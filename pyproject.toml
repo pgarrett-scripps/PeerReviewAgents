@@ -7,7 +7,11 @@ name = "peerreviewagents"
 version = "0.1.0"
 description = "Multi-agent LLM peer-review framework (an editorial board for manuscripts)"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.14"
+license = { text = "GPL-3.0-or-later" }
+classifiers = [
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+]
 dependencies = [
     "langgraph>=0.2",
     "langchain-core>=0.3",
@@ -17,14 +21,15 @@ dependencies = [
     "rich>=13",
     "pydantic>=2",
     "python-dotenv>=1",
-    "pypdf>=4",
+    "tomli>=2; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
 google = ["langchain-google-genai>=2"]
 ollama = ["langchain-ollama>=0.2"]
-research = ["arxiv>=2", "requests>=2"]
-pdf = ["markdown-pdf>=1"]
+research = ["arxiv>=2", "requests>=2", "tavily-python>=0.5"]
+pdf-export = ["markdown-pdf>=1"]
+pdf-ingest = ["marker-pdf>=1.10", "Pillow>=10"]
 
 [project.scripts]
 peerreview = "cli.main:run"

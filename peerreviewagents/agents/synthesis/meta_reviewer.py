@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from ..debate.base import _debate_so_far, _reports_digest
 from ..utils.agent_states import ReviewState
 from ..utils.agent_utils import run_agent
@@ -34,11 +36,13 @@ def node(state: ReviewState) -> dict:
 
 def _extract_rec(text: str) -> str:
     low = text.lower()
-    # Search the recommendation section first, fall back to whole text.
+    m = re.search(r"#+\s*draft\s+recommendation.*?$(.*?)(?=^#+\s|\Z)", low, re.IGNORECASE | re.MULTILINE | re.DOTALL)
+    scope = m.group(1) if m else low
     for key in ("reject", "major", "minor", "accept"):
-        if key in low.split("draft recommendation")[-1]:
+        if re.search(rf"\b{key}\b", scope):
             return key
+    # Fall back to full text if section search yielded nothing.
     for key in ("reject", "major", "minor", "accept"):
-        if key in low:
+        if re.search(rf"\b{key}\b", low):
             return key
     return "major"

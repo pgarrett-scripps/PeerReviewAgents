@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import datetime as _dt
+import logging
 import os
 import re
+
+logger = logging.getLogger(__name__)
 
 from .agents.utils.agent_states import ReviewState
 
@@ -91,5 +94,5 @@ def _try_pdf(run_dir: str) -> None:
                 with open(os.path.join(run_dir, fn), encoding="utf-8") as fh:
                     pdf.add_section(Section(fh.read()))
         pdf.save(os.path.join(run_dir, "review_package.pdf"))
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("PDF emission failed: %s", exc)

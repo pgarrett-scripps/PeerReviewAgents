@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ..utils.agent_states import ReviewState
-from ..utils.agent_utils import parse_report, run_agent
+from ..utils.agent_utils import fit_manuscript, parse_report, run_agent
 from ..utils.llm import make_llm
 
 _TEMPLATE = """Write Markdown with sections:
@@ -25,9 +25,7 @@ def make_integrity_node(name: str, role: str, mandate: str):
             f"You are the {role} on the research-integrity panel. {mandate} Assess the "
             "draft recommendation for hidden risks before the editor finalizes."
         )
-        manuscript = state["manuscript_md"]
-        if len(manuscript) > 50000:
-            manuscript = manuscript[:50000] + "\n\n[...truncated...]"
+        manuscript = fit_manuscript(state)
         user = (
             f"Draft recommendation: {state.get('draft_recommendation')}\n\n"
             f"Meta-review:\n{state.get('meta_review', '')[:4000]}\n\n"

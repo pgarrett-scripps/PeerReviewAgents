@@ -41,7 +41,6 @@ class ReviewState(TypedDict, total=False):
     # --- debate ---
     debate: Annotated[list[DebateTurn], operator.add]
     debate_round: int
-    debate_done: bool
 
     # --- synthesis ---
     meta_review: str

@@ -1,3 +1,4 @@
+from . import citations as _citations
 from .base import make_integrity_node
 
 rigor = make_integrity_node(
@@ -27,4 +28,9 @@ ethics = make_integrity_node(
     ),
 )
 
-NODES = [("rigor", rigor), ("reproducibility", reproducibility), ("ethics", ethics)]
+NODES = [
+    ("rigor", rigor),
+    ("reproducibility", reproducibility),
+    ("ethics", ethics),
+    ("citations", _citations.node),
+]

@@ -63,7 +63,7 @@ class PeerReviewGraph:
         self.graph = build_graph(self.config)
 
     def initial_state(self, manuscript_path: str) -> ReviewState:
-        title, md, sections = load_manuscript(manuscript_path)
+        title, md, sections = load_manuscript(manuscript_path, self.config)
         return ReviewState(
             manuscript_path=manuscript_path,
             manuscript_title=title,
@@ -86,6 +86,9 @@ class PeerReviewGraph:
 
     def stream(self, manuscript_path: str):
         """Yield (node_name, partial_state) as the graph executes (for the TUI)."""
+        # Emit a start event BEFORE parsing so the CLI/TUI shows activity
+        # while marker chews on the PDF (which can take minutes).
+        yield "_ingest_start", {"manuscript_path": manuscript_path}
         state = self.initial_state(manuscript_path)
         cfg = {"recursion_limit": 50}
         if self.config.get("checkpoint"):

@@ -29,7 +29,7 @@ def make_debate_node(role: str, stance: str):
     def node(state: ReviewState) -> dict:
         config = state["config"]
         llm = make_llm(config, depth="deep")
-        rnd = state.get("debate_round", 0) + (1 if role == "advocate" else 0)
+        rnd = state.get("debate_round", 0) + 1
         system = (
             f"You are the {role} in an editorial debate about whether to accept a "
             f"manuscript. {stance} Argue concisely (max ~250 words), engage directly "
@@ -43,7 +43,12 @@ def make_debate_node(role: str, stance: str):
         try:
             content = run_agent(llm, system, user)
         except Exception as exc:  # noqa: BLE001
-            return {"errors": [f"{role} failed: {exc}"]}
+            update: dict = {"errors": [f"{role} failed: {exc}"]}
+            # Always advance the round counter, even on failure, so the
+            # debate loop terminates instead of recursing forever.
+            if role == "skeptic":
+                update["debate_round"] = state.get("debate_round", 0) + 1
+            return update
         update = {"debate": [{"role": role, "round": rnd, "content": content}]}
         if role == "skeptic":  # skeptic closes a round
             update["debate_round"] = state.get("debate_round", 0) + 1

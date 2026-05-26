@@ -3,11 +3,25 @@
 Each tool degrades gracefully: if a dependency or network is unavailable it
 returns a short note rather than raising, so a review run never hard-fails on
 the research layer.
+
+The web search slot is backed by Tavily (real search API with retry/cache),
+not by the prior DuckDuckGo scraper which was unreliable and gated behind a
+package that wasn't even installed by default.
 """
 
 from __future__ import annotations
 
+import os
+from typing import Iterable
+
 from langchain_core.tools import tool
+
+from .tavily_client import TavilyResearchClient, get_tavily_client
+
+
+# ---------------------------------------------------------------------------
+# Scientific literature tools — keep their original behavior.
+# ---------------------------------------------------------------------------
 
 
 @tool
@@ -32,9 +46,14 @@ def semantic_scholar_search(query: str, limit: int = 5) -> str:
     try:
         import requests
 
+        headers = {}
+        api_key = os.environ.get("SEMANTIC_SCHOLAR_API_KEY")
+        if api_key:
+            headers["x-api-key"] = api_key
         resp = requests.get(
             "https://api.semanticscholar.org/graph/v1/paper/search",
             params={"query": query, "limit": limit, "fields": "title,year,citationCount,abstract"},
+            headers=headers,
             timeout=20,
         )
         resp.raise_for_status()
@@ -52,25 +71,90 @@ def semantic_scholar_search(query: str, limit: int = 5) -> str:
         return f"[semantic_scholar_search unavailable: {exc}]"
 
 
-@tool
-def web_search(query: str) -> str:
-    """General web search for facts, definitions, and claim verification."""
-    try:
-        from ddgs import DDGS  # optional dependency
-
-        with DDGS() as ddgs:
-            hits = list(ddgs.text(query, max_results=5))
-        if not hits:
-            return "No web results."
-        return "\n".join(f"- {h.get('title')}: {h.get('body', '')[:200]} ({h.get('href')})" for h in hits)
-    except Exception as exc:  # noqa: BLE001
-        return f"[web_search unavailable: {exc}]"
+# ---------------------------------------------------------------------------
+# Tavily-backed web search + extract. Built via a factory so each tool is
+# bound to a specific shared client (per-process, per-config fingerprint).
+# ---------------------------------------------------------------------------
 
 
-_ALL = {"arxiv": arxiv_search, "scholar": semantic_scholar_search, "web": web_search}
+def _make_tavily_tools(client: TavilyResearchClient) -> list:
+    @tool
+    def tavily_search(query: str) -> str:
+        """Web search for claim verification, definitions, and supporting
+        evidence outside the scientific-paper APIs. Returns a list of
+        title / snippet / url for the top hits, ranked by relevance.
+        Follow up with `tavily_extract` on a specific URL to read its
+        full clean text. Prefer the arxiv / semantic_scholar tools for
+        purely academic queries."""
+        return client.search(query)
+
+    @tool
+    def tavily_extract(url: str) -> str:
+        """Fetch the clean, readable full text of a single URL found via
+        `tavily_search`. Use when you need to verify a specific claim
+        against the source rather than relying on a snippet. The URL must
+        be http(s). Output is truncated to keep context manageable."""
+        return client.extract(url)
+
+    return [tavily_search, tavily_extract]
+
+
+# ---------------------------------------------------------------------------
+# Tool resolution.
+# ---------------------------------------------------------------------------
+
+# Aliases for legacy config values. Older `peerreview.toml` files used
+# `research_tools = ["web", ...]`; map that to the new Tavily slot so
+# users don't have to edit their configs to keep working.
+_LEGACY_ALIASES = {"web": "tavily"}
+
+# Names that map to the static (non-Tavily) tools.
+_STATIC_TOOLS = {
+    "arxiv": arxiv_search,
+    "scholar": semantic_scholar_search,
+}
+
+
+def _resolve_names(requested: Iterable[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in requested:
+        name = _LEGACY_ALIASES.get(raw, raw)
+        if name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
 
 
 def get_research_tools(config: dict) -> list:
+    """Return the LangChain tools available to research-enabled agents.
+
+    Honors `research_enabled`. Filters to the subset in `research_tools`.
+    Drops Tavily silently when `TAVILY_API_KEY` is not set (logged once
+    per process). Listing `"tavily"` also enables `tavily_extract` so the
+    agent can read full text of URLs it finds.
+    """
     if not config.get("research_enabled"):
         return []
-    return [_ALL[name] for name in config.get("research_tools", []) if name in _ALL]
+
+    requested = _resolve_names(config.get("research_tools") or [])
+    tools: list = []
+
+    for name in requested:
+        if name == "tavily":
+            client = get_tavily_client(config, os.environ.get("TAVILY_API_KEY"))
+            if client is not None:
+                search_tool, extract_tool = _make_tavily_tools(client)
+                tools.append(search_tool)
+                tools.append(extract_tool)
+        elif name == "tavily_extract":
+            client = get_tavily_client(config, os.environ.get("TAVILY_API_KEY"))
+            if client is not None:
+                _, extract_tool = _make_tavily_tools(client)
+                if not any(getattr(t, "name", "") == extract_tool.name for t in tools):
+                    tools.append(extract_tool)
+        elif name in _STATIC_TOOLS:
+            tools.append(_STATIC_TOOLS[name])
+
+    return tools

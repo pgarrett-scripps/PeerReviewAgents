@@ -7,7 +7,7 @@ structured markdown report that parse_report() turns into a ReviewReport.
 from __future__ import annotations
 
 from ..utils.agent_states import ReviewState
-from ..utils.agent_utils import parse_report, run_agent
+from ..utils.agent_utils import fit_manuscript, parse_report, run_agent
 from ..utils.llm import make_llm
 
 _REPORT_TEMPLATE = """Write your review in GitHub-flavored Markdown with EXACTLY these sections:
@@ -46,9 +46,7 @@ def make_reviewer_node(name: str, role: str, mandate: str, uses_research: bool =
             "You are rigorous, fair, and constructive. Ground critiques in specific "
             "evidence from the manuscript."
         )
-        manuscript = state["manuscript_md"]
-        if len(manuscript) > 60000:
-            manuscript = manuscript[:60000] + "\n\n[...manuscript truncated...]"
+        manuscript = fit_manuscript(state)
         user = (
             f"Manuscript title: {state.get('manuscript_title', 'Untitled')}\n\n"
             f"=== MANUSCRIPT ===\n{manuscript}\n=== END ===\n\n"

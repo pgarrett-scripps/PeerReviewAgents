@@ -53,6 +53,7 @@ def _patch_llms(monkeypatch):
         "peerreviewagents.agents.debate.base",
         "peerreviewagents.agents.synthesis.meta_reviewer",
         "peerreviewagents.agents.integrity.base",
+        "peerreviewagents.agents.integrity.citations",
         "peerreviewagents.agents.editor.editor_in_chief",
     ]
     for mod in targets:
@@ -71,7 +72,7 @@ def test_full_pipeline(monkeypatch, tmp_path):
     assert state["debate_round"] == cfg["max_debate_rounds"]
     assert len(state["debate"]) == cfg["max_debate_rounds"] * 2
     # Integrity panel and editor produced output.
-    assert len(state["integrity_findings"]) == 3
+    assert len(state["integrity_findings"]) == 4
     assert state["decision"] == "major"
     assert not state.get("errors")
 

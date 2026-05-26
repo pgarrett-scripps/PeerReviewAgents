@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from .agent_states import ReviewReport
+
+if TYPE_CHECKING:
+    from .agent_states import ReviewState
 
 _MAX_TOOL_STEPS = 4
 
@@ -28,8 +32,9 @@ def run_agent(llm, system_prompt: str, user_prompt: str, tools: list | None = No
             fn = tool_map.get(call["name"])
             result = fn.invoke(call["args"]) if fn else f"[unknown tool {call['name']}]"
             messages.append(ToolMessage(content=str(result), tool_call_id=call["id"]))
-    # Tool budget exhausted: ask for a final answer with no tools.
-    final = llm.invoke(messages + [HumanMessage(content="Now write your final report.")])
+    # Tool budget exhausted: ask for a final answer; keep tools bound so
+    # Anthropic accepts the tool-call / tool-result history in `messages`.
+    final = model.invoke(messages + [HumanMessage(content="Now write your final report.")])
     return _text(final.content)
 
 
@@ -73,3 +78,51 @@ def parse_report(text: str, reviewer: str) -> ReviewReport:
         confidence=_grab(r"confidence\s*[:=]?\s*([0-5](?:\.\d)?)", text, 3.0),
         body=text,
     )
+
+
+# Section names probed in priority order for section-aware truncation.
+_PRIORITY_SECTIONS: list[str] = [
+    "abstract",
+    "introduction",
+    "methods",
+    "materials and methods",
+    "methodology",
+    "results",
+    "discussion",
+    "conclusion",
+    "conclusions",
+]
+
+
+def fit_manuscript(state: ReviewState, budget: int | None = None) -> str:
+    """Return the manuscript text fitted to `budget` chars.
+
+    If the full markdown fits, return it unchanged. Otherwise prefer
+    keeping abstract + methods + results + discussion + conclusion;
+    drop supplementary/appendix content first; fall back to a tail
+    truncation if section parsing didn't yield enough structure.
+    """
+    text: str = state["manuscript_md"]
+    if budget is None:
+        budget = state["config"].get("manuscript_char_budget", 60000)
+
+    if len(text) <= budget:
+        return text
+
+    sections: dict[str, str] = state.get("sections") or {}
+    if sections:
+        parts: list[str] = []
+        total = 0
+        for name in _PRIORITY_SECTIONS:
+            content = sections.get(name, "")
+            if not content:
+                continue
+            chunk = f"## {name.title()}\n\n{content}"
+            if total + len(chunk) > budget:
+                break
+            parts.append(chunk)
+            total += len(chunk)
+        if len(parts) >= 4:
+            return "\n\n".join(parts)
+
+    return text[:budget] + "\n\n[...manuscript truncated...]"

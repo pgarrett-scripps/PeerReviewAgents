@@ -40,7 +40,9 @@ def node(state: ReviewState) -> dict:
     try:
         text = run_agent(llm, _SYS, user)
     except Exception as exc:  # noqa: BLE001
-        return {"errors": [f"editor failed: {exc}"], "decision": state.get("draft_recommendation", "major"), "decision_letter": ""}
+        # Do NOT fabricate a verdict on failure — leave decision empty so the
+        # caller knows the editor never rendered one.
+        return {"errors": [f"editor failed: {exc}"], "decision": "", "decision_letter": ""}
     return {"decision": _extract_decision(text, state), "decision_letter": text}
 
 
@@ -50,4 +52,8 @@ def _extract_decision(text: str, state: ReviewState) -> str:
             for v in _VALID:
                 if v in line.lower():
                     return v
-    return state.get("draft_recommendation", "major")
+    # No DECISION line in the LLM output — fall back to the meta-reviewer's
+    # draft only if it produced a valid verdict; otherwise return empty so
+    # downstream code can treat this run as failed.
+    draft = state.get("draft_recommendation", "")
+    return draft if draft in _VALID else ""

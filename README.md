@@ -39,7 +39,19 @@ if offline.
 
 ```bash
 pip install -e .
-# optional extras:  pip install -e ".[research,google,ollama,pdf]"
+
+# For PDF manuscripts (marker-pdf + Pillow, ~1 GB of model weights):
+pip install -e '.[pdf-ingest]'
+
+# Optional extras:
+#   pdf-ingest   — parse PDF manuscripts (marker-pdf + Pillow)
+#   pdf-export   — emit a combined review PDF (markdown-pdf)
+#   research     — live arXiv / web grounding (arxiv, requests, tavily-python)
+#   google       — Google Gemini provider (langchain-google-genai)
+#   ollama       — local Ollama provider (langchain-ollama)
+#
+# All extras:
+pip install -e '.[research,google,ollama,pdf-ingest,pdf-export]'
 ```
 
 ## API keys
@@ -83,10 +95,11 @@ write_reports(state)
 
 ## Configuration
 
-See `peerreviewagents/default_config.py`. Key knobs: `provider`, `deep_think_llm` /
-`quick_think_llm` (a deep model for synthesis/judgement, a quick model for the
-parallel reviewer pass), `reviewer_set`, `max_debate_rounds`, `research_enabled`,
-`emit_pdf`, `emit_verdict`, and `checkpoint` (SQLite crash-resume).
+See `peerreviewagents/default_config.py`. Key ones: `provider`,
+`deep_think_llm` / `quick_think_llm` (a deep model for synthesis/judgement, a quick
+model for the parallel reviewer pass), `reviewer_set`, `max_debate_rounds`,
+`research_enabled`, `emit_pdf`, `emit_verdict`, and `checkpoint` (SQLite
+crash-resume).
 
 ## Output
 

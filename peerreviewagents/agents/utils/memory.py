@@ -23,9 +23,3 @@ def append_memory(state: ReviewState) -> None:
     with open(path, "a", encoding="utf-8") as fh:
         fh.write(entry)
 
-
-def load_memory(path: str, limit: int = 4000) -> str:
-    if not os.path.exists(path):
-        return ""
-    with open(path, encoding="utf-8") as fh:
-        return fh.read()[-limit:]
