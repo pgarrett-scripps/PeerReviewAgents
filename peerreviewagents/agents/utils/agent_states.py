@@ -7,16 +7,18 @@ from typing import Annotated, TypedDict
 
 
 class ReviewReport(TypedDict):
-    """A single specialist reviewer's structured output."""
+    """A single specialist reviewer's output.
+
+    ``body`` is the full markdown report including a YAML frontmatter
+    block that carries ``score`` and ``confidence``; the scalars are
+    duplicated as top-level fields here so downstream consumers
+    (score_summary, debate digest) can read them without re-parsing.
+    """
     reviewer: str
-    summary: str
-    strengths: list[str]
-    weaknesses: list[str]
-    questions: list[str]
     # 1 (reject) .. 5 (accept), per-reviewer confidence-weighted score
     score: float
     confidence: float
-    body: str  # full markdown report
+    body: str
 
 
 class DebateTurn(TypedDict):
@@ -46,8 +48,11 @@ class ReviewState(TypedDict, total=False):
     meta_review: str
     draft_recommendation: str
 
-    # --- integrity ---
-    integrity_findings: Annotated[list[ReviewReport], operator.add]
+    # --- author rebuttal ---
+    # Free-text markdown the "author" agent writes to defend the
+    # manuscript against the reviewer panel before the editor decides.
+    # Sits between the meta-review and the editor.
+    author_rebuttal: str
 
     # --- final ---
     decision: str                # accept | minor | major | reject
@@ -55,3 +60,7 @@ class ReviewState(TypedDict, total=False):
 
     # --- bookkeeping ---
     errors: Annotated[list[str], operator.add]
+    # Sum of OpenRouter-reported per-call USD cost across every LLM
+    # invocation in the run. Surfaced in summary.md so users can size
+    # the cost of pointing this at a 50-page preprint.
+    total_cost: Annotated[float, operator.add]

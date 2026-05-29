@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>PeerReviewAgents</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="upload-page">
+    <main class="upload-card">
+        <h1>PeerReviewAgents</h1>
+        <p class="lede">
+            Drop a manuscript and watch a roomful of AI reviewers tear into it.
+        </p>
+
+        <form id="upload-form" enctype="multipart/form-data">
+            <label class="drop-zone" id="drop-zone">
+                <input type="file" id="file-input" name="manuscript"
+                       accept=".pdf,.md,.markdown,.tex,.docx,.txt" hidden>
+                <span class="drop-prompt">
+                    <strong>Drop a manuscript here</strong>
+                    <span class="muted">PDF · Markdown · LaTeX · DOCX · TXT</span>
+                </span>
+                <span class="drop-filename" hidden></span>
+            </label>
+            <button type="submit" class="primary" id="submit-btn" disabled>
+                Start review
+            </button>
+        </form>
+
+        <p id="status" class="status" role="status" aria-live="polite"></p>
+    </main>
+
+    <script>
+        const form  = document.getElementById('upload-form');
+        const input = document.getElementById('file-input');
+        const zone  = document.getElementById('drop-zone');
+        const sub   = document.getElementById('submit-btn');
+        const stat  = document.getElementById('status');
+        const fname = zone.querySelector('.drop-filename');
+        const prompt = zone.querySelector('.drop-prompt');
+
+        function setFile(file) {
+            if (!file) return;
+            fname.textContent = file.name;
+            fname.hidden = false;
+            prompt.hidden = true;
+            sub.disabled = false;
+        }
+
+        zone.addEventListener('click', () => input.click());
+        input.addEventListener('change', () => setFile(input.files[0]));
+        zone.addEventListener('dragover', (e) => {
+            e.preventDefault(); zone.classList.add('drag-over');
+        });
+        zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+        zone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            zone.classList.remove('drag-over');
+            const f = e.dataTransfer.files[0];
+            if (f) {
+                const dt = new DataTransfer();
+                dt.items.add(f);
+                input.files = dt.files;
+                setFile(f);
+            }
+        });
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if (!input.files[0]) return;
+            sub.disabled = true;
+            stat.textContent = 'Uploading…';
+
+            const data = new FormData();
+            data.append('manuscript', input.files[0]);
+            const resp = await fetch('/jobs', { method: 'POST', body: data });
+            if (!resp.ok) {
+                stat.textContent = `Error: ${await resp.text()}`;
+                sub.disabled = false;
+                return;
+            }
+            const body = await resp.json();
+            window.location.href = `/job.html?id=${encodeURIComponent(body.job_id)}`;
+        });
+    </script>
+</body>
+</html>

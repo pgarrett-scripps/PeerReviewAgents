@@ -15,21 +15,22 @@ classifiers = [
 dependencies = [
     "langgraph>=0.2",
     "langchain-core>=0.3",
-    "langchain-anthropic>=0.2",
     "langchain-openai>=0.2",
     "textual>=0.60",
     "rich>=13",
     "pydantic>=2",
     "python-dotenv>=1",
     "tomli>=2; python_version < '3.11'",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "python-multipart>=0.0.9",
+    "websockets>=12",
 ]
 
 [project.optional-dependencies]
-google = ["langchain-google-genai>=2"]
-ollama = ["langchain-ollama>=0.2"]
-research = ["arxiv>=2", "requests>=2", "tavily-python>=0.5"]
-pdf-export = ["markdown-pdf>=1"]
-pdf-ingest = ["marker-pdf>=1.10", "Pillow>=10"]
+research = ["arxiv>=2", "requests>=2"]
+pdf-ingest = ["requests>=2", "Pillow>=10"]
+web-test = ["httpx>=0.27"]
 
 [project.scripts]
 peerreview = "cli.main:run"

@@ -17,7 +17,7 @@ install:
 # Install with every optional extra
 install-all:
     uv venv
-    uv pip install -e ".[research,google,ollama,pdf-ingest,pdf-export]"
+    uv pip install -e ".[research,pdf-ingest]"
 
 # Install with a chosen extras group: `just install-extras research,pdf`
 install-extras extras:
@@ -27,7 +27,7 @@ install-extras extras:
 # Install dev/test tooling alongside the project
 install-dev:
     uv venv
-    uv pip install -e ".[research,pdf-ingest,pdf-export]"
+    uv pip install -e ".[research,pdf-ingest]"
     uv pip install pytest ruff
 
 # Sync the venv to match pyproject.toml exactly (drops anything stale)
@@ -52,10 +52,15 @@ run path *args:
 run-sample *args:
     uv run peerreview tests/sample_manuscript.md --no-tui {{args}}
 
-# Smoke-test marker ingestion on one PDF (no LLM calls, no vision).
-# Writes the extracted markdown to reports/_marker_test.md and prints a summary.
-# Usage:  just test-marker ~/Downloads/paper.pdf
-test-marker path:
+# Launch the FastAPI web UI (game-like agent room + upload form)
+serve *args:
+    uv run peerreview serve {{args}}
+
+# Smoke-test PDF ingestion via the Datalab API on one PDF (no LLM calls, no vision).
+# Writes the extracted markdown to reports/_ingest_test.md and prints a summary.
+# Requires DATALAB_API_KEY in the environment.
+# Usage:  just test-ingest ~/Downloads/paper.pdf
+test-ingest path:
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p reports
@@ -72,7 +77,7 @@ test-marker path:
     title, md, sections = load_manuscript(pdf)
     elapsed = time.time() - t0
 
-    out = Path("reports/_marker_test.md")
+    out = Path("reports/_ingest_test.md")
     out.write_text(md)
     img_refs = len(re.findall(r"!\[\]\([^)]+\)", md))
     headings = len(re.findall(r"(?m)^#+ "  , md))

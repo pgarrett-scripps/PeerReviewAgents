@@ -1,26 +1,35 @@
-"""Registry of available specialist reviewers."""
+"""Registry of specialist reviewers — the full panel always runs."""
 
 from __future__ import annotations
 
-import warnings
+from . import (
+    clarity,
+    data_analysis,
+    ethics,
+    literature,
+    methodology,
+    novelty,
+    reproducibility,
+    rigor,
+)
 
-from . import clarity, data_analysis, literature, methodology, novelty
+# Each reviewer is a parallel branch fanned out from START. Rigor,
+# reproducibility, and ethics used to be a separate "integrity panel"
+# that ran serially after the meta-review; they're regular reviewers
+# now so the whole panel runs concurrently.
+REVIEWERS: list[tuple[str, callable]] = [
+    ("methodology", methodology.node),
+    ("data_analysis", data_analysis.node),
+    ("novelty", novelty.node),
+    ("clarity", clarity.node),
+    ("literature", literature.node),
+    ("rigor", rigor.node),
+    ("reproducibility", reproducibility.node),
+    ("ethics", ethics.node),
+]
 
-REGISTRY = {
-    "methodology": methodology.node,
-    "data_analysis": data_analysis.node,
-    "novelty": novelty.node,
-    "clarity": clarity.node,
-    "literature": literature.node,
-}
+REVIEWER_NAMES = [name for name, _ in REVIEWERS]
 
 
-def get_reviewer_nodes(names):
-    unknown = [n for n in names if n not in REGISTRY]
-    if unknown:
-        warnings.warn(
-            f"Unknown reviewer name(s) skipped: {', '.join(unknown)}. "
-            f"Available: {', '.join(sorted(REGISTRY))}.",
-            stacklevel=2,
-        )
-    return [(n, REGISTRY[n]) for n in names if n in REGISTRY]
+def get_reviewer_nodes() -> list[tuple[str, callable]]:
+    return list(REVIEWERS)

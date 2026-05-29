@@ -1,7 +1,20 @@
-"""Provider-agnostic LLM factory.
+"""OpenRouter chat-model factory.
 
-Reads API keys from the environment (.env supported via python-dotenv) and
-returns LangChain chat models. Mirrors TradingAgents' deep/quick split.
+Every text agent in the pipeline (reviewers, debaters, meta-reviewer,
+integrity panel, editor-in-chief) calls the same model — the
+`reasoning_model` slug from config — via OpenRouter's OpenAI-compatible
+endpoint. Temperature is fixed at a low, deterministic value because
+peer review is judgement, not brainstorming.
+
+The synthesis-heavy agents (meta-reviewer and editor) opt into
+`reasoning_effort="high"` so reasoning-capable models spend more
+deliberation tokens on the calls that actually need it; the parallel
+specialist reviewers and integrity panel run at the default effort.
+
+Streaming is on by default so the TUI can show tokens as they arrive;
+`stream_usage` plus OpenRouter's `usage.include` extension surface
+token counts and per-call cost via the langchain callback handler in
+:mod:`peerreviewagents.observability`.
 """
 
 from __future__ import annotations
@@ -9,69 +22,65 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from ...observability import StreamingCallback
 
-def _anthropic(model: str, temperature: float, base_url: str | None) -> Any:
-    from langchain_anthropic import ChatAnthropic
+_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+_TEMPERATURE = 0.3
 
-    kwargs: dict[str, Any] = {"model": model, "temperature": temperature}
-    if base_url:
-        kwargs["base_url"] = base_url
-    return ChatAnthropic(**kwargs)
+# App attribution — OpenRouter uses these to identify the project on its
+# leaderboard and (for some providers) for rate-limit accounting.
+# https://openrouter.ai/docs/api-reference/overview#headers
+_APP_HEADERS = {
+    "HTTP-Referer": "https://github.com/pgarrett-scripps/PeerReviewAgents",
+    "X-Title": "PeerReviewAgents",
+}
 
 
-def _openai(model: str, temperature: float, base_url: str | None) -> Any:
+def _chat_openrouter(model: str, *, reasoning_effort: str | None = None) -> Any:
     from langchain_openai import ChatOpenAI
 
-    kwargs: dict[str, Any] = {"model": model, "temperature": temperature}
-    if base_url:
-        kwargs["base_url"] = base_url
-    return ChatOpenAI(**kwargs)
-
-
-def _openrouter(model: str, temperature: float, base_url: str | None) -> Any:
-    """OpenRouter is OpenAI-compatible. Honor OPENROUTER_API_KEY so users
-    don't have to know that the underlying SDK looks for OPENAI_API_KEY."""
-    from langchain_openai import ChatOpenAI
+    api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    # `extra_body` is forwarded verbatim to the OpenRouter request, which is
+    # how we pass through OpenRouter-specific fields the OpenAI SDK doesn't
+    # know about (reasoning effort + cost-inclusive usage accounting).
+    extra_body: dict[str, Any] = {"usage": {"include": True}}
+    if reasoning_effort:
+        extra_body["reasoning"] = {"effort": reasoning_effort}
 
     kwargs: dict[str, Any] = {
         "model": model,
-        "temperature": temperature,
-        "base_url": base_url or "https://openrouter.ai/api/v1",
+        "temperature": _TEMPERATURE,
+        "base_url": _OPENROUTER_BASE_URL,
+        "default_headers": _APP_HEADERS,
+        "extra_body": extra_body,
+        # Streaming powers the TUI's live-output panel; the callback below
+        # forwards each token to the observability queue.
+        "streaming": True,
+        "stream_usage": True,
+        "callbacks": [StreamingCallback(default_model=model)],
     }
-    api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")
     if api_key:
         kwargs["api_key"] = api_key
     return ChatOpenAI(**kwargs)
 
 
-def _google(model: str, temperature: float, base_url: str | None) -> Any:
-    from langchain_google_genai import ChatGoogleGenerativeAI
+def make_llm(config: dict, *, reasoning_effort: str | None = None) -> Any:
+    """Return the reasoning model used by every text agent.
 
-    return ChatGoogleGenerativeAI(model=model, temperature=temperature)
-
-
-def _ollama(model: str, temperature: float, base_url: str | None) -> Any:
-    from langchain_ollama import ChatOllama
-
-    return ChatOllama(model=model, temperature=temperature, base_url=base_url or "http://localhost:11434")
-
-
-_PROVIDERS = {
-    "anthropic": _anthropic,
-    "openai": _openai,
-    "openrouter": _openrouter,
-    "google": _google,
-    "ollama": _ollama,
-}
+    Pass ``reasoning_effort="high"`` for synthesis/judgement agents (the
+    meta-reviewer and editor) — it's a no-op on models without a reasoning
+    mode and a meaningful quality bump on those that do (o-series,
+    Claude extended thinking, DeepSeek-R1, etc.).
+    """
+    model = config.get("reasoning_model")
+    if not model:
+        raise ValueError("reasoning_model is not set in config")
+    return _chat_openrouter(model, reasoning_effort=reasoning_effort)
 
 
-def make_llm(config: dict, depth: str = "deep") -> Any:
-    """Create a chat model. depth is 'deep' or 'quick'."""
-    provider = config["provider"]
-    if provider not in _PROVIDERS:
-        raise ValueError(
-            f"Unknown provider '{provider}'. Options: {sorted(_PROVIDERS)}"
-        )
-    model = config["deep_think_llm"] if depth == "deep" else config["quick_think_llm"]
-    base_url = config.get("base_url")
-    return _PROVIDERS[provider](model, config.get("temperature", 0.3), base_url)
+def make_vision_llm(config: dict) -> Any:
+    """Return the multimodal model used during ingest to describe figures."""
+    model = config.get("vision_model")
+    if not model:
+        raise ValueError("vision_model is not set in config")
+    return _chat_openrouter(model)

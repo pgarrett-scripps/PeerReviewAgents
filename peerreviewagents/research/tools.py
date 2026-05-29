@@ -1,27 +1,22 @@
 """Live-research tools for grounding reviews in external evidence.
 
-Each tool degrades gracefully: if a dependency or network is unavailable it
-returns a short note rather than raising, so a review run never hard-fails on
-the research layer.
+Two structured paper-lookup tools — arXiv and Semantic Scholar — that
+reviewers can call when they need to verify a citation or check for
+prior art. Each degrades gracefully: if the dependency or network is
+unavailable, the tool returns a short note instead of raising, so a
+single research hiccup never sinks a review run.
 
-The web search slot is backed by Tavily (real search API with retry/cache),
-not by the prior DuckDuckGo scraper which was unreliable and gated behind a
-package that wasn't even installed by default.
+General-purpose web search is provided separately by OpenRouter's
+server-side `openrouter:web_search` tool (wired in from
+:mod:`peerreviewagents.agents.utils.agent_utils`), so we don't ship a
+client for it here.
 """
 
 from __future__ import annotations
 
 import os
-from typing import Iterable
 
 from langchain_core.tools import tool
-
-from .tavily_client import TavilyResearchClient, get_tavily_client
-
-
-# ---------------------------------------------------------------------------
-# Scientific literature tools — keep their original behavior.
-# ---------------------------------------------------------------------------
 
 
 @tool
@@ -71,90 +66,10 @@ def semantic_scholar_search(query: str, limit: int = 5) -> str:
         return f"[semantic_scholar_search unavailable: {exc}]"
 
 
-# ---------------------------------------------------------------------------
-# Tavily-backed web search + extract. Built via a factory so each tool is
-# bound to a specific shared client (per-process, per-config fingerprint).
-# ---------------------------------------------------------------------------
-
-
-def _make_tavily_tools(client: TavilyResearchClient) -> list:
-    @tool
-    def tavily_search(query: str) -> str:
-        """Web search for claim verification, definitions, and supporting
-        evidence outside the scientific-paper APIs. Returns a list of
-        title / snippet / url for the top hits, ranked by relevance.
-        Follow up with `tavily_extract` on a specific URL to read its
-        full clean text. Prefer the arxiv / semantic_scholar tools for
-        purely academic queries."""
-        return client.search(query)
-
-    @tool
-    def tavily_extract(url: str) -> str:
-        """Fetch the clean, readable full text of a single URL found via
-        `tavily_search`. Use when you need to verify a specific claim
-        against the source rather than relying on a snippet. The URL must
-        be http(s). Output is truncated to keep context manageable."""
-        return client.extract(url)
-
-    return [tavily_search, tavily_extract]
-
-
-# ---------------------------------------------------------------------------
-# Tool resolution.
-# ---------------------------------------------------------------------------
-
-# Aliases for legacy config values. Older `peerreview.toml` files used
-# `research_tools = ["web", ...]`; map that to the new Tavily slot so
-# users don't have to edit their configs to keep working.
-_LEGACY_ALIASES = {"web": "tavily"}
-
-# Names that map to the static (non-Tavily) tools.
-_STATIC_TOOLS = {
-    "arxiv": arxiv_search,
-    "scholar": semantic_scholar_search,
-}
-
-
-def _resolve_names(requested: Iterable[str]) -> list[str]:
-    out: list[str] = []
-    seen: set[str] = set()
-    for raw in requested:
-        name = _LEGACY_ALIASES.get(raw, raw)
-        if name in seen:
-            continue
-        seen.add(name)
-        out.append(name)
-    return out
-
-
 def get_research_tools(config: dict) -> list:
-    """Return the LangChain tools available to research-enabled agents.
+    """Return the structured paper-lookup tools available to reviewers.
 
-    Honors `research_enabled`. Filters to the subset in `research_tools`.
-    Drops Tavily silently when `TAVILY_API_KEY` is not set (logged once
-    per process). Listing `"tavily"` also enables `tavily_extract` so the
-    agent can read full text of URLs it finds.
+    OpenRouter's server-side web search is attached separately by
+    :func:`run_agent`, so it does not need to appear in this list.
     """
-    if not config.get("research_enabled"):
-        return []
-
-    requested = _resolve_names(config.get("research_tools") or [])
-    tools: list = []
-
-    for name in requested:
-        if name == "tavily":
-            client = get_tavily_client(config, os.environ.get("TAVILY_API_KEY"))
-            if client is not None:
-                search_tool, extract_tool = _make_tavily_tools(client)
-                tools.append(search_tool)
-                tools.append(extract_tool)
-        elif name == "tavily_extract":
-            client = get_tavily_client(config, os.environ.get("TAVILY_API_KEY"))
-            if client is not None:
-                _, extract_tool = _make_tavily_tools(client)
-                if not any(getattr(t, "name", "") == extract_tool.name for t in tools):
-                    tools.append(extract_tool)
-        elif name in _STATIC_TOOLS:
-            tools.append(_STATIC_TOOLS[name])
-
-    return tools
+    return [arxiv_search, semantic_scholar_search]

@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import datetime as _dt
-import logging
 import os
 import re
-
-logger = logging.getLogger(__name__)
 
 from .agents.utils.agent_states import ReviewState
 
@@ -32,8 +29,6 @@ def write_reports(state: ReviewState) -> str:
 
     for r in state.get("reports", []):
         _write(run_dir, f"review_{r['reviewer']}.md", r["body"])
-    for f in state.get("integrity_findings", []):
-        _write(run_dir, f"integrity_{f['reviewer']}.md", f["body"])
 
     if state.get("debate"):
         transcript = "\n\n".join(
@@ -43,13 +38,13 @@ def write_reports(state: ReviewState) -> str:
 
     if state.get("meta_review"):
         _write(run_dir, "meta_review.md", state["meta_review"])
+    if state.get("author_rebuttal"):
+        _write(run_dir, "author_rebuttal.md", state["author_rebuttal"])
     if state.get("decision_letter"):
         _write(run_dir, "decision_letter.md", state["decision_letter"])
 
     _write(run_dir, "summary.md", _summary(state))
 
-    if config.get("emit_pdf"):
-        _try_pdf(run_dir)
     return run_dir
 
 
@@ -69,6 +64,10 @@ def _summary(state: ReviewState) -> str:
     if avg is not None:
         lines.append("")
         lines.append(f"**Average reviewer score:** {avg:.2f}/5")
+    cost = state.get("total_cost")
+    if cost is not None and cost > 0:
+        lines.append("")
+        lines.append(f"**OpenRouter cost:** ${cost:.4f}")
     if state.get("errors"):
         lines += ["", "## Run Warnings"] + [f"- {e}" for e in state["errors"]]
     return "\n".join(lines)
@@ -82,17 +81,3 @@ def _avg(state: ReviewState):
 def _write(run_dir: str, name: str, content: str) -> None:
     with open(os.path.join(run_dir, name), "w", encoding="utf-8") as fh:
         fh.write(content)
-
-
-def _try_pdf(run_dir: str) -> None:
-    try:
-        from markdown_pdf import MarkdownPdf, Section
-
-        pdf = MarkdownPdf()
-        for fn in sorted(os.listdir(run_dir)):
-            if fn.endswith(".md"):
-                with open(os.path.join(run_dir, fn), encoding="utf-8") as fh:
-                    pdf.add_section(Section(fh.read()))
-        pdf.save(os.path.join(run_dir, "review_package.pdf"))
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("PDF emission failed: %s", exc)

@@ -1,41 +1,130 @@
-"""Helpers shared by all agent nodes: a small tool loop and report parsing."""
+"""Helpers shared by all agent nodes: tool loop, prompt-cache markup,
+frontmatter parsing, cost capture.
+"""
 
 from __future__ import annotations
 
-import re
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-
-from .agent_states import ReviewReport
+from langchain_core.utils.function_calling import convert_to_openai_tool
 
 if TYPE_CHECKING:
     from .agent_states import ReviewState
 
 _MAX_TOOL_STEPS = 4
 
+# OpenRouter's server-side web search. The model decides when to invoke it;
+# OpenRouter runs the search (Exa by default) and inlines results into the
+# completion, so it never surfaces as a tool_call our loop has to handle.
+# https://openrouter.ai/docs/guides/features/server-tools/web-search
+_OPENROUTER_WEB_SEARCH = {"type": "openrouter:web_search"}
 
-def run_agent(llm, system_prompt: str, user_prompt: str, tools: list | None = None) -> str:
-    """Run a chat turn, executing any tool calls (bounded), return final text."""
+
+# ---------------------------------------------------------------------------
+# Run result
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RunResult:
+    """What every agent gets back from ``run_agent``.
+
+    `text` is the model's final assistant content (raw string, markdown
+    by convention). `cost` is the OpenRouter-reported USD cost summed
+    across every invocation in the tool loop (best-effort — 0.0 if the
+    provider didn't surface a cost field).
+    """
+
+    text: str
+    cost: float
+
+
+# ---------------------------------------------------------------------------
+# Core tool loop
+# ---------------------------------------------------------------------------
+
+
+def run_agent(
+    llm,
+    system_prompt: str,
+    user_prompt: str,
+    tools: list | None = None,
+    *,
+    cached_prefix: str | None = None,
+) -> RunResult:
+    """Run a chat turn, executing any tool calls (bounded), return final text.
+
+    Function tools (e.g. arxiv_search, semantic_scholar_search) are looped
+    locally; OpenRouter's web_search is attached unconditionally so every
+    agent can do ad-hoc web searches that we never see the call for.
+
+    Args:
+        cached_prefix: optional text block placed at the start of the user
+            message and marked ``cache_control: ephemeral`` so providers
+            that support prompt caching (Anthropic, Gemini, DeepSeek via
+            OpenRouter) serve it from cache on subsequent matching calls.
+            Pass the manuscript here.
+    """
     tools = tools or []
     tool_map = {t.name: t for t in tools}
-    model = llm.bind_tools(tools) if tools else llm
 
-    messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
+    # Build the wire-format tool list: OpenAI-style specs for function
+    # tools, plus the OpenRouter server-tool spec passed through verbatim.
+    bound_tools: list = [convert_to_openai_tool(t) for t in tools]
+    bound_tools.append(_OPENROUTER_WEB_SEARCH)
+    model = llm.bind(tools=bound_tools)
+
+    messages = [SystemMessage(content=system_prompt), _user_message(user_prompt, cached_prefix)]
+    cost_total = 0.0
+    final_resp: AIMessage | None = None
     for _ in range(_MAX_TOOL_STEPS):
         resp: AIMessage = model.invoke(messages)
+        cost_total += _call_cost(resp)
         messages.append(resp)
         calls = getattr(resp, "tool_calls", None) or []
         if not calls:
-            return _text(resp.content)
+            final_resp = resp
+            break
         for call in calls:
             fn = tool_map.get(call["name"])
             result = fn.invoke(call["args"]) if fn else f"[unknown tool {call['name']}]"
             messages.append(ToolMessage(content=str(result), tool_call_id=call["id"]))
-    # Tool budget exhausted: ask for a final answer; keep tools bound so
-    # Anthropic accepts the tool-call / tool-result history in `messages`.
-    final = model.invoke(messages + [HumanMessage(content="Now write your final report.")])
-    return _text(final.content)
+    if final_resp is None:
+        # Tool budget exhausted: ask for a final answer; keep tools bound
+        # so the API accepts the tool-call / tool-result history.
+        final_resp = model.invoke(messages + [HumanMessage(content="Now produce your final answer.")])
+        cost_total += _call_cost(final_resp)
+
+    return RunResult(text=_text(final_resp.content), cost=cost_total)
+
+
+def _user_message(user_prompt: str, cached_prefix: str | None) -> HumanMessage:
+    """Build the user message, optionally with a cache-controlled prefix block."""
+    if cached_prefix is None:
+        return HumanMessage(content=user_prompt)
+    return HumanMessage(
+        content=[
+            # `cache_control: ephemeral` is the OpenRouter-normalized
+            # marker; providers that don't support caching ignore it.
+            {"type": "text", "text": cached_prefix, "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": user_prompt},
+        ]
+    )
+
+
+def _call_cost(resp: AIMessage) -> float:
+    """Best-effort extraction of OpenRouter's reported USD cost."""
+    meta = getattr(resp, "response_metadata", None) or {}
+    usage = meta.get("token_usage") or meta.get("usage") or {}
+    cost = usage.get("cost")
+    if cost is None:
+        return 0.0
+    try:
+        return float(cost)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _text(content) -> str:
@@ -44,43 +133,81 @@ def _text(content) -> str:
     return str(content)
 
 
-def _grab(pattern: str, text: str, default: float) -> float:
-    m = re.search(pattern, text, re.IGNORECASE)
-    if not m:
-        return default
+# ---------------------------------------------------------------------------
+# YAML frontmatter — single source of machine-readable scalars
+# ---------------------------------------------------------------------------
+#
+# Every agent emits markdown with an optional YAML frontmatter block at
+# the top, e.g.:
+#
+#     ---
+#     score: 4
+#     confidence: 4
+#     ---
+#     # Methodology Review
+#     ...
+#
+# The body (markdown after the frontmatter) is the canonical report
+# rendered on disk and in the webapp; the frontmatter only carries
+# scalars that downstream code needs (score, confidence, decision).
+
+
+def split_frontmatter(text: str) -> tuple[dict[str, str], str]:
+    """Parse YAML-ish frontmatter from the top of ``text``.
+
+    Tolerant: only ``key: value`` lines are supported (string values, no
+    nesting). Falls back to ``({}, text)`` when no frontmatter is found,
+    so a model that forgets the block doesn't break the pipeline.
+    """
+    if not isinstance(text, str) or not text.startswith("---"):
+        return {}, text
+    # Allow the opening fence to be followed by \n or \r\n.
+    rest = text[3:]
+    if rest.startswith("\r\n"):
+        rest = rest[2:]
+    elif rest.startswith("\n"):
+        rest = rest[1:]
+    else:
+        return {}, text
+    # Find a closing fence on its own line.
+    for sep in ("\n---\n", "\r\n---\r\n", "\n---\r\n", "\r\n---\n"):
+        idx = rest.find(sep)
+        if idx >= 0:
+            block, body = rest[:idx], rest[idx + len(sep):]
+            break
+    else:
+        # No closing fence — treat the whole text as body.
+        return {}, text
+    data: dict[str, str] = {}
+    for line in block.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        data[key.strip()] = value.strip().strip("'\"")
+    return data, body
+
+
+def body_only(text: str) -> str:
+    """Return the markdown body with any frontmatter stripped."""
+    _, body = split_frontmatter(text)
+    return body
+
+
+def coerce_int(value: Any, *, default: int, lo: int, hi: int) -> int:
+    """Clamp ``value`` to ``[lo, hi]``; return ``default`` if not coercible."""
     try:
-        return float(m.group(1))
-    except ValueError:
+        n = int(float(value))
+    except (TypeError, ValueError):
         return default
+    return max(lo, min(hi, n))
 
 
-def _bullets(text: str, header: str) -> list[str]:
-    """Extract bullet lines under a markdown header until the next header."""
-    m = re.search(rf"#+\s*{header}.*?\n(.*?)(?=\n#+\s|\Z)", text, re.IGNORECASE | re.DOTALL)
-    if not m:
-        return []
-    return [ln.strip(" -*\t") for ln in m.group(1).splitlines() if ln.strip().startswith(("-", "*"))]
+# ---------------------------------------------------------------------------
+# Section-aware manuscript truncation
+# ---------------------------------------------------------------------------
 
 
-def parse_report(text: str, reviewer: str) -> ReviewReport:
-    """Parse a reviewer's markdown into a structured ReviewReport."""
-    summary = ""
-    sm = re.search(r"#+\s*Summary\s*\n(.*?)(?=\n#+\s|\Z)", text, re.IGNORECASE | re.DOTALL)
-    if sm:
-        summary = sm.group(1).strip()[:1000]
-    return ReviewReport(
-        reviewer=reviewer,
-        summary=summary,
-        strengths=_bullets(text, "Strengths"),
-        weaknesses=_bullets(text, "Weaknesses"),
-        questions=_bullets(text, "Questions"),
-        score=_grab(r"score\s*[:=]?\s*([1-5](?:\.\d)?)", text, 3.0),
-        confidence=_grab(r"confidence\s*[:=]?\s*([0-5](?:\.\d)?)", text, 3.0),
-        body=text,
-    )
-
-
-# Section names probed in priority order for section-aware truncation.
 _PRIORITY_SECTIONS: list[str] = [
     "abstract",
     "introduction",
@@ -126,3 +253,72 @@ def fit_manuscript(state: ReviewState, budget: int | None = None) -> str:
             return "\n\n".join(parts)
 
     return text[:budget] + "\n\n[...manuscript truncated...]"
+
+
+def manuscript_block(state: ReviewState) -> str:
+    """Return the cache-eligible manuscript block used by every agent that
+    sends the manuscript text. Centralizing the wrapper format keeps the
+    block byte-identical across reviewers, debaters, meta-reviewer,
+    author rebuttal, and editor so they all share the same provider-side
+    cache entry."""
+    return f"=== MANUSCRIPT ===\n{fit_manuscript(state)}\n=== END MANUSCRIPT ==="
+
+
+# ---------------------------------------------------------------------------
+# Reviewer score aggregation (decision anchor)
+# ---------------------------------------------------------------------------
+
+
+def score_summary(state: ReviewState) -> str:
+    """Confidence-weighted reviewer score + verdict distribution.
+
+    Pipeline stages downstream of the reviewers (meta-reviewer, author
+    rebuttal, editor) work entirely in prose, which lets their verdicts
+    drift from the panel's actual numbers. Injecting this single line
+    into their prompts anchors the decision in the aggregated signal —
+    they can still argue against it, but they have to do so explicitly.
+    """
+    reports = state.get("reports") or []
+    if not reports:
+        return "(no reviewer scores yet)"
+
+    total_w = sum(r["confidence"] for r in reports) or 1.0
+    weighted = sum(r["score"] * r["confidence"] for r in reports) / total_w
+    raw = sum(r["score"] for r in reports) / len(reports)
+
+    # Per-reviewer line so the synthesizer can see who pushed where.
+    per_reviewer = "; ".join(
+        f"{r['reviewer']} {r['score']:.0f}/5@{r['confidence']:.0f}"
+        for r in reports
+    )
+
+    buckets: dict[str, int] = {}
+    for r in reports:
+        buckets[_score_to_verdict(r["score"])] = (
+            buckets.get(_score_to_verdict(r["score"]), 0) + 1
+        )
+    # Stable display order: best-case verdict first.
+    ordered = [b for b in ("accept", "minor", "major", "reject") if b in buckets]
+    distrib = ", ".join(f"{buckets[b]} {b}" for b in ordered)
+
+    return (
+        f"Confidence-weighted reviewer score: {weighted:.2f}/5  "
+        f"(unweighted: {raw:.2f}/5, n={len(reports)})\n"
+        f"Verdict distribution: {distrib}\n"
+        f"Per-reviewer: {per_reviewer}"
+    )
+
+
+def _score_to_verdict(score: float) -> str:
+    """Map a 1-5 reviewer score to a verdict bucket.
+
+    Thresholds match the reviewer prompt's own scale:
+    5 = accept, 4 = minor, 3 = major, 1-2 = reject.
+    """
+    if score >= 4.5:
+        return "accept"
+    if score >= 3.5:
+        return "minor"
+    if score >= 2.5:
+        return "major"
+    return "reject"

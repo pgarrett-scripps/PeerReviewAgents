@@ -1,9 +1,10 @@
-"""Vision-model pass that injects figure descriptions into marker's markdown.
+"""Vision-model pass that injects figure descriptions into the parsed markdown.
 
-Runs once at ingest time. For each `![](filename)` image reference that
-marker emitted, the corresponding PIL.Image is sent to a configured vision
-model whose short prose description is appended below the reference so
-downstream text-only reviewer LLMs can reason about figure content.
+Runs once at ingest time. For each `![](filename)` image reference in the
+markdown returned by the Datalab marker API, the corresponding PIL.Image
+is sent to the configured `vision_model` via OpenRouter. Its prose
+description is appended below the image reference so downstream
+text-only reviewer LLMs can reason about figure content.
 """
 
 from __future__ import annotations
@@ -15,14 +16,48 @@ from typing import Any
 
 from langchain_core.messages import HumanMessage
 
-_DEFAULT_PROMPT = (
-    "You are inspecting a figure from a scholarly manuscript. In 3-6 sentences, describe:\n"
-    "1. Figure type (bar/line/scatter plot, photomicrograph, schematic, gel image, etc.)\n"
-    "2. What is on each axis or what is depicted, with units if visible\n"
-    "3. The main visual trend, comparison, or finding shown\n"
-    "4. Any obvious issues — mislabeled axes, missing error bars, suspicious patterns, "
-    "low resolution, cropped legends. Say nothing if there is nothing to flag.\n"
-    "Be precise. Do not speculate beyond what the image shows."
+from ..agents.utils.llm import make_vision_llm
+from ..observability import AgentEvent, emit, node_context
+
+# Academic figures are dense and multi-panel. The default prompt asks for
+# a thorough, structured description so downstream reviewers have enough
+# detail to critique methodology, data, and presentation from text alone.
+_VISION_PROMPT = (
+    "You are inspecting a figure from a scholarly manuscript. Produce a "
+    "thorough, structured description that a text-only reviewer can use "
+    "to critique the figure without seeing it. Cover, in this order:\n\n"
+    "1. **Figure type and layout.** Single panel or multi-panel? If "
+    "multi-panel, list each subpanel (A, B, C…) and its individual type "
+    "(bar chart, line plot, scatter, heatmap, photomicrograph, gel image, "
+    "western blot, schematic, flowchart, microscopy, structural diagram, "
+    "phylogenetic tree, etc.).\n"
+    "2. **Axes, scales, and units.** For each plot, state x-axis and "
+    "y-axis labels with units, the scale (linear/log), and the visible "
+    "range. Note tick spacing if irregular. For images, note magnification "
+    "or scale bars if shown.\n"
+    "3. **Data series, conditions, and legend.** Enumerate every series, "
+    "group, condition, treatment, or label shown. Quote legend text "
+    "verbatim. Identify the color/shape encoding.\n"
+    "4. **Quantitative observations.** Report the main numbers a reviewer "
+    "would want: approximate values, peak/trough locations, fold changes, "
+    "ranges, error-bar magnitudes, sample sizes if printed (n=…), "
+    "p-values or significance asterisks if shown.\n"
+    "5. **Main finding or comparison.** State, in 1-2 sentences, what the "
+    "figure is intended to demonstrate.\n"
+    "6. **Caption text (if visible).** Quote any visible caption, title, "
+    "or annotation text verbatim.\n"
+    "7. **Quality and integrity issues.** Flag anything a reviewer should "
+    "scrutinize: missing error bars, missing n, missing scale bar, "
+    "truncated/non-zero y-axes that exaggerate effects, mislabeled or "
+    "swapped axes, inconsistent units, illegible text, suspicious "
+    "duplication or splicing in blots/images, low resolution, cropped "
+    "legends, overplotting that hides data, broken axes, color choices "
+    "inaccessible to colorblind readers. Say 'none observed' if nothing "
+    "stands out — do not invent issues.\n\n"
+    "Be precise and literal. Quote text shown in the figure verbatim "
+    "where possible. Do not speculate about what the data 'means' beyond "
+    "what is visible. Do not summarize — be exhaustive within each "
+    "section above."
 )
 
 _IMG_REF_RE = re.compile(r"!\[\]\(([^)]+)\)")
@@ -33,37 +68,41 @@ def describe_figures_inline(markdown: str, images: dict, config: dict) -> str:
     if not images:
         return markdown
 
-    llm = _make_vision_llm(config)
-    prompt = config.get("vision_prompt") or _DEFAULT_PROMPT
-    provider = config.get("vision_provider") or config["provider"]
-    cap = int(config.get("vision_max_figures", 10))
-    seen = 0
+    with node_context("vision"):
+        llm = make_vision_llm(config)
+        cap = int(config.get("vision_max_figures", 10))
+        seen = 0
 
-    def replace(match: re.Match) -> str:
-        nonlocal seen
-        if seen >= cap:
-            return match.group(0)
-        fname = match.group(1)
-        img = images.get(fname)
-        if img is None:
-            return match.group(0)
-        seen += 1
-        try:
-            description = _describe_one(llm, prompt, img, provider)
-        except Exception as exc:  # noqa: BLE001
-            description = f"[vision model failed: {exc}]"
-        return f"{match.group(0)}\n\n**Figure visual analysis:** {description}\n"
+        def replace(match: re.Match) -> str:
+            nonlocal seen
+            if seen >= cap:
+                return match.group(0)
+            fname = match.group(1)
+            img = images.get(fname)
+            if img is None:
+                return match.group(0)
+            seen += 1
+            emit(AgentEvent(
+                kind="log",
+                node="vision",
+                text=f"describing figure {seen}/{min(cap, len(images))}: {fname}",
+            ))
+            try:
+                description = _describe_one(llm, img)
+            except Exception as exc:  # noqa: BLE001
+                description = f"[vision model failed: {exc}]"
+            return f"{match.group(0)}\n\n**Figure visual analysis:** {description}\n"
 
-    return _IMG_REF_RE.sub(replace, markdown)
+        return _IMG_REF_RE.sub(replace, markdown)
 
 
-def _describe_one(llm: Any, prompt: str, pil_image: Any, provider: str) -> str:
+def _describe_one(llm: Any, pil_image: Any) -> str:
     buf = io.BytesIO()
     pil_image.save(buf, format="PNG")
     b64 = base64.b64encode(buf.getvalue()).decode()
     content = [
-        {"type": "text", "text": prompt},
-        _image_block(b64, provider),
+        {"type": "text", "text": _VISION_PROMPT},
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
     ]
     resp = llm.invoke([HumanMessage(content=content)])
     if isinstance(resp.content, str):
@@ -71,31 +110,3 @@ def _describe_one(llm: Any, prompt: str, pil_image: Any, provider: str) -> str:
     return "".join(
         b.get("text", "") if isinstance(b, dict) else str(b) for b in resp.content
     )
-
-
-def _image_block(b64: str, provider: str) -> dict:
-    if provider == "anthropic":
-        return {
-            "type": "image",
-            "source": {"type": "base64", "media_type": "image/png", "data": b64},
-        }
-    # openai, openrouter, google, ollama: OpenAI-style data URL.
-    return {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}
-
-
-def _make_vision_llm(config: dict) -> Any:
-    from ..agents.utils.llm import _PROVIDERS
-
-    provider = config.get("vision_provider") or config["provider"]
-    model = config.get("vision_model")
-    if not model:
-        raise ValueError(
-            "vision_enabled=true but vision_model is not set in config"
-        )
-    if provider not in _PROVIDERS:
-        raise ValueError(
-            f"Unknown vision_provider '{provider}'. Options: {sorted(_PROVIDERS)}"
-        )
-    base_url = config.get("vision_base_url") or config.get("base_url")
-    temperature = float(config.get("vision_temperature", 0.2))
-    return _PROVIDERS[provider](model, temperature, base_url)

@@ -8,102 +8,66 @@
 # Anything you don't set keeps its built-in default.  CLI flags and
 # PEERREVIEW_* env vars still override these values.
 #
-# This file is for NON-SECRET settings.  API keys belong in `.env`.
+# This file is for NON-SECRET settings.  API keys belong in `.env`:
+#   OPENROUTER_API_KEY  — text + vision models + server-side web search
+#   DATALAB_API_KEY     — PDF ingest
 
 # ---------------------------------------------------------------------------
-# Provider + models
+# Models (OpenRouter)
 # ---------------------------------------------------------------------------
 
-# anthropic | openai | openrouter | google | ollama
-provider = "anthropic"
+# Single text model used by every reviewer, debater, synthesizer,
+# integrity auditor, and the editor-in-chief. Pick any OpenRouter slug.
+reasoning_model = "anthropic/claude-opus-4.1"
 
-# Deep model: used for synthesis / judgement (meta-reviewer, editor, debate).
-# Use the provider's native model slug:
-#   anthropic    e.g. "claude-opus-4-7"
-#   openai       e.g. "gpt-4o"
-#   openrouter   e.g. "anthropic/claude-opus-4.1"
-#   google       e.g. "gemini-2.0-pro"
-#   ollama       e.g. "llama3.1:70b"
-deep_model = "claude-opus-4-7"
-
-# Quick model: used for the parallel reviewer pass + integrity panel.
-quick_model = "claude-haiku-4-5-20251001"
-
-# Sampling temperature (0.0 — 1.0 typical).
-temperature = 0.3
-
-# Override the API base URL (custom gateways, self-hosted Ollama, etc.).
-# OpenRouter's base URL is set automatically — only override to point
-# somewhere else.
-# base_url = "http://localhost:11434"
+# Multimodal model used during ingest to describe each extracted figure.
+# Must accept image input.
+vision_model = "anthropic/claude-haiku-4.5"
 
 # ---------------------------------------------------------------------------
 # Workflow
 # ---------------------------------------------------------------------------
 
-# Specialist reviewers in the parallel pass.
-# Available: methodology, data_analysis, novelty, clarity, literature
-reviewers = ["methodology", "data_analysis", "novelty", "clarity", "literature"]
-
 # Advocate ⇄ Skeptic debate rounds.
 debate_rounds = 2
 
-# Integrity panel iterations.
-integrity_rounds = 1
-
 # ---------------------------------------------------------------------------
-# Research / grounding
+# PDF ingest (Datalab marker API)
 # ---------------------------------------------------------------------------
+#
+# PDFs are parsed via https://www.datalab.to/api/v1/marker. Put your key
+# in `.env` as DATALAB_API_KEY=... — it's not read from this file.
+# Free tier includes $5 of credits on signup; pricing is per page.
+#
+# Defaults below are tuned for academic manuscripts; uncomment to override.
 
-# Enable the research layer (arXiv, Semantic Scholar, web).
-research_enabled = true
-research_tools = ["web", "arxiv", "scholar"]
+# Force OCR even on PDFs that already have a text layer.
+# pdf_force_ocr = false
 
-# Auto-detect scientific manuscripts and enable domain MCP grounding.
-domain_grounding = false
+# Let Datalab spend extra LLM cycles cleaning tables / headings. Costs more
+# per page but produces nicer markdown for messy two-column papers.
+# pdf_use_llm = false
+
+# Cap pages sent for processing (None = full document).
+# pdf_max_pages = 30
+
+# Pass a page range like "0-5,10" (0-indexed) for partial ingest.
+# pdf_page_range = "0-9"
+
+# OCR language hint when force_ocr is on, e.g. "English".
+# pdf_langs = "English"
 
 # ---------------------------------------------------------------------------
 # Figure understanding (vision model)
 # ---------------------------------------------------------------------------
 #
-# Runs once at ingest time. Each figure extracted from the PDF is sent to
-# a vision-capable model; the prose description is injected back into the
-# manuscript markdown so the text-only reviewer models can reason about
-# what the figures actually show. Cost scales with figure count, not with
-# reviewer count.
-
-# Turn the vision pass on/off.
-vision_enabled = false
-
-# Provider for the vision model. Defaults to the main `provider` above
-# when unset — useful if your main model isn't multimodal (e.g. owl-alpha)
-# but you want vision via a different gateway.
-# vision_provider = "openrouter"
-
-# Vision model slug. Required when vision_enabled = true.
-#   openrouter   e.g. "anthropic/claude-haiku-4.5", "openai/gpt-4o-mini",
-#                     "google/gemini-2.0-flash"
-#   anthropic    e.g. "claude-haiku-4-5-20251001"
-#   openai       e.g. "gpt-4o-mini"
-#   google       e.g. "gemini-2.0-flash"
-# vision_model = "anthropic/claude-haiku-4.5"
-
-# Override the vision API base URL (falls back to `base_url` above).
-# vision_base_url = "https://openrouter.ai/api/v1"
-
-# Sampling temperature for vision descriptions (lower = more literal).
-vision_temperature = 0.2
+# Every extracted figure is sent to `vision_model` and its description is
+# injected back into the manuscript markdown so the text-only reviewers
+# can reason about figure content. Cost scales with figure count, not
+# with reviewer count.
 
 # Hard cap on figures described per manuscript (cost control).
-vision_max_figures = 8
-
-# Override the default vision-analysis prompt. Leave commented to use the
-# built-in prompt that asks for figure type, axes/units, main trend, and
-# any obvious issues (mislabeled axes, missing error bars, etc.).
-# vision_prompt = """
-# Describe this figure in 3-5 sentences: type, what's plotted, main finding,
-# any quality issues you spot.
-# """
+vision_max_figures = 10
 
 # ---------------------------------------------------------------------------
 # Output
@@ -112,33 +76,15 @@ vision_max_figures = 8
 # Where per-run report directories are written.
 output_dir = "./reports"
 
-# Emit a combined review PDF alongside the markdown reports.
-# Requires the optional extra: `just install-extras pdf`
-emit_pdf = false
-
-# Include an accept/minor/major/reject verdict in the editor decision.
-emit_verdict = true
-
-# ---------------------------------------------------------------------------
-# Persistence
-# ---------------------------------------------------------------------------
-
-# Crash-resume via SQLite checkpoints.
-checkpoint = false
-
 # ---------------------------------------------------------------------------
 # Manuscript cache
 # ---------------------------------------------------------------------------
 #
-# Parsing a PDF with marker (and optionally the vision pass) is by far the
-# slowest step. The parsed (title, markdown, sections) triple is cached on
-# disk keyed by file content + the vision-affecting config slice, so
-# re-running on the same paper is instant.
-#
-# Inspect / wipe with `just cache-info` and `just cache-clear`. Bypass for
-# a single run with `--no-cache` on the CLI.
-
-cache_enabled = true
+# Parsing a PDF via the Datalab API (and the vision pass) is the slowest
+# step in the pipeline. The parsed (title, markdown, sections) triple is
+# always cached on disk keyed by file content + the ingest config slice,
+# so re-running on the same paper is instant. Inspect / wipe with
+# `just cache-info` and `just cache-clear`.
 
 # Where to store cache entries. Leave unset to use $XDG_CACHE_HOME (or
 # ~/.cache) under peerreviewagents/manuscripts/.
