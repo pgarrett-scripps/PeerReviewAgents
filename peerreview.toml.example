@@ -9,20 +9,25 @@
 # PEERREVIEW_* env vars still override these values.
 #
 # This file is for NON-SECRET settings.  API keys belong in `.env`:
-#   OPENROUTER_API_KEY  — text + vision models + server-side web search
-#   DATALAB_API_KEY     — PDF ingest
+#   OPENROUTER_API_KEY  — provider=openrouter (default)
+#   ANTHROPIC_API_KEY   — provider=anthropic
+#   OPENAI_API_KEY      — provider=openai
 
 # ---------------------------------------------------------------------------
-# Models (OpenRouter)
+# Model
 # ---------------------------------------------------------------------------
+
+# Which LLM provider to call. One of: "openrouter" (default), "anthropic",
+# "openai". Set the matching API key in your .env.
+# provider = "openrouter"
 
 # Single text model used by every reviewer, debater, synthesizer,
-# integrity auditor, and the editor-in-chief. Pick any OpenRouter slug.
+# integrity auditor, and the editor-in-chief. The model string is
+# interpreted by the active provider:
+#   openrouter -> e.g. "anthropic/claude-opus-4.1"
+#   anthropic  -> e.g. "claude-opus-4-7" or "claude-sonnet-4-6"
+#   openai     -> e.g. "gpt-4.1", "o3"
 reasoning_model = "anthropic/claude-opus-4.1"
-
-# Multimodal model used during ingest to describe each extracted figure.
-# Must accept image input.
-vision_model = "anthropic/claude-haiku-4.5"
 
 # ---------------------------------------------------------------------------
 # Workflow
@@ -32,42 +37,21 @@ vision_model = "anthropic/claude-haiku-4.5"
 debate_rounds = 2
 
 # ---------------------------------------------------------------------------
-# PDF ingest (Datalab marker API)
+# Research vendors
 # ---------------------------------------------------------------------------
 #
-# PDFs are parsed via https://www.datalab.to/api/v1/marker. Put your key
-# in `.env` as DATALAB_API_KEY=... — it's not read from this file.
-# Free tier includes $5 of credits on signup; pricing is per page.
-#
-# Defaults below are tuned for academic manuscripts; uncomment to override.
+# Per-category default vendor for the literature lookups the Novelty and
+# Literature reviewers make. The router tries vendors in order and falls
+# through to the next on rate-limit. Override per-tool with [tool_vendors]
+# below if you want one specific operation to use a different vendor.
 
-# Force OCR even on PDFs that already have a text layer.
-# pdf_force_ocr = false
+# [data_vendors]
+# paper_search = "semantic_scholar,arxiv"
+# biomedical   = "pubmed,biorxiv"
+# preprints    = "biorxiv,arxiv"
 
-# Let Datalab spend extra LLM cycles cleaning tables / headings. Costs more
-# per page but produces nicer markdown for messy two-column papers.
-# pdf_use_llm = false
-
-# Cap pages sent for processing (None = full document).
-# pdf_max_pages = 30
-
-# Pass a page range like "0-5,10" (0-indexed) for partial ingest.
-# pdf_page_range = "0-9"
-
-# OCR language hint when force_ocr is on, e.g. "English".
-# pdf_langs = "English"
-
-# ---------------------------------------------------------------------------
-# Figure understanding (vision model)
-# ---------------------------------------------------------------------------
-#
-# Every extracted figure is sent to `vision_model` and its description is
-# injected back into the manuscript markdown so the text-only reviewers
-# can reason about figure content. Cost scales with figure count, not
-# with reviewer count.
-
-# Hard cap on figures described per manuscript (cost control).
-vision_max_figures = 10
+# [tool_vendors]
+# find_related_work = "arxiv"     # force arXiv for this one operation
 
 # ---------------------------------------------------------------------------
 # Output
@@ -80,11 +64,9 @@ output_dir = "./reports"
 # Manuscript cache
 # ---------------------------------------------------------------------------
 #
-# Parsing a PDF via the Datalab API (and the vision pass) is the slowest
-# step in the pipeline. The parsed (title, markdown, sections) triple is
-# always cached on disk keyed by file content + the ingest config slice,
-# so re-running on the same paper is instant. Inspect / wipe with
-# `just cache-info` and `just cache-clear`.
+# Parsed (title, text, sections) triples are cached on disk keyed by the
+# file content, so re-running on the same paper is instant. Inspect or
+# wipe with `just cache-info` / `just cache-clear`.
 
 # Where to store cache entries. Leave unset to use $XDG_CACHE_HOME (or
 # ~/.cache) under peerreviewagents/manuscripts/.

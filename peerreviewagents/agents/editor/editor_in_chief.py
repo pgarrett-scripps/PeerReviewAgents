@@ -3,16 +3,13 @@
 from __future__ import annotations
 
 from ...observability import node_context
+from ..schemas import EditorDecisionOutput, Verdict
 from ..utils.agent_states import ReviewState
-from ..utils.agent_utils import (
-    manuscript_block,
-    run_agent,
-    score_summary,
-    split_frontmatter,
-)
+from ..utils.agent_utils import manuscript_block, score_summary
 from ..utils.llm import make_llm
+from ..utils.structured import invoke_structured
 
-_VALID = ("accept", "minor", "major", "reject")
+_VALID_VERDICTS = ("accept", "minor", "major", "reject")
 
 _SYS = (
     "You are the Editor-in-Chief. Using the meta-review, the author's "
@@ -21,9 +18,8 @@ _SYS = (
     "authors. Weigh the rebuttal: a concession is evidence the manuscript "
     "can improve in revision; a credible disagreement (with manuscript "
     "quote) is evidence a reviewer misread; a load-bearing critique the "
-    "author cannot rebut is evidence of a fundamental flaw. Output a "
-    "markdown decision letter with a YAML frontmatter block carrying the "
-    "decision."
+    "author cannot rebut is evidence of a fundamental flaw. Return the "
+    "structured EditorDecisionOutput schema."
 )
 
 
@@ -41,25 +37,18 @@ def _run(state: ReviewState) -> dict:
         f"Draft recommendation: {state.get('draft_recommendation')}\n\n"
         f"Meta-review:\n{state.get('meta_review', '')}\n\n"
         f"Author rebuttal:\n{rebuttal}\n\n"
-        "Produce a markdown decision letter with this exact shape:\n\n"
-        "---\n"
-        "decision: <accept|minor|major|reject>\n"
-        "---\n"
-        "## Decision Letter\n\n"
-        "## Summary of Evaluation\n\n"
-        "## Required Revisions\n"
-        "1. Numbered, prioritized, actionable.\n\n"
-        "## Minor Suggestions\n"
-        "- bullet items.\n\n"
-        "If the rebuttal credibly addressed a reviewer's concern, note "
-        "that you weighed it in Summary of Evaluation rather than "
-        "restating the original critique as a revision requirement."
+        "Produce the final decision letter. If the rebuttal credibly "
+        "addressed a reviewer's concern, note that you weighed it in "
+        "summary_of_evaluation rather than restating the original "
+        "critique as a required revision."
     )
     try:
         # Editor needs primary-source access to weigh disputed claims;
         # cached_prefix shares the reviewer block's cache entry.
-        result = run_agent(
+        result = invoke_structured(
             llm,
+            EditorDecisionOutput,
+            config,
             _SYS,
             user,
             cached_prefix=manuscript_block(state),
@@ -69,15 +58,15 @@ def _run(state: ReviewState) -> dict:
         # the caller knows the editor never rendered one.
         return {"errors": [f"editor failed: {exc}"], "decision": "", "decision_letter": ""}
 
-    meta, _ = split_frontmatter(result.text)
-    decision = str(meta.get("decision") or "").strip().lower()
-    if decision not in _VALID:
-        # Fall back to the meta-reviewer's draft only if it's valid;
-        # otherwise leave empty so downstream treats this run as failed.
+    output: EditorDecisionOutput = result.instance  # type: ignore[assignment]
+    decision: Verdict | str = output.decision
+    # Schema constrains decision to the Verdict literal, but defensively
+    # fall back to the draft if a non-conforming model slipped past.
+    if decision not in _VALID_VERDICTS:
         draft = state.get("draft_recommendation", "")
-        decision = draft if draft in _VALID else ""
+        decision = draft if draft in _VALID_VERDICTS else ""
     return {
         "decision": decision,
-        "decision_letter": result.text,
+        "decision_letter": output.to_markdown(),
         "total_cost": result.cost,
     }

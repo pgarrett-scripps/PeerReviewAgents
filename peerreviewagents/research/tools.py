@@ -1,75 +1,114 @@
-"""Live-research tools for grounding reviews in external evidence.
+"""LangChain ``@tool`` wrappers exposed to reviewer agents.
 
-Two structured paper-lookup tools — arXiv and Semantic Scholar — that
-reviewers can call when they need to verify a citation or check for
-prior art. Each degrades gracefully: if the dependency or network is
-unavailable, the tool returns a short note instead of raising, so a
-single research hiccup never sinks a review run.
+Each tool delegates to :func:`peerreviewagents.research.interface.route`,
+which picks the configured vendor and falls through to the next on
+rate-limit. Tools are intentionally *logical operations* (not
+vendor-specific endpoints) so the agent prompt doesn't have to know
+which backend served the result.
 
-General-purpose web search is provided separately by OpenRouter's
-server-side `openrouter:web_search` tool (wired in from
-:mod:`peerreviewagents.agents.utils.agent_utils`), so we don't ship a
-client for it here.
+Reviewers declare the tool *names* they want in
+:func:`peerreviewagents.agents.reviewers.base.make_reviewer_node`;
+:func:`get_tools_by_name` resolves those names to bound tools at graph
+build time.
 """
 
 from __future__ import annotations
 
-import os
-
 from langchain_core.tools import tool
 
+from .interface import available_methods, route
+
+
+# Module-level config holder — set by ``get_research_tools(config)``
+# before agent execution so the @tool functions (which can't take a
+# config arg per LangChain's tool schema rules) can read it.
+_ACTIVE_CONFIG: dict = {}
+
+
+def _cfg() -> dict:
+    return _ACTIVE_CONFIG
+
+
+# --- Logical operations (these are what reviewers actually call) -----------
+
 
 @tool
-def arxiv_search(query: str, max_results: int = 5) -> str:
-    """Search arXiv for related papers. Use to check novelty and prior art."""
-    try:
-        import arxiv  # type: ignore
+def find_related_work(query: str, max_results: int = 5) -> str:
+    """Find related-work papers for a query. Use for novelty / prior-art checks.
 
-        client = arxiv.Client()
-        search = arxiv.Search(query=query, max_results=max_results)
-        items = []
-        for r in client.results(search):
-            items.append(f"- {r.title} ({r.published.year}) — {r.entry_id}\n  {r.summary[:300]}")
-        return "\n".join(items) if items else "No arXiv results."
-    except Exception as exc:  # noqa: BLE001
-        return f"[arxiv_search unavailable: {exc}]"
+    Routes through Semantic Scholar (primary) → arXiv (rate-limit fallback).
+    """
+    return route("find_related_work", _cfg(), query=query, max_results=max_results)
 
 
 @tool
-def semantic_scholar_search(query: str, limit: int = 5) -> str:
-    """Search Semantic Scholar for related work and citation counts."""
-    try:
-        import requests
+def search_biomedical_literature(query: str, max_results: int = 5) -> str:
+    """Search peer-reviewed biomedical literature. Use for clinical, biology,
+    or medical claims.
 
-        headers = {}
-        api_key = os.environ.get("SEMANTIC_SCHOLAR_API_KEY")
-        if api_key:
-            headers["x-api-key"] = api_key
-        resp = requests.get(
-            "https://api.semanticscholar.org/graph/v1/paper/search",
-            params={"query": query, "limit": limit, "fields": "title,year,citationCount,abstract"},
-            headers=headers,
-            timeout=20,
+    Routes through PubMed (primary) → bioRxiv/medRxiv preprints via
+    EuropePMC (rate-limit fallback).
+    """
+    return route("search_biomedical_literature", _cfg(), query=query, max_results=max_results)
+
+
+@tool
+def search_preprints(query: str, max_results: int = 5) -> str:
+    """Search recent preprints (bioRxiv / medRxiv / arXiv). Use when the most
+    recent work might not yet be in peer-reviewed venues.
+
+    Routes through bioRxiv (primary, via EuropePMC) → arXiv (fallback).
+    """
+    return route("search_preprints", _cfg(), query=query, max_results=max_results)
+
+
+# --- Tool registry & lookup -------------------------------------------------
+
+
+_TOOL_REGISTRY = {
+    "find_related_work": find_related_work,
+    "search_biomedical_literature": search_biomedical_literature,
+    "search_preprints": search_preprints,
+}
+
+
+def available_tool_names() -> list[str]:
+    return list(_TOOL_REGISTRY)
+
+
+def get_tools_by_name(names: list[str], config: dict) -> list:
+    """Resolve tool ``names`` to bound tool objects, installing ``config``
+    so the underlying router can read ``data_vendors`` / ``tool_vendors``.
+    """
+    # Mutate in place so existing tool refs (already returned by an
+    # earlier call) pick up the latest config too. The pipeline is
+    # single-job-per-process today, so a global is fine here.
+    _ACTIVE_CONFIG.clear()
+    _ACTIVE_CONFIG.update(config)
+
+    unknown = [n for n in names if n not in _TOOL_REGISTRY]
+    if unknown:
+        raise ValueError(
+            f"unknown research tool(s): {unknown}; "
+            f"available: {available_tool_names()}"
         )
-        resp.raise_for_status()
-        data = resp.json().get("data", [])
-        if not data:
-            return "No Semantic Scholar results."
-        out = []
-        for p in data:
-            out.append(
-                f"- {p.get('title')} ({p.get('year')}, cites={p.get('citationCount')})\n"
-                f"  {(p.get('abstract') or '')[:300]}"
-            )
-        return "\n".join(out)
-    except Exception as exc:  # noqa: BLE001
-        return f"[semantic_scholar_search unavailable: {exc}]"
+    return [_TOOL_REGISTRY[n] for n in names]
 
 
 def get_research_tools(config: dict) -> list:
-    """Return the structured paper-lookup tools available to reviewers.
+    """Backward-compatible accessor: return every research tool wired up.
 
-    OpenRouter's server-side web search is attached separately by
-    :func:`run_agent`, so it does not need to appear in this list.
+    Prefer the per-reviewer :func:`get_tools_by_name` path in new code.
     """
-    return [arxiv_search, semantic_scholar_search]
+    return get_tools_by_name(available_tool_names(), config)
+
+
+__all__ = [
+    "find_related_work",
+    "search_biomedical_literature",
+    "search_preprints",
+    "available_tool_names",
+    "get_tools_by_name",
+    "get_research_tools",
+    "available_methods",
+]

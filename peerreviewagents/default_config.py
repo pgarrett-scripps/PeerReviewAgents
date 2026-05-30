@@ -8,9 +8,13 @@ Resolution order, lowest precedence first:
     5. PEERREVIEW_* env vars   — for one-off overrides.
     6. Explicit kwargs         — `get_config(reasoning_model="...")`, CLI flags.
 
-The pipeline is hardwired to OpenRouter. Secrets (OPENROUTER_API_KEY,
-DATALAB_API_KEY) live in the environment / `.env` and are never read by
-this module.
+Three LLM providers are wired up: ``openrouter`` (default), ``anthropic``
+(direct), ``openai`` (direct). Pick one with ``provider = "anthropic"``
+in TOML or ``--provider anthropic`` on the CLI. API keys live in the
+environment / ``.env`` (OPENROUTER_API_KEY, ANTHROPIC_API_KEY,
+OPENAI_API_KEY) and are never read by this module.
+
+PDF ingest is fully local (pypdf) — no external API key required.
 """
 
 from __future__ import annotations
@@ -26,14 +30,17 @@ except ModuleNotFoundError:  # pragma: no cover
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    # --- Models (OpenRouter) ---
+    # --- Model ---
+    # Which provider to call. One of: "openrouter" (default), "anthropic",
+    # "openai". See peerreviewagents.runtime.providers.PROVIDERS.
+    "provider": "openrouter",
     # Single text model used by every reviewer, debater, synthesizer,
-    # integrity auditor, and the editor-in-chief. Use an OpenRouter slug
-    # like "anthropic/claude-opus-4.1" or "openai/gpt-4o".
+    # integrity auditor, and the editor-in-chief. The model string is
+    # interpreted by the active provider:
+    #   openrouter -> a slug like "anthropic/claude-opus-4.1"
+    #   anthropic  -> a model id like "claude-opus-4-7" or "claude-sonnet-4-6"
+    #   openai     -> a model id like "gpt-4.1" or "o3"
     "reasoning_model": "anthropic/claude-opus-4.1",
-    # Multimodal model used during ingest to describe each extracted
-    # figure. OpenRouter slug — needs to accept image input.
-    "vision_model": "anthropic/claude-haiku-4.5",
 
     # --- Workflow ---
     "max_debate_rounds": 2,
@@ -43,21 +50,18 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # appendices/supplements first.
     "manuscript_char_budget": 60000,
 
-    # --- Figure understanding (vision model) ---
-    # Always runs during PDF ingest. Each extracted figure is described
-    # by `vision_model` and the description is inlined into the manuscript
-    # markdown so text-only reviewers can reason about figure content.
-    # Cost scales with figure count, not with reviewer count.
-    "vision_max_figures": 10,
-
-    # --- PDF ingest (Datalab marker API) ---
-    # Requires DATALAB_API_KEY in the environment. Defaults are tuned for
-    # academic manuscripts; override in peerreview.toml when needed.
-    "pdf_force_ocr": False,     # force OCR even on text-layer PDFs
-    "pdf_use_llm": False,       # let Datalab use an LLM to clean tables/headings (costs more)
-    "pdf_max_pages": None,      # cap pages sent for processing (None = full doc)
-    "pdf_page_range": None,     # e.g. "0-5,10" (0-indexed) for partial ingest
-    "pdf_langs": None,          # OCR language hint, e.g. "English"
+    # --- Research vendors ---
+    # Per-category default vendor list (comma-separated, primary first).
+    # Used by peerreviewagents.research.interface.route to pick which
+    # vendor serves each logical operation; on rate-limit the router
+    # falls through to the next vendor in the list. ``tool_vendors``
+    # is a per-method override map (e.g. {"find_related_work": "arxiv"}).
+    "data_vendors": {
+        "paper_search": "semantic_scholar,arxiv",
+        "biomedical":   "pubmed,biorxiv",
+        "preprints":    "biorxiv,arxiv",
+    },
+    "tool_vendors": {},
 
     # --- Output ---
     "output_dir": os.path.join(os.getcwd(), "reports"),
@@ -66,6 +70,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "memory_path": os.path.join(
         os.path.expanduser("~"), ".peerreviewagents", "memory", "review_memory.md"
     ),
+    # How many resolved past-review lessons to inject into the meta-
+    # reviewer's prompt (BM25-ranked by manuscript topic).
+    "memory_k": 3,
 
     # --- Manuscript cache ---
     # Parsed (title, markdown, sections) triples are always cached on disk,
@@ -119,8 +126,8 @@ def _normalize_toml(raw: dict[str, Any]) -> dict[str, Any]:
 # --- env var fallback (kept for one-off overrides / CI / scripts) -----------
 
 _ENV_STR_KEYS = {
+    "PEERREVIEW_PROVIDER": "provider",
     "PEERREVIEW_REASONING_MODEL": "reasoning_model",
-    "PEERREVIEW_VISION_MODEL": "vision_model",
     "PEERREVIEW_OUTPUT_DIR": "output_dir",
     "PEERREVIEW_CACHE_DIR": "cache_dir",
 }

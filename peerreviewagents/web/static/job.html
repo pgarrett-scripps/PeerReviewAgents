@@ -3,43 +3,73 @@
 <head>
     <meta charset="utf-8">
     <title>PeerReviewAgents — review</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/style.css?v=4">
 </head>
 <body class="job-page">
     <header class="topbar">
         <a class="brand" href="/">PeerReviewAgents</a>
-        <span id="manuscript-name" class="muted"></span>
+        <span id="manuscript-name" class="manuscript-name"></span>
         <span class="spacer"></span>
-        <span id="job-cost" class="cost">$0.00</span>
+        <button id="view-summary-btn" class="btn-pill" hidden type="button">View summary</button>
+        <span class="cost-meter">
+            <span class="cost-meter-label">cost</span>
+            <span id="job-cost" class="cost">$0.0000</span>
+        </span>
         <span id="job-status" class="pill pill-pending">pending</span>
     </header>
 
     <main class="stage">
         <section id="room" class="room"></section>
-        <aside id="panel" class="panel panel-collapsed">
+        <aside id="panel" class="panel panel-collapsed" aria-hidden="true">
             <header class="panel-head">
                 <span id="panel-emoji" class="panel-emoji">·</span>
-                <h2 id="panel-title">Click an agent</h2>
-                <button id="panel-close" class="panel-close" aria-label="close">✕</button>
+                <h2 id="panel-title">Agent</h2>
+                <button id="panel-expand" class="panel-icon-btn" title="Expand" aria-label="expand panel">⇱</button>
+                <button id="panel-close" class="panel-icon-btn" title="Close" aria-label="close panel">✕</button>
             </header>
             <div id="panel-meta" class="panel-meta"></div>
             <div id="panel-body" class="panel-body markdown">
-                <p class="muted">Pick a desk to peek at what that reviewer is writing.</p>
+                <p class="muted">Pick a desk to peek at what that agent is writing.</p>
             </div>
         </aside>
     </main>
 
-    <section id="banner" class="banner" hidden>
-        <h2 id="banner-title">Decision</h2>
-        <p id="banner-sub" class="muted"></p>
-        <ul id="banner-links"></ul>
-    </section>
+    <!-- Completion overlay: appears centered when the review finishes;
+         dismissible so the user can keep exploring the room. -->
+    <div id="completion" class="completion" hidden>
+        <div class="completion-backdrop" data-close="1"></div>
+        <article class="completion-card" role="dialog" aria-modal="true" aria-labelledby="completion-title">
+            <header class="completion-head">
+                <span id="completion-badge" class="decision-badge"></span>
+                <h2 id="completion-title">Review complete</h2>
+                <button id="completion-close" class="panel-icon-btn" title="Dismiss" aria-label="dismiss">✕</button>
+            </header>
+            <p id="completion-sub" class="completion-sub muted"></p>
+
+            <dl id="completion-stats" class="completion-stats"></dl>
+
+            <section id="completion-featured" class="completion-featured" hidden>
+                <h3>Recommended reading</h3>
+                <div id="completion-featured-cards" class="report-cards"></div>
+            </section>
+
+            <details id="completion-all-wrap" class="completion-all" hidden>
+                <summary>All report files (<span id="completion-all-count">0</span>)</summary>
+                <ul id="completion-all-list" class="report-list"></ul>
+            </details>
+
+            <footer class="completion-actions">
+                <button id="completion-explore" class="btn btn-ghost">Back to the room</button>
+                <a class="btn btn-primary" href="/">Start a new review</a>
+            </footer>
+        </article>
+    </div>
 
     <script>
         // Read job id from query string before loading the module.
         window.__JOB_ID = new URLSearchParams(location.search).get('id');
     </script>
-    <script type="module" src="/static/app.js"></script>
+    <script type="module" src="/static/app.js?v=3"></script>
     <script type="application/javascript"
             src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </body>

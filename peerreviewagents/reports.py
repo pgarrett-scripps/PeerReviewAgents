@@ -42,6 +42,8 @@ def write_reports(state: ReviewState) -> str:
         _write(run_dir, "author_rebuttal.md", state["author_rebuttal"])
     if state.get("decision_letter"):
         _write(run_dir, "decision_letter.md", state["decision_letter"])
+    if state.get("journal_recommendations"):
+        _write(run_dir, "journal_recommendations.md", state["journal_recommendations"])
 
     _write(run_dir, "summary.md", _summary(state))
 

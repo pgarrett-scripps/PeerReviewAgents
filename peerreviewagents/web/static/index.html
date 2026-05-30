@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <title>PeerReviewAgents</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/style.css?v=4">
 </head>
 <body class="upload-page">
     <main class="upload-card">
@@ -47,7 +47,6 @@
             sub.disabled = false;
         }
 
-        zone.addEventListener('click', () => input.click());
         input.addEventListener('change', () => setFile(input.files[0]));
         zone.addEventListener('dragover', (e) => {
             e.preventDefault(); zone.classList.add('drag-over');

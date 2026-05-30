@@ -15,12 +15,6 @@ if TYPE_CHECKING:
 
 _MAX_TOOL_STEPS = 4
 
-# OpenRouter's server-side web search. The model decides when to invoke it;
-# OpenRouter runs the search (Exa by default) and inlines results into the
-# completion, so it never surfaces as a tool_call our loop has to handle.
-# https://openrouter.ai/docs/guides/features/server-tools/web-search
-_OPENROUTER_WEB_SEARCH = {"type": "openrouter:web_search"}
-
 
 # ---------------------------------------------------------------------------
 # Run result
@@ -56,27 +50,33 @@ def run_agent(
 ) -> RunResult:
     """Run a chat turn, executing any tool calls (bounded), return final text.
 
-    Function tools (e.g. arxiv_search, semantic_scholar_search) are looped
-    locally; OpenRouter's web_search is attached unconditionally so every
-    agent can do ad-hoc web searches that we never see the call for.
+    Tool calls are looped locally up to ``_MAX_TOOL_STEPS`` rounds; if the
+    model still wants to call another tool after that, we force a final
+    answer.
 
     Args:
         cached_prefix: optional text block placed at the start of the user
-            message and marked ``cache_control: ephemeral`` so providers
-            that support prompt caching (Anthropic, Gemini, DeepSeek via
-            OpenRouter) serve it from cache on subsequent matching calls.
-            Pass the manuscript here.
+            message. On providers that honor ``cache_control: ephemeral``
+            markers (Anthropic direct, OpenRouter-routed Anthropic) this
+            block is sent as a separate cacheable content block so the
+            manuscript text is served from the provider cache across the
+            parallel reviewer fan-out. On other providers (OpenAI direct)
+            the prefix is concatenated with the user prompt as plain text.
     """
     tools = tools or []
     tool_map = {t.name: t for t in tools}
 
-    # Build the wire-format tool list: OpenAI-style specs for function
-    # tools, plus the OpenRouter server-tool spec passed through verbatim.
-    bound_tools: list = [convert_to_openai_tool(t) for t in tools]
-    bound_tools.append(_OPENROUTER_WEB_SEARCH)
-    model = llm.bind(tools=bound_tools)
+    if tools:
+        bound_tools = [convert_to_openai_tool(t) for t in tools]
+        model = llm.bind(tools=bound_tools)
+    else:
+        model = llm
 
-    messages = [SystemMessage(content=system_prompt), _user_message(user_prompt, cached_prefix)]
+    use_cache_marker = _cache_control_supported(llm)
+    messages = [
+        SystemMessage(content=system_prompt),
+        _user_message(user_prompt, cached_prefix, with_cache_marker=use_cache_marker),
+    ]
     cost_total = 0.0
     final_resp: AIMessage | None = None
     for _ in range(_MAX_TOOL_STEPS):
@@ -100,18 +100,45 @@ def run_agent(
     return RunResult(text=_text(final_resp.content), cost=cost_total)
 
 
-def _user_message(user_prompt: str, cached_prefix: str | None) -> HumanMessage:
+def _cache_control_supported(llm) -> bool:
+    """Whether ``llm`` accepts ``cache_control: ephemeral`` content-block markers.
+
+    Anthropic direct (``ChatAnthropic``) supports it natively; OpenRouter
+    forwards it to Anthropic-class providers. OpenAI direct does not
+    accept unknown content-block keys, so we strip the marker there.
+    """
+    cls_name = type(llm).__name__
+    if cls_name == "ChatAnthropic":
+        return True
+    if cls_name == "ChatOpenAI":
+        base_url = str(
+            getattr(llm, "openai_api_base", "")
+            or getattr(llm, "base_url", "")
+            or ""
+        )
+        return "openrouter" in base_url.lower()
+    return False
+
+
+def _user_message(
+    user_prompt: str,
+    cached_prefix: str | None,
+    *,
+    with_cache_marker: bool = True,
+) -> HumanMessage:
     """Build the user message, optionally with a cache-controlled prefix block."""
     if cached_prefix is None:
         return HumanMessage(content=user_prompt)
-    return HumanMessage(
-        content=[
-            # `cache_control: ephemeral` is the OpenRouter-normalized
-            # marker; providers that don't support caching ignore it.
-            {"type": "text", "text": cached_prefix, "cache_control": {"type": "ephemeral"}},
-            {"type": "text", "text": user_prompt},
-        ]
-    )
+    if with_cache_marker:
+        return HumanMessage(
+            content=[
+                {"type": "text", "text": cached_prefix, "cache_control": {"type": "ephemeral"}},
+                {"type": "text", "text": user_prompt},
+            ]
+        )
+    # No provider-side cache markup available: just concatenate so we
+    # don't pay the content-block overhead for nothing.
+    return HumanMessage(content=f"{cached_prefix}\n\n{user_prompt}")
 
 
 def _call_cost(resp: AIMessage) -> float:

@@ -5,6 +5,15 @@ import os
 from langchain_core.messages import AIMessage
 
 from peerreviewagents.agents.reviewers import REVIEWER_NAMES
+from peerreviewagents.agents.schemas import (
+    AuthorRebuttalOutput,
+    DebateOutput,
+    EditorDecisionOutput,
+    JournalRecommendationsOutput,
+    JournalSuggestion,
+    MetaReviewOutput,
+    ReviewerOutput,
+)
 from peerreviewagents.default_config import get_config
 from peerreviewagents.graph.review_graph import PeerReviewGraph
 from peerreviewagents.reports import write_reports
@@ -12,40 +21,90 @@ from peerreviewagents.reports import write_reports
 SAMPLE = os.path.join(os.path.dirname(__file__), "sample_manuscript.md")
 
 
-# Single markdown response that satisfies every agent in the pipeline.
-# Every agent now reads YAML frontmatter for its scalars; the body is
-# whatever the model writes. Having all the scalar keys present (score,
-# confidence, draft_recommendation, decision) means one canned reply
-# serves reviewers, meta-reviewer, and editor alike.
-_CANNED = (
-    "---\n"
-    "score: 3\n"
-    "confidence: 4\n"
-    "draft_recommendation: major\n"
-    "decision: major\n"
-    "---\n"
-    "# Review\n\n"
-    "## Summary\n"
-    "The paper proposes a method and reports improvements.\n\n"
-    "## Strengths\n"
-    "- Clear motivation\n"
-    "- Simple approach\n\n"
-    "## Weaknesses\n"
-    "- Single cluster limits generalization\n"
-    "- Overclaimed broad generalization\n\n"
-    "## Questions\n"
-    "- How were baselines tuned?\n"
-)
+# One canned instance per schema. The pipeline test never makes a real
+# LLM call — it patches every agent's make_llm to a FakeLLM that returns
+# the matching instance from .with_structured_output(Schema).invoke(...).
+_CANNED: dict[type, object] = {
+    ReviewerOutput: ReviewerOutput(
+        score=3,
+        confidence=4,
+        summary="The paper proposes a method and reports improvements.",
+        strengths=["Clear motivation", "Simple approach"],
+        weaknesses=[
+            "Single cluster limits generalization",
+            "Overclaimed broad generalization",
+        ],
+        questions=["How were baselines tuned?"],
+    ),
+    DebateOutput: DebateOutput(
+        argument="The contribution is incremental but the empirical signal is clean.",
+        key_points=["Methodology is reproducible", "Comparisons are fair"],
+    ),
+    MetaReviewOutput: MetaReviewOutput(
+        draft_recommendation="major",
+        synthesis="Panel split between minor and major; the weakness consensus dominates.",
+        decisive_factors="Generalization claim outruns the experimental scope.",
+    ),
+    AuthorRebuttalOutput: AuthorRebuttalOutput(
+        concessions=[],
+        disagreements=[],
+        load_bearing_critiques=["scope of generalization claim"],
+    ),
+    EditorDecisionOutput: EditorDecisionOutput(
+        decision="major",
+        summary_of_evaluation="Strong methodology, weak generalization claim.",
+        required_revisions=["Narrow the generalization claim or add a second cluster."],
+        minor_suggestions=["Tighten the abstract."],
+    ),
+    JournalRecommendationsOutput: JournalRecommendationsOutput(
+        as_is=[],
+        after_revision=[
+            JournalSuggestion(
+                name="Specialty Journal X",
+                fit_reasoning="Direct topic match for widget-throughput estimation.",
+                acceptance_realism="Plausible after the generalization claim is narrowed.",
+            ),
+        ],
+        alternative=[
+            JournalSuggestion(
+                name="arXiv cs.LG",
+                fit_reasoning="Preprint server appropriate while authors revise.",
+                acceptance_realism="Self-publication; immediate.",
+            ),
+        ],
+        notes="Avoid headline venues until the second cluster is added.",
+    ),
+}
+
+
+class _FakeStructuredChain:
+    def __init__(self, schema, include_raw: bool):
+        self._schema = schema
+        self._include_raw = include_raw
+
+    def invoke(self, _messages, **_kwargs):
+        instance = _CANNED[self._schema]
+        if self._include_raw:
+            return {"raw": AIMessage(content=""), "parsed": instance, "parsing_error": None}
+        return instance
 
 
 class FakeLLM:
-    """Stand-in chat model used by the pipeline test."""
+    """Stand-in chat model used by the pipeline test.
+
+    Implements just enough of the LangChain BaseChatModel surface that
+    the structured-output helper can call ``with_structured_output``
+    and the existing ``run_agent`` tool loop can call ``bind`` / ``invoke``.
+    """
 
     def bind(self, **_kwargs):
         return self
 
-    def invoke(self, messages, **_kwargs):
-        return AIMessage(content=_CANNED)
+    def invoke(self, _messages, **_kwargs):
+        return AIMessage(content="canned free-text")
+
+    def with_structured_output(self, schema, **kwargs):
+        return _FakeStructuredChain(schema, kwargs.get("include_raw", False))
 
 
 def _patch_llms(monkeypatch):
@@ -55,6 +114,7 @@ def _patch_llms(monkeypatch):
         "peerreviewagents.agents.synthesis.meta_reviewer",
         "peerreviewagents.agents.author.rebuttal",
         "peerreviewagents.agents.editor.editor_in_chief",
+        "peerreviewagents.agents.journal_recommender.recommender",
     ]
     # Accept arbitrary kwargs so the meta-reviewer / editor can pass
     # reasoning_effort= without blowing up the lambda signature.
@@ -70,10 +130,11 @@ def test_full_pipeline(monkeypatch, tmp_path):
 
     # Every reviewer in the hardcoded panel produced a report.
     assert len(state["reports"]) == len(REVIEWER_NAMES)
-    # Each report carries a markdown body that starts with frontmatter
-    # and the scalars are parsed out of it.
+    # Each report's body is rendered markdown from the structured output —
+    # no YAML frontmatter at the top anymore.
     for r in state["reports"]:
-        assert r["body"].startswith("---")
+        assert not r["body"].startswith("---")
+        assert r["body"].startswith("# ")
         assert r["score"] == 3.0
         assert r["confidence"] == 4.0
     # Debate ran the configured number of rounds (advocate+skeptic per round).
@@ -81,11 +142,15 @@ def test_full_pipeline(monkeypatch, tmp_path):
     assert len(state["debate"]) == cfg["max_debate_rounds"] * 2
     # Author rebuttal ran between meta-review and editor.
     assert state.get("author_rebuttal")
-    # Meta-reviewer parsed its draft recommendation from frontmatter.
+    # Meta-reviewer's draft recommendation came straight off the schema.
     assert state["draft_recommendation"] == "major"
-    # Editor parsed the final decision from frontmatter.
+    # Editor's final decision came straight off the schema.
     assert state["decision"] == "major"
-    assert state["decision_letter"].startswith("---")
+    # Decision letter is markdown rendered from the schema.
+    assert state["decision_letter"].startswith("# Decision Letter")
+    # Journal recommender ran after the editor and produced a tiered list.
+    assert state["journal_recommendations"].startswith("# Journal Recommendations")
+    assert "Specialty Journal X" in state["journal_recommendations"]
     assert not state.get("errors")
 
     run_dir = write_reports(state)
@@ -93,6 +158,7 @@ def test_full_pipeline(monkeypatch, tmp_path):
     assert os.path.exists(os.path.join(run_dir, "decision_letter.md"))
     assert os.path.exists(os.path.join(run_dir, "author_rebuttal.md"))
     assert os.path.exists(os.path.join(run_dir, "debate_transcript.md"))
+    assert os.path.exists(os.path.join(run_dir, "journal_recommendations.md"))
     # No citations file should be produced — that pipeline was removed.
     assert not any(
         f.startswith("citations_") for f in os.listdir(run_dir)

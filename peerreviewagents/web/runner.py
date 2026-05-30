@@ -39,6 +39,7 @@ _NODE_PHASE = {
     "meta_reviewer": "synthesis",
     "author_rebuttal": "synthesis",
     "editor": "decision",
+    "journal_recommender": "recommend",
 }
 
 
@@ -298,4 +299,6 @@ def _finished_body(job: JobState, agent: str) -> tuple[str | None, dict[str, Any
         return state.get("author_rebuttal"), None
     if agent == "editor":
         return state.get("decision_letter"), {"decision": state.get("decision")}
+    if agent == "journal_recommender":
+        return state.get("journal_recommendations"), None
     return None, None

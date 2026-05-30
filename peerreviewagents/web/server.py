@@ -12,6 +12,24 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.types import Scope
+
+
+class _NoCacheStaticFiles(StaticFiles):
+    """StaticFiles subclass that disables browser caching.
+
+    The UI ships with no fingerprinted asset URLs, so a cached app.js
+    can survive across deploys and silently keep buggy behavior alive
+    (long after the source file on disk was fixed). Forcing no-cache
+    is the right default for local-dev / single-host use.
+    """
+
+    async def get_response(self, path: str, scope: Scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
 
 from peerreviewagents.default_config import get_config
 
@@ -58,7 +76,7 @@ def _register_routes(app: FastAPI) -> None:
     if _STATIC_DIR.is_dir():
         app.mount(
             "/static",
-            StaticFiles(directory=str(_STATIC_DIR)),
+            _NoCacheStaticFiles(directory=str(_STATIC_DIR)),
             name="static",
         )
 

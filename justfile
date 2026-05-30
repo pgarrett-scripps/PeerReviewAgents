@@ -17,9 +17,9 @@ install:
 # Install with every optional extra
 install-all:
     uv venv
-    uv pip install -e ".[research,pdf-ingest]"
+    uv pip install -e ".[research]"
 
-# Install with a chosen extras group: `just install-extras research,pdf`
+# Install with a chosen extras group: `just install-extras research`
 install-extras extras:
     uv venv
     uv pip install -e ".[{{extras}}]"
@@ -27,7 +27,7 @@ install-extras extras:
 # Install dev/test tooling alongside the project
 install-dev:
     uv venv
-    uv pip install -e ".[research,pdf-ingest]"
+    uv pip install -e ".[research]"
     uv pip install pytest ruff
 
 # Sync the venv to match pyproject.toml exactly (drops anything stale)
@@ -56,9 +56,8 @@ run-sample *args:
 serve *args:
     uv run peerreview serve {{args}}
 
-# Smoke-test PDF ingestion via the Datalab API on one PDF (no LLM calls, no vision).
-# Writes the extracted markdown to reports/_ingest_test.md and prints a summary.
-# Requires DATALAB_API_KEY in the environment.
+# Smoke-test local PDF ingestion (pypdf, no LLM calls, no API keys).
+# Writes the extracted text to reports/_ingest_test.md and prints a summary.
 # Usage:  just test-ingest ~/Downloads/paper.pdf
 test-ingest path:
     #!/usr/bin/env bash
@@ -79,16 +78,12 @@ test-ingest path:
 
     out = Path("reports/_ingest_test.md")
     out.write_text(md)
-    img_refs = len(re.findall(r"!\[\]\([^)]+\)", md))
     headings = len(re.findall(r"(?m)^#+ "  , md))
-    table_rows = len(re.findall(r"(?m)^\|.+\|$", md))
 
-    print(f"elapsed:    {elapsed:.1f}s")
+    print(f"elapsed:    {elapsed:.2f}s")
     print(f"title:      {title[:80]}")
     print(f"chars:      {len(md)}")
-    print(f"image refs: {img_refs}")
     print(f"headings:   {headings}")
-    print(f"table rows: {table_rows}")
     print(f"sections:   {sorted(sections)}")
     print(f"wrote:      {out}")
     PYEOF

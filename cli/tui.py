@@ -11,6 +11,7 @@ mutates widgets via :meth:`call_from_thread` semantics.
 
 from __future__ import annotations
 
+import os
 import time
 from queue import Empty, Queue
 
@@ -20,7 +21,6 @@ from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import DataTable, Footer, Header, Log, Static
 
 from peerreviewagents.agents.reviewers import REVIEWER_NAMES
-from peerreviewagents.agents.utils.memory import append_memory
 from peerreviewagents.graph.review_graph import PeerReviewGraph
 from peerreviewagents.observability import (
     AgentEvent,
@@ -28,6 +28,7 @@ from peerreviewagents.observability import (
     register_observer,
 )
 from peerreviewagents.reports import write_reports
+from peerreviewagents.storage.memory import MemoryLog
 
 _VERDICT = {
     "accept": "ACCEPT",
@@ -102,7 +103,6 @@ class ReviewApp(App):
     # counters accumulate across rounds.
     _STAGES: tuple[tuple[str, str], ...] = (
         ("ingest", "Ingest"),
-        ("vision", "  ↳ Vision (figures)"),
         *tuple(
             (f"reviewer_{n}", f"Reviewer · {n.replace('_', ' ').title()}")
             for n in REVIEWER_NAMES
@@ -112,6 +112,7 @@ class ReviewApp(App):
         ("meta_reviewer", "Meta-reviewer"),
         ("author_rebuttal", "Author rebuttal"),
         ("editor", "Editor-in-Chief"),
+        ("journal_recommender", "Journal Scout"),
     )
 
     def __init__(self, manuscript: str, config: dict):
@@ -241,8 +242,18 @@ class ReviewApp(App):
         except Exception as exc:  # noqa: BLE001
             self._finish_with_error([f"failed to write reports: {exc}"])
             return
+        job_id = os.path.basename(run_dir.rstrip(os.sep))
         try:
-            append_memory(self.final)
+            sections = self.final.get("sections") or {}
+            abstract = sections.get("abstract") or self.final.get("manuscript_md", "")[:500]
+            MemoryLog(self.config["memory_path"]).append_pending(
+                job_id=job_id,
+                title=self.final.get("manuscript_title", ""),
+                abstract=abstract,
+                decision=self.final.get("decision", ""),
+                draft_summary=self.final.get("decision_letter", ""),
+                reports=self.final.get("reports", []),
+            )
         except Exception:  # noqa: BLE001
             pass
 
@@ -250,6 +261,7 @@ class ReviewApp(App):
         msg = (
             f"[b green]DECISION:[/b green] {_VERDICT[decision]}\n"
             f"[b]Reports:[/b] {run_dir}\n"
+            f"[b]Job ID:[/b] {job_id}\n"
             f"[b]OpenRouter cost:[/b] ${cost:.4f}"
         )
         self.query_one("#decision", Static).update(msg)
@@ -318,12 +330,6 @@ class ReviewApp(App):
             st["time_text"] = _fmt_elapsed(time.time() - st["started"])
         self._set_table_status(node)
         self._append_log(f"✓ {st['label']} ({st['time_text']})")
-        # Vision only fires when the ingester emits image blocks AND we
-        # didn't hit the parse cache. If ingest finishes with no vision
-        # start, mark the row "skipped" so the user isn't left wondering
-        # why it's still pending.
-        if node == "ingest":
-            self._mark_pending_skipped("vision")
         # Auto-advance the focus to another still-running agent so
         # parallel branches don't strand the viewer on a finished one.
         if self._focused_node == node:
@@ -434,14 +440,6 @@ class ReviewApp(App):
         except Exception:  # noqa: BLE001
             pass
 
-    def _mark_pending_skipped(self, node: str) -> None:
-        st = self._stage_state.get(node)
-        if st is None or st["status"] != "pending":
-            return
-        st["status"] = "skipped"
-        st["time_text"] = ""
-        self._set_table_status(node)
-
     def _next_running(self, *, exclude: str | None = None) -> str | None:
         for key, st in self._stage_state.items():
             if key == exclude:
@@ -452,10 +450,11 @@ class ReviewApp(App):
 
     def _refresh_status(self) -> None:
         elapsed = _fmt_elapsed(time.time() - self._start_time)
+        provider = self.config.get("provider", "openrouter")
         bar = (
             f"[b]Manuscript:[/b] {escape(self.manuscript)}   "
-            f"[b]Reasoning:[/b] {escape(self.config['reasoning_model'])}   "
-            f"[b]Vision:[/b] {escape(self.config['vision_model'])}\n"
+            f"[b]Provider:[/b] {escape(provider)}   "
+            f"[b]Model:[/b] {escape(self.config['reasoning_model'])}\n"
             f"[b]Elapsed:[/b] {elapsed}   "
             f"[b]Tokens:[/b] {_fmt_int(self._total_in)} in / {_fmt_int(self._total_out)} out   "
             f"[b]Cost:[/b] [green]${self._total_cost:.4f}[/green]"

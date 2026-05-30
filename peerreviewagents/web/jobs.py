@@ -36,6 +36,8 @@ AGENT_LAYOUT: list[dict[str, Any]] = [
     {"name": "meta_reviewer",          "label": "Area Chair",      "role": "synthesis", "emoji": "🧑‍⚖️"},
     {"name": "author_rebuttal",        "label": "Author",          "role": "author",    "emoji": "✒️"},
     {"name": "editor",                 "label": "Editor-in-Chief", "role": "editor",    "emoji": "👔"},
+    # Post-decision: venue suggestions
+    {"name": "journal_recommender",    "label": "Journal Scout",   "role": "recommend", "emoji": "🗺️"},
 ]
 
 AGENT_NAMES = [a["name"] for a in AGENT_LAYOUT]

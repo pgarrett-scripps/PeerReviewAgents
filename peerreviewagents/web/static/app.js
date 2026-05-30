@@ -24,20 +24,32 @@ if (!JOB_ID) {
 // --- DOM hooks ---------------------------------------------------------
 
 const els = {
-    room:           document.getElementById('room'),
-    cost:           document.getElementById('job-cost'),
-    status:         document.getElementById('job-status'),
-    manuscript:     document.getElementById('manuscript-name'),
-    panel:          document.getElementById('panel'),
-    panelTitle:     document.getElementById('panel-title'),
-    panelEmoji:     document.getElementById('panel-emoji'),
-    panelMeta:      document.getElementById('panel-meta'),
-    panelBody:      document.getElementById('panel-body'),
-    panelClose:     document.getElementById('panel-close'),
-    banner:         document.getElementById('banner'),
-    bannerTitle:    document.getElementById('banner-title'),
-    bannerSub:      document.getElementById('banner-sub'),
-    bannerLinks:    document.getElementById('banner-links'),
+    stage:                document.querySelector('.stage'),
+    room:                 document.getElementById('room'),
+    cost:                 document.getElementById('job-cost'),
+    status:               document.getElementById('job-status'),
+    manuscript:           document.getElementById('manuscript-name'),
+    panel:                document.getElementById('panel'),
+    panelTitle:           document.getElementById('panel-title'),
+    panelEmoji:           document.getElementById('panel-emoji'),
+    panelMeta:            document.getElementById('panel-meta'),
+    panelBody:            document.getElementById('panel-body'),
+    panelClose:           document.getElementById('panel-close'),
+    panelExpand:          document.getElementById('panel-expand'),
+    // Completion overlay (replaces the legacy bottom banner).
+    completion:           document.getElementById('completion'),
+    completionTitle:      document.getElementById('completion-title'),
+    completionBadge:      document.getElementById('completion-badge'),
+    completionSub:        document.getElementById('completion-sub'),
+    completionStats:      document.getElementById('completion-stats'),
+    completionFeatured:   document.getElementById('completion-featured'),
+    completionFeaturedCards: document.getElementById('completion-featured-cards'),
+    completionAllWrap:    document.getElementById('completion-all-wrap'),
+    completionAllList:    document.getElementById('completion-all-list'),
+    completionAllCount:   document.getElementById('completion-all-count'),
+    completionClose:      document.getElementById('completion-close'),
+    completionExplore:    document.getElementById('completion-explore'),
+    viewSummaryBtn:       document.getElementById('view-summary-btn'),
 };
 
 // --- State -------------------------------------------------------------
@@ -56,6 +68,10 @@ const state = {
     // While a panel is open we poll /jobs/<id>/agents/<name> to pick
     // up the finished markdown body when the agent transitions to done.
     panelPollHandle: null,
+    // Latest "final" event payload (or a synthetic one we build from the
+    // job snapshot on a refresh) so the topbar "View summary" button can
+    // re-open the completion modal without re-fetching state.
+    lastFinal: null,
 };
 
 // --- Layout maths ------------------------------------------------------
@@ -323,19 +339,84 @@ function openPanel(name) {
         els.panelEmoji.textContent = '·';
     }
     els.panel.classList.remove('panel-collapsed');
-    els.panel.classList.add('panel-open');
+    els.panel.setAttribute('aria-hidden', 'false');
+    // The grid layout is driven by classes on the stage; this animates
+    // the room/panel split open without absolute positioning tricks.
+    els.stage.classList.add('panel-open');
     refreshPanel();
     startPanelPoll();
+    // Let the room canvas resize into the new column width.
+    window.dispatchEvent(new Event('resize'));
 }
 
 function closePanel() {
     state.selected = null;
     stopPanelPoll();
-    els.panel.classList.remove('panel-open');
+    els.stage.classList.remove('panel-open', 'panel-expanded');
     els.panel.classList.add('panel-collapsed');
+    els.panel.setAttribute('aria-hidden', 'true');
+    els.panelExpand.textContent = '⇱';
+    window.dispatchEvent(new Event('resize'));
+}
+
+function togglePanelExpand() {
+    const expanded = els.stage.classList.toggle('panel-expanded');
+    els.panelExpand.textContent = expanded ? '⇲' : '⇱';
+    els.panelExpand.title = expanded ? 'Shrink' : 'Expand';
+    window.dispatchEvent(new Event('resize'));
 }
 
 els.panelClose.addEventListener('click', closePanel);
+els.panelExpand.addEventListener('click', togglePanelExpand);
+
+// --- completion overlay handlers --------------------------------------
+
+function dismissCompletion() {
+    els.completion.hidden = true;
+}
+function reopenCompletion() {
+    if (state.lastFinal) renderCompletion(state.lastFinal);
+}
+els.completionClose.addEventListener('click', dismissCompletion);
+els.completionExplore.addEventListener('click', dismissCompletion);
+els.completion.addEventListener('click', (e) => {
+    // Click on the backdrop (not the card itself) dismisses.
+    if (e.target instanceof HTMLElement && e.target.dataset.close === '1') {
+        dismissCompletion();
+    }
+});
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !els.completion.hidden) dismissCompletion();
+});
+els.viewSummaryBtn.addEventListener('click', reopenCompletion);
+
+function showSummaryButton(status) {
+    // Topbar entry point for opening the completion modal — it's the
+    // ONLY thing that should pop the modal. We deliberately do not
+    // auto-open the modal on the live 'final' event or on a refresh,
+    // because the user is here to watch the room work; covering it
+    // with an overlay is jarring.
+    if (status === 'done') {
+        els.viewSummaryBtn.textContent = 'View summary';
+        els.viewSummaryBtn.classList.remove('btn-pill-error');
+        els.viewSummaryBtn.hidden = false;
+    } else if (status === 'error') {
+        els.viewSummaryBtn.textContent = 'View error';
+        els.viewSummaryBtn.classList.add('btn-pill-error');
+        els.viewSummaryBtn.hidden = false;
+    } else {
+        els.viewSummaryBtn.hidden = true;
+    }
+}
+
+function pulseSummaryButton() {
+    // Brief attention pulse so the user notices the new button without
+    // shoving a modal in their face.
+    els.viewSummaryBtn.classList.remove('pulse');
+    // Force a reflow so the animation re-triggers if it was already on.
+    void els.viewSummaryBtn.offsetWidth;
+    els.viewSummaryBtn.classList.add('pulse');
+}
 
 function startPanelPoll() {
     stopPanelPoll();
@@ -383,35 +464,60 @@ async function refreshPanel() {
         { input_tokens: 0, output_tokens: 0, cost_usd: 0 };
 
     let payload = null;
-    try {
-        const resp = await fetch(`/jobs/${JOB_ID}/agents/${encodeURIComponent(name)}`);
-        if (resp.ok) payload = await resp.json();
-    } catch (err) {
-        // Fall through to the streamed-buffer rendering path below.
+    // Only hit the REST endpoint when the agent is settled — while it's
+    // running we have nothing finished to show in the body, and the
+    // streaming spinner pulls its data straight from state.
+    if (status === 'done' || status === 'error') {
+        try {
+            const resp = await fetch(`/jobs/${JOB_ID}/agents/${encodeURIComponent(name)}`);
+            if (resp.ok) payload = await resp.json();
+        } catch (err) {
+            // Falls through to the buffer rendering path.
+        }
+        if (state.selected !== name) return;
     }
-    if (state.selected !== name) return;
 
-    // Prefer the finished/rendered body; fall back to the live stream
-    // (also markdown) while the agent is still writing.
+    // Finished body (preferred) or the streamed buffer as a fallback when
+    // the worker hasn't published the rendered markdown yet.
     const text = (payload && payload.body) || state.buffers.get(name) || (payload && payload.streamed) || '';
     const fm = parseFrontmatter(text);
     const visible = stripFrontmatter(text);
 
-    // Panel meta line: status + usage + frontmatter scalars.
+    // Panel meta line: status + token counters + cost + any frontmatter scalars.
+    const streamedBytes = (state.buffers.get(name) || '').length;
     const metaParts = [
         `<span>status: <strong>${status}</strong></span>`,
         `<span>tok in: ${usage.input_tokens || 0}</span>`,
         `<span>tok out: ${usage.output_tokens || 0}</span>`,
         `<span>cost: $${(usage.cost_usd || 0).toFixed(4)}</span>`,
     ];
+    if (status === 'running' && streamedBytes > 0) {
+        metaParts.splice(1, 0,
+            `<span>streamed: ${streamedBytes.toLocaleString()} chars</span>`,
+        );
+    }
     for (const [k, v] of Object.entries(fm)) {
         metaParts.push(`<span><strong>${escapeHtml(k)}:</strong> ${escapeHtml(v)}</span>`);
     }
     els.panelMeta.innerHTML = metaParts.join('');
 
+    // Running agents get a spinner + live counters. We deliberately don't
+    // render the streaming buffer here — with structured outputs the
+    // bytes flowing through are usually JSON fragments, not human-friendly
+    // prose. Once the node finishes the body renders below.
+    if (status === 'running') {
+        els.panelBody.innerHTML = renderWorkingState(name, usage, streamedBytes);
+        return;
+    }
+    if (status === 'pending') {
+        els.panelBody.innerHTML =
+            `<p class="muted">${escapeHtml(name)} hasn't started yet. The panel will fill in once it begins.</p>`;
+        return;
+    }
+
     if (!visible) {
         els.panelBody.innerHTML =
-            `<p class="muted">No output yet. Once ${name} starts writing, the report will render here.</p>`;
+            `<p class="muted">${escapeHtml(name)} finished without producing a body. Check the run log for errors.</p>`;
         return;
     }
     els.panelBody.innerHTML = renderMarkdown(visible);
@@ -420,6 +526,30 @@ async function refreshPanel() {
     if (status === 'done' || status === 'error') {
         stopPanelPoll();
     }
+}
+
+function renderWorkingState(name, usage, streamedBytes) {
+    const tokIn = (usage.input_tokens || 0).toLocaleString();
+    const tokOut = (usage.output_tokens || 0).toLocaleString();
+    const cost = (usage.cost_usd || 0).toFixed(4);
+    const chars = streamedBytes.toLocaleString();
+    return [
+        '<div class="working">',
+        '  <div class="working-row">',
+        '    <span class="spinner"></span>',
+        `    <span class="working-label">${escapeHtml(name)} is working…</span>`,
+        '  </div>',
+        '  <dl class="working-stats">',
+        '    <div><dt>chars streamed</dt><dd>' + chars + '</dd></div>',
+        '    <div><dt>tokens in</dt><dd>' + tokIn + '</dd></div>',
+        '    <div><dt>tokens out</dt><dd>' + tokOut + '</dd></div>',
+        '    <div><dt>cost so far</dt><dd>$' + cost + '</dd></div>',
+        '  </dl>',
+        '  <p class="muted working-note">',
+        '    The rendered report will appear here once this agent finishes.',
+        '  </p>',
+        '</div>',
+    ].join('\n');
 }
 
 function escapeHtml(s) {
@@ -499,7 +629,12 @@ function handleEvent(ev) {
             break;
         }
         case 'final':
-            renderBanner(ev);
+            state.lastFinal = ev;
+            showSummaryButton(ev.status);
+            // Don't auto-pop the modal — it covers the room the user
+            // came to see. Highlight the topbar button instead; the
+            // user opens the modal when they want it.
+            pulseSummaryButton();
             break;
         default:
             // Unknown event types are no-ops; forward-compatibility.
@@ -507,45 +642,138 @@ function handleEvent(ev) {
     }
 }
 
-async function renderBanner(ev) {
-    const banner = els.banner;
-    banner.hidden = false;
-    banner.classList.remove('accept', 'minor', 'major', 'reject');
-    const decisionMap = {
-        accept: 'Accept',
-        minor:  'Minor Revision',
-        major:  'Major Revision',
-        reject: 'Reject',
-    };
-    if (ev.status === 'done' && ev.decision) {
-        banner.classList.add(ev.decision);
-        els.bannerTitle.textContent = `Decision: ${decisionMap[ev.decision] || ev.decision}`;
-        els.bannerSub.textContent =
-            `Total cost: $${(ev.total_cost || 0).toFixed(4)}` +
-            (ev.report_dir ? ` · Reports written to ${ev.report_dir}` : '');
+// Top three files the user most wants to land on first.
+const FEATURED_REPORTS = [
+    { file: 'summary.md',                  title: 'Summary',                blurb: 'Decision badge + per-reviewer scores at a glance.' },
+    { file: 'decision_letter.md',          title: 'Decision Letter',        blurb: 'Editor-in-Chief’s reasoning + required revisions.' },
+    { file: 'journal_recommendations.md',  title: 'Journal Recommendations',blurb: 'Tiered venue suggestions (as-is / after revision / fallback).' },
+];
+
+const DECISION_LABELS = {
+    accept: 'Accept',
+    minor:  'Minor Revision',
+    major:  'Major Revision',
+    reject: 'Reject',
+};
+
+async function renderCompletion(ev) {
+    const overlay = els.completion;
+    overlay.hidden = false;
+
+    // Reset state from a previous (e.g. cached) render.
+    els.completionBadge.className = 'decision-badge';
+    els.completionStats.innerHTML = '';
+    els.completionFeaturedCards.innerHTML = '';
+    els.completionAllList.innerHTML = '';
+    els.completionFeatured.hidden = true;
+    els.completionAllWrap.hidden = true;
+
+    const ok = ev.status === 'done' && ev.decision;
+    if (ok) {
+        els.completionBadge.classList.add(ev.decision);
+        els.completionBadge.textContent = DECISION_LABELS[ev.decision] || ev.decision;
+        els.completionTitle.textContent = 'Review complete';
+        els.completionSub.textContent =
+            `Editor-in-Chief returned ${DECISION_LABELS[ev.decision] || ev.decision}.`;
     } else {
-        els.bannerTitle.textContent = 'Review failed';
-        els.bannerSub.textContent =
+        els.completionBadge.classList.add('error');
+        els.completionBadge.textContent = 'Error';
+        els.completionTitle.textContent = 'Review failed';
+        els.completionSub.textContent =
             (ev.errors && ev.errors.length)
-                ? ev.errors.join('; ')
-                : 'no decision was produced';
+                ? ev.errors.slice(0, 3).join(' · ')
+                : 'No decision was produced. Check the run log.';
     }
-    els.bannerLinks.innerHTML = '';
+
+    // Stats row: cost / duration / manuscript / job id.
+    const stats = [];
+    if (ev.total_cost != null) {
+        stats.push({ label: 'cost', value: `$${(ev.total_cost || 0).toFixed(4)}` });
+    }
+    const dur = jobDuration(state.job);
+    if (dur) stats.push({ label: 'duration', value: dur });
+    if (state.job && state.job.manuscript_filename) {
+        stats.push({ label: 'manuscript', value: state.job.manuscript_filename });
+    }
+    if (ev.report_dir) {
+        // Just the basename (job id is the slug); the full path is in the
+        // CLI output. Most users don't need the absolute path here.
+        const base = ev.report_dir.split('/').filter(Boolean).pop();
+        if (base) stats.push({ label: 'job', value: base });
+    }
+    for (const s of stats) {
+        const div = document.createElement('div');
+        const dt = document.createElement('dt');
+        const dd = document.createElement('dd');
+        dt.textContent = s.label;
+        dd.textContent = s.value;
+        div.appendChild(dt);
+        div.appendChild(dd);
+        els.completionStats.appendChild(div);
+    }
+
+    // Report files: featured cards + collapsible full list.
+    let files = [];
     try {
         const resp = await fetch(`/jobs/${JOB_ID}/reports`);
-        const data = await resp.json();
-        for (const f of (data.files || [])) {
-            const li = document.createElement('li');
-            const a  = document.createElement('a');
-            a.href = `/jobs/${JOB_ID}/report/${encodeURIComponent(f)}`;
-            a.textContent = f;
-            a.target = '_blank';
-            li.appendChild(a);
-            els.bannerLinks.appendChild(li);
+        if (resp.ok) {
+            const data = await resp.json();
+            files = data.files || [];
         }
     } catch (err) {
         console.warn('failed to list reports', err);
     }
+
+    if (files.length === 0) return;
+
+    const fileSet = new Set(files);
+    const featured = FEATURED_REPORTS.filter(f => fileSet.has(f.file));
+    if (featured.length) {
+        els.completionFeatured.hidden = false;
+        for (const f of featured) {
+            const a = document.createElement('a');
+            a.className = 'report-card';
+            a.href = `/jobs/${JOB_ID}/report/${encodeURIComponent(f.file)}`;
+            a.target = '_blank';
+            a.rel = 'noopener';
+            a.innerHTML = `
+                <span class="report-card-title">${escapeHtml(f.title)}</span>
+                <span class="report-card-meta">${escapeHtml(f.file)}</span>
+            `;
+            els.completionFeaturedCards.appendChild(a);
+        }
+    }
+
+    const remaining = files.filter(f => !FEATURED_REPORTS.some(x => x.file === f));
+    if (remaining.length) {
+        els.completionAllWrap.hidden = false;
+        els.completionAllCount.textContent = String(files.length);
+        for (const f of remaining) {
+            const li = document.createElement('li');
+            const a = document.createElement('a');
+            a.href = `/jobs/${JOB_ID}/report/${encodeURIComponent(f)}`;
+            a.textContent = f;
+            a.target = '_blank';
+            a.rel = 'noopener';
+            li.appendChild(a);
+            els.completionAllList.appendChild(li);
+        }
+    } else if (featured.length) {
+        // Featured covered everything; still let the user open the
+        // accordion to confirm there's nothing else hiding.
+        els.completionAllWrap.hidden = false;
+        els.completionAllCount.textContent = String(files.length);
+    }
+}
+
+function jobDuration(job) {
+    if (!job || !job.started_at) return '';
+    const end = job.finished_at || Date.now() / 1000;
+    const seconds = Math.max(0, end - job.started_at);
+    if (seconds < 60) return `${seconds.toFixed(1)}s`;
+    const m = Math.floor(seconds / 60);
+    const s = Math.round(seconds % 60);
+    return `${m}m ${s}s`;
 }
 
 // --- Boot --------------------------------------------------------------
@@ -569,6 +797,23 @@ async function boot() {
     }
 
     relayout();
+
+    // If the job already finished (refresh / bookmarked link / a fast-
+    // failing run that completed before the page loaded), don't pop the
+    // modal automatically — that hides the room and is jarring. Just
+    // reveal the "View summary" button so the user can open it when
+    // they want.
+    if (state.job.status === 'done' || state.job.status === 'error') {
+        state.lastFinal = {
+            status: state.job.status,
+            decision: state.job.decision,
+            total_cost: state.job.total_cost,
+            report_dir: state.job.report_dir,
+            errors: state.job.errors,
+        };
+        showSummaryButton(state.job.status);
+    }
+
     connectSocket();
 }
 

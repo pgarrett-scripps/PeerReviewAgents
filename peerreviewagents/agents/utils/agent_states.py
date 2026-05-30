@@ -58,6 +58,10 @@ class ReviewState(TypedDict, total=False):
     decision: str                # accept | minor | major | reject
     decision_letter: str
 
+    # --- post-decision: venue recommendations ---
+    # Rendered markdown from JournalRecommendationsOutput.to_markdown().
+    journal_recommendations: str
+
     # --- bookkeeping ---
     errors: Annotated[list[str], operator.add]
     # Sum of OpenRouter-reported per-call USD cost across every LLM

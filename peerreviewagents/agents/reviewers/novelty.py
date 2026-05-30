@@ -5,8 +5,8 @@ node = make_reviewer_node(
     role="Novelty & Contribution Reviewer",
     mandate=(
         "Assess originality and significance relative to prior work. Use research "
-        "tools to find closely related papers and judge whether the contribution is "
-        "incremental or substantive. Identify overclaimed novelty."
+        "tools to find closely related papers (and recent preprints) and judge whether "
+        "the contribution is incremental or substantive. Identify overclaimed novelty."
     ),
-    uses_research=True,
+    tool_names=["find_related_work", "search_preprints"],
 )

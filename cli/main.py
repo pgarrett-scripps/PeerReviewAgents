@@ -19,7 +19,7 @@ from rich.panel import Panel
 from peerreviewagents.default_config import get_config
 from peerreviewagents.graph.review_graph import PeerReviewGraph
 from peerreviewagents.reports import write_reports
-from peerreviewagents.agents.utils.memory import append_memory
+from peerreviewagents.storage.memory import MemoryLog
 
 console = Console()
 
@@ -31,6 +31,7 @@ _NODE_LABELS = {
     "meta_reviewer": "Area Chair synthesizes",
     "author_rebuttal": "Author rebuts",
     "editor": "Editor-in-Chief decides",
+    "journal_recommender": "Journal Scout suggests venues",
 }
 
 _VALID_DECISIONS = {"accept", "minor", "major", "reject"}
@@ -61,11 +62,13 @@ def build_parser() -> argparse.ArgumentParser:
             "Non-secret settings live in ./peerreview.toml.\n\n"
             "Examples:\n"
             "  peerreview paper.pdf --no-tui\n"
-            "  peerreview paper.pdf --reasoning-model anthropic/claude-opus-4.1\n\n"
+            "  peerreview paper.pdf --reasoning-model anthropic/claude-opus-4.1\n"
+            "  peerreview paper.pdf --provider anthropic --reasoning-model claude-opus-4-7\n\n"
             "Run `just cache-clear` to wipe the manuscript parsing cache.\n\n"
-            "Required env vars:\n"
-            "  OPENROUTER_API_KEY (or OPENAI_API_KEY) — text + vision + web search\n"
-            "  DATALAB_API_KEY                        — PDF ingest\n"
+            "Required env vars (one of, per --provider):\n"
+            "  OPENROUTER_API_KEY  — provider=openrouter  (default)\n"
+            "  ANTHROPIC_API_KEY   — provider=anthropic\n"
+            "  OPENAI_API_KEY      — provider=openai\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -77,14 +80,16 @@ def build_parser() -> argparse.ArgumentParser:
              "~/.config/peerreviewagents/config.toml).",
     )
     p.add_argument(
-        "--reasoning-model",
-        dest="reasoning_model",
-        help="OpenRouter slug for the text model (e.g. anthropic/claude-opus-4.1).",
+        "--provider",
+        dest="provider",
+        choices=("openrouter", "anthropic", "openai"),
+        help="LLM provider (default: openrouter).",
     )
     p.add_argument(
-        "--vision-model",
-        dest="vision_model",
-        help="OpenRouter slug for the figure-description model.",
+        "--reasoning-model",
+        dest="reasoning_model",
+        help="Model id for the active provider (e.g. anthropic/claude-opus-4.1 "
+             "on OpenRouter, claude-opus-4-7 on Anthropic direct, gpt-4.1 on OpenAI).",
     )
     p.add_argument("--debate-rounds", type=int, dest="max_debate_rounds")
     p.add_argument("--output-dir", dest="output_dir")
@@ -96,7 +101,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def config_from_args(args) -> dict:
     overrides = {}
-    for key in ("reasoning_model", "vision_model", "max_debate_rounds",
+    for key in ("provider", "reasoning_model", "max_debate_rounds",
                 "output_dir", "cache_dir"):
         val = getattr(args, key, None)
         if val is not None:
@@ -125,16 +130,36 @@ def run_headless(manuscript: str, config: dict) -> None:
         sys.exit(2)
 
     run_dir = write_reports(final)
+    job_id = os.path.basename(run_dir.rstrip(os.sep))
     try:
-        append_memory(final)
+        _append_pending_memory(final, job_id, config)
     except Exception:  # noqa: BLE001
         pass
     cost = final.get("total_cost") or 0.0
     cost_line = f"\nCost: ${cost:.4f}" if cost > 0 else ""
     console.print(Panel.fit(
-        f"[bold]Decision:[/bold] {final['decision']}\nReports: {run_dir}{cost_line}",
+        f"[bold]Decision:[/bold] {final['decision']}\n"
+        f"Reports: {run_dir}\n"
+        f"Job ID: {job_id}{cost_line}\n\n"
+        f"When you know the venue's outcome, record it with:\n"
+        f"  peerreview outcome {job_id} {{accepted|rejected|minor|major|withdrawn}}",
         border_style="green",
     ))
+
+
+def _append_pending_memory(state: dict, job_id: str, config: dict) -> None:
+    """Write a pending entry to the review memory log. Called from both
+    the headless CLI and the TUI."""
+    sections = state.get("sections") or {}
+    abstract = sections.get("abstract") or state.get("manuscript_md", "")[:500]
+    MemoryLog(config["memory_path"]).append_pending(
+        job_id=job_id,
+        title=state.get("manuscript_title", ""),
+        abstract=abstract,
+        decision=state.get("decision", ""),
+        draft_summary=state.get("decision_letter", ""),
+        reports=state.get("reports", []),
+    )
 
 
 def run_server(args) -> None:
@@ -149,7 +174,7 @@ def run_server(args) -> None:
         sys.exit(1)
 
     overrides: dict = {}
-    for key in ("reasoning_model", "vision_model", "max_debate_rounds",
+    for key in ("provider", "reasoning_model", "max_debate_rounds",
                 "output_dir", "cache_dir"):
         val = getattr(args, key, None)
         if val is not None:
@@ -168,6 +193,46 @@ def run_server(args) -> None:
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
 
+def run_outcome(args) -> None:
+    """Mark a past review's real-world outcome and (optionally) reflect on it."""
+    config = get_config(config_path=args.config_path)
+    log = MemoryLog(config["memory_path"])
+
+    llm = None
+    if not args.no_reflect:
+        try:
+            from peerreviewagents.agents.utils.llm import make_llm
+
+            llm = make_llm(config)
+        except Exception as exc:  # noqa: BLE001
+            console.print(
+                f"[yellow]Could not initialize LLM for reflection ({exc}); "
+                "recording outcome without a lesson.[/yellow]"
+            )
+            llm = None
+
+    try:
+        entry = log.mark_resolved(args.job_id, args.outcome, llm=llm, config=config)
+    except KeyError:
+        console.print(f"[red]No memory entry found for job_id '{args.job_id}'.[/red]")
+        console.print(
+            f"Check the log at: {config['memory_path']} "
+            "(use the Job ID printed at the end of a review run)."
+        )
+        sys.exit(1)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        sys.exit(1)
+
+    lesson = entry.lesson or "(reflection skipped)"
+    console.print(Panel.fit(
+        f"[bold]Outcome recorded:[/bold] {entry.outcome}\n"
+        f"[bold]Original decision:[/bold] {entry.decision}\n"
+        f"[bold]Lesson:[/bold] {lesson}",
+        border_style="green",
+    ))
+
+
 def run() -> None:
     load_dotenv()
     argv = sys.argv[1:]
@@ -182,12 +247,32 @@ def run() -> None:
                         help="Where to store uploaded manuscripts "
                              "(default: ./.peerreview-uploads)")
         sp.add_argument("--config", dest="config_path", default=None)
+        sp.add_argument("--provider", dest="provider",
+                        choices=("openrouter", "anthropic", "openai"), default=None)
         sp.add_argument("--reasoning-model", dest="reasoning_model", default=None)
-        sp.add_argument("--vision-model", dest="vision_model", default=None)
         sp.add_argument("--debate-rounds", type=int, dest="max_debate_rounds", default=None)
         sp.add_argument("--output-dir", dest="output_dir", default=None)
         sp.add_argument("--cache-dir", dest="cache_dir", default=None)
         run_server(sp.parse_args(argv[1:]))
+        return
+
+    if argv and argv[0] == "outcome":
+        sp = argparse.ArgumentParser(
+            prog="peerreview outcome",
+            description="Mark a past review's real-world outcome and reflect.",
+        )
+        sp.add_argument("job_id", help="Job ID printed at the end of the review run.")
+        sp.add_argument(
+            "outcome",
+            choices=("accepted", "rejected", "minor", "major", "withdrawn"),
+            help="What actually happened to the manuscript at the venue.",
+        )
+        sp.add_argument("--config", dest="config_path", default=None)
+        sp.add_argument(
+            "--no-reflect", action="store_true",
+            help="Record the outcome but skip the LLM reflection step.",
+        )
+        run_outcome(sp.parse_args(argv[1:]))
         return
 
     args = build_parser().parse_args()

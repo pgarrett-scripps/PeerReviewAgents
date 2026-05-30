@@ -11,3 +11,7 @@ venv/
 reports/*
 !reports/.gitkeep
 .pytest_cache/
+.ruff_cache/
+
+# User-uploaded manuscripts (web UI drop zone)
+.peerreview-uploads/

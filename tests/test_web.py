@@ -20,36 +20,80 @@ import uvicorn
 from langchain_core.messages import AIMessage
 
 from peerreviewagents.agents.reviewers import REVIEWER_NAMES
+from peerreviewagents.agents.schemas import (
+    AuthorRebuttalOutput,
+    DebateOutput,
+    EditorDecisionOutput,
+    JournalRecommendationsOutput,
+    JournalSuggestion,
+    MetaReviewOutput,
+    ReviewerOutput,
+)
 from peerreviewagents.web import create_app
 
 
 SAMPLE = os.path.join(os.path.dirname(__file__), "sample_manuscript.md")
 
-_CANNED = (
-    "---\n"
-    "score: 3\n"
-    "confidence: 4\n"
-    "draft_recommendation: major\n"
-    "decision: major\n"
-    "---\n"
-    "# Review\n\n"
-    "## Summary\n"
-    "Method is sensible but undertested.\n\n"
-    "## Strengths\n"
-    "- Clear motivation\n\n"
-    "## Weaknesses\n"
-    "- Single cluster only\n"
-)
+# One canned structured instance per agent boundary. Mirrors the
+# fixtures in tests/test_pipeline.py so both end-to-end tests exercise
+# the same Phase-C structured-output path.
+_CANNED: dict[type, object] = {
+    ReviewerOutput: ReviewerOutput(
+        score=3, confidence=4,
+        summary="Method is sensible but undertested.",
+        strengths=["Clear motivation"],
+        weaknesses=["Single cluster only"],
+    ),
+    DebateOutput: DebateOutput(
+        argument="Contribution is incremental but cleanly evaluated.",
+        key_points=["Fair comparisons"],
+    ),
+    MetaReviewOutput: MetaReviewOutput(
+        draft_recommendation="major",
+        synthesis="Panel leans toward major revision.",
+        decisive_factors="Generalization claim outruns the evidence.",
+    ),
+    AuthorRebuttalOutput: AuthorRebuttalOutput(
+        load_bearing_critiques=["scope of generalization"],
+    ),
+    EditorDecisionOutput: EditorDecisionOutput(
+        decision="major",
+        summary_of_evaluation="Strong method, weak generalization.",
+        required_revisions=["Narrow the claim."],
+    ),
+    JournalRecommendationsOutput: JournalRecommendationsOutput(
+        after_revision=[JournalSuggestion(
+            name="Specialty Journal X",
+            fit_reasoning="Topic match.",
+            acceptance_realism="Plausible after the claim is narrowed.",
+        )],
+    ),
+}
+
+
+class _FakeStructuredChain:
+    def __init__(self, schema, include_raw: bool):
+        self._schema = schema
+        self._include_raw = include_raw
+
+    def invoke(self, _messages, **_kwargs):
+        instance = _CANNED[self._schema]
+        if self._include_raw:
+            return {"raw": AIMessage(content=""), "parsed": instance, "parsing_error": None}
+        return instance
 
 
 class FakeLLM:
-    """Drop-in replacement matching what run_agent does to a chat model."""
+    """Drop-in replacement matching what run_agent + invoke_structured expect."""
 
     def bind(self, **_kwargs):
         return self
 
-    def invoke(self, messages, **_kwargs):
-        return AIMessage(content=_CANNED)
+    def invoke(self, _messages, **_kwargs):
+        return AIMessage(content="canned free-text")
+
+    def with_structured_output(self, schema, **kwargs):
+        return _FakeStructuredChain(schema, kwargs.get("include_raw", False))
 
 
 @pytest.fixture
@@ -60,6 +104,7 @@ def patched_llms(monkeypatch):
         "peerreviewagents.agents.synthesis.meta_reviewer",
         "peerreviewagents.agents.author.rebuttal",
         "peerreviewagents.agents.editor.editor_in_chief",
+        "peerreviewagents.agents.journal_recommender.recommender",
     ]
     for mod in targets:
         monkeypatch.setattr(f"{mod}.make_llm", lambda config, **_kw: FakeLLM())
@@ -147,7 +192,9 @@ def test_full_web_pipeline(monkeypatch, tmp_path, patched_llms):
         assert payload["known"] is True
         assert payload["status"] == "done"
         assert payload["body"]
-        assert payload["body"].startswith("---")
+        # Bodies are rendered markdown from the structured ReviewerOutput,
+        # no YAML frontmatter at the top.
+        assert payload["body"].startswith("# ")
         assert payload["meta"]["score"] == 3.0
 
         # Reports were written to disk and listed.

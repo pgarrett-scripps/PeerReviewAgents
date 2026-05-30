@@ -1,23 +1,19 @@
-"""Manuscript ingestion: file -> clean Markdown + a coarse section map.
+"""Manuscript ingestion: file -> plain text + a coarse section map.
 
-PDF parsing goes through the hosted Datalab marker API
-(https://www.datalab.to/api/v1/marker), which runs the same marker engine
-that used to ship locally but on Datalab's GPU fleet — typically returning
-in seconds rather than the minutes the CPU build took. Requires
-``DATALAB_API_KEY`` in the environment.
+PDF parsing uses ``pypdf`` locally — no external API, no API key, no GPU.
+Text is extracted page-by-page and concatenated; images, tables, and
+multi-column layout fidelity are deliberately out of scope. For most
+academic manuscripts pypdf's text-layer extraction is good enough, and
+the LLM is robust to mild ordering oddities.
 
-Each extracted figure is sent to the configured `vision_model` and its
-prose description is injected into the markdown so text-only reviewer
-LLMs can reason about figure content.
+Other supported inputs: Markdown / LaTeX / TXT (read directly), DOCX
+(via python-docx). All paths converge on ``(title, text, sections)``.
 """
 
 from __future__ import annotations
 
-import base64
-import io
 import os
 import re
-import time
 
 # Common manuscript section headings we try to bucket text into.
 _SECTION_KEYS = [
@@ -48,24 +44,15 @@ _NUMERIC_PREFIX_RE = re.compile(
 
 from ..observability import AgentEvent, emit
 
-_DATALAB_ENDPOINT = "https://www.datalab.to/api/v1/marker"
-# Datalab deletes response data ~1 hour after completion; the polling
-# cap below (10 min) is comfortably inside that window for normal papers.
-_DATALAB_POLL_INTERVAL_S = 2.0
-_DATALAB_POLL_MAX_ATTEMPTS = 300
-
 
 def load_manuscript(
     path: str, config: dict | None = None
 ) -> tuple[str, str, dict[str, str]]:
-    """Return (title, full_markdown, sections).
+    """Return ``(title, text, sections)`` for the given manuscript file.
 
-    The Datalab parse output (markdown + figure images) is cached on
-    disk (see :mod:`.cache`). The vision-model pass that turns figure
-    images into prose runs every time on top of the cached parse, so
-    swapping ``vision_model`` doesn't bust the expensive parse and each
-    run gets fresh figure descriptions. Wipe the cache with
-    `just cache-clear` if you need to force a re-parse.
+    The parsed triple is cached on disk keyed by file content (see
+    :mod:`.cache`). Wipe the cache with ``just cache-clear`` if you need
+    to force a re-parse.
     """
     config = config or {}
     from . import cache as _cache
@@ -73,45 +60,25 @@ def load_manuscript(
     key = _cache.cache_key(path, config)
     cached = _cache.get(key, config)
     if cached is not None:
-        title, raw_text, sections, images = cached
-    else:
-        title, raw_text, sections, images = _load_uncached(path, config)
-        try:
-            _cache.put(
-                key, title, raw_text, sections, images,
-                source_path=path, config=config,
-            )
-        except OSError:
-            # Cache write failure is non-fatal: log nothing, return the
-            # result so the run can still proceed.
-            pass
+        return cached
 
-    # Vision pass: deliberately runs OUTSIDE the cache so changing the
-    # vision model doesn't invalidate the cached Datalab parse, and so
-    # users always see live figure descriptions in the TUI.
-    text = raw_text
-    if images:
-        from .vision import describe_figures_inline
-
-        text = describe_figures_inline(raw_text, images, config)
+    title, text, sections = _load_uncached(path)
+    try:
+        _cache.put(
+            key, title, text, sections,
+            source_path=path, config=config,
+        )
+    except OSError:
+        # Cache write failure is non-fatal: the run still has the parsed
+        # text in memory, so we just skip persisting it.
+        pass
     return title, text, sections
 
 
-def _load_uncached(
-    path: str, config: dict
-) -> tuple[str, str, dict[str, str], dict]:
-    """Parse a manuscript from scratch.
-
-    Returns ``(title, raw_markdown, sections, images)`` where ``images``
-    is a dict ``{filename: PIL.Image}`` of extracted figures (empty for
-    non-PDF inputs). The markdown does **not** include vision-model
-    figure annotations — that's applied by ``load_manuscript`` outside
-    the cache layer.
-    """
+def _load_uncached(path: str) -> tuple[str, str, dict[str, str]]:
     ext = os.path.splitext(path)[1].lower()
-    images: dict = {}
     if ext == ".pdf":
-        text, images = _read_pdf_with_datalab(path, config)
+        text = _read_pdf(path)
     elif ext in (".md", ".markdown", ".txt", ".tex"):
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
             text = fh.read()
@@ -123,97 +90,52 @@ def _load_uncached(
     text = _normalize(text)
     title = _guess_title(text, fallback=os.path.basename(path))
     sections = _split_sections(text)
-    return title, text, sections, images
+    return title, text, sections
 
 
-def _read_pdf_with_datalab(path: str, config: dict) -> tuple[str, dict]:
-    """POST the PDF to Datalab, poll until done, return (markdown, images).
+def _read_pdf(path: str) -> str:
+    """Extract text from a PDF using pypdf, page-by-page.
 
-    Image extraction is always requested; base64 PNGs are decoded back
-    to PIL.Images and returned alongside the markdown so the cache can
-    persist them and the vision pass can describe them on every run.
+    Pages are joined with a blank line so downstream section-splitting
+    sees natural paragraph boundaries. Pages whose text extraction
+    raises (corrupt page, font issues) are skipped rather than aborting
+    the whole document.
     """
     try:
-        import requests
+        from pypdf import PdfReader
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
-            "PDF ingest requires the `requests` package. "
-            "Install with: pip install -e '.[pdf-ingest]'"
+            "PDF ingest requires the `pypdf` package. "
+            "Install with: pip install pypdf"
         ) from exc
 
-    api_key = os.environ.get("DATALAB_API_KEY")
-    if not api_key:
-        raise RuntimeError(
-            "DATALAB_API_KEY is not set. Add it to your .env or environment "
-            "to ingest PDFs via the Datalab marker API."
-        )
-
-    headers = {"X-Api-Key": api_key}
-    form: dict[str, tuple[None, str]] = {
-        "output_format": (None, "markdown"),
-        "paginate": (None, "false"),
-        "force_ocr": (None, str(bool(config.get("pdf_force_ocr", False))).lower()),
-        "use_llm": (None, str(bool(config.get("pdf_use_llm", False))).lower()),
-        "disable_image_extraction": (None, "false"),
-    }
-    if config.get("pdf_max_pages"):
-        form["max_pages"] = (None, str(int(config["pdf_max_pages"])))
-    if config.get("pdf_page_range"):
-        form["page_range"] = (None, str(config["pdf_page_range"]))
-    if config.get("pdf_langs"):
-        form["langs"] = (None, str(config["pdf_langs"]))
-
-    emit(AgentEvent(kind="log", node="ingest", text="uploading PDF to Datalab…"))
-    with open(path, "rb") as fh:
-        files = dict(form)
-        files["file"] = (os.path.basename(path), fh, "application/pdf")
-        resp = requests.post(_DATALAB_ENDPOINT, files=files, headers=headers, timeout=60)
-    resp.raise_for_status()
-    payload = resp.json()
-    if not payload.get("success"):
-        raise RuntimeError(f"Datalab upload failed: {payload.get('error', payload)}")
-
-    check_url = payload["request_check_url"]
-    emit(AgentEvent(kind="log", node="ingest", text="waiting for Datalab to parse PDF…"))
-    result = _datalab_poll(check_url, headers, requests)
-    markdown = result.get("markdown") or ""
-    if not markdown:
-        raise RuntimeError(f"Datalab returned empty markdown: {result.get('error', result)}")
-
-    images = _decode_images(result.get("images") or {})
-    return markdown, images
-
-
-def _datalab_poll(check_url: str, headers: dict, requests_mod) -> dict:
-    for _ in range(_DATALAB_POLL_MAX_ATTEMPTS):
-        time.sleep(_DATALAB_POLL_INTERVAL_S)
-        r = requests_mod.get(check_url, headers=headers, timeout=30)
-        r.raise_for_status()
-        data = r.json()
-        if data.get("status") == "complete":
-            if not data.get("success"):
-                raise RuntimeError(f"Datalab processing failed: {data.get('error', data)}")
-            return data
-    raise TimeoutError(
-        f"Datalab did not finish within "
-        f"{_DATALAB_POLL_INTERVAL_S * _DATALAB_POLL_MAX_ATTEMPTS:.0f}s"
-    )
-
-
-def _decode_images(images: dict) -> dict:
-    """API returns {filename: base64-PNG}; vision.py expects {filename: PIL.Image}."""
-    try:
-        from PIL import Image
-    except ImportError:  # pragma: no cover
-        return {}
-    out = {}
-    for fname, b64 in images.items():
+    emit(AgentEvent(kind="log", node="ingest", text=f"reading PDF: {os.path.basename(path)}"))
+    reader = PdfReader(path)
+    parts: list[str] = []
+    for i, page in enumerate(reader.pages):
         try:
-            out[fname] = Image.open(io.BytesIO(base64.b64decode(b64)))
-        except Exception:  # noqa: BLE001
-            # Skip any image we can't decode rather than failing the whole parse.
+            page_text = page.extract_text() or ""
+        except Exception as exc:  # noqa: BLE001
+            emit(AgentEvent(
+                kind="log",
+                node="ingest",
+                text=f"page {i + 1}: extraction failed ({exc}); skipping",
+            ))
             continue
-    return out
+        if page_text.strip():
+            parts.append(page_text)
+    if not parts:
+        raise RuntimeError(
+            f"pypdf extracted no text from {path}. The PDF may be scanned "
+            "(image-only) with no text layer — OCR is out of scope for this "
+            "ingest path; convert to text/Markdown first."
+        )
+    emit(AgentEvent(
+        kind="log",
+        node="ingest",
+        text=f"extracted {len(parts)} of {len(reader.pages)} pages",
+    ))
+    return "\n\n".join(parts)
 
 
 def _read_docx(path: str) -> str:

@@ -1,94 +1,111 @@
 """Builder for specialist reviewer nodes.
 
 A reviewer reads the manuscript, optionally consults research tools, and
-returns a markdown report with a YAML frontmatter block carrying score +
-confidence. The manuscript block is sent with prompt-cache markup so the
-parallel reviewer fan-out (and any re-run on the same manuscript) shares
-one provider-side cache entry.
+returns a :class:`ReviewerOutput` (score, confidence, summary, strengths,
+weaknesses, questions). The rendered markdown body that lands on disk
+is produced by ``ReviewerOutput.to_markdown(role)`` — so the structured
+fields are the single source of truth and nothing parses YAML
+frontmatter back out of the body.
+
+The manuscript block is sent with prompt-cache markup (on providers
+that support it) so the parallel reviewer fan-out shares one
+provider-side cache entry.
 """
 
 from __future__ import annotations
 
 from ...observability import node_context
+from ..schemas import ReviewerOutput
 from ..utils.agent_states import ReviewReport, ReviewState
-from ..utils.agent_utils import (
-    coerce_int,
-    manuscript_block,
-    run_agent,
-    split_frontmatter,
-)
+from ..utils.agent_utils import manuscript_block
 from ..utils.llm import make_llm
+from ..utils.structured import (
+    invoke_structured,
+    invoke_structured_after_tools,
+)
 
 _INSTRUCTIONS = (
     "Manuscript title: {title}\n\n"
     "You are the {role} on a journal peer-review panel. {mandate} You are "
-    "rigorous, fair, and constructive. Ground critiques in specific "
+    "rigorous, fair, and constructive. Ground every critique in specific "
     "evidence from the manuscript above.\n\n"
-    "Output a complete markdown review document. Begin with a YAML "
-    "frontmatter block carrying your scores (integers 1-5):\n\n"
-    "---\n"
-    "score: <1=reject, 3=major revision, 4=minor revision, 5=accept>\n"
-    "confidence: <1-5>\n"
-    "---\n"
-    "# {role}\n\n"
-    "## Summary\n"
-    "One-paragraph overall take from your specialty.\n\n"
-    "## Strengths\n"
-    "- bullet sentences\n\n"
-    "## Weaknesses\n"
-    "- bullet sentences grounded in specific manuscript evidence\n\n"
-    "## Questions\n"
-    "- bullet sentences\n\n"
-    "Focus strictly on your specialty. Do not rehash unrelated aspects. "
-    "Emit the frontmatter exactly as shown — score and confidence must "
-    "be integers, one per line."
+    "Return a structured review with the following fields:\n"
+    "  - score (int 1-5): 1=reject, 3=major revision, 4=minor revision, 5=accept\n"
+    "  - confidence (int 1-5): how confident you are in your score\n"
+    "  - summary: one-paragraph overall take from your specialty\n"
+    "  - strengths: bullet sentences naming strengths\n"
+    "  - weaknesses: bullet sentences naming weaknesses with manuscript evidence\n"
+    "  - questions: bullet questions for the authors\n\n"
+    "Focus strictly on your specialty. Do not rehash unrelated aspects."
+)
+
+_SYSTEM = (
+    "You are a specialist on a journal peer-review editorial panel. "
+    "Your role is given in the user message; follow it strictly. "
+    "Return your verdict as the structured ReviewerOutput schema."
 )
 
 
-def make_reviewer_node(name: str, role: str, mandate: str, uses_research: bool = False):
+def make_reviewer_node(
+    name: str,
+    role: str,
+    mandate: str,
+    *,
+    tool_names: list[str] | None = None,
+):
+    """Build a LangGraph node for one specialist reviewer.
+
+    ``tool_names`` is a list of logical research-tool names this reviewer
+    should call (see :mod:`peerreviewagents.research.tools` for the
+    registry). Pass ``None`` (default) for a tool-free reviewer.
+    """
     node_name = f"reviewer_{name}"
+    bound_tool_names = list(tool_names or [])
 
     def node(state: ReviewState) -> dict:
         with node_context(node_name):
             config = state["config"]
             llm = make_llm(config)
-            tools = []
-            if uses_research:
-                from ...research.tools import get_research_tools
-
-                tools = get_research_tools(config)
-
-            system = (
-                "You are a specialist on a journal peer-review editorial panel. "
-                "Your role is given in the user message; follow it strictly. "
-                "Always produce a markdown document with a YAML frontmatter "
-                "block containing score and confidence."
-            )
             instructions = _INSTRUCTIONS.format(
                 title=state.get("manuscript_title", "Untitled"),
                 role=role,
                 mandate=mandate,
             )
+            cached_prefix = manuscript_block(state)
+
             try:
-                result = run_agent(
-                    llm,
-                    system,
-                    instructions,
-                    tools,
-                    cached_prefix=manuscript_block(state),
-                )
-                meta, _ = split_frontmatter(result.text)
-                score = coerce_int(meta.get("score"), default=3, lo=1, hi=5)
-                confidence = coerce_int(meta.get("confidence"), default=3, lo=1, hi=5)
-                report: ReviewReport = {
-                    "reviewer": name,
-                    "score": float(score),
-                    "confidence": float(confidence),
-                    "body": result.text,
-                }
-                return {"reports": [report], "total_cost": result.cost}
+                if bound_tool_names:
+                    from ...research.tools import get_tools_by_name
+
+                    result = invoke_structured_after_tools(
+                        llm,
+                        ReviewerOutput,
+                        config,
+                        _SYSTEM,
+                        instructions,
+                        get_tools_by_name(bound_tool_names, config),
+                        cached_prefix=cached_prefix,
+                    )
+                else:
+                    result = invoke_structured(
+                        llm,
+                        ReviewerOutput,
+                        config,
+                        _SYSTEM,
+                        instructions,
+                        cached_prefix=cached_prefix,
+                    )
             except Exception as exc:  # noqa: BLE001
                 return {"errors": [f"{name} reviewer failed: {exc}"]}
+
+            output: ReviewerOutput = result.instance  # type: ignore[assignment]
+            report: ReviewReport = {
+                "reviewer": name,
+                "score": float(output.score),
+                "confidence": float(output.confidence),
+                "body": output.to_markdown(role=role),
+            }
+            return {"reports": [report], "total_cost": result.cost}
 
     node.__name__ = node_name
     return node
