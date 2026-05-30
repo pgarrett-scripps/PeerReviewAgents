@@ -241,6 +241,11 @@ finished bodies via the REST endpoints).
 - **`storage/memory.py`** — append-only markdown log with HTML-comment record
   separators; pending entries are patched in place when resolved.
 
+## Paper
+
+LaTeX sources for the arXiv preprint live in [`paper/`](paper/). See
+[`paper/README.md`](paper/README.md) for the build instructions.
+
 ## Disclaimer
 
 A research tool to assist human peer review — not a replacement for it.
