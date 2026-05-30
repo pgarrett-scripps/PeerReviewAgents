@@ -35,8 +35,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # "openai". See peerreviewagents.runtime.providers.PROVIDERS.
     "provider": "openrouter",
     # Single text model used by every reviewer, debater, synthesizer,
-    # integrity auditor, and the editor-in-chief. The model string is
-    # interpreted by the active provider:
+    # author rebuttal, editor, and journal recommender. The model string
+    # is interpreted by the active provider:
     #   openrouter -> a slug like "anthropic/claude-opus-4.1"
     #   anthropic  -> a model id like "claude-opus-4-7" or "claude-sonnet-4-6"
     #   openai     -> a model id like "gpt-4.1" or "o3"

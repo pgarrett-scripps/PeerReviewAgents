@@ -1,11 +1,11 @@
 """Helpers shared by all agent nodes: tool loop, prompt-cache markup,
-frontmatter parsing, cost capture.
+manuscript truncation, score aggregation, cost capture.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.utils.function_calling import convert_to_openai_tool
@@ -158,76 +158,6 @@ def _text(content) -> str:
     if isinstance(content, list):
         return "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in content)
     return str(content)
-
-
-# ---------------------------------------------------------------------------
-# YAML frontmatter — single source of machine-readable scalars
-# ---------------------------------------------------------------------------
-#
-# Every agent emits markdown with an optional YAML frontmatter block at
-# the top, e.g.:
-#
-#     ---
-#     score: 4
-#     confidence: 4
-#     ---
-#     # Methodology Review
-#     ...
-#
-# The body (markdown after the frontmatter) is the canonical report
-# rendered on disk and in the webapp; the frontmatter only carries
-# scalars that downstream code needs (score, confidence, decision).
-
-
-def split_frontmatter(text: str) -> tuple[dict[str, str], str]:
-    """Parse YAML-ish frontmatter from the top of ``text``.
-
-    Tolerant: only ``key: value`` lines are supported (string values, no
-    nesting). Falls back to ``({}, text)`` when no frontmatter is found,
-    so a model that forgets the block doesn't break the pipeline.
-    """
-    if not isinstance(text, str) or not text.startswith("---"):
-        return {}, text
-    # Allow the opening fence to be followed by \n or \r\n.
-    rest = text[3:]
-    if rest.startswith("\r\n"):
-        rest = rest[2:]
-    elif rest.startswith("\n"):
-        rest = rest[1:]
-    else:
-        return {}, text
-    # Find a closing fence on its own line.
-    for sep in ("\n---\n", "\r\n---\r\n", "\n---\r\n", "\r\n---\n"):
-        idx = rest.find(sep)
-        if idx >= 0:
-            block, body = rest[:idx], rest[idx + len(sep):]
-            break
-    else:
-        # No closing fence — treat the whole text as body.
-        return {}, text
-    data: dict[str, str] = {}
-    for line in block.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or ":" not in line:
-            continue
-        key, _, value = line.partition(":")
-        data[key.strip()] = value.strip().strip("'\"")
-    return data, body
-
-
-def body_only(text: str) -> str:
-    """Return the markdown body with any frontmatter stripped."""
-    _, body = split_frontmatter(text)
-    return body
-
-
-def coerce_int(value: Any, *, default: int, lo: int, hi: int) -> int:
-    """Clamp ``value`` to ``[lo, hi]``; return ``default`` if not coercible."""
-    try:
-        n = int(float(value))
-    except (TypeError, ValueError):
-        return default
-    return max(lo, min(hi, n))
 
 
 # ---------------------------------------------------------------------------

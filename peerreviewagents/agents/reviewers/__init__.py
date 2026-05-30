@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Callable
+
 from . import (
     clarity,
     data_analysis,
@@ -13,11 +15,8 @@ from . import (
     rigor,
 )
 
-# Each reviewer is a parallel branch fanned out from START. Rigor,
-# reproducibility, and ethics used to be a separate "integrity panel"
-# that ran serially after the meta-review; they're regular reviewers
-# now so the whole panel runs concurrently.
-REVIEWERS: list[tuple[str, callable]] = [
+# Each reviewer is a parallel branch fanned out from START.
+REVIEWERS: list[tuple[str, Callable]] = [
     ("methodology", methodology.node),
     ("data_analysis", data_analysis.node),
     ("novelty", novelty.node),
@@ -31,5 +30,5 @@ REVIEWERS: list[tuple[str, callable]] = [
 REVIEWER_NAMES = [name for name, _ in REVIEWERS]
 
 
-def get_reviewer_nodes() -> list[tuple[str, callable]]:
+def get_reviewer_nodes() -> list[tuple[str, Callable]]:
     return list(REVIEWERS)

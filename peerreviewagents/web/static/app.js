@@ -433,29 +433,6 @@ function stopPanelPoll() {
     }
 }
 
-// Strip a leading "---\nkey: value\n...\n---\n" frontmatter block.
-// We surface the scalars in the panel meta header instead.
-function stripFrontmatter(text) {
-    if (!text || !text.startsWith('---')) return text;
-    const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
-    return m ? text.slice(m[0].length) : text;
-}
-
-function parseFrontmatter(text) {
-    if (!text || !text.startsWith('---')) return {};
-    const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-    if (!m) return {};
-    const out = {};
-    for (const line of m[1].split(/\r?\n/)) {
-        const idx = line.indexOf(':');
-        if (idx < 0) continue;
-        const k = line.slice(0, idx).trim();
-        const v = line.slice(idx + 1).trim().replace(/^['"]|['"]$/g, '');
-        if (k) out[k] = v;
-    }
-    return out;
-}
-
 async function refreshPanel() {
     if (!state.selected) return;
     const name = state.selected;
@@ -477,13 +454,12 @@ async function refreshPanel() {
         if (state.selected !== name) return;
     }
 
-    // Finished body (preferred) or the streamed buffer as a fallback when
-    // the worker hasn't published the rendered markdown yet.
-    const text = (payload && payload.body) || state.buffers.get(name) || (payload && payload.streamed) || '';
-    const fm = parseFrontmatter(text);
-    const visible = stripFrontmatter(text);
+    // Finished body (rendered markdown from the agent's pydantic schema)
+    // or the streamed buffer as a fallback if the worker hasn't published
+    // the rendered body yet.
+    const body = (payload && payload.body) || state.buffers.get(name) || (payload && payload.streamed) || '';
 
-    // Panel meta line: status + token counters + cost + any frontmatter scalars.
+    // Panel meta line: status + token counters + cost.
     const streamedBytes = (state.buffers.get(name) || '').length;
     const metaParts = [
         `<span>status: <strong>${status}</strong></span>`,
@@ -495,9 +471,6 @@ async function refreshPanel() {
         metaParts.splice(1, 0,
             `<span>streamed: ${streamedBytes.toLocaleString()} chars</span>`,
         );
-    }
-    for (const [k, v] of Object.entries(fm)) {
-        metaParts.push(`<span><strong>${escapeHtml(k)}:</strong> ${escapeHtml(v)}</span>`);
     }
     els.panelMeta.innerHTML = metaParts.join('');
 
@@ -515,12 +488,12 @@ async function refreshPanel() {
         return;
     }
 
-    if (!visible) {
+    if (!body) {
         els.panelBody.innerHTML =
             `<p class="muted">${escapeHtml(name)} finished without producing a body. Check the run log for errors.</p>`;
         return;
     }
-    els.panelBody.innerHTML = renderMarkdown(visible);
+    els.panelBody.innerHTML = renderMarkdown(body);
     els.panelBody.scrollTop = els.panelBody.scrollHeight;
 
     if (status === 'done' || status === 'error') {

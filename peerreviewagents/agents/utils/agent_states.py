@@ -9,10 +9,11 @@ from typing import Annotated, TypedDict
 class ReviewReport(TypedDict):
     """A single specialist reviewer's output.
 
-    ``body`` is the full markdown report including a YAML frontmatter
-    block that carries ``score`` and ``confidence``; the scalars are
-    duplicated as top-level fields here so downstream consumers
-    (score_summary, debate digest) can read them without re-parsing.
+    ``body`` is the rendered markdown report produced from the agent's
+    :class:`~peerreviewagents.agents.schemas.ReviewerOutput` via
+    ``to_markdown()``. The ``score`` and ``confidence`` scalars are
+    promoted to top-level fields so downstream consumers (score_summary,
+    debate digest, reports.py) can read them without touching the body.
     """
     reviewer: str
     # 1 (reject) .. 5 (accept), per-reviewer confidence-weighted score

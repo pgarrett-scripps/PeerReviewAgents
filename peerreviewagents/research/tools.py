@@ -19,7 +19,7 @@ from langchain_core.tools import tool
 from .interface import available_methods, route
 
 
-# Module-level config holder — set by ``get_research_tools(config)``
+# Module-level config holder — set by ``get_tools_by_name(names, config)``
 # before agent execution so the @tool functions (which can't take a
 # config arg per LangChain's tool schema rules) can read it.
 _ACTIVE_CONFIG: dict = {}
@@ -95,20 +95,11 @@ def get_tools_by_name(names: list[str], config: dict) -> list:
     return [_TOOL_REGISTRY[n] for n in names]
 
 
-def get_research_tools(config: dict) -> list:
-    """Backward-compatible accessor: return every research tool wired up.
-
-    Prefer the per-reviewer :func:`get_tools_by_name` path in new code.
-    """
-    return get_tools_by_name(available_tool_names(), config)
-
-
 __all__ = [
     "find_related_work",
     "search_biomedical_literature",
     "search_preprints",
     "available_tool_names",
     "get_tools_by_name",
-    "get_research_tools",
     "available_methods",
 ]

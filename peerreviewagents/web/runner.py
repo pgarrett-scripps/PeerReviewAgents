@@ -247,11 +247,12 @@ _STOP_SENTINEL = object()
 def render_agent_payload(job: JobState, agent: str) -> dict[str, Any]:
     """Build the response for ``GET /jobs/<id>/agents/<name>``.
 
-    Every agent's output is markdown (with optional YAML frontmatter at
-    the top carrying scalars like score/decision). The frontend renders
-    ``body`` once it's set; while the agent is still streaming we serve
-    the accumulated ``streamed`` buffer — also markdown, since no agent
-    streams JSON anymore.
+    Every agent emits a typed pydantic schema (see
+    :mod:`peerreviewagents.agents.schemas`); the ``body`` field below is
+    the rendered markdown produced from that schema via ``to_markdown()``.
+    The ``streamed`` field is the live token buffer the WebSocket has
+    accumulated so far — useful for live introspection while the agent
+    is still running.
     """
     if agent not in AGENT_NAMES and agent != "ingest":
         return {"agent": agent, "known": False}

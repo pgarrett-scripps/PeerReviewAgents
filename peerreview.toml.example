@@ -22,8 +22,8 @@
 # provider = "openrouter"
 
 # Single text model used by every reviewer, debater, synthesizer,
-# integrity auditor, and the editor-in-chief. The model string is
-# interpreted by the active provider:
+# author rebuttal, editor, and journal recommender. The model string
+# is interpreted by the active provider:
 #   openrouter -> e.g. "anthropic/claude-opus-4.1"
 #   anthropic  -> e.g. "claude-opus-4-7" or "claude-sonnet-4-6"
 #   openai     -> e.g. "gpt-4.1", "o3"
