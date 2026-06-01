@@ -1,0 +1,39 @@
+name = "Analytical Chemistry"
+aliases = ["Anal. Chem.", "AC"]
+publisher = "American Chemical Society (ACS)"
+field = "analytical chemistry"
+
+impact_factor = 6.7
+impact_factor_year = 2024
+acceptance_rate = "~30%"
+
+audience = "Analytical chemists, including mass spectrometry, separations, and sensor communities."
+
+description = """
+Publishes original research in measurement science: new analytical methods,
+instrumentation, and fundamental advances, with strong representation of mass
+spectrometry, separations, spectroscopy, and sensors.
+"""
+
+scope = """
+In scope: genuinely new measurement capability or significant analytical
+improvement, with rigorous figures of merit. Out of scope: routine application
+of established methods without analytical novelty.
+"""
+
+max_words = 0
+abstract_max_words = 250
+max_figures = 0
+max_references = 0
+
+guidelines = """
+Reviewers should weigh: analytical novelty and significance; rigor of validation
+(sensitivity, selectivity, linearity, LOD/LOQ, precision, accuracy); and fair
+comparison to existing methods.
+
+Required: complete experimental and instrument parameters; validation data and
+appropriate statistics; data deposition (e.g. raw MS data to a public
+repository) where applicable.
+"""
+
+last_updated = "2026-06-01"

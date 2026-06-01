@@ -1,0 +1,40 @@
+name = "New England Journal of Medicine"
+aliases = ["NEJM", "N. Engl. J. Med."]
+publisher = "Massachusetts Medical Society"
+field = "clinical medicine"
+
+impact_factor = 96.2
+impact_factor_year = 2024
+acceptance_rate = "~5%"
+
+audience = "Physicians and clinical researchers; practice-changing readership."
+
+description = """
+The leading general medical journal, publishing major clinical research —
+especially large randomized controlled trials — that changes medical practice.
+Extremely selective.
+"""
+
+scope = """
+In scope: rigorous, practice-changing clinical research (notably RCTs) of broad
+importance. Out of scope: preclinical-only work, small underpowered studies, or
+findings without clear clinical relevance.
+"""
+
+max_words = 2700           # Original Article
+abstract_max_words = 250
+max_figures = 5
+max_references = 40
+
+guidelines = """
+Reviewers should weigh: clinical importance and generalizability; methodological
+rigor (randomization, blinding, prespecified endpoints, power, intention-to-treat);
+appropriate statistics; and patient safety/ethics.
+
+Required: trial registration (e.g. ClinicalTrials.gov), a protocol and statistical
+analysis plan, CONSORT-compliant reporting, conflict-of-interest disclosures, and
+a data-sharing statement. Structured abstract (Background/Methods/Results/
+Conclusions).
+"""
+
+last_updated = "2026-06-01"

@@ -1,0 +1,46 @@
+name = "Nature Methods"
+aliases = ["Nat. Methods", "Nat Methods"]
+publisher = "Nature Portfolio (Springer Nature)"
+field = "methods / life sciences"
+
+impact_factor = 36.1
+impact_factor_year = 2024
+acceptance_rate = "~10%"
+
+audience = "Experimental and computational life scientists across disciplines who adopt new techniques."
+
+description = """
+Publishes novel methods and significant improvements to existing techniques in
+the life sciences, including experimental, computational, and instrumentation
+methods. Emphasis on broad utility and demonstrated, rigorous validation.
+"""
+
+scope = """
+In scope: new or substantially improved methods (wet-lab or computational) with
+clear, generalizable utility and head-to-head benchmarking against the state of
+the art. Out of scope: incremental tweaks, application papers that use existing
+methods without methodological novelty, and purely theoretical work without
+demonstrated utility.
+"""
+
+max_words = 3000           # Article main text (excl. abstract, methods, refs)
+abstract_max_words = 150
+max_figures = 6            # Figures + tables combined
+max_references = 50
+
+guidelines = """
+Reviewers should weigh:
+- Novelty and significance of the method versus existing approaches.
+- Rigor of validation: appropriate benchmarks, comparisons to alternatives,
+  controls, and quantification of error/uncertainty.
+- Generalizability — does it work beyond a single bespoke setup?
+- Reproducibility: code and data must be available; software methods need a
+  usable implementation and documentation.
+
+Required: a Reporting Summary; full Methods section (does not count toward the
+main-text word limit); data and code availability statements. Statistics must
+state n, error bars, and tests used. Claims of improvement need quantitative,
+benchmarked support.
+"""
+
+last_updated = "2026-06-01"

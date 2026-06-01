@@ -1,0 +1,39 @@
+name = "Genome Biology"
+aliases = ["Genome Biol."]
+publisher = "BMC (Springer Nature)"
+field = "genomics / computational biology (open access)"
+
+impact_factor = 12.3
+impact_factor_year = 2024
+acceptance_rate = "~15%"
+
+audience = "Genomicists, computational biologists, and method developers in genome-scale biology."
+
+description = """
+Open-access journal publishing outstanding research in genomics, epigenomics,
+and the development of genome-scale methods and software. Strong venue for novel
+computational methods with demonstrated biological impact.
+"""
+
+scope = """
+In scope: novel genome-scale methods/software and significant biological
+findings enabled by them. Out of scope: incremental methods or analyses without
+clear advance.
+"""
+
+max_words = 0
+abstract_max_words = 0
+max_figures = 0
+max_references = 0
+
+guidelines = """
+Reviewers should weigh: methodological novelty and rigor; benchmarking against
+state-of-the-art tools; biological significance of results; and reproducibility
+at genome scale.
+
+Required: open data and code (with a usable software release for Method
+submissions); reproducible pipelines; complete statistics and multiple-testing
+control.
+"""
+
+last_updated = "2026-06-01"

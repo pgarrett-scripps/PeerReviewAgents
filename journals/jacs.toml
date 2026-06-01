@@ -1,0 +1,38 @@
+name = "Journal of the American Chemical Society"
+aliases = ["JACS", "J. Am. Chem. Soc."]
+publisher = "American Chemical Society (ACS)"
+field = "chemistry"
+
+impact_factor = 15.0
+impact_factor_year = 2024
+acceptance_rate = "~25%"
+
+audience = "Chemists across all subdisciplines; flagship general chemistry readership."
+
+description = """
+Flagship ACS journal publishing significant original research across all areas
+of chemistry. High bar for novelty and importance to a broad chemistry audience.
+"""
+
+scope = """
+In scope: significant advances in any area of chemistry, fully characterized and
+rigorously supported. Out of scope: incremental results or insufficiently
+characterized compounds/materials.
+"""
+
+max_words = 0              # Articles full-length; Communications shorter
+abstract_max_words = 200
+max_figures = 0
+max_references = 0
+
+guidelines = """
+Reviewers should weigh: significance and novelty to broad chemistry; rigor and
+completeness of characterization (spectra, purity, controls); and whether claims
+are fully supported by the data.
+
+Required: full experimental details and characterization data in Supporting
+Information; crystallographic/spectroscopic data deposited as appropriate. New
+compounds must be unambiguously characterized.
+"""
+
+last_updated = "2026-06-01"

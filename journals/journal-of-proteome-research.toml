@@ -1,0 +1,45 @@
+name = "Journal of Proteome Research"
+aliases = ["JPR", "J. Proteome Res."]
+publisher = "American Chemical Society (ACS)"
+field = "proteomics / analytical chemistry"
+
+impact_factor = 3.8
+impact_factor_year = 2024
+acceptance_rate = "~40%"
+
+audience = "Proteomics researchers, analytical chemists, and systems biologists working with MS-based and other omics data."
+
+description = """
+Publishes research on global protein analysis and function, including
+mass-spectrometry-based proteomics, metabolomics, and integrative multi-omics,
+spanning method development, software, and biological applications.
+"""
+
+scope = """
+In scope: MS-based proteomics/metabolomics methods, computational pipelines and
+software, and biological studies that apply omics rigorously. Out of scope:
+studies with inadequate experimental design, missing replication, or data not
+deposited in a public repository.
+"""
+
+max_words = 0              # No strict word cap; concise full-length articles
+abstract_max_words = 200
+max_figures = 0
+max_references = 0
+
+guidelines = """
+Reviewers should weigh:
+- Experimental design and statistical power: replicates, controls, multiple-
+  testing correction, and appropriate FDR control for identifications.
+- Quality of MS data acquisition and processing; clear reporting of search
+  parameters, FDR thresholds, and quantification strategy.
+- Biological interpretation supported by the data, not overreach.
+- Reproducibility and data sharing.
+
+Required: raw and processed data deposited in a public repository (e.g. PRIDE /
+ProteomeXchange) with an accession number; complete reporting of sample prep,
+instrument settings, and software/versions. Identification and quantification
+must report FDR and the criteria used.
+"""
+
+last_updated = "2026-06-01"

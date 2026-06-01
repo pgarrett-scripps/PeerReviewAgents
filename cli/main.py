@@ -92,6 +92,17 @@ def build_parser() -> argparse.ArgumentParser:
              "on OpenRouter, claude-opus-4-7 on Anthropic direct, gpt-4.1 on OpenAI).",
     )
     p.add_argument("--debate-rounds", type=int, dest="max_debate_rounds")
+    p.add_argument(
+        "--journal",
+        dest="target_journal",
+        help="Slug of a target journal to review against (see "
+             "--list-journals). Reviews venue-agnostically if omitted.",
+    )
+    p.add_argument(
+        "--list-journals",
+        action="store_true",
+        help="List available target-journal slugs and exit.",
+    )
     p.add_argument("--output-dir", dest="output_dir")
     p.add_argument("--no-tui", action="store_true", help="run headless")
     p.add_argument("--cache-dir", dest="cache_dir",
@@ -102,11 +113,46 @@ def build_parser() -> argparse.ArgumentParser:
 def config_from_args(args) -> dict:
     overrides = {}
     for key in ("provider", "reasoning_model", "max_debate_rounds",
-                "output_dir", "cache_dir"):
+                "output_dir", "cache_dir", "target_journal"):
         val = getattr(args, key, None)
         if val is not None:
             overrides[key] = val
     return get_config(config_path=args.config_path, **overrides)
+
+
+def _print_journals(config: dict) -> None:
+    """Print the available target-journal slugs and names."""
+    from peerreviewagents.journals import list_journals
+
+    profiles = list_journals(config)
+    if not profiles:
+        console.print("[yellow]No journal profiles found.[/yellow]")
+        return
+    default = config.get("target_journal") or ""
+    console.print("[bold]Available target journals[/bold] (use with --journal <slug>):\n")
+    for p in profiles:
+        marker = "  [dim](default)[/dim]" if p.slug == default else ""
+        console.print(f"  [cyan]{p.slug}[/cyan] — {p.name}{marker}")
+    console.print(
+        "\nUse [cyan]--journal \"\"[/cyan] for a fully venue-agnostic review "
+        "(no journal framing)."
+    )
+
+
+def _validate_target_journal(config: dict) -> None:
+    """Fail fast (with the available slugs) if --journal names a slug that
+    doesn't resolve, rather than silently reviewing against no venue."""
+    slug = config.get("target_journal")
+    if not slug:
+        return
+    from peerreviewagents.journals import load_journal
+
+    try:
+        load_journal(slug, config)
+    except FileNotFoundError as exc:
+        console.print(f"[red]{exc}[/red]")
+        console.print("Run [bold]peerreview --list-journals[/bold] to see valid slugs.")
+        sys.exit(1)
 
 
 def run_headless(manuscript: str, config: dict) -> None:
@@ -175,7 +221,7 @@ def run_server(args) -> None:
 
     overrides: dict = {}
     for key in ("provider", "reasoning_model", "max_debate_rounds",
-                "output_dir", "cache_dir"):
+                "output_dir", "cache_dir", "target_journal"):
         val = getattr(args, key, None)
         if val is not None:
             overrides[key] = val
@@ -253,6 +299,9 @@ def run() -> None:
         sp.add_argument("--debate-rounds", type=int, dest="max_debate_rounds", default=None)
         sp.add_argument("--output-dir", dest="output_dir", default=None)
         sp.add_argument("--cache-dir", dest="cache_dir", default=None)
+        sp.add_argument("--journal", dest="target_journal", default=None,
+                        help="Default target-journal slug for jobs (the web "
+                             "form can override per-upload).")
         run_server(sp.parse_args(argv[1:]))
         return
 
@@ -276,6 +325,9 @@ def run() -> None:
         return
 
     args = build_parser().parse_args()
+    if args.list_journals:
+        _print_journals(config_from_args(args))
+        return
     if not args.manuscript:
         console.print("[red]Provide a manuscript path or use the `serve` subcommand.[/red] See --help.")
         sys.exit(1)
@@ -283,6 +335,7 @@ def run() -> None:
         console.print(f"[red]File not found:[/red] {args.manuscript}")
         sys.exit(1)
     config = config_from_args(args)
+    _validate_target_journal(config)
 
     if args.no_tui:
         run_headless(args.manuscript, config)

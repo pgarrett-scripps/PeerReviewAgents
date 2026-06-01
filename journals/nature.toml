@@ -1,0 +1,40 @@
+name = "Nature"
+aliases = ["Nat."]
+publisher = "Nature Portfolio (Springer Nature)"
+field = "multidisciplinary"
+
+impact_factor = 50.5
+impact_factor_year = 2024
+acceptance_rate = "~8%"
+
+audience = "Broad scientific readership across all disciplines; non-specialists must grasp the significance."
+
+description = """
+Publishes the most significant original research across all fields of science
+and technology, selected for outstanding novelty, importance, and broad
+interest. Highly selective, with a strong premium on conceptual advance.
+"""
+
+scope = """
+In scope: landmark findings of wide significance that change a field or open a
+new one. Out of scope: incremental advances, narrow specialist results, and
+confirmatory studies — these belong in specialist journals.
+"""
+
+max_words = 3000           # Article; Letters shorter
+abstract_max_words = 150
+max_figures = 6
+max_references = 50
+
+guidelines = """
+Reviewers should weigh: significance and reach beyond the immediate subfield;
+strength and novelty of the central claim; rigor and completeness of the
+evidence; and whether conclusions are fully supported. The bar is not just
+"correct" but "important to a broad audience."
+
+Required: Reporting Summary, data and code availability statements, and full
+Methods (online, not counted in main word limit). Statistics must be complete
+and appropriate. Overstatement of significance is a common rejection cause.
+"""
+
+last_updated = "2026-06-01"

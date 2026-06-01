@@ -1,0 +1,44 @@
+name = "Journal of Machine Learning Research"
+aliases = ["JMLR"]
+publisher = "JMLR, Inc. (open access)"
+field = "machine learning"
+
+impact_factor = 6.0
+impact_factor_year = 2024
+acceptance_rate = "~15%"
+
+audience = "Machine learning researchers; technically deep, theory-friendly readership."
+
+description = """
+Open-access journal publishing substantial, rigorous machine learning research:
+new algorithms, learning theory, and well-validated empirical studies. Also runs
+a Machine Learning Open Source Software track for mature ML libraries.
+"""
+
+scope = """
+In scope: novel ML methods with theoretical grounding and/or thorough empirical
+evaluation, learning theory, and open-source ML software (MLOSS track). Out of
+scope: incremental benchmark-chasing without insight, application papers without
+a methodological or theoretical contribution, and work without reproducible
+experiments.
+"""
+
+max_words = 0              # No page limit; length must match contribution
+abstract_max_words = 0
+max_figures = 0
+max_references = 0
+
+guidelines = """
+Reviewers should weigh:
+- Correctness and clarity of the technical contribution (proofs, derivations).
+- Significance and novelty relative to prior work, with honest positioning.
+- Empirical rigor: appropriate baselines, multiple datasets/seeds, ablations,
+  reported variance, and statistical significance of claimed gains.
+- Reproducibility: code and experimental details sufficient to reproduce.
+
+JMLR favors depth over brevity — there is no page limit, but length should be
+justified by the contribution. For MLOSS submissions the released software,
+documentation, and open license are the primary objects of review.
+"""
+
+last_updated = "2026-06-01"

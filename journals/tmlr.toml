@@ -1,0 +1,41 @@
+name = "Transactions on Machine Learning Research"
+aliases = ["TMLR"]
+publisher = "TMLR (open access, OpenReview)"
+field = "machine learning"
+
+impact_factor = 0.0          # New venue; no established JIF
+impact_factor_year = 2024
+acceptance_rate = "~40%"
+
+audience = "Machine learning researchers; open peer review on OpenReview."
+
+description = """
+Open-access ML journal with a fast, open-review process. Acceptance is based on
+two criteria only: are the claims supported by correct and rigorous evidence,
+and would some audience be interested? Novelty/significance are explicitly NOT
+acceptance criteria.
+"""
+
+scope = """
+In scope: any technically sound ML contribution whose claims are convincingly
+supported. Out of scope: work with unsupported claims or flawed methodology.
+"Not novel enough" is not grounds for rejection.
+"""
+
+max_words = 0
+abstract_max_words = 0
+max_figures = 0
+max_references = 0
+
+guidelines = """
+Reviewers apply exactly two questions: (1) Are the claims made in the submission
+supported by accurate, convincing, and complete evidence? (2) Would some
+individuals in the ML community be interested in the findings? Do NOT reject for
+lack of novelty, significance, or SOTA results.
+
+Required: claims must be precisely scoped to what the evidence shows;
+reproducible experiments with code; honest discussion of limitations. Reviews
+are public on OpenReview.
+"""
+
+last_updated = "2026-06-01"

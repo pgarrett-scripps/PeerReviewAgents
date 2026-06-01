@@ -1,0 +1,38 @@
+name = "Angewandte Chemie International Edition"
+aliases = ["Angew. Chem. Int. Ed.", "Angewandte"]
+publisher = "Wiley-VCH / German Chemical Society (GDCh)"
+field = "chemistry"
+
+impact_factor = 16.1
+impact_factor_year = 2024
+acceptance_rate = "~20%"
+
+audience = "Chemists across all subdisciplines; broad, international chemistry readership."
+
+description = """
+Leading general chemistry journal publishing high-impact Communications and
+Research Articles across the chemical sciences. Communications emphasize urgent,
+significant findings.
+"""
+
+scope = """
+In scope: significant, novel chemistry of broad interest. Out of scope:
+incremental work, or results without sufficient characterization.
+"""
+
+max_words = 0
+abstract_max_words = 200
+max_figures = 0
+max_references = 0
+
+guidelines = """
+Reviewers should weigh: novelty, significance, and urgency (especially for
+Communications); rigor and completeness of characterization; and breadth of
+interest to chemists.
+
+Required: full characterization and experimental detail in Supporting
+Information; deposited structural data where relevant. Claims of "first" or
+generality must be substantiated.
+"""
+
+last_updated = "2026-06-01"

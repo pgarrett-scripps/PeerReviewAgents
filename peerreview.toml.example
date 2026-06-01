@@ -37,6 +37,27 @@ reasoning_model = "anthropic/claude-opus-4.1"
 debate_rounds = 2
 
 # ---------------------------------------------------------------------------
+# Target journal
+# ---------------------------------------------------------------------------
+#
+# Review the manuscript against a specific venue. The value is the slug of
+# a profile in the journals/ directory (the filename without .toml), e.g.
+# "nature-methods" or "bioinformatics". The selected journal's scope,
+# standards, and submission limits are injected into the reviewer,
+# meta-reviewer, editor, and recommender prompts. Override per-run with
+# `--journal <slug>`; list options with `peerreview --list-journals`.
+#
+# Default is "general": a stand-in profile with sound, field-general
+# standards, ideal when the intended journal isn't one of the bundled
+# profiles. Set to "" for a fully venue-agnostic review with no journal
+# framing at all.
+# target_journal = "general"
+
+# Directory holding journal profile .toml files. Leave unset to use the
+# repo-root journals/ directory.
+# journals_dir = "./journals"
+
+# ---------------------------------------------------------------------------
 # Research vendors
 # ---------------------------------------------------------------------------
 #

@@ -1,0 +1,40 @@
+name = "eLife"
+aliases = ["eLife"]
+publisher = "eLife Sciences Publications"
+field = "life sciences (open access)"
+
+impact_factor = 6.4
+impact_factor_year = 2024
+acceptance_rate = "n/a (review-and-publish model)"
+
+audience = "Life scientists and biomedical researchers."
+
+description = """
+Open-access life-sciences journal. Under its current model, papers sent for
+review are published with public eLife Assessments and peer reviews rather than
+a binary accept/reject — emphasis is on transparent, constructive evaluation.
+"""
+
+scope = """
+In scope: significant advances in the life and biomedical sciences with rigorous
+support. Out of scope: work outside the life sciences, or claims not backed by
+the data.
+"""
+
+max_words = 0              # No strict limit; concise full-length articles
+abstract_max_words = 200
+max_figures = 0
+max_references = 0
+
+guidelines = """
+Reviewers write a public, constructive assessment rather than a gatekeeping
+verdict. Weigh: strength of evidence (from "inadequate" to "exceptional") and
+significance of the findings (from "useful" to "landmark"), and state clearly
+which claims are and are not supported.
+
+Required: data and code availability; reagent and methods transparency;
+complete statistics. The review itself is published, so critiques must be
+specific and evidence-grounded.
+"""
+
+last_updated = "2026-06-01"

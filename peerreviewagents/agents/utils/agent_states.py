@@ -37,6 +37,11 @@ class ReviewState(TypedDict, total=False):
     manuscript_md: str           # normalized full text
     sections: dict[str, str]     # section name -> text
     config: dict
+    # Target-venue context. Rendered prompt block from the selected
+    # JournalProfile.to_prompt_block(); empty string when no target
+    # journal is set (venue-agnostic review). Parsed once in
+    # PeerReviewGraph.initial_state and shared by every agent.
+    journal_block: str
 
     # --- reviewer pass (parallel writers, hence reducers) ---
     reports: Annotated[list[ReviewReport], operator.add]

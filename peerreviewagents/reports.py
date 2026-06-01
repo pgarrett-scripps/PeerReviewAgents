@@ -57,6 +57,11 @@ def _summary(state: ReviewState) -> str:
         f"# Review Summary — {state.get('manuscript_title', 'Untitled')}",
         "",
         f"**Decision:** {label}",
+    ]
+    venue = _target_venue(state)
+    if venue:
+        lines.append(f"**Target venue:** {venue}")
+    lines += [
         "",
         "## Reviewer Scores",
     ]
@@ -73,6 +78,20 @@ def _summary(state: ReviewState) -> str:
     if state.get("errors"):
         lines += ["", "## Run Warnings"] + [f"- {e}" for e in state["errors"]]
     return "\n".join(lines)
+
+
+def _target_venue(state: ReviewState) -> str:
+    """Human-readable name of the target journal, or '' if none/unresolvable."""
+    slug = (state.get("config") or {}).get("target_journal")
+    if not slug:
+        return ""
+    try:
+        from .journals import load_journal
+
+        profile = load_journal(slug, state.get("config"))
+    except Exception:  # noqa: BLE001 — never let report writing fail on this
+        return slug
+    return profile.name if profile else slug
 
 
 def _avg(state: ReviewState):

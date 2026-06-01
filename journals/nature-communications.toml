@@ -1,0 +1,38 @@
+name = "Nature Communications"
+aliases = ["Nat. Commun.", "NatComms"]
+publisher = "Nature Portfolio (Springer Nature)"
+field = "multidisciplinary (open access)"
+
+impact_factor = 14.7
+impact_factor_year = 2024
+acceptance_rate = "~25%"
+
+audience = "Specialists and adjacent fields; significance should matter to a subfield, not necessarily all of science."
+
+description = """
+Open-access multidisciplinary journal publishing high-quality research across
+the natural sciences. Bar is significant advance within a field rather than the
+broad general-interest threshold of Nature.
+"""
+
+scope = """
+In scope: solid, important advances of interest to specialists in a discipline.
+Out of scope: incremental work, or studies whose conclusions outrun the
+evidence.
+"""
+
+max_words = 5000
+abstract_max_words = 150
+max_figures = 10
+max_references = 70
+
+guidelines = """
+Reviewers should weigh: novelty and importance within the relevant field;
+completeness and rigor of the evidence; and reproducibility. Less emphasis on
+broad cross-field interest than Nature, more on solidity.
+
+Required: Reporting Summary, data and code availability, full methods, complete
+statistics. Source data for figures is encouraged.
+"""
+
+last_updated = "2026-06-01"

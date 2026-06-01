@@ -13,6 +13,7 @@ from ..agents.synthesis import meta_reviewer
 from ..agents.utils.agent_states import ReviewState
 from ..default_config import get_config
 from ..ingest.loader import load_manuscript
+from ..journals import load_journal
 from .conditional_logic import should_continue_debate
 
 
@@ -68,12 +69,26 @@ class PeerReviewGraph:
             manuscript_md=md,
             sections=sections,
             config=self.config,
+            journal_block=self._journal_block(),
             reports=[],
             debate=[],
             debate_round=0,
             errors=[],
             total_cost=0.0,
         )
+
+    def _journal_block(self) -> str:
+        """Render the target-journal prompt block once, or '' if none/missing.
+
+        A bad slug should already have been caught at selection time
+        (CLI/web); here we degrade gracefully so a run never crashes on
+        venue context — the review just proceeds venue-agnostically.
+        """
+        try:
+            profile = load_journal(self.config.get("target_journal"), self.config)
+        except FileNotFoundError:
+            return ""
+        return profile.to_prompt_block() if profile else ""
 
     def review(self, manuscript_path: str) -> ReviewState:
         state = self.initial_state(manuscript_path)

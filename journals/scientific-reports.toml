@@ -1,0 +1,39 @@
+name = "Scientific Reports"
+aliases = ["Sci. Rep.", "SciRep"]
+publisher = "Nature Portfolio (Springer Nature)"
+field = "multidisciplinary (open access)"
+
+impact_factor = 3.8
+impact_factor_year = 2024
+acceptance_rate = "~45%"
+
+audience = "Broad scientific readership; open-access megajournal across the natural sciences."
+
+description = """
+Open-access megajournal publishing technically sound original research across
+the natural sciences, psychology, medicine, and engineering. Like PLOS ONE,
+selection is on scientific validity, not perceived impact.
+"""
+
+scope = """
+In scope: any methodologically rigorous, well-reported study with conclusions
+supported by the data. Out of scope: flawed methodology, unsupported
+conclusions, or inadequate reporting. Novelty/impact are not selection criteria.
+"""
+
+max_words = 0
+abstract_max_words = 200
+max_figures = 0
+max_references = 0
+
+guidelines = """
+Reviewers should judge scientific and technical validity ONLY — not novelty or
+anticipated impact. Weigh: soundness of methods and analysis; whether
+conclusions follow from the results; reporting completeness; and data
+availability.
+
+Required: data availability statement, ethics/consent statements where relevant,
+complete methods and statistics.
+"""
+
+last_updated = "2026-06-01"

@@ -1,0 +1,38 @@
+name = "Briefings in Bioinformatics"
+aliases = ["Brief. Bioinform.", "BIB"]
+publisher = "Oxford University Press"
+field = "bioinformatics"
+
+impact_factor = 6.8
+impact_factor_year = 2024
+acceptance_rate = "~20%"
+
+audience = "Bioinformaticians and computational biologists seeking reviews, comparisons, and methods."
+
+description = """
+Publishes reviews, problem-oriented surveys, and comparative evaluations of
+databases and tools in bioinformatics and computational biology, alongside some
+methods papers. Known for rigorous benchmarking-style comparisons.
+"""
+
+scope = """
+In scope: authoritative reviews, systematic tool/database comparisons, and
+methods with thorough evaluation. Out of scope: narrow primary-research reports
+without a review or comparative dimension.
+"""
+
+max_words = 0
+abstract_max_words = 250
+max_figures = 0
+max_references = 0
+
+guidelines = """
+Reviewers should weigh: comprehensiveness and balance of the review/comparison;
+fairness and rigor of any benchmarking (datasets, metrics, reproducibility);
+timeliness; and clarity for practitioners.
+
+Required: reproducible comparison setup with available data/code where
+benchmarks are reported; clear, critical synthesis rather than mere listing.
+"""
+
+last_updated = "2026-06-01"

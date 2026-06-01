@@ -1,0 +1,167 @@
+"""Journal profiles: load venue-specific context for the review agents.
+
+Each journal lives in one TOML file under ``journals_dir`` (repo-root
+``journals/`` by default — see ``journals/README.md`` for the schema).
+A profile is parsed into a :class:`JournalProfile` and rendered to a
+prompt block via :meth:`JournalProfile.to_prompt_block`, which is folded
+into the shared manuscript context block so every agent that reviews
+against a target venue sees the same standards, scope, and limits.
+
+The loader is deliberately forgiving: every field except ``name`` is
+optional, unknown keys are ignored, and a selected-but-missing slug is a
+clear error the CLI/web layer can surface before a run starts. When no
+journal is selected the agents receive an empty block and behave exactly
+as before.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+try:
+    import tomllib  # Python 3.11+
+except ModuleNotFoundError:  # pragma: no cover
+    import tomli as tomllib  # type: ignore[no-redef]
+
+
+def _default_journals_dir() -> Path:
+    """Repo-root ``journals/`` directory, resolved relative to this file so
+    it works regardless of the process working directory (CLI, web server,
+    or pytest)."""
+    return Path(__file__).resolve().parent.parent / "journals"
+
+
+def journals_dir(config: dict | None = None) -> Path:
+    """Resolve the directory holding journal ``.toml`` profiles.
+
+    Precedence: explicit ``journals_dir`` in config, else the repo-root
+    default. A relative config value is resolved against the current
+    working directory (matching ``output_dir`` semantics).
+    """
+    raw = (config or {}).get("journals_dir")
+    if raw:
+        return Path(os.path.expanduser(str(raw)))
+    return _default_journals_dir()
+
+
+class JournalProfile(BaseModel):
+    """One journal's submission context. Mirrors the TOML schema in
+    ``journals/_template.toml``; only ``name`` is required."""
+
+    slug: str = Field(..., description="Filename stem used to select this journal.")
+    name: str
+    aliases: list[str] = Field(default_factory=list)
+    publisher: str = ""
+    field: str = ""
+
+    impact_factor: float = 0.0
+    impact_factor_year: int = 0
+    acceptance_rate: str = ""
+
+    audience: str = ""
+    description: str = ""
+    scope: str = ""
+
+    max_words: int = 0
+    abstract_max_words: int = 0
+    max_figures: int = 0
+    max_references: int = 0
+
+    guidelines: str = ""
+    last_updated: str = ""
+
+    def _limits_line(self) -> str:
+        """One line summarizing whatever hard limits the venue declares."""
+        parts: list[str] = []
+        if self.max_words:
+            parts.append(f"main text ≤ {self.max_words} words")
+        if self.abstract_max_words:
+            parts.append(f"abstract ≤ {self.abstract_max_words} words")
+        if self.max_figures:
+            parts.append(f"≤ {self.max_figures} display items (figures + tables)")
+        if self.max_references:
+            parts.append(f"≤ {self.max_references} references")
+        return "; ".join(parts)
+
+    def to_prompt_block(self) -> str:
+        """Render the profile as a prompt block for the review agents.
+
+        Empty fields are omitted so the block stays compact. The caller
+        wraps/positions this; here we only produce the inner content.
+        """
+        lines: list[str] = [
+            "=== TARGET JOURNAL ===",
+            f"Name: {self.name}",
+        ]
+        if self.field:
+            lines.append(f"Field: {self.field}")
+        if self.impact_factor:
+            year = f" ({self.impact_factor_year})" if self.impact_factor_year else ""
+            lines.append(f"Approx. impact factor: {self.impact_factor}{year}")
+        if self.acceptance_rate:
+            lines.append(f"Approx. acceptance rate: {self.acceptance_rate}")
+        if self.audience:
+            lines.append(f"Audience: {self.audience}")
+        if self.description:
+            lines.append(f"About: {self.description.strip()}")
+        if self.scope:
+            lines.append(f"Scope: {self.scope.strip()}")
+        limits = self._limits_line()
+        if limits:
+            lines.append(f"Submission limits: {limits}")
+        if self.guidelines:
+            lines.append("Author/reviewer guidelines:")
+            lines.append(self.guidelines.strip())
+        lines.append("=== END TARGET JOURNAL ===")
+        return "\n".join(lines)
+
+
+def _read_profile(path: Path) -> JournalProfile:
+    with path.open("rb") as fh:
+        raw: dict[str, Any] = tomllib.load(fh)
+    # Keep only keys the model knows about; ignore extras silently.
+    known = {k: v for k, v in raw.items() if k in JournalProfile.model_fields}
+    known["slug"] = path.stem
+    return JournalProfile(**known)
+
+
+def list_journals(config: dict | None = None) -> list[JournalProfile]:
+    """All journal profiles in ``journals_dir``, sorted by name.
+
+    Files whose stem starts with ``_`` (e.g. ``_template.toml``) are
+    skipped. Unparseable files are skipped rather than aborting the list.
+    """
+    directory = journals_dir(config)
+    if not directory.is_dir():
+        return []
+    out: list[JournalProfile] = []
+    for path in sorted(directory.glob("*.toml")):
+        if path.stem.startswith("_"):
+            continue
+        try:
+            out.append(_read_profile(path))
+        except Exception:  # noqa: BLE001 — a malformed file shouldn't break selection
+            continue
+    return sorted(out, key=lambda p: p.name.lower())
+
+
+def load_journal(slug: str | None, config: dict | None = None) -> JournalProfile | None:
+    """Load a single profile by slug, or ``None`` if ``slug`` is falsy.
+
+    Raises ``FileNotFoundError`` (with the available slugs) when a
+    non-empty slug doesn't resolve — callers validate at selection time so
+    a typo fails fast instead of silently reviewing against no venue.
+    """
+    if not slug:
+        return None
+    path = journals_dir(config) / f"{slug}.toml"
+    if not path.is_file():
+        available = ", ".join(p.slug for p in list_journals(config)) or "(none found)"
+        raise FileNotFoundError(
+            f"unknown target journal {slug!r}; available: {available}"
+        )
+    return _read_profile(path)

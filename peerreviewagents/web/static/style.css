@@ -67,6 +67,24 @@ body {
 .drop-prompt strong { font-size: 1.05rem; }
 .drop-filename { font-family: var(--mono); }
 .muted { color: var(--muted); font-size: .9rem; }
+.journal-field {
+    display: grid;
+    gap: .4rem;
+    margin-top: 1.2rem;
+    text-align: left;
+}
+.journal-label { font-size: .9rem; font-weight: 600; }
+.journal-field select {
+    width: 100%;
+    padding: .6rem .7rem;
+    background: var(--bg, #0c1322);
+    color: inherit;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font: inherit;
+    cursor: pointer;
+}
+.journal-field select:hover { border-color: var(--accent); }
 .primary {
     margin-top: 1.2rem;
     padding: .7rem 1.1rem;

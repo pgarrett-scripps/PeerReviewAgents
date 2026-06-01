@@ -1,0 +1,41 @@
+name = "PLOS ONE"
+aliases = ["PLoS ONE"]
+publisher = "Public Library of Science (PLOS)"
+field = "multidisciplinary (open access)"
+
+impact_factor = 3.7
+impact_factor_year = 2024
+acceptance_rate = "~45%"
+
+audience = "Broad scientific readership; megajournal across all disciplines."
+
+description = """
+Open-access megajournal publishing scientifically rigorous research across all
+disciplines. Selection is based on technical soundness and rigor, NOT on
+perceived novelty, significance, or impact.
+"""
+
+scope = """
+In scope: any rigorous, ethically conducted, well-reported study with conclusions
+supported by the data. Out of scope: work with flawed methodology, unsupported
+conclusions, or inadequate reporting. Perceived importance is explicitly not a
+criterion.
+"""
+
+max_words = 0
+abstract_max_words = 300
+max_figures = 0
+max_references = 0
+
+guidelines = """
+Reviewers should judge TECHNICAL SOUNDNESS only — do not reject for lack of
+novelty or impact. Weigh: rigor of methods and analysis; whether conclusions are
+supported by the data; adherence to reporting and ethics standards; and full
+data availability.
+
+Required: a Data Availability Statement (data must be public or available on
+request with justification); appropriate ethics/consent statements; complete
+methods and statistics.
+"""
+
+last_updated = "2026-06-01"

@@ -5,7 +5,7 @@ from __future__ import annotations
 from ...observability import node_context
 from ..schemas import EditorDecisionOutput, Verdict
 from ..utils.agent_states import ReviewState
-from ..utils.agent_utils import manuscript_block, score_summary
+from ..utils.agent_utils import context_block, score_summary
 from ..utils.llm import make_llm
 from ..utils.structured import invoke_structured
 
@@ -18,7 +18,10 @@ _SYS = (
     "authors. Weigh the rebuttal: a concession is evidence the manuscript "
     "can improve in revision; a credible disagreement (with manuscript "
     "quote) is evidence a reviewer misread; a load-bearing critique the "
-    "author cannot rebut is evidence of a fundamental flaw. Return the "
+    "author cannot rebut is evidence of a fundamental flaw. If a target "
+    "journal is described in the context above, make the decision against "
+    "that venue's bar and scope, and let required revisions reflect its "
+    "standards and submission limits. Return the "
     "structured EditorDecisionOutput schema."
 )
 
@@ -51,7 +54,7 @@ def _run(state: ReviewState) -> dict:
             config,
             _SYS,
             user,
-            cached_prefix=manuscript_block(state),
+            cached_prefix=context_block(state),
         )
     except Exception as exc:  # noqa: BLE001
         # Do NOT fabricate a verdict on failure — leave decision empty so

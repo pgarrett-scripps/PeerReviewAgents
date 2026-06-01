@@ -63,6 +63,20 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "tool_vendors": {},
 
+    # --- Target journal ---
+    # Slug of the journal to review against (a file <slug>.toml under
+    # journals_dir). Defaults to "general" — a stand-in profile with sound,
+    # field-general standards for venues not in the database. Set to a
+    # specific slug (e.g. "nature-methods") for venue-specific standards, or
+    # to "" for a fully venue-agnostic review with no journal framing. The
+    # selected journal's scope/standards/limits are injected into the
+    # reviewer, meta-reviewer, editor, and recommender prompts.
+    "target_journal": "general",
+    # Directory holding journal profile .toml files. Empty/None = the
+    # repo-root journals/ directory (resolved relative to the package, so
+    # it works regardless of working directory).
+    "journals_dir": None,
+
     # --- Output ---
     "output_dir": os.path.join(os.getcwd(), "reports"),
 
@@ -130,6 +144,8 @@ _ENV_STR_KEYS = {
     "PEERREVIEW_REASONING_MODEL": "reasoning_model",
     "PEERREVIEW_OUTPUT_DIR": "output_dir",
     "PEERREVIEW_CACHE_DIR": "cache_dir",
+    "PEERREVIEW_TARGET_JOURNAL": "target_journal",
+    "PEERREVIEW_JOURNALS_DIR": "journals_dir",
 }
 _ENV_INT_KEYS = {
     "PEERREVIEW_DEBATE_ROUNDS": "max_debate_rounds",

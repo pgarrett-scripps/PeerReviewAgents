@@ -221,6 +221,22 @@ def manuscript_block(state: ReviewState) -> str:
     return f"=== MANUSCRIPT ===\n{fit_manuscript(state)}\n=== END MANUSCRIPT ==="
 
 
+def context_block(state: ReviewState) -> str:
+    """Shared cached prefix: target-journal context (if any) + manuscript.
+
+    The journal block is constant for a whole run, so prepending it to the
+    manuscript block keeps a single, byte-identical prefix across every
+    agent that takes ``cached_prefix`` — they still share one provider-side
+    cache entry. When no target journal is selected the journal block is
+    empty and this is exactly the old manuscript block.
+    """
+    journal = (state.get("journal_block") or "").strip()
+    manuscript = manuscript_block(state)
+    if not journal:
+        return manuscript
+    return f"{journal}\n\n{manuscript}"
+
+
 # ---------------------------------------------------------------------------
 # Reviewer score aggregation (decision anchor)
 # ---------------------------------------------------------------------------

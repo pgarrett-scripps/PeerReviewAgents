@@ -1,0 +1,38 @@
+name = "Nature Machine Intelligence"
+aliases = ["Nat. Mach. Intell.", "NMI"]
+publisher = "Nature Portfolio (Springer Nature)"
+field = "machine learning / AI"
+
+impact_factor = 18.8
+impact_factor_year = 2024
+acceptance_rate = "~10%"
+
+audience = "AI/ML researchers and interdisciplinary readers applying ML to science and society."
+
+description = """
+Publishes high-impact research across machine learning, robotics, and AI,
+including applications to other disciplines, plus work on the implications of
+AI. Premium on significance and broad interest.
+"""
+
+scope = """
+In scope: significant advances in ML/AI methods or impactful interdisciplinary
+applications, rigorously validated. Out of scope: incremental ML results without
+broad significance.
+"""
+
+max_words = 4000
+abstract_max_words = 150
+max_figures = 6
+max_references = 60
+
+guidelines = """
+Reviewers should weigh: significance and novelty to a broad AI/ML and
+interdisciplinary audience; rigor of evaluation (baselines, ablations, variance);
+reproducibility; and, where relevant, real-world or scientific impact.
+
+Required: Reporting Summary, data and code availability, full Methods, complete
+statistics. For applied work, validation on realistic data is expected.
+"""
+
+last_updated = "2026-06-01"

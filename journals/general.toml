@@ -1,0 +1,52 @@
+name = "General Peer-Reviewed Journal"
+aliases = ["General", "Default", "Unlisted journal"]
+publisher = ""
+field = "any discipline"
+
+# Left at 0 / unset on purpose: this is a stand-in for a venue not in the
+# database, so there is no meaningful impact factor or acceptance rate.
+impact_factor = 0.0
+impact_factor_year = 0
+acceptance_rate = ""
+
+audience = "Researchers in the manuscript's own field plus the educated scientific reader."
+
+description = """
+A reputable, selective, peer-reviewed journal in the manuscript's field. Use
+this as the default when the intended venue is not one of the specific profiles
+in this folder: it applies sound, field-general standards rather than any one
+journal's idiosyncratic rules.
+"""
+
+scope = """
+In scope: original, rigorous research that advances the manuscript's field and
+whose conclusions are supported by the evidence. Out of scope: work that is not
+methodologically sound, whose claims outrun the data, or that has no advance
+over existing literature.
+"""
+
+# No hard caps — judge length and figure count for appropriateness rather than
+# against a specific limit. Override by choosing a specific journal profile.
+max_words = 0
+abstract_max_words = 0
+max_figures = 0
+max_references = 0
+
+guidelines = """
+Apply the standards a strong general-interest journal in the field would use.
+Reviewers should weigh:
+- Soundness and rigor of the methods, analysis, and statistics.
+- Whether the conclusions are fully supported by the evidence presented.
+- Novelty and significance relative to the existing literature.
+- Clarity, completeness, and honest discussion of limitations.
+- Reproducibility: availability of data, code, and enough methodological
+  detail to repeat the work.
+- Research ethics and appropriate reporting/consent where relevant.
+
+Do not penalize the manuscript for failing rules that are specific to a
+particular journal (exact word counts, figure caps, house formatting); judge
+length and presentation for appropriateness instead. If the authors target a
+specific venue, select that journal's profile for venue-specific standards.
+"""
+
+last_updated = "2026-06-01"

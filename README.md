@@ -49,6 +49,11 @@ provider-side cache entry.
 
 PDF ingest is fully local via `pypdf` — no external API key needed.
 
+Reviews can be **venue-specific**: point the run at a target journal and its
+scope, standards, and submission limits are threaded into the reviewer,
+meta-reviewer, editor, and Journal Scout prompts. See
+[Target journal](#target-journal).
+
 ## Providers
 
 Three are wired up. Pick one with `--provider` or the `provider` TOML key.
@@ -133,6 +138,10 @@ peerreview paper.pdf --no-tui \
   --reasoning-model claude-opus-4-1-20250805 \
   --debate-rounds 3
 
+# Review against a specific journal (see --list-journals for slugs)
+peerreview paper.pdf --no-tui --journal nature-methods
+peerreview --list-journals
+
 # Browser-based "room" UI — upload + watch agents work
 peerreview serve                              # http://127.0.0.1:8765
 peerreview serve --host 0.0.0.0 --port 8080   # bind to all interfaces
@@ -153,7 +162,33 @@ the agent is running, then renders the agent's report when it finishes. When
 the pipeline completes, the topbar shows a **View summary** button — click it
 to open a completion card with the decision badge, stats, and report-file
 links. The MVP runs **one job at a time**, in-process, with no auth — host it
-behind a reverse proxy if you put it on a public network.
+behind a reverse proxy if you put it on a public network. The upload form
+includes a **target-journal** dropdown (populated from `GET /journals`) so you
+can pick the venue per submission.
+
+### Target journal
+
+Profiles in [`journals/`](journals/) — one `.toml` per venue — describe a
+journal's scope, audience, impact factor, submission limits, and author/reviewer
+guidelines. Selecting one injects that context into the reviewers,
+meta-reviewer, editor, and Journal Scout, so the panel judges the manuscript
+against the standards of the venue it's actually headed for, and records the
+chosen venue in `summary.md`.
+
+```bash
+peerreview --list-journals                       # available slugs
+peerreview paper.pdf --journal bioinformatics    # review against a venue
+peerreview paper.pdf --journal ""                # fully venue-agnostic, no framing
+```
+
+Select a venue with `--journal <slug>`, the `target_journal` TOML key,
+`PEERREVIEW_TARGET_JOURNAL`, or the web dropdown. The default is **`general`** —
+a stand-in profile with sound, field-general standards, ideal when the intended
+journal isn't one of the bundled profiles. ~30 journals ship across the natural
+sciences, bioinformatics, chemistry, ML, and medicine; add your own by copying
+[`journals/_template.toml`](journals/_template.toml). A `--journal` slug that
+doesn't resolve is rejected at startup with the list of valid slugs. See
+[`journals/README.md`](journals/README.md) for the schema and details.
 
 ### As a library
 
@@ -198,9 +233,9 @@ TOML, environment vars, and CLI flags all layer on top of the built-in defaults
 (precedence: defaults → user TOML → project TOML → `--config` → env → flags).
 
 The full knob list: `provider`, `reasoning_model`, `max_debate_rounds`,
-`manuscript_char_budget`, `output_dir`, `cache_dir`, `memory_path`, `memory_k`,
-`data_vendors`, `tool_vendors`. See `peerreview.toml.example` for an annotated
-template.
+`manuscript_char_budget`, `target_journal`, `journals_dir`, `output_dir`,
+`cache_dir`, `memory_path`, `memory_k`, `data_vendors`, `tool_vendors`. See
+`peerreview.toml.example` for an annotated template.
 
 ## Output
 
@@ -212,7 +247,7 @@ Each run writes to `reports/<timestamp>-<slug>/`:
 - `author_rebuttal.md` — author's defense
 - `decision_letter.md` — Editor-in-Chief verdict + required revisions
 - `journal_recommendations.md` — tiered venue suggestions (as-is / after-revision / alternative)
-- `summary.md` — one-page roll-up with the verdict badge + per-reviewer scores + cost
+- `summary.md` — one-page roll-up with the verdict badge + target venue + per-reviewer scores + cost
 
 ## Tests
 
@@ -222,9 +257,10 @@ pytest tests/ -q             # runs the full pipeline with a fake LLM, no API ke
 ```
 
 The test suite covers ingest, structured-output round-trip + retry fallback,
-provider factories, research-vendor routing with rate-limit fallback, the memory
-log lifecycle, and end-to-end web pipeline (uploading → running → reading
-finished bodies via the REST endpoints).
+provider factories, research-vendor routing with rate-limit fallback, journal
+profile loading + context-block injection, the memory log lifecycle, and
+end-to-end web pipeline (uploading → running → reading finished bodies via the
+REST endpoints).
 
 ## Architecture notes
 

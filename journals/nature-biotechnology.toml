@@ -1,0 +1,39 @@
+name = "Nature Biotechnology"
+aliases = ["Nat. Biotechnol.", "NBT"]
+publisher = "Nature Portfolio (Springer Nature)"
+field = "biotechnology / methods"
+
+impact_factor = 33.1
+impact_factor_year = 2024
+acceptance_rate = "~10%"
+
+audience = "Biotechnology researchers and computational biologists; applied life-science readership."
+
+description = """
+Publishes research of broad significance in the biological and biomedical
+sciences with an applied or technological angle, including high-impact
+computational methods, sequencing technologies, and engineered systems.
+"""
+
+scope = """
+In scope: methods and technologies with demonstrated, broad practical impact and
+rigorous benchmarking. Out of scope: incremental methods, or applications
+without a clear technological advance.
+"""
+
+max_words = 3000
+abstract_max_words = 150
+max_figures = 6
+max_references = 50
+
+guidelines = """
+Reviewers should weigh: significance and breadth of the technological advance;
+rigor and scale of validation/benchmarking; and real-world utility. For
+computational methods, expect strong comparisons to existing tools and
+reproducible results.
+
+Required: Reporting Summary, data and code availability, full online Methods,
+complete statistics. Overstated practical impact is a common concern.
+"""
+
+last_updated = "2026-06-01"

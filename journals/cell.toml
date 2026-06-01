@@ -1,0 +1,39 @@
+name = "Cell"
+aliases = ["Cell (Cell Press)"]
+publisher = "Cell Press (Elsevier)"
+field = "molecular & cell biology"
+
+impact_factor = 45.5
+impact_factor_year = 2024
+acceptance_rate = "~10%"
+
+audience = "Molecular, cell, and systems biologists; broad life-sciences readership."
+
+description = """
+Flagship Cell Press journal publishing landmark findings across biology,
+especially molecular and cell biology. Premium on conceptually significant,
+mechanistically complete stories.
+"""
+
+scope = """
+In scope: major, mechanistically thorough advances of broad biological
+significance. Out of scope: incremental findings or stories with significant
+mechanistic gaps.
+"""
+
+max_words = 0              # ~45,000 characters incl. figures/refs
+abstract_max_words = 150
+max_figures = 7
+max_references = 0
+
+guidelines = """
+Reviewers should weigh: conceptual significance and novelty; completeness and
+rigor of the mechanistic evidence (multiple orthogonal approaches, proper
+controls); and whether conclusions are fully supported.
+
+Required: a STAR Methods section, Key Resources Table, data and code
+availability, and full reporting of reagents and statistics. Reviewers often
+expect substantial mechanistic depth and orthogonal validation.
+"""
+
+last_updated = "2026-06-01"

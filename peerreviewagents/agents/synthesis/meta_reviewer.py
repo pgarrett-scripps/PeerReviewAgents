@@ -7,7 +7,7 @@ from ...storage.memory import MemoryLog
 from ..debate.base import _debate_so_far, _reports_digest
 from ..schemas import MetaReviewOutput
 from ..utils.agent_states import ReviewState
-from ..utils.agent_utils import manuscript_block, score_summary
+from ..utils.agent_utils import context_block, score_summary
 from ..utils.llm import make_llm
 from ..utils.structured import invoke_structured
 
@@ -15,6 +15,8 @@ _SYS = (
     "You are the Area Chair synthesizing a peer-review package. Weigh the "
     "specialist reviews (by score and confidence) and the advocate/skeptic "
     "debate into a single balanced meta-review. Be decisive but fair. "
+    "If a target journal is described in the context above, calibrate the "
+    "recommendation to that venue's standards and scope. "
     "Return the structured MetaReviewOutput schema."
 )
 
@@ -52,7 +54,7 @@ def _run(state: ReviewState) -> dict:
             config,
             _SYS,
             user,
-            cached_prefix=manuscript_block(state),
+            cached_prefix=context_block(state),
         )
     except Exception as exc:  # noqa: BLE001
         return {

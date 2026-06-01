@@ -1,0 +1,39 @@
+name = "GigaScience"
+aliases = ["GigaScience"]
+publisher = "Oxford University Press / GigaScience Press"
+field = "data-driven / computational biology (open access)"
+
+impact_factor = 8.9
+impact_factor_year = 2024
+acceptance_rate = "~30%"
+
+audience = "Data-intensive life scientists; researchers producing large datasets, tools, and reproducible pipelines."
+
+description = """
+Open-access, open-data journal for large-scale and data-driven research across
+the life and biomedical sciences. Distinctive emphasis on reproducibility, with
+data, code, and workflows hosted and reviewed alongside the manuscript.
+"""
+
+scope = """
+In scope: big-data studies, databases, software, and workflows with strong
+reproducibility. Out of scope: work that cannot share its data/code, or whose
+results are not reproducible.
+"""
+
+max_words = 0
+abstract_max_words = 0
+max_figures = 0
+max_references = 0
+
+guidelines = """
+Reviewers should weigh: scientific and technical soundness; reproducibility of
+the entire analysis (data + code + environment); and utility of the released
+resources. Novelty is secondary to rigor and reusability.
+
+Required: all supporting data deposited (e.g. in the GigaDB repository), code
+released openly, and ideally a runnable workflow. Reviewers may be asked to
+verify reproducibility.
+"""
+
+last_updated = "2026-06-01"

@@ -1,0 +1,39 @@
+name = "Journal of Medicinal Chemistry"
+aliases = ["JMC", "J. Med. Chem."]
+publisher = "American Chemical Society (ACS)"
+field = "medicinal chemistry / drug discovery"
+
+impact_factor = 7.3
+impact_factor_year = 2024
+acceptance_rate = "~30%"
+
+audience = "Medicinal chemists, chemical biologists, and drug-discovery researchers."
+
+description = """
+Publishes research at the chemistry-biology interface relevant to drug
+discovery, including design, synthesis, and evaluation of biologically active
+compounds, SAR, and computational/medicinal chemistry methods.
+"""
+
+scope = """
+In scope: novel bioactive compounds with biological evaluation and SAR, and
+methods advancing drug discovery. Out of scope: compounds without biological
+data, weak/incomplete SAR, or computational predictions without validation.
+"""
+
+max_words = 0
+abstract_max_words = 200
+max_figures = 0
+max_references = 0
+
+guidelines = """
+Reviewers should weigh: novelty and significance for drug discovery; rigor of
+biological assays (dose-response, controls, selectivity); quality of SAR; and
+full chemical characterization and purity (typically >=95%).
+
+Required: complete synthetic procedures, characterization, and purity data in
+Supporting Information; assay protocols; for computational work, experimental
+validation. PAINS/assay-interference liabilities should be addressed.
+"""
+
+last_updated = "2026-06-01"

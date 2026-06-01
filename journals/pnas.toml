@@ -1,0 +1,38 @@
+name = "Proceedings of the National Academy of Sciences"
+aliases = ["PNAS"]
+publisher = "National Academy of Sciences"
+field = "multidisciplinary"
+
+impact_factor = 9.4
+impact_factor_year = 2024
+acceptance_rate = "~15%"
+
+audience = "Broad scientific readership across the physical, biological, and social sciences."
+
+description = """
+Publishes high-quality original research across the sciences. Broad scope and
+high standards, but less narrowly selective for "general interest" than Nature
+or Science — strong specialist advances are welcome.
+"""
+
+scope = """
+In scope: rigorous, significant research in any scientific discipline. Out of
+scope: work with insufficient novelty or rigor for the field's leading
+specialist journals.
+"""
+
+max_words = 0              # ~6 pages; Brief Reports shorter
+abstract_max_words = 250
+max_figures = 0
+max_references = 0
+
+guidelines = """
+Reviewers should weigh: technical rigor and soundness of conclusions; novelty
+and importance within the field; and clarity for a broad scientific audience.
+
+Required: data, code, and materials availability; complete methods and
+statistics. Significance Statement (≤120 words) framing the advance for
+non-specialists is required at submission.
+"""
+
+last_updated = "2026-06-01"

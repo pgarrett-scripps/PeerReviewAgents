@@ -44,9 +44,18 @@ def _run(state: ReviewState) -> dict:
     decision_letter = state.get("decision_letter") or "(no decision letter)"
     meta_review = state.get("meta_review") or "(no meta-review)"
 
+    journal = (state.get("journal_block") or "").strip()
+    target_block = (
+        f"The authors' intended target venue:\n{journal}\n\n"
+        "Use the as_is / after_revision buckets to judge the manuscript's "
+        "prospects AT THIS TARGET (and comparable venues); use alternative "
+        "for fallbacks if the target is out of reach.\n\n"
+    ) if journal else ""
+
     user = (
         f"Manuscript title: {state.get('manuscript_title', 'Untitled')}\n\n"
         f"Abstract:\n{abstract}\n\n"
+        f"{target_block}"
         f"Reviewer panel: {reviewer_names}\n"
         f"Numerical signal:\n{score_summary(state)}\n\n"
         f"Editor's final decision: {decision}\n\n"

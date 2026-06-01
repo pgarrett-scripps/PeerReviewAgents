@@ -1,0 +1,38 @@
+name = "BMC Bioinformatics"
+aliases = ["BMC Bioinform."]
+publisher = "BMC (Springer Nature)"
+field = "bioinformatics (open access)"
+
+impact_factor = 2.9
+impact_factor_year = 2024
+acceptance_rate = "~30%"
+
+audience = "Bioinformatics tool developers and users; broad methods readership."
+
+description = """
+Open-access journal publishing research on computational methods, algorithms,
+software, and databases applied to biological problems. Selection emphasizes
+technical soundness and utility over headline novelty.
+"""
+
+scope = """
+In scope: new algorithms, software, databases, and analyses with biological
+relevance and a usable implementation. Out of scope: tools without an available
+implementation or any benchmarking.
+"""
+
+max_words = 0
+abstract_max_words = 350
+max_figures = 0
+max_references = 0
+
+guidelines = """
+Reviewers should weigh: correctness and soundness of the method; benchmarking
+against existing tools on relevant data; clarity of the contribution; and
+availability/usability of the software.
+
+Required: open-source code and test data with a clear availability statement;
+reproducible methods; structured (Background/Results/Conclusions) abstract.
+"""
+
+last_updated = "2026-06-01"

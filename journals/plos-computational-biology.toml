@@ -1,0 +1,39 @@
+name = "PLOS Computational Biology"
+aliases = ["PLoS Comput. Biol.", "PCB"]
+publisher = "Public Library of Science (PLOS)"
+field = "computational biology (open access)"
+
+impact_factor = 3.8
+impact_factor_year = 2024
+acceptance_rate = "~25%"
+
+audience = "Computational and quantitative biologists; methods developers and modelers."
+
+description = """
+Open-access journal for research that furthers understanding of living systems
+through computation, including modeling, simulation, algorithms, and analysis of
+biological data. Biological insight is central, not just method machinery.
+"""
+
+scope = """
+In scope: computational methods and models that yield biological insight, with
+appropriate validation. Out of scope: methods with no biological relevance, or
+biology with trivial computation.
+"""
+
+max_words = 0
+abstract_max_words = 250
+max_figures = 0
+max_references = 0
+
+guidelines = """
+Reviewers should weigh: soundness of the computational/statistical approach;
+biological significance and whether the insight is genuinely enabled by the
+computation; benchmarking against alternatives; and reproducibility.
+
+Required: an Author Summary for a general audience; full data and CODE
+availability (open repository); reproducible methods. Statistics and model
+assumptions must be stated explicitly.
+"""
+
+last_updated = "2026-06-01"

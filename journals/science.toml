@@ -1,0 +1,37 @@
+name = "Science"
+aliases = ["Science (AAAS)"]
+publisher = "American Association for the Advancement of Science (AAAS)"
+field = "multidisciplinary"
+
+impact_factor = 44.7
+impact_factor_year = 2024
+acceptance_rate = "~7%"
+
+audience = "Broad scientific readership; significance must be clear to non-specialists."
+
+description = """
+Publishes high-impact original research of broad significance across the
+sciences, selected for novelty and importance. One of the most selective
+general-science venues.
+"""
+
+scope = """
+In scope: major advances with wide implications across disciplines. Out of
+scope: incremental or specialist findings without general significance.
+"""
+
+max_words = 2500           # Research Article; Reports are shorter
+abstract_max_words = 125
+max_figures = 6
+max_references = 60
+
+guidelines = """
+Reviewers should weigh: broad significance and novelty; rigor and reproducibility
+of the evidence; and whether the central claim is fully supported. Like Nature,
+the question is importance to a wide audience, not just correctness.
+
+Required: data and materials availability, full supplementary methods, complete
+statistics. Code/data must be accessible to reviewers and readers.
+"""
+
+last_updated = "2026-06-01"

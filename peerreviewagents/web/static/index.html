@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <title>PeerReviewAgents</title>
-    <link rel="stylesheet" href="/static/style.css?v=4">
+    <link rel="stylesheet" href="/static/style.css?v=5">
 </head>
 <body class="upload-page">
     <main class="upload-card">
@@ -22,6 +22,12 @@
                 </span>
                 <span class="drop-filename" hidden></span>
             </label>
+            <label class="journal-field">
+                <span class="journal-label">Target journal <span class="muted">(optional)</span></span>
+                <select id="journal-select" name="target_journal">
+                    <option value="">— Venue-agnostic review —</option>
+                </select>
+            </label>
             <button type="submit" class="primary" id="submit-btn" disabled>
                 Start review
             </button>
@@ -38,6 +44,25 @@
         const stat  = document.getElementById('status');
         const fname = zone.querySelector('.drop-filename');
         const prompt = zone.querySelector('.drop-prompt');
+        const journalSelect = document.getElementById('journal-select');
+
+        // Populate the target-journal dropdown from the server.
+        (async () => {
+            try {
+                const resp = await fetch('/journals');
+                if (!resp.ok) return;
+                const { journals, default: dflt } = await resp.json();
+                for (const j of journals) {
+                    const opt = document.createElement('option');
+                    opt.value = j.slug;
+                    let text = j.field ? `${j.name} — ${j.field}` : j.name;
+                    if (j.slug === dflt) text += ' (default)';
+                    opt.textContent = text;
+                    if (j.slug === dflt) opt.selected = true;
+                    journalSelect.appendChild(opt);
+                }
+            } catch (_) { /* dropdown stays venue-agnostic only */ }
+        })();
 
         function setFile(file) {
             if (!file) return;
@@ -72,6 +97,7 @@
 
             const data = new FormData();
             data.append('manuscript', input.files[0]);
+            data.append('target_journal', journalSelect.value);
             const resp = await fetch('/jobs', { method: 'POST', body: data });
             if (!resp.ok) {
                 stat.textContent = `Error: ${await resp.text()}`;

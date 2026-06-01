@@ -9,10 +9,24 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import (
+    FastAPI,
+    Form,
+    HTTPException,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.types import Scope
+
+from peerreviewagents.default_config import get_config
+from peerreviewagents.journals import list_journals, load_journal
+
+from .bus import EventBus
+from .jobs import AGENT_LAYOUT, JobManager, JobState
+from .runner import JobRunner, render_agent_payload
 
 
 class _NoCacheStaticFiles(StaticFiles):
@@ -30,12 +44,6 @@ class _NoCacheStaticFiles(StaticFiles):
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
         return response
-
-from peerreviewagents.default_config import get_config
-
-from .bus import EventBus
-from .jobs import AGENT_LAYOUT, JobManager, JobState
-from .runner import JobRunner, render_agent_payload
 
 
 _STATIC_DIR = Path(__file__).parent / "static"
@@ -99,10 +107,32 @@ def _register_routes(app: FastAPI) -> None:
         """Static layout metadata, useful for the frontend init."""
         return JSONResponse({"agents": AGENT_LAYOUT})
 
+    @app.get("/journals")
+    async def journals() -> JSONResponse:
+        """Available target-journal options for the upload form.
+
+        The 'general' fallback profile is pinned to the top so the default
+        choice (review against sound, field-general standards) is the first
+        real option, ahead of the alphabetical list of specific venues.
+        """
+        config = get_config(**app.state.config_overrides)
+        profiles = list_journals(config)
+        profiles.sort(key=lambda p: (p.slug != "general", p.name.lower()))
+        return JSONResponse({
+            "journals": [
+                {"slug": p.slug, "name": p.name, "field": p.field}
+                for p in profiles
+            ],
+            "default": config.get("target_journal") or "",
+        })
+
     # --- jobs ------------------------------------------------------------
 
     @app.post("/jobs")
-    async def create_job(manuscript: UploadFile) -> JSONResponse:
+    async def create_job(
+        manuscript: UploadFile,
+        target_journal: str = Form(""),
+    ) -> JSONResponse:
         if jobs.has_active():
             raise HTTPException(
                 409, "another review is currently running; only one job is supported in the MVP"
@@ -113,6 +143,16 @@ def _register_routes(app: FastAPI) -> None:
                 400,
                 f"unsupported file type {suffix!r}; allowed: {sorted(_ALLOWED_SUFFIXES)}",
             )
+
+        # Per-upload journal selection overrides any server-level default;
+        # an empty value falls through to the server default (if any).
+        job_overrides = dict(app.state.config_overrides)
+        if target_journal:
+            try:
+                load_journal(target_journal, get_config(**app.state.config_overrides))
+            except FileNotFoundError as exc:
+                raise HTTPException(400, str(exc))
+            job_overrides["target_journal"] = target_journal
 
         job = jobs.create(manuscript_path="", manuscript_filename=manuscript.filename or "manuscript")
         job_dir = Path(app.state.upload_root) / job.id
@@ -126,7 +166,7 @@ def _register_routes(app: FastAPI) -> None:
         bus = EventBus(loop)
         app.state.buses[job.id] = bus
 
-        config = get_config(**app.state.config_overrides)
+        config = get_config(**job_overrides)
         runner = JobRunner(job, config, bus)
         app.state.runners[job.id] = runner
         jobs.set_active(job.id)

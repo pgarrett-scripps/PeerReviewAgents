@@ -1,0 +1,46 @@
+name = "Bioinformatics"
+aliases = ["Bioinformatics (Oxford)", "OUP Bioinformatics"]
+publisher = "Oxford University Press / ISCB"
+field = "bioinformatics / computational biology"
+
+impact_factor = 5.8
+impact_factor_year = 2024
+acceptance_rate = "~20%"
+
+audience = "Computational biologists, method developers, and bench biologists who use computational tools."
+
+description = """
+Publishes new developments in computational methods, statistical and
+mathematical approaches, and software for molecular and cellular biology,
+genomics, and systems biology. Strong emphasis on tools that the community can
+actually run.
+"""
+
+scope = """
+In scope: novel algorithms, statistical methods, and software with demonstrated
+biological utility and benchmarking. Application Notes for mature, usable tools.
+Out of scope: methods without an available implementation, biology papers with
+no methodological contribution, and benchmarks of others' tools without a new
+method or substantial new insight.
+"""
+
+max_words = 5000           # Original Paper; Application Notes are ~2 pages
+abstract_max_words = 250
+max_figures = 0            # No hard cap, but keep display items focused
+max_references = 0
+
+guidelines = """
+Reviewers should weigh:
+- Methodological novelty and correctness of the algorithm/statistics.
+- Benchmarking against current best-in-class methods on appropriate datasets,
+  with runtime/scalability where relevant.
+- Biological relevance — does the method answer a real question?
+- Software quality: source code freely available, installable, documented;
+  for Application Notes a working, maintained tool is the core requirement.
+
+Required: an Availability section pointing to source code and test data under an
+open license. Methods must be reproducible from the description plus the
+released code. Avoid overclaiming generality beyond the tested datasets.
+"""
+
+last_updated = "2026-06-01"

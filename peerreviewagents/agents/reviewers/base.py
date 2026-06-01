@@ -17,7 +17,7 @@ from __future__ import annotations
 from ...observability import node_context
 from ..schemas import ReviewerOutput
 from ..utils.agent_states import ReviewReport, ReviewState
-from ..utils.agent_utils import manuscript_block
+from ..utils.agent_utils import context_block
 from ..utils.llm import make_llm
 from ..utils.structured import (
     invoke_structured,
@@ -28,7 +28,10 @@ _INSTRUCTIONS = (
     "Manuscript title: {title}\n\n"
     "You are the {role} on a journal peer-review panel. {mandate} You are "
     "rigorous, fair, and constructive. Ground every critique in specific "
-    "evidence from the manuscript above.\n\n"
+    "evidence from the manuscript above. If a target journal is described "
+    "above, judge the manuscript against that venue's scope, standards, "
+    "and submission limits, and flag misfits (out-of-scope, over-length, "
+    "too many display items) where relevant to your specialty.\n\n"
     "Return a structured review with the following fields:\n"
     "  - score (int 1-5): 1=reject, 3=major revision, 4=minor revision, 5=accept\n"
     "  - confidence (int 1-5): how confident you are in your score\n"
@@ -71,7 +74,7 @@ def make_reviewer_node(
                 role=role,
                 mandate=mandate,
             )
-            cached_prefix = manuscript_block(state)
+            cached_prefix = context_block(state)
 
             try:
                 if bound_tool_names:

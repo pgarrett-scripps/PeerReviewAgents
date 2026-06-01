@@ -1,0 +1,38 @@
+name = "Nucleic Acids Research"
+aliases = ["NAR"]
+publisher = "Oxford University Press"
+field = "molecular biology / bioinformatics"
+
+impact_factor = 16.6
+impact_factor_year = 2024
+acceptance_rate = "~25%"
+
+audience = "Molecular biologists and bioinformaticians working on nucleic acids and associated databases/tools."
+
+description = """
+Publishes research on the physical, chemical, biochemical, and biological aspects
+of nucleic acids and proteins involved in their metabolism. Well known for its
+annual Database and Web Server issues for bioinformatics resources.
+"""
+
+scope = """
+In scope: nucleic-acid biology and structure, gene regulation, genome integrity,
+and computational tools/databases for these (Database and Web Server tracks).
+Out of scope: tools or biology with no clear advance over existing resources.
+"""
+
+max_words = 0
+abstract_max_words = 250
+max_figures = 0
+max_references = 0
+
+guidelines = """
+Reviewers should weigh: novelty and rigor of the biological or computational
+contribution; quality and completeness of validation; and, for Database/Web
+Server submissions, the utility, accessibility, and maintenance of the resource.
+
+Required: public availability of data and, for tools, a working and free
+web/resource link; reproducible methods; complete statistics.
+"""
+
+last_updated = "2026-06-01"
