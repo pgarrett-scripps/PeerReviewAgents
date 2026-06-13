@@ -7,7 +7,7 @@ from ...storage.memory import MemoryLog
 from ..debate.base import _debate_so_far, _reports_digest
 from ..schemas import MetaReviewOutput
 from ..utils.agent_states import ReviewState
-from ..utils.agent_utils import context_block, score_summary
+from ..utils.agent_utils import directives_block, score_summary
 from ..utils.llm import make_llm
 from ..utils.structured import invoke_structured
 
@@ -16,7 +16,9 @@ _SYS = (
     "specialist reviews (by score and confidence) and the advocate/skeptic "
     "debate into a single balanced meta-review. Be decisive but fair. "
     "If a target journal is described in the context above, calibrate the "
-    "recommendation to that venue's standards and scope. "
+    "recommendation to that venue's standards and scope. If a review "
+    "strictness standard is described in the context above, calibrate the "
+    "recommendation to it as well. "
     "Return the structured MetaReviewOutput schema."
 )
 
@@ -45,16 +47,18 @@ def _run(state: ReviewState) -> dict:
         "average verdict, name the specific reasoning in decisive_factors."
     )
     try:
-        # Manuscript is the same cached prefix the reviewers populated —
-        # near-zero marginal cost, but lets the meta-reviewer ground its
-        # synthesis in primary text rather than just the digest.
+        # The Area Chair synthesizes the distilled signal (reviews + debate +
+        # numerical aggregate), NOT the primary text — feeding it the full
+        # manuscript invites it to become a 9th reviewer instead of weighing
+        # the panel. Only the venue/strictness directives ride along as the
+        # cached prefix so it can calibrate to the target venue's bar.
         result = invoke_structured(
             llm,
             MetaReviewOutput,
             config,
             _SYS,
             user,
-            cached_prefix=context_block(state),
+            cached_prefix=directives_block(state),
         )
     except Exception as exc:  # noqa: BLE001
         return {
@@ -74,6 +78,8 @@ def _run(state: ReviewState) -> dict:
 def _past_context(state: ReviewState, config: dict) -> str:
     """BM25-retrieve the top-K resolved lessons most relevant to this
     manuscript. Failures degrade silently to no prior context."""
+    if not config.get("use_memory", True):
+        return ""
     k = int(config.get("memory_k", 3) or 0)
     if k <= 0:
         return ""

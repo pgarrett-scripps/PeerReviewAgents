@@ -85,6 +85,31 @@ body {
     cursor: pointer;
 }
 .journal-field select:hover { border-color: var(--accent); }
+.strictness-field {
+    display: grid;
+    gap: .4rem;
+    margin-top: 1.2rem;
+    text-align: left;
+}
+.strictness-field input[type="range"] {
+    width: 100%;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+.strictness-scale {
+    display: flex;
+    justify-content: space-between;
+}
+.desk-screen-field {
+    display: flex;
+    align-items: baseline;
+    gap: .5rem;
+    margin-top: 1rem;
+    text-align: left;
+    font-size: .9rem;
+    cursor: pointer;
+}
+.desk-screen-field input[type="checkbox"] { accent-color: var(--accent); cursor: pointer; }
 .primary {
     margin-top: 1.2rem;
     padding: .7rem 1.1rem;
@@ -201,17 +226,14 @@ body {
     100% { box-shadow: 0 0 0 0   rgba(239,108,108,0); }
 }
 
-/* --- stage = room + side panel --------------------------------------- */
+/* --- stage = full-width room (agent reports open as a modal) --------- */
 
 .stage {
     position: relative;
     display: grid;
-    grid-template-columns: 1fr 0;       /* panel width grows when open */
+    grid-template-columns: 1fr;
     min-height: 0;
-    transition: grid-template-columns .25s ease;
 }
-.stage.panel-open { grid-template-columns: 1fr min(420px, 36vw); }
-.stage.panel-expanded { grid-template-columns: 1fr min(820px, 65vw); }
 
 .room {
     position: relative;
@@ -223,17 +245,39 @@ body {
 }
 .room canvas { display: block; width: 100%; height: 100%; }
 
-/* --- side panel ------------------------------------------------------- */
+/* --- agent report modal ---------------------------------------------- */
 
-.panel {
-    background: var(--panel);
-    border-left: 1px solid var(--border);
+.agent-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 25;
+    display: grid;
+    place-items: center;
+    padding: 1.5rem;
+}
+.agent-modal[hidden] { display: none; }
+.agent-modal-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(8,10,15,.45);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+    animation: pr-fade-in .2s ease;
+}
+.agent-modal-card {
+    position: relative;
     display: grid;
     grid-template-rows: auto auto 1fr;
-    min-width: 0;
+    width: min(760px, 94vw);
+    max-height: min(85vh, 820px);
+    min-height: 0;
     overflow: hidden;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    box-shadow: var(--shadow-modal);
+    animation: pr-card-in .25s cubic-bezier(.2,.7,.2,1);
 }
-.panel-collapsed { display: none; }
 .panel-head {
     display: flex;
     align-items: center;
@@ -281,6 +325,7 @@ body {
 .panel-body {
     padding: 1.2rem 1.4rem 2rem;
     overflow: auto;
+    min-height: 0;
     line-height: 1.6;
     font-size: .92rem;
     color: var(--text);
@@ -573,9 +618,8 @@ body {
 /* --- responsive tweaks ------------------------------------------------ */
 
 @media (max-width: 700px) {
-    .stage.panel-open { grid-template-columns: 0 1fr; }
-    .stage.panel-expanded { grid-template-columns: 0 1fr; }
     .manuscript-name { max-width: 18ch; }
     .completion-card { padding: 1.2rem; }
+    .agent-modal-card { max-height: 90vh; }
     .report-list { columns: 1; }
 }

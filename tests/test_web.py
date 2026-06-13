@@ -21,6 +21,8 @@ from langchain_core.messages import AIMessage
 
 from peerreviewagents.agents.reviewers import REVIEWER_NAMES
 from peerreviewagents.agents.schemas import (
+    AuditFinding,
+    AuditOutput,
     AuthorRebuttalOutput,
     DebateOutput,
     EditorDecisionOutput,
@@ -43,6 +45,19 @@ _CANNED: dict[type, object] = {
         summary="Method is sensible but undertested.",
         strengths=["Clear motivation"],
         weaknesses=["Single cluster only"],
+    ),
+    AuditOutput: AuditOutput(
+        summary="A few HARD identifiers are missing.",
+        categories_detected=["Computational/ML"],
+        findings=[
+            AuditFinding(
+                category="Computational/ML",
+                item="Random seed",
+                severity="HARD",
+                status="missing",
+                evidence="No seed reported.",
+            ),
+        ],
     ),
     DebateOutput: DebateOutput(
         argument="Contribution is incremental but cleanly evaluated.",
@@ -100,6 +115,7 @@ class FakeLLM:
 def patched_llms(monkeypatch):
     targets = [
         "peerreviewagents.agents.reviewers.base",
+        "peerreviewagents.agents.auditors.base",
         "peerreviewagents.agents.debate.base",
         "peerreviewagents.agents.synthesis.meta_reviewer",
         "peerreviewagents.agents.author.rebuttal",
@@ -218,6 +234,49 @@ def test_rejects_unknown_suffix(tmp_path):
             files={"manuscript": ("bad.bin", b"\x00\x01", "application/octet-stream")},
         )
     assert resp.status_code == 400
+
+
+def test_rejects_invalid_strictness(tmp_path):
+    app = create_app(upload_dir=str(tmp_path / "uploads"))
+    port = _free_port()
+    with _running_server(app, port):
+        resp = httpx.post(
+            f"http://127.0.0.1:{port}/jobs",
+            files={"manuscript": ("paper.md", b"# Title\n\nBody.", "text/markdown")},
+            data={"review_strictness": "9"},
+        )
+    assert resp.status_code == 400
+    assert "strictness" in resp.text.lower()
+
+
+def test_journals_endpoint_exposes_strictness_defaults(tmp_path):
+    app = create_app(
+        config_overrides={"review_strictness": 4},
+        upload_dir=str(tmp_path / "uploads"),
+    )
+    port = _free_port()
+    with _running_server(app, port):
+        resp = httpx.get(f"http://127.0.0.1:{port}/journals")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["default_strictness"] == 4
+    # Labels are keyed by level (JSON stringifies the int keys).
+    assert body["strictness_labels"]["3"] == "Balanced"
+
+
+def test_journals_endpoint_exposes_article_types(tmp_path):
+    app = create_app(
+        config_overrides={"article_type": "review"},
+        upload_dir=str(tmp_path / "uploads"),
+    )
+    port = _free_port()
+    with _running_server(app, port):
+        resp = httpx.get(f"http://127.0.0.1:{port}/journals")
+    assert resp.status_code == 200
+    body = resp.json()
+    keys = [at["key"] for at in body["article_types"]]
+    assert "review" in keys and "technical-note" in keys
+    assert body["default_article_type"] == "review"
 
 
 def test_unknown_job_returns_404(tmp_path):

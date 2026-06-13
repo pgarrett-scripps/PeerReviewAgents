@@ -30,3 +30,18 @@ policy, statistics/reporting standards, and anything reviewers should weigh.
 """
 
 last_updated = "2026-06-01"
+
+# --- Per-article-type overrides (optional) ---
+# The article-type taxonomy (article, letter, communication, perspective,
+# review, technical-note, tutorial) and what each means is shared across all
+# venues — see peerreviewagents/article_types.py. Here you only override the
+# venue-specific specifics for the types you care about: word/abstract caps
+# and any handling notes. Types you don't list still get the general framing.
+# Delete this section if the venue doesn't differentiate by manuscript type.
+#
+# [article_types.article]
+# max_words = 8000
+#
+# [article_types.letter]
+# max_words = 5500
+# notes = "Presubmission inquiry recommended."

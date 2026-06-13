@@ -168,7 +168,7 @@ can pick the venue per submission.
 
 ### Target journal
 
-Profiles in [`journals/`](journals/) — one `.toml` per venue — describe a
+Profiles in [`peerreviewagents/journals/`](peerreviewagents/journals/) — one `.toml` per venue — describe a
 journal's scope, audience, impact factor, submission limits, and author/reviewer
 guidelines. Selecting one injects that context into the reviewers,
 meta-reviewer, editor, and Journal Scout, so the panel judges the manuscript
@@ -186,9 +186,73 @@ Select a venue with `--journal <slug>`, the `target_journal` TOML key,
 a stand-in profile with sound, field-general standards, ideal when the intended
 journal isn't one of the bundled profiles. ~30 journals ship across the natural
 sciences, bioinformatics, chemistry, ML, and medicine; add your own by copying
-[`journals/_template.toml`](journals/_template.toml). A `--journal` slug that
-doesn't resolve is rejected at startup with the list of valid slugs. See
-[`journals/README.md`](journals/README.md) for the schema and details.
+[`_template.toml`](peerreviewagents/journals/_template.toml) into a directory of
+your own and pointing `journals_dir` / `PEERREVIEW_JOURNALS_DIR` at it. A
+`--journal` slug that doesn't resolve is rejected at startup with the list of
+valid slugs. See [`peerreviewagents/journals/README.md`](peerreviewagents/journals/README.md)
+for the schema and details.
+
+### Review strictness
+
+A 1–5 dial controls how easy or harsh the panel is. The level renders to a
+directive that's injected into the **reviewer**, **meta-reviewer**, and
+**editor** prompts (sharing the same provider-side cache entry as the
+journal/manuscript context), so it changes how the manuscript is *judged*
+without touching the author rebuttal or the venue recommendations.
+
+| Level | Meaning |
+|---|---|
+| 1 | Very lenient — reward the contribution; only fundamental flaws block |
+| 2 | Lenient |
+| **3** | **Balanced (default)** — no directive injected; behaves as before |
+| 4 | Strict — top-venue bar; unaddressed weaknesses are blocking |
+| 5 | Very strict — exacting bar; default to rejection on doubt |
+
+```bash
+peerreview paper.pdf --no-tui --strictness 5     # harsh review
+peerreview paper.pdf --no-tui --strictness 1     # gentle review
+```
+
+Set it with `--strictness <1-5>`, the `review_strictness` (or `strictness`)
+TOML key, `PEERREVIEW_STRICTNESS`, or the web form's slider. The chosen level
+is recorded in `summary.md`.
+
+### Article type
+
+Tell the panel what *kind* of submission it's reviewing. The taxonomy is
+venue-general — `article`, `letter`, `communication`, `perspective`, `review`,
+`technical-note`, `tutorial` — and naming it injects a manuscript-type block
+into the reviewer/meta-reviewer/editor prompts so the work is judged
+appropriately (a Letter or Review isn't held to a research Article's bar for
+novel data). Any per-type word limits come from the **target journal's**
+profile, which may declare them per type (e.g. Journal of Proteome Research).
+
+```bash
+peerreview paper.pdf --no-tui --journal journal-of-proteome-research --article-type review
+peerreview --list-article-types                  # available type keys
+```
+
+Set it with `--article-type <key>`, the `article_type` TOML key,
+`PEERREVIEW_ARTICLE_TYPE`, or the web form. Default is unset (no manuscript-type
+framing); the chosen type is recorded in `summary.md`.
+
+### Desk screen (optional triage gate)
+
+Real editorial flows screen submissions *before* assigning reviewers. Enabling
+the desk screen adds a triage node that runs once, ahead of the panel, and can
+**desk-reject** a manuscript (out of scope, incomplete, fatal flaw, or clearly
+below the venue's bar) — short-circuiting the run to a reject without spending
+the 8-reviewer panel, the debate, or the editor. It screens against the target
+journal and the current strictness, and is **fail-open** (any error proceeds to
+the full review). Off by default, so a normal run is unchanged.
+
+```bash
+peerreview paper.pdf --no-tui --desk-screen --journal nature --strictness 5
+```
+
+Enable it with `--desk-screen`, the `desk_screen` TOML key,
+`PEERREVIEW_DESK_SCREEN`, or the web form's checkbox. A desk reject writes
+`desk_screen.md` + a `decision_letter.md`, and `summary.md` records the outcome.
 
 ### As a library
 
@@ -233,8 +297,9 @@ TOML, environment vars, and CLI flags all layer on top of the built-in defaults
 (precedence: defaults → user TOML → project TOML → `--config` → env → flags).
 
 The full knob list: `provider`, `reasoning_model`, `max_debate_rounds`,
-`manuscript_char_budget`, `target_journal`, `journals_dir`, `output_dir`,
-`cache_dir`, `memory_path`, `memory_k`, `data_vendors`, `tool_vendors`. See
+`manuscript_char_budget`, `target_journal`, `journals_dir`, `article_type`,
+`review_strictness`, `desk_screen`, `output_dir`, `cache_dir`, `memory_path`, `memory_k`,
+`data_vendors`, `tool_vendors`. See
 `peerreview.toml.example` for an annotated template.
 
 ## Output

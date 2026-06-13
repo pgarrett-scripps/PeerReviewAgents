@@ -11,6 +11,7 @@ from typing import Any
 
 from fastapi import (
     FastAPI,
+    File,
     Form,
     HTTPException,
     UploadFile,
@@ -22,7 +23,9 @@ from fastapi.staticfiles import StaticFiles
 from starlette.types import Scope
 
 from peerreviewagents.default_config import get_config
+from peerreviewagents.article_types import ARTICLE_TYPES, normalize_article_type
 from peerreviewagents.journals import list_journals, load_journal
+from peerreviewagents.strictness import DEFAULT_LEVEL, LABELS, normalize_strictness
 
 from .bus import EventBus
 from .jobs import AGENT_LAYOUT, JobManager, JobState
@@ -118,12 +121,40 @@ def _register_routes(app: FastAPI) -> None:
         config = get_config(**app.state.config_overrides)
         profiles = list_journals(config)
         profiles.sort(key=lambda p: (p.slug != "general", p.name.lower()))
+        try:
+            default_strictness = normalize_strictness(
+                config.get("review_strictness", DEFAULT_LEVEL)
+            )
+        except ValueError:
+            default_strictness = DEFAULT_LEVEL
+        try:
+            default_article_type = normalize_article_type(config.get("article_type"))
+        except ValueError:
+            default_article_type = ""
         return JSONResponse({
             "journals": [
-                {"slug": p.slug, "name": p.name, "field": p.field}
+                {
+                    "slug": p.slug,
+                    "name": p.name,
+                    "field": p.field,
+                    # Type keys this venue defines caps for, so the form can
+                    # hint which selections carry a word limit.
+                    "article_types": sorted(p.article_types),
+                }
                 for p in profiles
             ],
             "default": config.get("target_journal") or "",
+            # Article-type taxonomy is venue-general, so it's a single list
+            # independent of the chosen journal (caps come from the journal).
+            "article_types": [
+                {"key": at.key, "name": at.name, "description": at.description}
+                for at in ARTICLE_TYPES.values()
+            ],
+            "default_article_type": default_article_type,
+            "default_strictness": default_strictness,
+            "strictness_labels": LABELS,
+            "default_desk_screen": bool(config.get("desk_screen")),
+            "default_use_memory": bool(config.get("use_memory", True)),
         })
 
     # --- jobs ------------------------------------------------------------
@@ -132,6 +163,11 @@ def _register_routes(app: FastAPI) -> None:
     async def create_job(
         manuscript: UploadFile,
         target_journal: str = Form(""),
+        article_type: str = Form(""),
+        review_strictness: str = Form(""),
+        desk_screen: str = Form(""),
+        use_memory: str = Form(""),
+        supplement: UploadFile | None = File(None),
     ) -> JSONResponse:
         if jobs.has_active():
             raise HTTPException(
@@ -144,8 +180,8 @@ def _register_routes(app: FastAPI) -> None:
                 f"unsupported file type {suffix!r}; allowed: {sorted(_ALLOWED_SUFFIXES)}",
             )
 
-        # Per-upload journal selection overrides any server-level default;
-        # an empty value falls through to the server default (if any).
+        # Per-upload journal / strictness selection overrides any server-level
+        # default; an empty value falls through to the server default (if any).
         job_overrides = dict(app.state.config_overrides)
         if target_journal:
             try:
@@ -153,6 +189,27 @@ def _register_routes(app: FastAPI) -> None:
             except FileNotFoundError as exc:
                 raise HTTPException(400, str(exc))
             job_overrides["target_journal"] = target_journal
+        if article_type:
+            try:
+                job_overrides["article_type"] = normalize_article_type(article_type)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc))
+        if review_strictness:
+            try:
+                job_overrides["review_strictness"] = normalize_strictness(review_strictness)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc))
+        low = desk_screen.strip().lower()
+        if low in ("1", "true", "yes", "on"):
+            job_overrides["desk_screen"] = True
+        elif low in ("0", "false", "no", "off"):
+            job_overrides["desk_screen"] = False
+
+        mem = use_memory.strip().lower()
+        if mem in ("1", "true", "yes", "on"):
+            job_overrides["use_memory"] = True
+        elif mem in ("0", "false", "no", "off"):
+            job_overrides["use_memory"] = False
 
         job = jobs.create(manuscript_path="", manuscript_filename=manuscript.filename or "manuscript")
         job_dir = Path(app.state.upload_root) / job.id
@@ -162,11 +219,28 @@ def _register_routes(app: FastAPI) -> None:
             shutil.copyfileobj(manuscript.file, fh)
         job.manuscript_path = str(dest)
 
+        # Optional supplementary information. Saved alongside the manuscript
+        # and handed to the methods_completeness auditor only. Absent = a
+        # normal run; a wrong file type is rejected rather than silently dropped.
+        if supplement is not None and supplement.filename:
+            sup_suffix = Path(supplement.filename).suffix.lower()
+            if sup_suffix not in _ALLOWED_SUFFIXES:
+                raise HTTPException(
+                    400,
+                    f"unsupported SI file type {sup_suffix!r}; "
+                    f"allowed: {sorted(_ALLOWED_SUFFIXES)}",
+                )
+            sup_dest = job_dir / (supplement.filename or f"supplement{sup_suffix}")
+            with sup_dest.open("wb") as fh:
+                shutil.copyfileobj(supplement.file, fh)
+            job_overrides["supplement_path"] = str(sup_dest)
+
         loop = asyncio.get_running_loop()
         bus = EventBus(loop)
         app.state.buses[job.id] = bus
 
         config = get_config(**job_overrides)
+        job.desk_screen = bool(config.get("desk_screen"))
         runner = JobRunner(job, config, bus)
         app.state.runners[job.id] = runner
         jobs.set_active(job.id)

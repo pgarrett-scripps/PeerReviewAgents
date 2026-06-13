@@ -6,8 +6,11 @@ from langchain_core.messages import AIMessage
 
 from peerreviewagents.agents.reviewers import REVIEWER_NAMES
 from peerreviewagents.agents.schemas import (
+    AuditFinding,
+    AuditOutput,
     AuthorRebuttalOutput,
     DebateOutput,
+    DeskScreenOutput,
     EditorDecisionOutput,
     JournalRecommendationsOutput,
     JournalSuggestion,
@@ -25,6 +28,33 @@ SAMPLE = os.path.join(os.path.dirname(__file__), "sample_manuscript.md")
 # LLM call — it patches every agent's make_llm to a FakeLLM that returns
 # the matching instance from .with_structured_output(Schema).invoke(...).
 _CANNED: dict[type, object] = {
+    # Desk screen defaults to "pass" so enabling the gate doesn't change a
+    # canned run unless a test overrides this entry.
+    DeskScreenOutput: DeskScreenOutput(
+        desk_reject=False,
+        rationale="Within scope and complete enough for full review.",
+        reasons=[],
+    ),
+    AuditOutput: AuditOutput(
+        summary="Methods are mostly documented; a few HARD identifiers are missing.",
+        categories_detected=["Cross-cutting", "Computational/ML"],
+        findings=[
+            AuditFinding(
+                category="Computational/ML",
+                item="Random seed",
+                severity="HARD",
+                status="missing",
+                evidence="Training described without any seed or seed-averaging statement.",
+            ),
+            AuditFinding(
+                category="Cross-cutting",
+                item="Code availability",
+                severity="SOFT",
+                status="missing",
+                evidence="No code-availability statement for the custom pipeline.",
+            ),
+        ],
+    ),
     ReviewerOutput: ReviewerOutput(
         score=3,
         confidence=4,
@@ -110,9 +140,11 @@ class FakeLLM:
 def _patch_llms(monkeypatch):
     targets = [
         "peerreviewagents.agents.reviewers.base",
+        "peerreviewagents.agents.auditors.base",
         "peerreviewagents.agents.debate.base",
         "peerreviewagents.agents.synthesis.meta_reviewer",
         "peerreviewagents.agents.author.rebuttal",
+        "peerreviewagents.agents.editor.desk_screen",
         "peerreviewagents.agents.editor.editor_in_chief",
         "peerreviewagents.agents.journal_recommender.recommender",
     ]

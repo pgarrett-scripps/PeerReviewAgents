@@ -20,6 +20,8 @@ JOB_STATUS = ("pending", "running", "done", "error")
 # Display order of the canonical agents in the office. The frontend reads
 # this from /jobs/<id> so it can lay sprites out deterministically.
 AGENT_LAYOUT: list[dict[str, Any]] = [
+    # Optional desk-screen triage gate (only fires when enabled)
+    {"name": "desk_screen",            "label": "Desk Screen",     "role": "editor",    "emoji": "🛂"},
     # Reviewers — 8 desks arranged in a 4x2 grid in the bullpen
     {"name": "reviewer_methodology",   "label": "Methodology",     "role": "reviewer",  "emoji": "🔬"},
     {"name": "reviewer_data_analysis", "label": "Data Analysis",   "role": "reviewer",  "emoji": "📊"},
@@ -29,12 +31,15 @@ AGENT_LAYOUT: list[dict[str, Any]] = [
     {"name": "reviewer_rigor",         "label": "Rigor",           "role": "reviewer",  "emoji": "🧪"},
     {"name": "reviewer_reproducibility","label": "Reproducibility","role": "reviewer",  "emoji": "🔁"},
     {"name": "reviewer_ethics",        "label": "Ethics",          "role": "reviewer",  "emoji": "⚖️"},
+    # Editorial audit lane — factual checklists routed straight to the editor
+    {"name": "audit_methods_completeness", "label": "Methods Audit",  "role": "audit", "emoji": "📋"},
+    {"name": "audit_citation_integrity",   "label": "Citation Audit", "role": "audit", "emoji": "🔗"},
     # Debate stage
     {"name": "advocate",               "label": "Advocate",        "role": "debate",    "emoji": "🗣️"},
     {"name": "skeptic",                "label": "Skeptic",         "role": "debate",    "emoji": "🤨"},
     # Synthesis room
     {"name": "meta_reviewer",          "label": "Area Chair",      "role": "synthesis", "emoji": "🧑‍⚖️"},
-    {"name": "author_rebuttal",        "label": "Author",          "role": "author",    "emoji": "✒️"},
+    {"name": "author_rebuttal",        "label": "Verifier",        "role": "verifier",  "emoji": "🔎"},
     {"name": "editor",                 "label": "Editor-in-Chief", "role": "editor",    "emoji": "👔"},
     # Post-decision: venue suggestions
     {"name": "journal_recommender",    "label": "Journal Scout",   "role": "recommend", "emoji": "🗺️"},
@@ -55,6 +60,9 @@ class JobState:
     decision: str | None = None
     report_dir: str | None = None
     total_cost: float = 0.0
+    # Whether the optional desk-screen triage gate runs for this job, so the
+    # frontend only draws that sprite when it can actually fire.
+    desk_screen: bool = False
     errors: list[str] = field(default_factory=list)
     # Per-agent fields populated from the event stream.
     agent_buffers: dict[str, str] = field(default_factory=dict)
@@ -77,6 +85,7 @@ class JobState:
             "errors": list(self.errors),
             "agent_status": dict(self.agent_status),
             "agent_usage": dict(self.agent_usage),
+            "desk_screen": self.desk_screen,
             "agents": AGENT_LAYOUT,
         }
 

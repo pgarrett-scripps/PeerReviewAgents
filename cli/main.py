@@ -26,10 +26,13 @@ console = Console()
 _NODE_LABELS = {
     "_ingest_start": "Parsing manuscript (PDFs can take a few minutes)",
     "_ingest": "Manuscript ingested",
+    "audit_methods_completeness": "Methods-completeness audit",
+    "audit_citation_integrity": "Citation-integrity audit",
     "advocate": "Advocate argues",
     "skeptic": "Skeptic responds",
     "meta_reviewer": "Area Chair synthesizes",
     "author_rebuttal": "Author rebuts",
+    "desk_screen": "Editor desk-screens (triage)",
     "editor": "Editor-in-Chief decides",
     "journal_recommender": "Journal Scout suggests venues",
 }
@@ -39,6 +42,9 @@ _VALID_DECISIONS = {"accept", "minor", "major", "reject"}
 
 def _run_failed(state: dict) -> str | None:
     """Return a reason string if the run did not produce a real review, else None."""
+    # A desk reject is a valid terminal outcome with no reviewer reports.
+    if state.get("desk_rejected") and state.get("decision") in _VALID_DECISIONS:
+        return None
     if state.get("decision") not in _VALID_DECISIONS:
         return "Editor never produced a valid decision"
     if not state.get("reports"):
@@ -93,6 +99,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--debate-rounds", type=int, dest="max_debate_rounds")
     p.add_argument(
+        "--strictness",
+        type=int,
+        dest="review_strictness",
+        choices=range(1, 6),
+        metavar="{1-5}",
+        help="How harsh the panel is: 1=very lenient, 3=balanced (default), "
+             "5=very strict. Calibrates the reviewer, meta-reviewer, and "
+             "editor.",
+    )
+    p.add_argument(
+        "--desk-screen",
+        dest="desk_screen",
+        action="store_const",
+        const=True,
+        default=None,
+        help="Enable the editorial desk-screen gate: a triage pass that can "
+             "desk-reject (out-of-scope / incomplete / fatal-flaw) before the "
+             "full panel runs. Off by default.",
+    )
+    p.add_argument(
+        "--no-memory",
+        dest="use_memory",
+        action="store_const",
+        const=False,
+        default=None,
+        help="Disable the cross-run memory loop for this run: retrieve no "
+             "past lessons and do not append this run to the log. On by default.",
+    )
+    p.add_argument(
         "--journal",
         dest="target_journal",
         help="Slug of a target journal to review against (see "
@@ -103,7 +138,25 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="List available target-journal slugs and exit.",
     )
+    p.add_argument(
+        "--article-type",
+        dest="article_type",
+        help="Kind of submission being reviewed (see --list-article-types): "
+             "article, letter, communication, perspective, review, "
+             "technical-note, tutorial. No manuscript-type framing if omitted.",
+    )
+    p.add_argument(
+        "--list-article-types",
+        action="store_true",
+        help="List available article-type keys and exit.",
+    )
     p.add_argument("--output-dir", dest="output_dir")
+    p.add_argument(
+        "--si",
+        dest="supplement_path",
+        help="Optional supplementary-information file (pdf/md/tex/docx). Passed "
+             "in full to the methods-completeness auditor only. Ignored if omitted.",
+    )
     p.add_argument("--no-tui", action="store_true", help="run headless")
     p.add_argument("--cache-dir", dest="cache_dir",
                    help="Override the manuscript parsing cache directory.")
@@ -113,7 +166,9 @@ def build_parser() -> argparse.ArgumentParser:
 def config_from_args(args) -> dict:
     overrides = {}
     for key in ("provider", "reasoning_model", "max_debate_rounds",
-                "output_dir", "cache_dir", "target_journal"):
+                "output_dir", "cache_dir", "target_journal", "article_type",
+                "review_strictness", "desk_screen", "use_memory",
+                "supplement_path"):
         val = getattr(args, key, None)
         if val is not None:
             overrides[key] = val
@@ -155,6 +210,49 @@ def _validate_target_journal(config: dict) -> None:
         sys.exit(1)
 
 
+def _validate_strictness(config: dict) -> None:
+    """Fail fast if review_strictness (from any source — flag, env, TOML)
+    isn't an integer 1-5, rather than silently clamping mid-run."""
+    from peerreviewagents.strictness import normalize_strictness
+
+    try:
+        normalize_strictness(config.get("review_strictness"))
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        sys.exit(1)
+
+
+def _print_article_types(config: dict) -> None:
+    """Print the selectable article-type keys and what each is for."""
+    from peerreviewagents.article_types import ARTICLE_TYPES
+
+    default = config.get("article_type") or ""
+    console.print(
+        "[bold]Available article types[/bold] (use with --article-type <key>):\n"
+    )
+    for at in ARTICLE_TYPES.values():
+        marker = "  [dim](selected)[/dim]" if at.key == default else ""
+        console.print(f"  [cyan]{at.key}[/cyan] — {at.name}: {at.description}{marker}")
+    console.print(
+        "\nPer-type word limits come from the target journal's profile. "
+        "Omit [cyan]--article-type[/cyan] for no manuscript-type framing."
+    )
+
+
+def _validate_article_type(config: dict) -> None:
+    """Fail fast if article_type (from any source) isn't a known type key."""
+    from peerreviewagents.article_types import normalize_article_type
+
+    try:
+        normalize_article_type(config.get("article_type"))
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        console.print(
+            "Run [bold]peerreview --list-article-types[/bold] to see valid keys."
+        )
+        sys.exit(1)
+
+
 def run_headless(manuscript: str, config: dict) -> None:
     console.print(Panel.fit(f"[bold]PeerReviewAgents[/bold]\n{manuscript}", border_style="cyan"))
     graph = PeerReviewGraph(config)
@@ -183,19 +281,24 @@ def run_headless(manuscript: str, config: dict) -> None:
         pass
     cost = final.get("total_cost") or 0.0
     cost_line = f"\nCost: ${cost:.4f}" if cost > 0 else ""
+    outcome_hint = (
+        f"\n\nWhen you know the venue's outcome, record it with:\n"
+        f"  peerreview outcome {job_id} {{accepted|rejected|minor|major|withdrawn}}"
+        if config.get("use_memory", True) else ""
+    )
     console.print(Panel.fit(
         f"[bold]Decision:[/bold] {final['decision']}\n"
         f"Reports: {run_dir}\n"
-        f"Job ID: {job_id}{cost_line}\n\n"
-        f"When you know the venue's outcome, record it with:\n"
-        f"  peerreview outcome {job_id} {{accepted|rejected|minor|major|withdrawn}}",
+        f"Job ID: {job_id}{cost_line}{outcome_hint}",
         border_style="green",
     ))
 
 
 def _append_pending_memory(state: dict, job_id: str, config: dict) -> None:
     """Write a pending entry to the review memory log. Called from both
-    the headless CLI and the TUI."""
+    the headless CLI and the TUI. No-op when memory is disabled for the run."""
+    if not config.get("use_memory", True):
+        return
     sections = state.get("sections") or {}
     abstract = sections.get("abstract") or state.get("manuscript_md", "")[:500]
     MemoryLog(config["memory_path"]).append_pending(
@@ -221,7 +324,8 @@ def run_server(args) -> None:
 
     overrides: dict = {}
     for key in ("provider", "reasoning_model", "max_debate_rounds",
-                "output_dir", "cache_dir", "target_journal"):
+                "output_dir", "cache_dir", "target_journal", "article_type",
+                "review_strictness", "desk_screen"):
         val = getattr(args, key, None)
         if val is not None:
             overrides[key] = val
@@ -302,6 +406,17 @@ def run() -> None:
         sp.add_argument("--journal", dest="target_journal", default=None,
                         help="Default target-journal slug for jobs (the web "
                              "form can override per-upload).")
+        sp.add_argument("--article-type", dest="article_type", default=None,
+                        help="Default article-type key for jobs (the web "
+                             "form can override per-upload).")
+        sp.add_argument("--strictness", type=int, dest="review_strictness",
+                        choices=range(1, 6), metavar="{1-5}", default=None,
+                        help="Default review strictness for jobs 1-5 (the web "
+                             "form can override per-upload).")
+        sp.add_argument("--desk-screen", dest="desk_screen",
+                        action="store_const", const=True, default=None,
+                        help="Enable the desk-screen gate by default for jobs "
+                             "(the web form can override per-upload).")
         run_server(sp.parse_args(argv[1:]))
         return
 
@@ -328,6 +443,9 @@ def run() -> None:
     if args.list_journals:
         _print_journals(config_from_args(args))
         return
+    if args.list_article_types:
+        _print_article_types(config_from_args(args))
+        return
     if not args.manuscript:
         console.print("[red]Provide a manuscript path or use the `serve` subcommand.[/red] See --help.")
         sys.exit(1)
@@ -336,6 +454,8 @@ def run() -> None:
         sys.exit(1)
     config = config_from_args(args)
     _validate_target_journal(config)
+    _validate_article_type(config)
+    _validate_strictness(config)
 
     if args.no_tui:
         run_headless(args.manuscript, config)

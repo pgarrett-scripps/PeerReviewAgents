@@ -37,7 +37,41 @@ actually being submitted to, rather than in a vacuum.
 | `max_references`     | int         | Reference cap (0 / unset = none).                              |
 | `guidelines`         | string      | Free-text author/reviewer guidelines, evaluation criteria,     |
 |                      |             | structure requirements, data/code policies, etc.              |
+| `article_types`      | table       | Optional per-manuscript-type overrides — see below.            |
 | `last_updated`       | string      | `YYYY-MM-DD` you last verified these values.                   |
+
+## Article types
+
+The *kind* of submission — a full research Article, a Letter, a Review, a
+Perspective, etc. — is a venue-general taxonomy: what a "Letter" is, and how a
+reviewer should weigh it, barely changes between journals. So the description
+and review framing for each type live once in
+[`peerreviewagents/article_types.py`](../article_types.py), shared by every
+venue. The selectable keys are `article`, `letter`, `communication`,
+`perspective`, `review`, `technical-note`, and `tutorial`.
+
+A journal profile only overrides the **venue-specific specifics** that actually
+differ — word/abstract caps and handling notes — as optional `[article_types.<key>]`
+tables (these must come *after* all the top-level scalar keys, since a TOML
+table header ends the top-level section):
+
+```toml
+[article_types.article]
+max_words = 8000
+
+[article_types.review]
+max_words = 6000
+notes = "Peer-reviewed; a bare list of citations is inadequate."
+```
+
+Each override field is optional. A venue that doesn't differentiate by type
+simply omits the section; a type the user selects that the venue doesn't list
+still gets the shared general framing, just without per-venue caps. The
+selected type is chosen with `target_journal`-style precedence: `article_type`
+in `peerreview.toml`, `PEERREVIEW_ARTICLE_TYPE`, or per-run
+`peerreview --article-type <key>` (list options with
+`peerreview --list-article-types`). Leave it unset for no manuscript-type
+framing.
 
 Impact factors and acceptance rates drift year to year — treat the values here
 as approximate and record `impact_factor_year` / `last_updated` so a stale

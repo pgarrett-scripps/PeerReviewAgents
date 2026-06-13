@@ -15,3 +15,6 @@ reports/*
 
 # User-uploaded manuscripts (web UI drop zone)
 .peerreview-uploads/
+
+# Evaluation corpus + runs (PDFs, jsonl, reports)
+data/

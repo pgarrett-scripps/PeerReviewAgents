@@ -1,0 +1,29 @@
+# Keep the build context small and avoid baking secrets/artifacts into layers.
+.git
+.gitignore
+.venv
+venv
+__pycache__
+*.py[cod]
+*.egg-info
+.eggs
+build
+dist
+.pytest_cache
+.ruff_cache
+
+# Secrets — provided at runtime via env_file, never copied into the image.
+.env
+
+# Generated / user data — mounted as volumes at runtime instead.
+reports
+.peerreview-uploads
+data
+
+# Docs and dev-only material not needed in the runtime image.
+paper
+tests
+README.md.bak
+Dockerfile
+docker-compose.yml
+.dockerignore

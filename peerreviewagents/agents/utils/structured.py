@@ -23,11 +23,20 @@ Two entry points:
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel
+
+# Transient provider/transport failures (e.g. OpenRouter "Provider returned
+# error", rate limits, dropped connections) surface as exceptions from
+# ``structured.invoke``. Retry the call a few times with linear backoff
+# before letting it bubble up to the agent's node-level error handler, so a
+# single upstream blip doesn't silently drop an agent from the run.
+_MAX_PROVIDER_ATTEMPTS = 3
+_RETRY_BACKOFF_S = 2.0
 
 from ...runtime.providers import provider_spec
 from .agent_utils import (
@@ -112,7 +121,7 @@ def _try_structured(
 ) -> StructuredResult:
     spec = provider_spec(config)
     structured = _bind(llm, schema, spec.structured_method)
-    result = structured.invoke(messages)
+    result = _invoke_with_retries(structured, messages)
     parsed, cost = _unpack(result)
     if parsed is not None:
         return StructuredResult(instance=parsed, cost=cost)
@@ -123,13 +132,35 @@ def _try_structured(
         f"Your previous response did not produce a valid {schema.__name__}. "
         "Respond again, strictly matching the schema. No prose, no extra fields."
     ))
-    result2 = structured.invoke(messages + [retry_msg])
+    result2 = _invoke_with_retries(structured, messages + [retry_msg])
     parsed2, cost2 = _unpack(result2)
     if parsed2 is not None:
         return StructuredResult(instance=parsed2, cost=cost + cost2)
 
     err = _parsing_error(result2)
     raise ValueError(f"structured-output validation failed after retry: {err}")
+
+
+def _invoke_with_retries(structured, messages: list) -> Any:
+    """Invoke a structured-output chain, retrying transient provider errors.
+
+    Retries up to ``_MAX_PROVIDER_ATTEMPTS`` times on any exception raised by
+    ``invoke`` (provider/transport failures), with linear backoff between
+    attempts. The final exception is re-raised if every attempt fails, so the
+    agent's existing try/except still records a node-level error. Schema
+    *validation* failures don't raise here (they return ``parsed=None``) and
+    are handled separately by the caller's sharpened-prompt retry.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(_MAX_PROVIDER_ATTEMPTS):
+        try:
+            return structured.invoke(messages)
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt < _MAX_PROVIDER_ATTEMPTS - 1:
+                time.sleep(_RETRY_BACKOFF_S * (attempt + 1))
+    assert last_exc is not None
+    raise last_exc
 
 
 def _bind(llm, schema: type[BaseModel], method: str):

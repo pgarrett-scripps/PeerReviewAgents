@@ -11,22 +11,22 @@ default:
 
 # Create the uv-managed venv and install the project (editable)
 install:
-    uv venv
+    [ -d .venv ] || uv venv
     uv pip install -e .
 
 # Install with every optional extra
 install-all:
-    uv venv
+    [ -d .venv ] || uv venv
     uv pip install -e ".[research]"
 
 # Install with a chosen extras group: `just install-extras research`
 install-extras extras:
-    uv venv
+    [ -d .venv ] || uv venv
     uv pip install -e ".[{{extras}}]"
 
 # Install dev/test tooling alongside the project
 install-dev:
-    uv venv
+    [ -d .venv ] || uv venv
     uv pip install -e ".[research]"
     uv pip install pytest ruff
 
@@ -116,6 +116,96 @@ fmt-check:
 
 # Lint + format-check + tests
 check: lint fmt-check test
+
+# --- Evaluation harness -----------------------------------------------------
+# Requires the eval extra:  just install-extras eval
+# (openreview-py for the corpus, matplotlib for the figure).
+
+eval_venue := "ICLR.cc/2025/Conference"
+eval_dir := "data/eval"
+
+# Inspect a venue's review/decision fields before fetching (no LLM, no cost)
+eval-inspect venue=eval_venue:
+    uv run python -m peerreviewagents.eval inspect --venue {{venue}}
+
+# Fetch a balanced labeled corpus (default 10 papers) into data/eval/
+eval-fetch limit="10" venue=eval_venue:
+    uv run python -m peerreviewagents.eval fetch --venue {{venue}} --limit {{limit}} --out {{eval_dir}}
+
+# Agreement phase: review every corpus paper once (resumable). Costs LLM calls.
+eval-run *args:
+    uv run python -m peerreviewagents.eval run --dir {{eval_dir}} --repeats 1 {{args}}
+
+# Consistency phase: 3x runs on a subset. Usage: just eval-consistency ID1,ID2,ID3
+eval-consistency ids:
+    uv run python -m peerreviewagents.eval run --dir {{eval_dir}} --repeats 3 --only {{ids}}
+
+# Compute the agreement + consistency report (prints + writes data/eval/report.*)
+eval-metrics:
+    uv run python -m peerreviewagents.eval metrics --dir {{eval_dir}}
+
+# Render the paper figure (SVG+PNG) into paper/figures/eval_results.*
+eval-figure:
+    uv run python -m peerreviewagents.eval figure --dir {{eval_dir}} --out paper/figures/eval_results
+
+# Full agreement pilot: fetch -> run all once -> metrics -> figure.
+# (Consistency is a separate, cheaper step — pick ids, then `just eval-consistency`.)
+eval-pilot limit="10":
+    just eval-fetch {{limit}}
+    just eval-run
+    just eval-metrics
+    just eval-figure
+
+# --- Ablation pipelines (reproducible; rerun any time) ----------------------
+# Shared conditioning for the ablations, matched to the headline run
+# (model owl-alpha + conference profile + conference-paper type). Override on
+# the command line if you change the comparison model, e.g.:
+#   just eval-model="openrouter/some-model" eval-ablate-debate
+eval_model := "openrouter/owl-alpha"
+eval_cond := "--provider openrouter --model " + eval_model + " --journal ml-conference --article-type conference-paper"
+
+# Debate ablation: review all corpus papers with the advocate/skeptic debate
+# OFF, into its own runs file, then score it. Compare report_nodebate.md
+# against the debate-ON report.md.
+eval-ablate-debate:
+    uv run python -m peerreviewagents.eval run --dir {{eval_dir}} {{eval_cond}} \
+        --no-debate --runs-out {{eval_dir}}/runs_nodebate.jsonl \
+        --leakage-note "debate-OFF ablation; conference profile"
+    uv run python -m peerreviewagents.eval metrics --dir {{eval_dir}} \
+        --runs {{eval_dir}}/runs_nodebate.jsonl --out {{eval_dir}}/report_nodebate
+    just eval-ablation-figure
+
+# Regenerate the ablation-ladder figure (single-LLM -> no-debate -> full).
+# Needs the three runs files present. Override `baseline` if the comparison
+# model changed (the baseline file is model-namespaced).
+eval-ablation-figure baseline="data/eval/runs_baseline_openrouter-owl-alpha.jsonl":
+    uv run python -m peerreviewagents.eval ablation-figure --dir {{eval_dir}} \
+        --runs {{baseline}},{{eval_dir}}/runs_nodebate.jsonl,{{eval_dir}}/runs.jsonl \
+        --labels "Single-LLM,No debate,Full pipeline" \
+        --out paper/figures/eval_ablation --title "Structure ablation (n=30)"
+
+# Strictness sweep: run a subset of papers at every strictness level (1..5),
+# each to its own runs file, then tabulate how the weighted score moves.
+# Usage: just eval-strictness-sweep "ID1,ID2,ID3"
+eval-strictness-sweep ids:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for L in 1 2 3 4 5; do
+      uv run python -m peerreviewagents.eval run --dir {{eval_dir}} {{eval_cond}} \
+        --strictness "$L" --only "{{ids}}" \
+        --runs-out "{{eval_dir}}/runs_strict$L.jsonl" \
+        --leakage-note "strictness sweep L=$L; conference profile"
+    done
+    uv run python -m peerreviewagents.eval sweep --dir {{eval_dir}} \
+      --runs {{eval_dir}}/runs_strict1.jsonl,{{eval_dir}}/runs_strict2.jsonl,{{eval_dir}}/runs_strict3.jsonl,{{eval_dir}}/runs_strict4.jsonl,{{eval_dir}}/runs_strict5.jsonl \
+      --labels 1,2,3,4,5 --out {{eval_dir}}/sweep_strictness
+    just eval-strictness-figure
+
+# Regenerate the strictness-sweep figure from the per-level runs files.
+eval-strictness-figure:
+    uv run python -m peerreviewagents.eval strictness-figure --dir {{eval_dir}} \
+        --runs {{eval_dir}}/runs_strict1.jsonl,{{eval_dir}}/runs_strict2.jsonl,{{eval_dir}}/runs_strict3.jsonl,{{eval_dir}}/runs_strict4.jsonl,{{eval_dir}}/runs_strict5.jsonl \
+        --labels "1,2,3,4,5" --out paper/figures/eval_strictness
 
 # --- Manuscript cache -------------------------------------------------------
 

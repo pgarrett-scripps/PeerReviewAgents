@@ -37,11 +37,29 @@ reasoning_model = "anthropic/claude-opus-4.1"
 debate_rounds = 2
 
 # ---------------------------------------------------------------------------
+# Review strictness
+# ---------------------------------------------------------------------------
+#
+# How easy or harsh the panel is, as an integer 1-5: 1=very lenient,
+# 3=balanced (default), 5=very strict. The level is rendered to a directive
+# injected into the reviewer, meta-reviewer, and editor prompts. Level 3
+# injects nothing, so a default run behaves exactly as before. Override
+# per-run with `--strictness <1-5>` (or PEERREVIEW_STRICTNESS).
+# strictness = 3
+
+# Optional editorial desk-screen gate. When true, a triage node runs once
+# before the reviewer fan-out and may desk-reject the manuscript (out of
+# scope / incomplete / fatal flaw / below the venue bar), short-circuiting
+# the run to a reject without spending the panel. Off by default. Override
+# per-run with `--desk-screen` (or PEERREVIEW_DESK_SCREEN).
+# desk_screen = false
+
+# ---------------------------------------------------------------------------
 # Target journal
 # ---------------------------------------------------------------------------
 #
 # Review the manuscript against a specific venue. The value is the slug of
-# a profile in the journals/ directory (the filename without .toml), e.g.
+# a bundled journal profile (the filename without .toml), e.g.
 # "nature-methods" or "bioinformatics". The selected journal's scope,
 # standards, and submission limits are injected into the reviewer,
 # meta-reviewer, editor, and recommender prompts. Override per-run with
@@ -54,8 +72,22 @@ debate_rounds = 2
 # target_journal = "general"
 
 # Directory holding journal profile .toml files. Leave unset to use the
-# repo-root journals/ directory.
-# journals_dir = "./journals"
+# profiles bundled inside the peerreviewagents package. Set to point at your
+# own profiles directory (copy the bundled _template.toml as a starting point).
+# journals_dir = "./my-journals"
+
+# ---------------------------------------------------------------------------
+# Article type
+# ---------------------------------------------------------------------------
+#
+# The kind of submission being reviewed. The taxonomy is venue-general — one
+# of: article, letter, communication, perspective, review, technical-note,
+# tutorial (list them with `peerreview --list-article-types`). Naming the type
+# tells the panel how to weigh the work (e.g. a Letter or Review is not held to
+# a research Article's bar for novel data). Any per-type word limits come from
+# the target journal's profile. Override per-run with `--article-type <key>`
+# (or PEERREVIEW_ARTICLE_TYPE). Default is "" — no manuscript-type framing.
+# article_type = ""
 
 # ---------------------------------------------------------------------------
 # Research vendors

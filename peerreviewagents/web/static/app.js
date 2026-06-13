@@ -35,7 +35,6 @@ const els = {
     panelMeta:            document.getElementById('panel-meta'),
     panelBody:            document.getElementById('panel-body'),
     panelClose:           document.getElementById('panel-close'),
-    panelExpand:          document.getElementById('panel-expand'),
     // Completion overlay (replaces the legacy bottom banner).
     completion:           document.getElementById('completion'),
     completionTitle:      document.getElementById('completion-title'),
@@ -86,63 +85,121 @@ function computeLayout(width, height) {
     const innerW = width  - margin * 2;
     const innerH = height - margin * 2;
 
+    // Three full-height zones with even gutters so the room reads as three
+    // tidy columns instead of boxes floating at different heights. Caption
+    // space is reserved at the top of each zone.
+    const labelPad = 34;
     const reviewersBox = {
         x: margin,
         y: margin,
         w: innerW * 0.42,
-        h: innerH * 0.85,
+        h: innerH,
     };
     const debateBox = {
-        x: margin + innerW * 0.45,
-        y: margin + innerH * 0.10,
-        w: innerW * 0.20,
-        h: innerH * 0.40,
+        x: margin + innerW * 0.46,
+        y: margin,
+        w: innerW * 0.18,
+        h: innerH,
     };
     const synthesisBox = {
-        x: margin + innerW * 0.70,
-        y: margin + innerH * 0.10,
-        w: innerW * 0.30,
-        h: innerH * 0.85,
+        x: margin + innerW * 0.68,
+        y: margin,
+        w: innerW * 0.32,
+        h: innerH,
     };
 
     const positions = new Map();
 
-    // 4x2 grid for the 8 reviewers (column-major so rows feel tidy)
+    // Evenly distribute `count` rows down a zone's body (the area below its
+    // caption) so the column is vertically centered rather than top-heavy.
+    const rowY = (box, idx, count) => {
+        const top = box.y + labelPad;
+        const usable = box.h - labelPad;
+        return top + (usable / (count + 1)) * (idx + 1);
+    };
+
+    // Optional desk-screen triage gate sits at the top of the bullpen, as
+    // the entrance every manuscript passes before the reviewers. Only drawn
+    // when it's actually enabled for this job (otherwise it would linger as
+    // a perpetually-pending sprite).
+    let gridTop = reviewersBox.y + labelPad;
+    const gridBottom = reviewersBox.y + reviewersBox.h;
+    if (state.job && state.job.desk_screen) {
+        const gateY = reviewersBox.y + labelPad + 4;
+        positions.set('desk_screen', {
+            x: reviewersBox.x + reviewersBox.w * 0.5,
+            y: gateY,
+        });
+        gridTop = gateY + 58;   // push the grid below the gate
+    }
+
+    // Audit lane: a row along the bottom of the bullpen. Auditors fan out
+    // alongside the reviewers but their reports route to the editor, so they
+    // sit under the reviewer grid behind a divider.
+    const auditNames = state.agents
+        .filter(a => a.role === 'audit')
+        .map(a => a.name);
+    const auditBandH = auditNames.length ? 110 : 0;
+    const reviewerGridBottom = gridBottom - auditBandH;
+
+    // 4x2 grid for the 8 reviewers, centered in the bullpen body above the
+    // audit band.
     const reviewerNames = state.agents
         .filter(a => a.role === 'reviewer')
         .map(a => a.name);
     const cols = 4, rows = 2;
     const colStep = reviewersBox.w / (cols + 1);
-    const rowStep = (reviewersBox.h * 0.7) / (rows + 1);
+    const gridH = reviewerGridBottom - gridTop;
     reviewerNames.forEach((name, i) => {
         const col = i % cols;
         const row = Math.floor(i / cols);
         positions.set(name, {
             x: reviewersBox.x + colStep * (col + 1),
-            y: reviewersBox.y + rowStep * (row + 1),
+            y: gridTop + (gridH / (rows + 1)) * (row + 1),
         });
     });
-    // Debate stage: two podiums facing each other
+
+    let auditBand = null;
+    if (auditNames.length) {
+        auditBand = {
+            x: reviewersBox.x,
+            y: reviewerGridBottom + 6,
+            w: reviewersBox.w,
+            h: auditBandH - 6,
+        };
+        const aStep = reviewersBox.w / (auditNames.length + 1);
+        // Pin the sprite center to a fixed clearance above the bullpen's
+        // bottom edge so the disc (26px up) and the label beneath it (~50px
+        // down) both stay inside the zone instead of spilling over.
+        const auditY = gridBottom - 60;
+        auditNames.forEach((name, i) => {
+            positions.set(name, {
+                x: reviewersBox.x + aStep * (i + 1),
+                y: auditY,
+            });
+        });
+    }
+
+    // Debate stage: two podiums facing each other at mid-height.
     positions.set('advocate', {
-        x: debateBox.x + debateBox.w * 0.25,
-        y: debateBox.y + debateBox.h * 0.5,
+        x: debateBox.x + debateBox.w * 0.30,
+        y: rowY(debateBox, 0, 1),
     });
     positions.set('skeptic', {
-        x: debateBox.x + debateBox.w * 0.75,
-        y: debateBox.y + debateBox.h * 0.5,
+        x: debateBox.x + debateBox.w * 0.70,
+        y: rowY(debateBox, 0, 1),
     });
 
-    // Synthesis row
-    const synthNames = ['meta_reviewer', 'author_rebuttal', 'editor'];
-    const synthStep = synthesisBox.h / (synthNames.length + 1);
+    // Editorial column: synthesis → author → editor → journal scout.
+    const synthNames = ['meta_reviewer', 'author_rebuttal', 'editor', 'journal_recommender'];
     synthNames.forEach((name, i) => {
         positions.set(name, {
             x: synthesisBox.x + synthesisBox.w * 0.5,
-            y: synthesisBox.y + synthStep * (i + 1),
+            y: rowY(synthesisBox, i, synthNames.length),
         });
     });
 
-    return { positions, reviewersBox, debateBox, synthesisBox };
+    return { positions, reviewersBox, debateBox, synthesisBox, auditBand };
 }
 
 // --- Pixi bootstrapping ------------------------------------------------
@@ -198,6 +255,28 @@ function drawFloor() {
         t.position.set(z.box.x + 14, z.box.y + 10);
         labelLayer.addChild(t);
     }
+
+    // Audit lane divider + caption inside the reviewers bullpen.
+    if (layout.auditBand) {
+        const b = layout.auditBand;
+        const line = new Graphics();
+        line.moveTo(b.x + 12, b.y).lineTo(b.x + b.w - 12, b.y)
+            .stroke({ color: 0x303749, width: 1, alpha: 0.9 });
+        floorLayer.addChild(line);
+
+        const t = new Text({
+            text: 'AUDITS → EDITOR',
+            style: new TextStyle({
+                fontFamily: 'system-ui, sans-serif',
+                fontSize: 10,
+                fontWeight: '700',
+                fill: 0x6e7691,
+                letterSpacing: 2,
+            }),
+        });
+        t.position.set(b.x + 14, b.y + 4);
+        labelLayer.addChild(t);
+    }
 }
 
 // --- Sprite construction ----------------------------------------------
@@ -211,10 +290,12 @@ const STATUS_COLOR = {
 
 const ROLE_TINT = {
     reviewer:  0x6ea8ff,
+    audit:     0xf2c14e,
     debate:    0xb388ff,
     synthesis: 0x88d4c2,
-    author:    0xffadad,
+    verifier:  0xffadad,
     editor:    0xff9f1c,
+    recommend: 0x9fd6ff,
 };
 
 function buildSprite(agent) {
@@ -276,9 +357,23 @@ function setSpriteState(sprite, status) {
     if (!sprite) return;
     sprite._state = status;
     const color = STATUS_COLOR[status] ?? STATUS_COLOR.pending;
-    const { ring, bubble } = sprite._parts;
+    const isError = status === 'error';
+    const { ring, disc, bubble } = sprite._parts;
+
+    // Failed agents become a filled red circle so they read as failures at
+    // a glance, not just a thin ring tint.
     ring.clear();
-    ring.circle(0, 0, 32).stroke({ color, width: 3, alpha: status === 'pending' ? 0.4 : 0.9 });
+    ring.circle(0, 0, 32).stroke({
+        color,
+        width: isError ? 4 : 3,
+        alpha: status === 'pending' ? 0.4 : 0.95,
+    });
+
+    disc.clear();
+    disc.circle(0, 0, 26)
+        .fill({ color: isError ? 0x3a1722 : 0x1c2030 })
+        .stroke({ color: isError ? STATUS_COLOR.error : 0x2a3145, width: 2 });
+
     bubble.visible = status === 'running';
 }
 
@@ -326,7 +421,7 @@ app.ticker.add((ticker) => {
     }
 });
 
-// --- Side panel --------------------------------------------------------
+// --- Agent report modal ------------------------------------------------
 
 function openPanel(name) {
     state.selected = name;
@@ -338,36 +433,28 @@ function openPanel(name) {
         els.panelTitle.textContent = name;
         els.panelEmoji.textContent = '·';
     }
-    els.panel.classList.remove('panel-collapsed');
-    els.panel.setAttribute('aria-hidden', 'false');
-    // The grid layout is driven by classes on the stage; this animates
-    // the room/panel split open without absolute positioning tricks.
-    els.stage.classList.add('panel-open');
+    els.panelBody.scrollTop = 0;
+    els.panel.hidden = false;
     refreshPanel();
     startPanelPoll();
-    // Let the room canvas resize into the new column width.
-    window.dispatchEvent(new Event('resize'));
 }
 
 function closePanel() {
     state.selected = null;
     stopPanelPoll();
-    els.stage.classList.remove('panel-open', 'panel-expanded');
-    els.panel.classList.add('panel-collapsed');
-    els.panel.setAttribute('aria-hidden', 'true');
-    els.panelExpand.textContent = '⇱';
-    window.dispatchEvent(new Event('resize'));
-}
-
-function togglePanelExpand() {
-    const expanded = els.stage.classList.toggle('panel-expanded');
-    els.panelExpand.textContent = expanded ? '⇲' : '⇱';
-    els.panelExpand.title = expanded ? 'Shrink' : 'Expand';
-    window.dispatchEvent(new Event('resize'));
+    els.panel.hidden = true;
 }
 
 els.panelClose.addEventListener('click', closePanel);
-els.panelExpand.addEventListener('click', togglePanelExpand);
+els.panel.addEventListener('click', (e) => {
+    // Click on the backdrop (not the card) dismisses.
+    if (e.target instanceof HTMLElement && e.target.dataset.close === '1') {
+        closePanel();
+    }
+});
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !els.panel.hidden) closePanel();
+});
 
 // --- completion overlay handlers --------------------------------------
 
@@ -572,6 +659,15 @@ function handleEvent(ev) {
             }
             // Force one more refresh so the panel grabs the final body
             // even if the polling tick is mid-interval.
+            if (state.selected === ev.agent) refreshPanel();
+            break;
+        }
+        case 'node_error': {
+            // An agent caught an exception and produced no usable output.
+            // Mark its desk red; this wins over a later/earlier 'done'.
+            state.statusByAgent.set(ev.agent, 'error');
+            setSpriteState(state.sprites.get(ev.agent), 'error');
+            if (ev.text) console.warn(`[${ev.agent}] ${ev.text}`);
             if (state.selected === ev.agent) refreshPanel();
             break;
         }

@@ -65,6 +65,124 @@ class ReviewerOutput(BaseModel):
         return "\n".join(parts)
 
 
+# --- Editorial compliance audit ---------------------------------------------
+
+Severity = Literal["HARD", "SOFT"]
+FindingStatus = Literal["present", "missing", "unverifiable"]
+
+
+class AuditFinding(BaseModel):
+    """One checklist item the auditor evaluated against the manuscript."""
+
+    category: str = Field(
+        ...,
+        description="Checklist category this item belongs to (e.g. 'Antibodies', "
+                    "'Cell lines', 'Model organisms', 'Computational/ML', "
+                    "'Protocol provenance', 'Reference resolvability').",
+    )
+    item: str = Field(
+        ...,
+        description="The specific identifier or detail checked (e.g. 'Antibody "
+                    "catalog number', 'RRID', 'Random seed', 'Reference resolves "
+                    "to a protocol', 'Claim supported by cited work').",
+    )
+    severity: Severity = Field(
+        ...,
+        description="HARD = if the trigger is present and this is absent, the work "
+                    "cannot be reproduced/verified (you cannot obtain the same "
+                    "input or rerun it). SOFT = recommended for full "
+                    "reproducibility but not strictly blocking.",
+    )
+    status: FindingStatus = Field(
+        ...,
+        description="present = documented in the manuscript; missing = the "
+                    "triggering method is present but the identifier is absent; "
+                    "unverifiable = referenced/claimed but it cannot be confirmed "
+                    "from the manuscript alone (e.g. an 'as previously described' "
+                    "citation whose contents you cannot check).",
+    )
+    evidence: str = Field(
+        ...,
+        description="For present: where it is stated. For missing/unverifiable: the "
+                    "exact sentence, citation, reagent, or method that triggered the "
+                    "check, so the editor and authors can locate it.",
+    )
+
+
+class AuditOutput(BaseModel):
+    """A compliance auditor's factual checklist result.
+
+    Deliberately has NO score: audits feed only the editor as a compliance
+    dossier and must not be averaged into the panel's scientific-merit
+    verdict. The editor converts HARD gaps into required revisions and SOFT
+    gaps into minor suggestions.
+    """
+
+    summary: str = Field(
+        ...,
+        description="One short paragraph: which categories applied and the overall "
+                    "completeness picture. Factual reporting, not a quality verdict.",
+    )
+    categories_detected: list[str] = Field(
+        default_factory=list,
+        description="Checklist categories whose triggers appear in the manuscript "
+                    "and were therefore checked. Categories with no trigger are "
+                    "skipped, not reported as gaps.",
+    )
+    findings: list[AuditFinding] = Field(
+        default_factory=list,
+        description="One entry per checked item. Always report missing/unverifiable "
+                    "items; you may also list notable present ones for the record.",
+    )
+
+    def hard_gaps(self) -> int:
+        """HARD items that are outright missing — true reproduction blockers."""
+        return sum(1 for f in self.findings if f.severity == "HARD" and f.status == "missing")
+
+    def soft_gaps(self) -> int:
+        """SOFT-missing plus anything unverifiable (flagged as a question, not a blocker)."""
+        return sum(
+            1
+            for f in self.findings
+            if (f.severity == "SOFT" and f.status == "missing") or f.status == "unverifiable"
+        )
+
+    def to_markdown(self, title: str = "Editorial Compliance Audit") -> str:
+        hard = [f for f in self.findings if f.severity == "HARD" and f.status == "missing"]
+        soft = [f for f in self.findings if f.severity == "SOFT" and f.status == "missing"]
+        unver = [f for f in self.findings if f.status == "unverifiable"]
+        present = [f for f in self.findings if f.status == "present"]
+
+        parts: list[str] = [
+            f"# {title}",
+            "",
+            "## Summary",
+            self.summary.strip() or "(no summary provided)",
+        ]
+        if self.categories_detected:
+            parts += ["", "## Categories checked", *(f"- {c}" for c in self.categories_detected)]
+        parts += [
+            "",
+            f"**HARD gaps (blocking): {len(hard)}** · "
+            f"SOFT gaps: {len(soft)} · unverifiable: {len(unver)}",
+        ]
+        if hard:
+            parts += ["", "## HARD gaps — reproduction blockers", *(_finding_line(f) for f in hard)]
+        if unver:
+            parts += ["", "## Unverifiable (raise as questions)", *(_finding_line(f) for f in unver)]
+        if soft:
+            parts += ["", "## SOFT gaps — recommended", *(_finding_line(f) for f in soft)]
+        if present:
+            parts += ["", "## Documented (for the record)", *(_finding_line(f) for f in present)]
+        if not self.findings:
+            parts += ["", "_No applicable checklist items were missing._"]
+        return "\n".join(parts)
+
+
+def _finding_line(f: "AuditFinding") -> str:
+    return f"- **[{f.category}] {f.item}** — {f.evidence.strip()}"
+
+
 # --- Debate turn ------------------------------------------------------------
 
 
@@ -212,6 +330,51 @@ class EditorDecisionOutput(BaseModel):
         if self.minor_suggestions:
             parts += ["", "## Minor Suggestions"]
             parts += (f"- {s}" for s in self.minor_suggestions)
+        return "\n".join(parts)
+
+
+# --- Desk screen (optional triage gate) -------------------------------------
+
+
+class DeskScreenOutput(BaseModel):
+    """Editorial triage: whether to desk-reject before the full review.
+
+    Emitted by the optional desk-screen node that runs once, ahead of the
+    reviewer fan-out. A ``desk_reject`` of ``True`` short-circuits the
+    pipeline to a reject without spending the panel; ``False`` lets the
+    manuscript proceed to the full review unchanged.
+    """
+
+    desk_reject: bool = Field(
+        ...,
+        description="True to reject the manuscript at the desk without sending "
+                    "it out for full review; False to proceed to the panel.",
+    )
+    rationale: str = Field(
+        ...,
+        description="One short paragraph explaining the screening decision, "
+                    "addressed to the authors.",
+    )
+    reasons: list[str] = Field(
+        default_factory=list,
+        description="Specific grounds for a desk reject (e.g. out of scope for "
+                    "the venue, incomplete submission, fundamental flaw, clearly "
+                    "below the venue's bar). Empty when the manuscript passes.",
+    )
+
+    def to_markdown(self) -> str:
+        verdict = "Desk Reject" if self.desk_reject else "Passed Desk Screen"
+        parts: list[str] = [
+            "# Editorial Desk Screen",
+            "",
+            f"**Outcome:** {verdict}",
+            "",
+            "## Rationale",
+            self.rationale.strip(),
+        ]
+        if self.reasons:
+            parts += ["", "## Grounds"]
+            parts += (f"- {r}" for r in self.reasons)
         return "\n".join(parts)
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from ...observability import node_context
 from ..schemas import EditorDecisionOutput, Verdict
 from ..utils.agent_states import ReviewState
-from ..utils.agent_utils import context_block, score_summary
+from ..utils.agent_utils import audit_digest, directives_block, score_summary
 from ..utils.llm import make_llm
 from ..utils.structured import invoke_structured
 
@@ -18,10 +18,21 @@ _SYS = (
     "authors. Weigh the rebuttal: a concession is evidence the manuscript "
     "can improve in revision; a credible disagreement (with manuscript "
     "quote) is evidence a reviewer misread; a load-bearing critique the "
-    "author cannot rebut is evidence of a fundamental flaw. If a target "
+    "author cannot rebut is evidence of a fundamental flaw. You also receive "
+    "one or more editorial compliance audits (e.g. methods completeness, "
+    "citation integrity). These are factual checklists, NOT opinions or "
+    "scores, produced in parallel with the panel. Treat HARD gaps as items "
+    "the authors must add and fold them into required_revisions — they are "
+    "not by themselves grounds for rejection, UNLESS a gap actually prevents "
+    "evaluating the manuscript's central claims (e.g. a load-bearing protocol "
+    "delegated to an unresolvable reference, or a key claim resting on a "
+    "misattributed citation). Map SOFT gaps and unverifiable items to "
+    "minor_suggestions or to questions for the authors. If a target "
     "journal is described in the context above, make the decision against "
     "that venue's bar and scope, and let required revisions reflect its "
-    "standards and submission limits. Return the "
+    "standards and submission limits. If a review strictness standard is "
+    "described in the context above, apply it to the final decision and let "
+    "it guide borderline accept/reject calls. Return the "
     "structured EditorDecisionOutput schema."
 )
 
@@ -40,21 +51,27 @@ def _run(state: ReviewState) -> dict:
         f"Draft recommendation: {state.get('draft_recommendation')}\n\n"
         f"Meta-review:\n{state.get('meta_review', '')}\n\n"
         f"Author rebuttal:\n{rebuttal}\n\n"
+        f"Editorial compliance audits (factual checklists — convert HARD gaps "
+        f"to required revisions, SOFT/unverifiable to minor suggestions or "
+        f"questions):\n{audit_digest(state)}\n\n"
         "Produce the final decision letter. If the rebuttal credibly "
         "addressed a reviewer's concern, note that you weighed it in "
         "summary_of_evaluation rather than restating the original "
         "critique as a required revision."
     )
     try:
-        # Editor needs primary-source access to weigh disputed claims;
-        # cached_prefix shares the reviewer block's cache entry.
+        # The Editor decides on the synthesis (meta-review + rebuttal +
+        # numerical signal), not by re-reading the manuscript — that trusts
+        # the panel's work instead of re-litigating it. Only the
+        # venue/strictness directives ride along so the decision is made
+        # against the target venue's bar.
         result = invoke_structured(
             llm,
             EditorDecisionOutput,
             config,
             _SYS,
             user,
-            cached_prefix=context_block(state),
+            cached_prefix=directives_block(state),
         )
     except Exception as exc:  # noqa: BLE001
         # Do NOT fabricate a verdict on failure — leave decision empty so

@@ -1,0 +1,72 @@
+name = "Top-Tier ML Conference (ICLR / NeurIPS / ICML style)"
+aliases = ["ICLR", "NeurIPS", "ICML", "Conference", "ML conference"]
+publisher = ""
+field = "machine learning"
+
+# Conferences don't carry a journal impact factor; the meaningful reputation
+# signal is selectivity.
+impact_factor = 0.0
+impact_factor_year = 0
+acceptance_rate = "~25-35%"
+
+audience = "Machine-learning researchers reading the proceedings, plus expert reviewers and area chairs on the program committee."
+
+description = """
+A highly selective, double-blind, archival machine-learning conference in the
+style of ICLR, NeurIPS, or ICML. Submissions are reviewed competitively against
+a large pool, go through an author-rebuttal phase, and are accepted as poster,
+spotlight, or oral — or rejected. Crucially, there is NO revise-and-resubmit
+within a cycle: the outcome is a binary accept/reject for this venue's
+proceedings.
+"""
+
+scope = """
+In scope: original machine-learning research — new methods, theory, empirical
+studies, benchmarks, datasets, or analyses — that advances the field and backs
+its claims with adequate experiments or proofs. Out of scope: incremental work
+with no clear contribution over published baselines, claims unsupported by the
+reported experiments, or work outside machine learning.
+"""
+
+# Conference-style budget: roughly a 9-page main text with an unlimited
+# appendix — a soft norm, not a hard journal word cap.
+max_words = 9000
+abstract_max_words = 250
+max_figures = 0
+max_references = 0
+
+guidelines = """
+Judge this manuscript by the norms of a top machine-learning CONFERENCE, not a
+journal:
+
+- The decision is competitive and BINARY for this cycle (accept vs. reject).
+  There is no major/minor-revision track. Calibrate to a venue that accepts
+  roughly a quarter to a third of submissions: a solid, complete paper with a
+  clear contribution should clear the bar — it need not be flawless.
+- Weigh the contribution and novelty relative to the ML literature; the
+  soundness of the empirical evaluation (baselines, ablations, datasets,
+  statistical care) or the theory; and reproducibility (code/configs and enough
+  detail to reproduce).
+- Judge the main text against a ~9-page budget with an unlimited appendix. Do
+  not penalize a paper for deferring detail to the appendix, and do not demand
+  journal-level comprehensiveness in the main body.
+- An author-rebuttal phase exists: treat fixable presentation issues and
+  reviewer misunderstandings as addressable in rebuttal, not as grounds for
+  rejection.
+- Clarity, honest limitations, and ethical/broader-impact discussion where
+  relevant are expected but are rarely decisive on their own.
+
+Map your verdict onto this venue: "accept" or "minor" mean the paper would be
+ACCEPTED at the conference; "major" or "reject" mean it would NOT be accepted
+this cycle. Do not default to "major revision" — that journal category does not
+exist here. Decide whether the paper clears the conference bar.
+"""
+
+last_updated = "2026-06-09"
+
+# Conference submissions are full papers; map the shared "conference-paper"
+# type to this venue's page/abstract budget.
+[article_types.conference-paper]
+max_words = 9000
+abstract_max_words = 250
+notes = "Standard conference submission: ~9-page main text plus an unlimited appendix, double-blind, with an author-rebuttal phase."

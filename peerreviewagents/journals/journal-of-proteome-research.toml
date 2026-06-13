@@ -43,3 +43,32 @@ must report FDR and the criteria used.
 """
 
 last_updated = "2026-06-01"
+
+# Per-type word caps (JPR's count excludes the experimental section,
+# acknowledgments, the supporting-information statement, and references).
+# The general description of each type lives in
+# peerreviewagents.article_types; only the venue-specific numbers/notes
+# are overridden here.
+[article_types.article]
+max_words = 8000
+
+[article_types.letter]
+max_words = 5500
+
+[article_types.perspective]
+max_words = 9500
+notes = "Only a limited number are published; a presubmission inquiry to the Editor-in-Chief is recommended."
+
+[article_types.communication]
+max_words = 4500
+notes = "Reserved for especially time-sensitive work; a presubmission inquiry explaining the urgency is required."
+
+[article_types.review]
+max_words = 6000
+notes = "Peer-reviewed; a mere list of citations is inadequate. Reviews of proteomics/metabolomics of uncharacterized natural products are not accepted."
+
+[article_types.technical-note]
+max_words = 4500
+
+[article_types.tutorial]
+max_words = 5000

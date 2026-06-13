@@ -15,6 +15,8 @@ from __future__ import annotations
 import os
 import re
 
+from ..observability import AgentEvent, emit
+
 # Common manuscript section headings we try to bucket text into.
 _SECTION_KEYS = [
     "abstract", "introduction", "background", "related work", "methods",
@@ -41,8 +43,6 @@ _TITLE_BOILERPLATE = (
 _NUMERIC_PREFIX_RE = re.compile(
     r"^(?:[ivxlcdm]+\.|\d+(?:\.\d+)*\.?)\s*", re.IGNORECASE
 )
-
-from ..observability import AgentEvent, emit
 
 
 def load_manuscript(

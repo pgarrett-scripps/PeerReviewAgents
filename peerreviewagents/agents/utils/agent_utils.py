@@ -221,20 +221,68 @@ def manuscript_block(state: ReviewState) -> str:
     return f"=== MANUSCRIPT ===\n{fit_manuscript(state)}\n=== END MANUSCRIPT ==="
 
 
-def context_block(state: ReviewState) -> str:
-    """Shared cached prefix: target-journal context (if any) + manuscript.
+def supplement_block(state: ReviewState) -> str:
+    """Full supplementary-information block, or '' when no SI was provided.
 
-    The journal block is constant for a whole run, so prepending it to the
-    manuscript block keeps a single, byte-identical prefix across every
-    agent that takes ``cached_prefix`` — they still share one provider-side
-    cache entry. When no target journal is selected the journal block is
-    empty and this is exactly the old manuscript block.
+    Unlike :func:`manuscript_block`, this is deliberately NOT truncated: the
+    SI is passed in full to the agents that opt in (currently only the
+    methods_completeness auditor), because the reagent / key-resources tables
+    and detailed protocols there are exactly what those agents check. Appended
+    after the manuscript in an opt-in agent's cached prefix, so it forms its
+    own provider-side cache entry without touching the shared fan-out prefix.
     """
-    journal = (state.get("journal_block") or "").strip()
-    manuscript = manuscript_block(state)
-    if not journal:
-        return manuscript
-    return f"{journal}\n\n{manuscript}"
+    sup = (state.get("supplement_md") or "").strip()
+    if not sup:
+        return ""
+    return (
+        "=== SUPPLEMENTARY INFORMATION ===\n"
+        f"{sup}\n"
+        "=== END SUPPLEMENTARY INFORMATION ==="
+    )
+
+
+def directives_block(state: ReviewState) -> str | None:
+    """Run-wide framing directives only: journal + article-type + strictness,
+    WITHOUT the manuscript text.
+
+    Used by synthesis-stage agents (meta-reviewer, editor) that judge the
+    distilled review/debate signal rather than re-reading the primary text:
+    they still need to know the venue's bar and the configured strictness
+    ("the context above" their system prompts reference), but feeding them
+    the full manuscript invites them to re-review instead of synthesize.
+
+    Returns ``None`` when no directives are set so the caller sends a plain
+    user message with no cached prefix.
+    """
+    parts = [
+        p
+        for p in (
+            (state.get("journal_block") or "").strip(),
+            (state.get("article_type_block") or "").strip(),
+            (state.get("strictness_block") or "").strip(),
+        )
+        if p
+    ]
+    return "\n\n".join(parts) if parts else None
+
+
+def context_block(state: ReviewState) -> str:
+    """Shared cached prefix: journal + article-type + strictness + manuscript.
+
+    Each context block is constant for a whole run, so prepending them to the
+    manuscript block keeps a single, byte-identical prefix across every agent
+    that takes ``cached_prefix`` — they still share one provider-side cache
+    entry. The order reads as a funnel: journal ("what venue"), then article
+    type ("what kind of submission"), then the strictness directive ("how
+    harshly to judge"). When none are set this is exactly the manuscript
+    block alone.
+    """
+    parts = [
+        p
+        for p in (directives_block(state), manuscript_block(state))
+        if p
+    ]
+    return "\n\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -295,3 +343,30 @@ def _score_to_verdict(score: float) -> str:
     if score >= 2.5:
         return "major"
     return "reject"
+
+
+# ---------------------------------------------------------------------------
+# Editorial audit digest (editor-only compliance dossier)
+# ---------------------------------------------------------------------------
+
+
+def audit_digest(state: ReviewState) -> str:
+    """Render the audit lane's reports for the editor's prompt.
+
+    Audits are factual compliance checklists routed only to the editor (see
+    :class:`~peerreviewagents.agents.utils.agent_states.AuditReport`). This
+    folds each auditor's HARD/SOFT gap counts and full report into one block
+    so the editor can turn HARD gaps into required revisions. Returns a
+    short placeholder when no audits ran.
+    """
+    audits = state.get("audits") or []
+    if not audits:
+        return "(no editorial audits were produced)"
+    parts: list[str] = []
+    for a in audits:
+        parts.append(
+            f"### {a.get('title', a.get('auditor', 'Audit'))} "
+            f"— HARD gaps: {a.get('hard_gaps', 0)}, SOFT gaps: {a.get('soft_gaps', 0)}"
+        )
+        parts.append((a.get("body") or "").strip())
+    return "\n\n".join(parts)

@@ -172,3 +172,49 @@ def test_invoke_structured_double_failure_raises():
     llm = _StubLLM([_fail("bad json"), _fail("still bad")])
     with pytest.raises(ValueError, match="validation failed after retry"):
         invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
+
+
+# ---------- transient provider-error retries --------------------------------
+
+
+class _FlakyChain:
+    """Chain that raises ``fails`` times, then returns ``result``."""
+
+    def __init__(self, fails: int, result):
+        self.remaining = fails
+        self.result = result
+        self.calls = 0
+
+    def invoke(self, _messages, **_kwargs):
+        self.calls += 1
+        if self.remaining > 0:
+            self.remaining -= 1
+            raise RuntimeError("Provider returned error")
+        return self.result
+
+
+class _FlakyLLM:
+    def __init__(self, chain):
+        self._chain = chain
+
+    def with_structured_output(self, _schema, **_kwargs):
+        return self._chain
+
+
+def test_invoke_structured_retries_transient_provider_error(monkeypatch):
+    import peerreviewagents.agents.utils.structured as s
+    monkeypatch.setattr(s, "_RETRY_BACKOFF_S", 0)
+    inst = ReviewerOutput(score=3, confidence=3, summary="ok")
+    chain = _FlakyChain(fails=2, result=_ok(inst))  # fails twice, succeeds 3rd
+    result = invoke_structured(_FlakyLLM(chain), ReviewerOutput, _cfg(), "sys", "user")
+    assert result.instance is inst
+    assert chain.calls == 3
+
+
+def test_invoke_structured_provider_error_exhausts_attempts(monkeypatch):
+    import peerreviewagents.agents.utils.structured as s
+    monkeypatch.setattr(s, "_RETRY_BACKOFF_S", 0)
+    chain = _FlakyChain(fails=99, result=_ok(None))  # always fails
+    with pytest.raises(RuntimeError, match="Provider returned error"):
+        invoke_structured(_FlakyLLM(chain), ReviewerOutput, _cfg(), "sys", "user")
+    assert chain.calls == s._MAX_PROVIDER_ATTEMPTS  # capped at 3 tries

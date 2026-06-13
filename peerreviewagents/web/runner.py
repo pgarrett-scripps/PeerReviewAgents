@@ -34,6 +34,7 @@ _VALID_DECISIONS = {"accept", "minor", "major", "reject"}
 # to the right room as work progresses.
 _NODE_PHASE = {
     "ingest": "ingest",
+    "desk_screen": "decision",
     "advocate": "debate",
     "skeptic": "debate",
     "meta_reviewer": "synthesis",
@@ -46,7 +47,14 @@ _NODE_PHASE = {
 def _phase_for(node: str) -> str | None:
     if node.startswith("reviewer_"):
         return "reviewers"
+    if node.startswith("audit_"):
+        return "reviewers"
     return _NODE_PHASE.get(node)
+
+
+def _desk_screen_body(state: dict):
+    """Body + meta for the desk-screen agent panel."""
+    return state.get("desk_screen"), {"desk_rejected": bool(state.get("desk_rejected"))}
 
 
 class JobRunner:
@@ -58,6 +66,9 @@ class JobRunner:
         self.bus = bus
         self._events: Queue[AgentEvent] = Queue()
         self._thread: threading.Thread | None = None
+        # How many entries of the accumulated ``errors`` list we've already
+        # turned into per-agent error events, so we only emit new ones.
+        self._seen_errors = 0
         # Throttle token forwarding: pile up bytes for ~50ms then flush.
         # Otherwise debate rounds saturate the WebSocket with one frame
         # per chunk.
@@ -95,6 +106,7 @@ class JobRunner:
             for node, accumulated in graph.stream(self.job.manuscript_path):
                 self.job.accumulated = accumulated
                 self._handle_node_yield(node)
+                self._emit_node_errors(accumulated)
         except Exception as exc:  # noqa: BLE001
             self.job.errors.append(f"pipeline crashed: {exc}")
             self._events.put(AgentEvent(kind="log", node="error", text=str(exc)))
@@ -114,6 +126,25 @@ class JobRunner:
             self._events.put(AgentEvent(kind="node_start", node="ingest"))
         elif node == "_ingest":
             self._events.put(AgentEvent(kind="node_end", node="ingest", text="done"))
+
+    def _emit_node_errors(self, accumulated: Any) -> None:
+        """Turn newly-appended state ``errors`` into per-agent error events.
+
+        Agents catch their own exceptions and append an ``errors`` string
+        rather than raising, so a failure looks like a normal node_end to the
+        observer. We diff the accumulated list here and emit a ``node_error``
+        for any entry we can map back to a sprite, so the frontend can mark
+        that desk as failed (red) instead of a misleading green 'done'.
+        """
+        if not isinstance(accumulated, dict):
+            return
+        errors = accumulated.get("errors") or []
+        for err in errors[self._seen_errors:]:
+            agent = _agent_from_error(str(err))
+            if agent:
+                self.job.agent_status[agent] = "error"
+                self._emit({"type": "node_error", "agent": agent, "text": str(err)})
+        self._seen_errors = len(errors)
 
     # ------------------------------------------------------------------
     # Token forwarding with light batching
@@ -166,7 +197,9 @@ class JobRunner:
             if phase:
                 self._emit({"type": "phase", "phase": phase, "agent": node})
         elif ev.kind == "node_end":
-            self.job.agent_status[node] = "done"
+            # Don't clobber a failure we already recorded for this node.
+            if self.job.agent_status.get(node) != "error":
+                self.job.agent_status[node] = "done"
         elif ev.kind == "token":
             buf = self.job.agent_buffers.setdefault(node, "")
             self.job.agent_buffers[node] = buf + ev.text
@@ -204,7 +237,9 @@ class JobRunner:
     def _finalize(self) -> None:
         final: ReviewState = self.job.accumulated  # type: ignore[assignment]
         decision = final.get("decision") if isinstance(final, dict) else None
-        if decision in _VALID_DECISIONS and final.get("reports"):
+        # A desk reject is a valid terminal outcome with no reviewer reports.
+        is_desk_reject = bool(final.get("desk_rejected")) if isinstance(final, dict) else False
+        if decision in _VALID_DECISIONS and (final.get("reports") or is_desk_reject):
             try:
                 run_dir = write_reports(final)
                 self.job.report_dir = run_dir
@@ -242,6 +277,24 @@ class JobRunner:
 
 # Sentinel used to wake the forwarder thread on shutdown.
 _STOP_SENTINEL = object()
+
+
+def _agent_from_error(err: str) -> str | None:
+    """Map an accumulated error string back to a sprite/agent name.
+
+    Agents format their failures as ``"<who> failed: <exc>"`` where ``<who>``
+    is either a layout node name (``meta_reviewer``, ``editor``, ``advocate``…)
+    or ``"<name> reviewer"`` for the specialist fan-out. Returns ``None`` for
+    anything we can't confidently attribute (e.g. pipeline-level crashes).
+    """
+    head = err.split(" failed:", 1)[0].strip()
+    if not head:
+        return None
+    if head.endswith(" reviewer"):
+        return "reviewer_" + head[: -len(" reviewer")].strip()
+    if head.endswith(" auditor"):
+        return "audit_" + head[: -len(" auditor")].strip()
+    return head if head in AGENT_NAMES else None
 
 
 def render_agent_payload(job: JobState, agent: str) -> dict[str, Any]:
@@ -285,6 +338,15 @@ def _finished_body(job: JobState, agent: str) -> tuple[str | None, dict[str, Any
                     "confidence": r.get("confidence"),
                 }
         return None, None
+    if agent.startswith("audit_"):
+        name = agent[len("audit_"):]
+        for a in state.get("audits", []) or []:
+            if a.get("auditor") == name:
+                return a.get("body"), {
+                    "hard_gaps": a.get("hard_gaps"),
+                    "soft_gaps": a.get("soft_gaps"),
+                }
+        return None, None
     if agent in ("advocate", "skeptic"):
         turns = [t for t in state.get("debate", []) or [] if t.get("role") == agent]
         if not turns:
@@ -293,6 +355,8 @@ def _finished_body(job: JobState, agent: str) -> tuple[str | None, dict[str, Any
             f"**Round {t.get('round')}**\n\n{t.get('content', '')}" for t in turns
         )
         return body, {"rounds": len(turns)}
+    if agent == "desk_screen":
+        return _desk_screen_body(state)
     if agent == "meta_reviewer":
         body = state.get("meta_review")
         return body, {"draft_recommendation": state.get("draft_recommendation")}

@@ -12,7 +12,7 @@ from __future__ import annotations
 from ...observability import node_context
 from ..schemas import JournalRecommendationsOutput
 from ..utils.agent_states import ReviewState
-from ..utils.agent_utils import score_summary
+from ..utils.agent_utils import manuscript_block, score_summary
 from ..utils.llm import make_llm
 from ..utils.structured import invoke_structured
 
@@ -37,8 +37,6 @@ def _run(state: ReviewState) -> dict:
     config = state["config"]
     llm = make_llm(config, reasoning_effort="high")
 
-    sections = state.get("sections") or {}
-    abstract = (sections.get("abstract") or state.get("manuscript_md", "")[:1200]).strip()
     reviewer_names = ", ".join(r.get("reviewer", "?") for r in state.get("reports") or [])
     decision = state.get("decision") or "(no decision)"
     decision_letter = state.get("decision_letter") or "(no decision letter)"
@@ -54,7 +52,8 @@ def _run(state: ReviewState) -> dict:
 
     user = (
         f"Manuscript title: {state.get('manuscript_title', 'Untitled')}\n\n"
-        f"Abstract:\n{abstract}\n\n"
+        "The full manuscript is provided above; judge venue fit (topic, "
+        "scope, methodology, results depth) against it.\n\n"
         f"{target_block}"
         f"Reviewer panel: {reviewer_names}\n"
         f"Numerical signal:\n{score_summary(state)}\n\n"
@@ -72,12 +71,18 @@ def _run(state: ReviewState) -> dict:
         "be candid about acceptance odds at that venue given the verdict."
     )
     try:
+        # Full manuscript as the cached prefix — byte-identical to the
+        # debate/rebuttal block, so it can land a prompt-cache hit. The
+        # scout's own target-venue framing lives in the user prompt, so we
+        # send the bare manuscript here (not context_block) to avoid
+        # duplicating the journal directive.
         result = invoke_structured(
             llm,
             JournalRecommendationsOutput,
             config,
             _SYS,
             user,
+            cached_prefix=manuscript_block(state),
         )
     except Exception as exc:  # noqa: BLE001
         return {

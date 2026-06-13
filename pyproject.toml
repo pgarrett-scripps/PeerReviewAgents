@@ -9,8 +9,29 @@ description = "Multi-agent LLM peer-review framework (an editorial board for man
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
 license = { text = "GPL-3.0-or-later" }
+authors = [
+    { name = "Patrick Garrett", email = "pgarrett@scripps.edu" },
+]
+keywords = [
+    "peer-review",
+    "llm",
+    "multi-agent",
+    "langgraph",
+    "scholarly-publishing",
+    "agents",
+]
 classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
     "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Text Processing :: General",
 ]
 dependencies = [
     "langgraph>=0.2",
@@ -33,13 +54,23 @@ dependencies = [
 [project.optional-dependencies]
 research = ["arxiv>=2", "requests>=2"]
 web-test = ["httpx>=0.27"]
+# Evaluation harness: fetch a labeled OpenReview corpus and score the
+# pipeline against human reviews. Stats are pure-Python (no scipy);
+# matplotlib is only used to render the paper figure (committed as SVG, so
+# the Typst paper build itself needs no Python).
+eval = ["openreview-py>=1.40", "matplotlib>=3.7"]
+
+[project.urls]
+Homepage = "https://github.com/pgarrett-scripps/PeerReviewAgents"
+Repository = "https://github.com/pgarrett-scripps/PeerReviewAgents"
+Issues = "https://github.com/pgarrett-scripps/PeerReviewAgents/issues"
 
 [project.scripts]
 peerreview = "cli.main:run"
 
-[tool.setuptools]
-packages = ["peerreviewagents", "cli"]
+[tool.setuptools.packages.find]
+include = ["peerreviewagents*", "cli*"]
 
-[tool.setuptools.package-dir]
-peerreviewagents = "peerreviewagents"
-cli = "cli"
+[tool.setuptools.package-data]
+"peerreviewagents.journals" = ["*.toml", "README.md"]
+"peerreviewagents.web" = ["static/*"]

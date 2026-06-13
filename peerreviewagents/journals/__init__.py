@@ -1,7 +1,9 @@
 """Journal profiles: load venue-specific context for the review agents.
 
-Each journal lives in one TOML file under ``journals_dir`` (repo-root
-``journals/`` by default — see ``journals/README.md`` for the schema).
+Each journal lives in one TOML file under ``journals_dir`` — by default the
+profiles bundled inside this package (see ``README.md`` in this directory
+for the schema). Override the directory via the ``journals_dir`` config key
+or ``PEERREVIEW_JOURNALS_DIR`` to point at your own profiles.
 A profile is parsed into a :class:`JournalProfile` and rendered to a
 prompt block via :meth:`JournalProfile.to_prompt_block`, which is folded
 into the shared manuscript context block so every agent that reviews
@@ -29,23 +31,40 @@ except ModuleNotFoundError:  # pragma: no cover
 
 
 def _default_journals_dir() -> Path:
-    """Repo-root ``journals/`` directory, resolved relative to this file so
-    it works regardless of the process working directory (CLI, web server,
-    or pytest)."""
-    return Path(__file__).resolve().parent.parent / "journals"
+    """The bundled profiles directory — this package's own directory, which
+    holds the shipped ``*.toml`` profiles alongside this module. Resolved
+    relative to this file so it works whether the package is run from a
+    source checkout, an installed wheel, the CLI, the web server, or
+    pytest."""
+    return Path(__file__).resolve().parent
 
 
 def journals_dir(config: dict | None = None) -> Path:
     """Resolve the directory holding journal ``.toml`` profiles.
 
-    Precedence: explicit ``journals_dir`` in config, else the repo-root
-    default. A relative config value is resolved against the current
-    working directory (matching ``output_dir`` semantics).
+    Precedence: explicit ``journals_dir`` in config, else the bundled
+    profiles shipped inside this package. A relative config value is
+    resolved against the current working directory (matching ``output_dir``
+    semantics).
     """
     raw = (config or {}).get("journals_dir")
     if raw:
         return Path(os.path.expanduser(str(raw)))
     return _default_journals_dir()
+
+
+class ArticleTypeLimits(BaseModel):
+    """Per-venue overrides for one universal article type.
+
+    The article-type *taxonomy* (what a Letter or Review is, and how to judge
+    it) lives in :mod:`peerreviewagents.article_types`; a journal only supplies
+    the specifics that actually differ between venues. Every field is optional —
+    a type listed with no overrides still gets the shared general framing.
+    """
+
+    max_words: int = 0
+    abstract_max_words: int = 0
+    notes: str = ""
 
 
 class JournalProfile(BaseModel):
@@ -71,8 +90,17 @@ class JournalProfile(BaseModel):
     max_figures: int = 0
     max_references: int = 0
 
+    # Optional per-type cap/notes overrides, keyed by the universal article-type
+    # slug (see peerreviewagents.article_types). Venues that don't differentiate
+    # by manuscript type leave this empty.
+    article_types: dict[str, ArticleTypeLimits] = Field(default_factory=dict)
+
     guidelines: str = ""
     last_updated: str = ""
+
+    def article_type_limits(self, key: str) -> ArticleTypeLimits | None:
+        """This venue's cap/notes overrides for article-type ``key``, if any."""
+        return self.article_types.get(key)
 
     def _limits_line(self) -> str:
         """One line summarizing whatever hard limits the venue declares."""

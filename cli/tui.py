@@ -20,6 +20,7 @@ from textual.app import App, ComposeResult
 from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import DataTable, Footer, Header, Log, Static
 
+from peerreviewagents.agents.auditors import AUDITOR_NAMES
 from peerreviewagents.agents.reviewers import REVIEWER_NAMES
 from peerreviewagents.graph.review_graph import PeerReviewGraph
 from peerreviewagents.observability import (
@@ -106,6 +107,10 @@ class ReviewApp(App):
         *tuple(
             (f"reviewer_{n}", f"Reviewer · {n.replace('_', ' ').title()}")
             for n in REVIEWER_NAMES
+        ),
+        *tuple(
+            (f"audit_{n}", f"Audit · {n.replace('_', ' ').title()}")
+            for n in AUDITOR_NAMES
         ),
         ("advocate", "Debate · Advocate"),
         ("skeptic", "Debate · Skeptic"),

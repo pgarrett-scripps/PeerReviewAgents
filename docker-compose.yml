@@ -1,0 +1,58 @@
+# PeerReviewAgents — web UI service.
+#
+#   docker compose up -d --build      # build + start in the background
+#   docker compose up -d --no-build   # start from a preloaded image (server)
+#   docker compose logs -f            # follow logs
+#   docker compose down               # stop
+#
+# Prerequisites on the host (same dir as this file):
+#   - .env               API keys (copy from .env.example) + HOST_UID/HOST_GID
+#   - peerreview.toml     non-secret settings (copy from peerreview.toml.example)
+#   - the bind-mount dirs must exist and be writable by HOST_UID:
+#       mkdir -p reports .peerreview-uploads .cache
+#
+# Why HOST_UID/HOST_GID: the container writes into the bind-mounted
+# reports/uploads/cache dirs. Running as your host user's uid:gid means
+# those files stay owned by you and the container can write them without a
+# permissions clash. Add to .env (run on the host):
+#       echo "HOST_UID=$(id -u)" >> .env
+#       echo "HOST_GID=$(id -g)" >> .env
+
+services:
+  peerreview:
+    build: .
+    image: peerreviewagents
+    container_name: peerreview
+    restart: unless-stopped
+    # Run as the host user so bind-mounted dirs are writable and outputs
+    # stay host-owned. Falls back to 1000:1000 if HOST_UID/GID are unset.
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    ports:
+      - "8765:8765"
+    environment:
+      # Point HOME and the cache at the writable bind mount, so the manuscript
+      # cache (and any stray ~/.config writes) land somewhere the host user
+      # owns rather than the image-owned /app.
+      - HOME=/app/.cache
+      - XDG_CACHE_HOME=/app/.cache
+    # API keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, TAVILY_API_KEY, ...).
+    env_file:
+      - .env
+    volumes:
+      # The `:z` suffix tells Docker to relabel these host paths with an
+      # SELinux label the container can access. Without it, bind-mount writes
+      # are denied on SELinux-enforcing hosts (RHEL/CentOS/Fedora) even when
+      # the dirs are chmod 777.
+      #
+      # Non-secret runtime config, read-only inside the container.
+      - ./peerreview.toml:/app/peerreview.toml:ro,z
+      # Persisted, host-owned outputs and caches.
+      - ./reports:/app/reports:z
+      - ./.peerreview-uploads:/app/.peerreview-uploads:z
+      - ./.cache:/app/.cache:z
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/', timeout=5).status < 500 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s

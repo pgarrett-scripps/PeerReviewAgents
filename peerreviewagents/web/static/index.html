@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <title>PeerReviewAgents</title>
-    <link rel="stylesheet" href="/static/style.css?v=5">
+    <link rel="stylesheet" href="/static/style.css?v=7">
 </head>
 <body class="upload-page">
     <main class="upload-card">
@@ -23,10 +23,41 @@
                 <span class="drop-filename" hidden></span>
             </label>
             <label class="journal-field">
+                <span class="journal-label">Supplementary information <span class="muted">(optional)</span></span>
+                <input type="file" id="si-input" name="supplement"
+                       accept=".pdf,.md,.markdown,.tex,.docx,.txt">
+                <span class="muted">Passed in full to the methods-completeness auditor.</span>
+            </label>
+            <label class="journal-field">
                 <span class="journal-label">Target journal <span class="muted">(optional)</span></span>
                 <select id="journal-select" name="target_journal">
                     <option value="">— Venue-agnostic review —</option>
                 </select>
+            </label>
+            <label class="journal-field">
+                <span class="journal-label">Manuscript type <span class="muted">(optional)</span></span>
+                <select id="article-type-select" name="article_type">
+                    <option value="">— No manuscript-type framing —</option>
+                </select>
+            </label>
+            <label class="strictness-field">
+                <span class="journal-label">Review strictness:
+                    <strong id="strictness-value">Balanced</strong></span>
+                <input type="range" id="strictness-input" name="review_strictness"
+                       min="1" max="5" step="1" value="3">
+                <span class="strictness-scale muted">
+                    <span>Lenient</span><span>Harsh</span>
+                </span>
+            </label>
+            <label class="desk-screen-field">
+                <input type="checkbox" id="desk-screen-input" name="desk_screen">
+                <span>Desk-screen first
+                    <span class="muted">— triage that can reject before full review</span></span>
+            </label>
+            <label class="desk-screen-field">
+                <input type="checkbox" id="memory-input" name="use_memory" checked>
+                <span>Long-term memory
+                    <span class="muted">— condition the area chair on lessons from past reviews</span></span>
             </label>
             <button type="submit" class="primary" id="submit-btn" disabled>
                 Start review
@@ -39,19 +70,36 @@
     <script>
         const form  = document.getElementById('upload-form');
         const input = document.getElementById('file-input');
+        const siInput = document.getElementById('si-input');
         const zone  = document.getElementById('drop-zone');
         const sub   = document.getElementById('submit-btn');
         const stat  = document.getElementById('status');
         const fname = zone.querySelector('.drop-filename');
         const prompt = zone.querySelector('.drop-prompt');
         const journalSelect = document.getElementById('journal-select');
+        const articleTypeSelect = document.getElementById('article-type-select');
+        const strictInput = document.getElementById('strictness-input');
+        const strictValue = document.getElementById('strictness-value');
+        const deskInput = document.getElementById('desk-screen-input');
+        const memInput = document.getElementById('memory-input');
 
-        // Populate the target-journal dropdown from the server.
+        let strictnessLabels = {
+            1: 'Very lenient', 2: 'Lenient', 3: 'Balanced',
+            4: 'Strict', 5: 'Very strict',
+        };
+        function renderStrictness() {
+            strictValue.textContent = strictnessLabels[strictInput.value] || '';
+        }
+        strictInput.addEventListener('input', renderStrictness);
+        renderStrictness();
+
+        // Populate the target-journal dropdown + strictness default from the server.
         (async () => {
             try {
                 const resp = await fetch('/journals');
                 if (!resp.ok) return;
-                const { journals, default: dflt } = await resp.json();
+                const data = await resp.json();
+                const { journals, default: dflt } = data;
                 for (const j of journals) {
                     const opt = document.createElement('option');
                     opt.value = j.slug;
@@ -61,6 +109,22 @@
                     if (j.slug === dflt) opt.selected = true;
                     journalSelect.appendChild(opt);
                 }
+                // Manuscript types are venue-general; per-type word limits
+                // come from whichever journal is also selected.
+                const atDflt = data.default_article_type || '';
+                for (const at of (data.article_types || [])) {
+                    const opt = document.createElement('option');
+                    opt.value = at.key;
+                    opt.textContent = at.name;
+                    if (at.description) opt.title = at.description;
+                    if (at.key === atDflt) opt.selected = true;
+                    articleTypeSelect.appendChild(opt);
+                }
+                if (data.strictness_labels) strictnessLabels = data.strictness_labels;
+                if (data.default_strictness) strictInput.value = data.default_strictness;
+                if (data.default_desk_screen) deskInput.checked = true;
+                if (typeof data.default_use_memory === 'boolean') memInput.checked = data.default_use_memory;
+                renderStrictness();
             } catch (_) { /* dropdown stays venue-agnostic only */ }
         })();
 
@@ -97,7 +161,12 @@
 
             const data = new FormData();
             data.append('manuscript', input.files[0]);
+            if (siInput.files[0]) data.append('supplement', siInput.files[0]);
             data.append('target_journal', journalSelect.value);
+            data.append('article_type', articleTypeSelect.value);
+            data.append('review_strictness', strictInput.value);
+            data.append('desk_screen', deskInput.checked ? 'true' : 'false');
+            data.append('use_memory', memInput.checked ? 'true' : 'false');
             const resp = await fetch('/jobs', { method: 'POST', body: data });
             if (!resp.ok) {
                 stat.textContent = `Error: ${await resp.text()}`;

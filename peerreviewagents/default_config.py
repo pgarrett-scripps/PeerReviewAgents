@@ -44,11 +44,27 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
     # --- Workflow ---
     "max_debate_rounds": 2,
+    # Advocate/skeptic debate. True (default) runs the dialectical debate
+    # between the reviewer panel and the meta-reviewer; False ablates it
+    # (reviewers feed the meta-reviewer directly) — used to measure the
+    # debate's contribution in the eval harness.
+    "enable_debate": True,
+    # Optional editorial desk-screen gate. When True, a triage node runs once
+    # before the reviewer fan-out and may desk-reject the manuscript (scope /
+    # completeness / fatal-flaw / below-venue-bar), short-circuiting the run
+    # to a reject without spending the panel. Off by default — a default run
+    # is unchanged. Screens against the target journal + review strictness.
+    "desk_screen": False,
     # Hard cap on manuscript chars sent to a single agent. Long papers are
     # truncated; section-aware truncation preserves the most load-bearing
     # sections (abstract, methods, results, discussion, conclusion) and drops
     # appendices/supplements first.
     "manuscript_char_budget": 60000,
+    # Optional path to a supplementary-information file (pdf/md/tex/docx).
+    # When set, the SI is parsed and passed IN FULL to the
+    # methods_completeness auditor only (reagent/key-resources tables and
+    # full protocols often live here). None = no SI; the run is unchanged.
+    "supplement_path": None,
 
     # --- Research vendors ---
     # Per-category default vendor list (comma-separated, primary first).
@@ -73,9 +89,27 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # reviewer, meta-reviewer, editor, and recommender prompts.
     "target_journal": "general",
     # Directory holding journal profile .toml files. Empty/None = the
-    # repo-root journals/ directory (resolved relative to the package, so
-    # it works regardless of working directory).
+    # profiles bundled inside the peerreviewagents.journals package (resolved
+    # relative to the package, so it works regardless of working directory
+    # and from an installed wheel). Set to point at your own profiles dir.
     "journals_dir": None,
+
+    # --- Article type ---
+    # The kind of submission being reviewed (a venue-general taxonomy; see
+    # peerreviewagents.article_types): one of "article", "letter",
+    # "communication", "perspective", "review", "technical-note", "tutorial",
+    # or "" for no manuscript-type framing (default). The selected type tells
+    # the panel what kind of work it is judging; any per-type word caps come
+    # from the target journal's profile. Renders nothing when "".
+    "article_type": "",
+
+    # --- Review strictness ---
+    # How easy or harsh the panel is, as an integer 1-5 (see
+    # peerreviewagents.strictness): 1=very lenient, 3=balanced (default),
+    # 5=very strict. The level is rendered to a directive that is injected
+    # into the reviewer, meta-reviewer, and editor prompts. Level 3 injects
+    # nothing, so a default run behaves exactly as before.
+    "review_strictness": 3,
 
     # --- Output ---
     "output_dir": os.path.join(os.getcwd(), "reports"),
@@ -87,6 +121,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # How many resolved past-review lessons to inject into the meta-
     # reviewer's prompt (BM25-ranked by manuscript topic).
     "memory_k": 3,
+    # Master switch for the cross-run memory loop. When False, the
+    # meta-reviewer retrieves no past lessons and completed runs are not
+    # appended to the log — the run is fully memory-free.
+    "use_memory": True,
 
     # --- Manuscript cache ---
     # Parsed (title, markdown, sections) triples are always cached on disk,
@@ -104,6 +142,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
 # is passed through unchanged (and validated against DEFAULT_CONFIG keys).
 _TOML_KEY_RENAMES = {
     "debate_rounds": "max_debate_rounds",
+    "strictness": "review_strictness",
 }
 
 
@@ -146,10 +185,18 @@ _ENV_STR_KEYS = {
     "PEERREVIEW_CACHE_DIR": "cache_dir",
     "PEERREVIEW_TARGET_JOURNAL": "target_journal",
     "PEERREVIEW_JOURNALS_DIR": "journals_dir",
+    "PEERREVIEW_ARTICLE_TYPE": "article_type",
 }
 _ENV_INT_KEYS = {
     "PEERREVIEW_DEBATE_ROUNDS": "max_debate_rounds",
+    "PEERREVIEW_STRICTNESS": "review_strictness",
 }
+_ENV_BOOL_KEYS = {
+    "PEERREVIEW_DESK_SCREEN": "desk_screen",
+    "PEERREVIEW_USE_MEMORY": "use_memory",
+}
+_TRUE_STRINGS = {"1", "true", "yes", "on"}
+_FALSE_STRINGS = {"0", "false", "no", "off"}
 
 
 def _env_overrides() -> dict[str, Any]:
@@ -165,6 +212,14 @@ def _env_overrides() -> dict[str, Any]:
                 out[cfg_key] = int(val)
             except ValueError:
                 pass
+    for env_key, cfg_key in _ENV_BOOL_KEYS.items():
+        val = os.environ.get(env_key)
+        if val is not None:
+            low = val.strip().lower()
+            if low in _TRUE_STRINGS:
+                out[cfg_key] = True
+            elif low in _FALSE_STRINGS:
+                out[cfg_key] = False
     return out
 
 
