@@ -30,6 +30,7 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel
 
+from ...observability import AgentEvent, current_node, emit
 from ...runtime.providers import spec_for_llm
 from .agent_utils import (
     _build_messages,
@@ -93,8 +94,25 @@ def invoke_structured_after_tools(
     Two LLM calls; cost is summed. This avoids the awkward interaction
     between tool-calling and structured-output binding (LangChain wraps
     both as tool calls, and combining them gets brittle across providers).
+
+    If the tool loop itself fails (a provider rejecting the tool request —
+    e.g. the Sonnet-only ``tools.0 function`` 400 — a tool vendor being down,
+    or a rate limit), we fall back to a tools-free structured pass so this
+    reviewer still contributes a verdict from the manuscript alone rather than
+    dropping out of the panel. The fallback is logged so the lost web-search
+    grounding is visible.
     """
-    free = run_agent(llm, system_prompt, user_prompt, tools, cached_prefix=cached_prefix)
+    try:
+        free = run_agent(llm, system_prompt, user_prompt, tools, cached_prefix=cached_prefix)
+    except Exception as exc:  # noqa: BLE001
+        emit(AgentEvent(
+            kind="log",
+            node=current_node(),
+            text=f"tool loop failed ({type(exc).__name__}); reviewing without research tools",
+        ))
+        return invoke_structured(
+            llm, schema, config, system_prompt, user_prompt, cached_prefix=cached_prefix
+        )
     extraction_sys = (
         "Convert the assistant text below into a structured JSON object "
         "matching the given schema. Preserve every concrete claim verbatim; "
