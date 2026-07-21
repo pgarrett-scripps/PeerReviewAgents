@@ -19,11 +19,30 @@ from typing import Any
 from ...runtime.providers import make_chat_model
 
 
-def make_llm(config: dict, *, reasoning_effort: str | None = None) -> Any:
-    """Return the reasoning model used by every text agent.
+def make_llm(
+    config: dict,
+    *,
+    agent: str | None = None,
+    default_tag: str = "default",
+    reasoning_effort: str | None = None,
+) -> Any:
+    """Return the reasoning model used by a text agent.
 
-    ``reasoning_effort`` is a no-op on models without a reasoning mode
-    and a meaningful quality bump on those that do (o-series, Claude
-    extended thinking, DeepSeek-R1, etc.).
+    ``agent`` (a stable key like ``"editor"`` or ``"reviewer_methodology"``)
+    plus ``default_tag`` select the model via config model tags — see
+    :func:`peerreviewagents.runtime.providers.resolve_model`. With no
+    ``[models]`` / ``[agent_models]`` configured, every agent falls back to
+    the single global ``provider`` / ``reasoning_model``, so existing configs
+    are unchanged.
+
+    ``reasoning_effort`` is a no-op on models without a reasoning mode and a
+    meaningful quality bump on those that do (o-series, Claude adaptive
+    thinking, DeepSeek-R1, etc.); when set it overrides any ``effort`` on the
+    resolved tag.
     """
-    return make_chat_model(config, reasoning_effort=reasoning_effort)
+    return make_chat_model(
+        config,
+        agent=agent,
+        default_tag=default_tag,
+        reasoning_effort=reasoning_effort,
+    )

@@ -42,6 +42,35 @@ DEFAULT_CONFIG: dict[str, Any] = {
     #   openai     -> a model id like "gpt-4.1" or "o3"
     "reasoning_model": "anthropic/claude-opus-4.1",
 
+    # --- Per-agent models (optional) ---
+    # Named model "tags". Each maps a tag to {provider?, model?, effort?};
+    # any field left out falls back to the global provider / reasoning_model
+    # above. Example (TOML):
+    #     [models.synthesis]           # editor, meta-reviewer, rebuttal, recommender
+    #     provider = "anthropic"
+    #     model = "claude-opus-4-8"
+    #     effort = "high"
+    #     [models.reviewer]            # the specialist panel
+    #     provider = "anthropic"
+    #     model = "claude-sonnet-5"
+    #     [models.screen]              # desk-screen triage
+    #     model = "claude-haiku-4-5"
+    # Agents resolve their model through a code-declared default tag:
+    #   reviewers -> "reviewer", debate -> "debate", auditors -> "audit",
+    #   desk-screen -> "screen", and editor / meta-reviewer / author-rebuttal /
+    #   journal-recommender -> "synthesis". Defining a tag retargets that whole
+    #   group; leaving "models" empty means every agent uses the global model.
+    "models": {},
+    # Per-agent override map: agent key -> tag name or an inline
+    # {provider?, model?, effort?} spec. Wins over the agent's default tag.
+    # Agent keys: reviewer_<name> (e.g. reviewer_methodology), debate_advocate,
+    # debate_skeptic, audit_<name>, desk_screen, meta_reviewer, editor,
+    # author_rebuttal, journal_recommender. Example (TOML):
+    #     [agent_models]
+    #     reviewer_novelty = "synthesis"          # give one reviewer the big model
+    #     editor = { model = "claude-opus-4-8", effort = "max" }
+    "agent_models": {},
+
     # --- Workflow ---
     "max_debate_rounds": 2,
     # Advocate/skeptic debate. True (default) runs the dialectical debate
@@ -55,11 +84,22 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # to a reject without spending the panel. Off by default — a default run
     # is unchanged. Screens against the target journal + review strictness.
     "desk_screen": False,
-    # Hard cap on manuscript chars sent to a single agent. Long papers are
-    # truncated; section-aware truncation preserves the most load-bearing
-    # sections (abstract, methods, results, discussion, conclusion) and drops
-    # appendices/supplements first.
-    "manuscript_char_budget": 60000,
+    # Desk-screen mode: "off", "warm", or "gate". Default None -> fall back to
+    # the legacy `desk_screen` bool (True -> "gate", False -> "off"). Set this
+    # to override.
+    #   gate — run triage and desk-reject weak manuscripts (short-circuit).
+    #   warm — run triage ONLY to prime the shared manuscript prompt cache
+    #          before the parallel reviewer fan-out, then always proceed.
+    #   off  — skip the node entirely.
+    # (Present here as None so TOML `desk_screen_mode = "..."` isn't dropped.)
+    "desk_screen_mode": None,
+    # Optional cap on manuscript chars sent to a single agent. None (default)
+    # sends the FULL manuscript — no truncation. Set an int to cap it: long
+    # papers are then truncated section-aware, preserving the most load-bearing
+    # sections (abstract, methods, results, discussion, conclusion) and dropping
+    # appendices/supplements first. Raise a cap only to bound cost on very long
+    # papers; cost scales with manuscript length × the ~14 agents that read it.
+    "manuscript_char_budget": None,
     # Optional path to a supplementary-information file (pdf/md/tex/docx).
     # When set, the SI is parsed and passed IN FULL to the
     # methods_completeness auditor only (reagent/key-resources tables and

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
 import json
 import os
 import shutil
@@ -51,6 +52,110 @@ class _NoCacheStaticFiles(StaticFiles):
 
 _STATIC_DIR = Path(__file__).parent / "static"
 _ALLOWED_SUFFIXES = {".pdf", ".md", ".markdown", ".tex", ".docx", ".txt"}
+
+# Maps the human decision label written into summary.md back to the machine
+# key the UI colours badges with.
+_DECISION_KEY = {
+    "Accept": "accept",
+    "Minor Revision": "minor",
+    "Major Revision": "major",
+    "Reject": "reject",
+}
+
+
+def _prettify_slug(slug: str) -> str:
+    """Turn a run-dir slug ('gap-ms-automated…') into a readable fallback title."""
+    return " ".join(w for w in slug.replace("-", " ").split() if w).strip() or slug
+
+
+def _date_from_run_name(name: str) -> str:
+    """Extract the 'YYYY-MM-DD HH:MM' timestamp from a run-dir name, or ''."""
+    try:
+        return _dt.datetime.strptime(name[:15], "%Y%m%d-%H%M%S").strftime("%Y-%m-%d %H:%M")
+    except (ValueError, IndexError):
+        return ""
+
+
+def _parse_summary(text: str) -> dict[str, Any]:
+    """Pull title / decision / venue / cost out of a run's summary.md.
+
+    Best-effort and format-tolerant: any field that isn't found is simply
+    omitted so the caller's defaults survive.
+    """
+    out: dict[str, Any] = {}
+    for line in text.splitlines():
+        s = line.strip()
+        if "title" not in out and s.startswith("# Review Summary") and "—" in s:
+            out["title"] = s.split("—", 1)[1].strip()
+        elif s.startswith("**Decision:**"):
+            label = s.split("**Decision:**", 1)[1].strip()
+            out["decision_label"] = label
+            out["decision"] = _DECISION_KEY.get(label, "")
+        elif s.startswith("**Target venue:**"):
+            out["venue"] = s.split("**Target venue:**", 1)[1].strip()
+        elif s.startswith("**Outcome:**") and "Desk reject" in s:
+            out["decision"] = "reject"
+            out.setdefault("decision_label", "Desk Reject")
+        elif s.startswith("**OpenRouter cost:**") and "$" in s:
+            out["cost"] = s.split("$", 1)[1].strip() or None
+    return out
+
+
+def _scan_history(root: Path, limit: int = 200) -> list[dict[str, Any]]:
+    """List past review runs on disk, newest first.
+
+    Each run is a directory under the reports output dir; we read its
+    summary.md for display metadata. Directory names are timestamp-prefixed
+    so a reverse name sort is chronological.
+    """
+    if not root.is_dir():
+        return []
+    runs: list[dict[str, Any]] = []
+    dirs = sorted(
+        (p for p in root.iterdir() if p.is_dir()),
+        key=lambda p: p.name,
+        reverse=True,
+    )[:limit]
+    for d in dirs:
+        try:
+            md_files = [p for p in d.iterdir() if p.is_file() and p.suffix == ".md"]
+        except OSError:
+            continue
+        # A run with no markdown reports (e.g. a leftover scratch dir) isn't a
+        # real review — skip it rather than surface an empty history row.
+        if not md_files:
+            continue
+        meta: dict[str, Any] = {
+            "id": d.name,
+            "title": _prettify_slug(d.name[16:] or d.name),
+            "decision": "",
+            "decision_label": "",
+            "venue": "",
+            "cost": None,
+            "date": _date_from_run_name(d.name),
+            "files": len(md_files),
+        }
+        summary = d / "summary.md"
+        if summary.is_file():
+            try:
+                meta.update(_parse_summary(summary.read_text(encoding="utf-8")))
+            except OSError:
+                pass
+        runs.append(meta)
+    return runs
+
+
+def _safe_run_dir(root: Path, run: str) -> Path:
+    """Resolve ``run`` to a direct child directory of ``root`` or 404.
+
+    Guards against path traversal: the resolved target's parent must be the
+    reports root exactly (so '..'/nested paths are rejected).
+    """
+    resolved_root = root.resolve()
+    target = (resolved_root / run).resolve()
+    if target.parent != resolved_root or not target.is_dir():
+        raise HTTPException(404, "unknown run")
+    return target
 
 
 def create_app(
@@ -105,6 +210,13 @@ def _register_routes(app: FastAPI) -> None:
             raise HTTPException(404, "job.html missing")
         return HTMLResponse(path.read_text(encoding="utf-8"))
 
+    @app.get("/review.html", response_class=HTMLResponse)
+    async def review_page() -> HTMLResponse:
+        path = _STATIC_DIR / "review.html"
+        if not path.is_file():
+            raise HTTPException(404, "review.html missing")
+        return HTMLResponse(path.read_text(encoding="utf-8"))
+
     @app.get("/agents")
     async def agents() -> JSONResponse:
         """Static layout metadata, useful for the frontend init."""
@@ -156,6 +268,33 @@ def _register_routes(app: FastAPI) -> None:
             "default_desk_screen": bool(config.get("desk_screen")),
             "default_use_memory": bool(config.get("use_memory", True)),
         })
+
+    # --- history (disk-backed past runs) ---------------------------------
+
+    def _reports_root() -> Path:
+        config = get_config(**app.state.config_overrides)
+        return Path(config["output_dir"])
+
+    @app.get("/history")
+    async def history() -> JSONResponse:
+        """Past review runs on disk, newest first, for the home page list."""
+        return JSONResponse({"runs": _scan_history(_reports_root())})
+
+    @app.get("/history/{run}/reports")
+    async def history_reports(run: str) -> JSONResponse:
+        run_dir = _safe_run_dir(_reports_root(), run)
+        files = sorted(
+            p.name for p in run_dir.iterdir() if p.is_file() and p.suffix == ".md"
+        )
+        return JSONResponse({"files": files})
+
+    @app.get("/history/{run}/report/{name}")
+    async def history_report_file(run: str, name: str) -> FileResponse:
+        run_dir = _safe_run_dir(_reports_root(), run)
+        target = (run_dir / name).resolve()
+        if target.parent != run_dir.resolve() or not target.is_file():
+            raise HTTPException(404, "report file not found")
+        return FileResponse(str(target), media_type="text/markdown")
 
     # --- jobs ------------------------------------------------------------
 

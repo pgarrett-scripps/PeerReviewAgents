@@ -1,19 +1,14 @@
 // PeerReviewAgents — job page frontend.
 //
-// Renders a 2D "office" with one sprite per agent and wires it to a
-// WebSocket of events from the backend. Each sprite has a small state
-// machine (idle | working | done | error) plus a tween for desk-to-stage
-// movement when a phase changes. Clicking a sprite opens the side panel
-// and either streams the in-progress token buffer or fetches the
-// finished markdown body, depending on which tab is active.
+// Renders the "Review Chamber": a pipeline rail across the top and a room of
+// desk-cards below, one per agent, wired to a WebSocket of backend events.
+// Each desk carries a small state machine (pending | running | done | error),
+// a live token counter, and a role-tinted status ring. Clicking a desk opens
+// a modal that streams the in-progress work or shows the finished report.
 //
-// We pull PixiJS from a CDN as an ES module (no bundler) and lean on
-// emoji glyphs as sprite art — they look fine on canvas, weigh nothing,
-// and the AGENT_LAYOUT served by the backend tells us which glyph to
-// use for each role.
-
-import { Application, Container, Graphics, Text, TextStyle }
-    from 'https://cdn.jsdelivr.net/npm/pixi.js@8.6.6/dist/pixi.min.mjs';
+// This is a plain-DOM view — no canvas, no bundler. The AGENT_LAYOUT served
+// by the backend (/jobs/<id>) tells us the roster, roles and glyphs; roles
+// map to zones and to the rail stages below.
 
 const JOB_ID = window.__JOB_ID;
 if (!JOB_ID) {
@@ -24,8 +19,8 @@ if (!JOB_ID) {
 // --- DOM hooks ---------------------------------------------------------
 
 const els = {
-    stage:                document.querySelector('.stage'),
     room:                 document.getElementById('room'),
+    rail:                 document.getElementById('rail'),
     cost:                 document.getElementById('job-cost'),
     status:               document.getElementById('job-status'),
     manuscript:           document.getElementById('manuscript-name'),
@@ -35,7 +30,6 @@ const els = {
     panelMeta:            document.getElementById('panel-meta'),
     panelBody:            document.getElementById('panel-body'),
     panelClose:           document.getElementById('panel-close'),
-    // Completion overlay (replaces the legacy bottom banner).
     completion:           document.getElementById('completion'),
     completionTitle:      document.getElementById('completion-title'),
     completionBadge:      document.getElementById('completion-badge'),
@@ -56,372 +50,314 @@ const els = {
 const state = {
     job: null,             // /jobs/<id> snapshot
     agents: [],            // AGENT_LAYOUT from backend
-    sprites: new Map(),    // name -> sprite container
-    desks: new Map(),      // name -> {x, y}
-    stage: { x: 0, y: 0 },
+    cards: new Map(),      // name -> desk element
+    zones: [],             // zone <section>s (each has _agents + _metaEl)
+    railNodes: new Map(),  // stage key -> .stage element
+    railFill: null,
+    railPulse: null,
     buffers: new Map(),    // name -> streamed text
     statusByAgent: new Map(),
     usageByAgent: new Map(),
     selected: null,        // currently inspected agent
     phase: null,
-    // While a panel is open we poll /jobs/<id>/agents/<name> to pick
-    // up the finished markdown body when the agent transitions to done.
     panelPollHandle: null,
-    // Latest "final" event payload (or a synthetic one we build from the
-    // job snapshot on a refresh) so the topbar "View summary" button can
-    // re-open the completion modal without re-fetching state.
     lastFinal: null,
 };
 
-// --- Layout maths ------------------------------------------------------
-//
-// The room is divided into three zones:
-//   left:  reviewer bullpen (4x2 grid)
-//   center: debate stage (advocate, skeptic facing each other)
-//   right: synthesis room (meta_reviewer / author / editor in a row)
-
-function computeLayout(width, height) {
-    const margin = 60;
-    const innerW = width  - margin * 2;
-    const innerH = height - margin * 2;
-
-    // Three full-height zones with even gutters so the room reads as three
-    // tidy columns instead of boxes floating at different heights. Caption
-    // space is reserved at the top of each zone.
-    const labelPad = 34;
-    const reviewersBox = {
-        x: margin,
-        y: margin,
-        w: innerW * 0.42,
-        h: innerH,
-    };
-    const debateBox = {
-        x: margin + innerW * 0.46,
-        y: margin,
-        w: innerW * 0.18,
-        h: innerH,
-    };
-    const synthesisBox = {
-        x: margin + innerW * 0.68,
-        y: margin,
-        w: innerW * 0.32,
-        h: innerH,
-    };
-
-    const positions = new Map();
-
-    // Evenly distribute `count` rows down a zone's body (the area below its
-    // caption) so the column is vertically centered rather than top-heavy.
-    const rowY = (box, idx, count) => {
-        const top = box.y + labelPad;
-        const usable = box.h - labelPad;
-        return top + (usable / (count + 1)) * (idx + 1);
-    };
-
-    // Optional desk-screen triage gate sits at the top of the bullpen, as
-    // the entrance every manuscript passes before the reviewers. Only drawn
-    // when it's actually enabled for this job (otherwise it would linger as
-    // a perpetually-pending sprite).
-    let gridTop = reviewersBox.y + labelPad;
-    const gridBottom = reviewersBox.y + reviewersBox.h;
-    if (state.job && state.job.desk_screen) {
-        const gateY = reviewersBox.y + labelPad + 4;
-        positions.set('desk_screen', {
-            x: reviewersBox.x + reviewersBox.w * 0.5,
-            y: gateY,
-        });
-        gridTop = gateY + 58;   // push the grid below the gate
-    }
-
-    // Audit lane: a row along the bottom of the bullpen. Auditors fan out
-    // alongside the reviewers but their reports route to the editor, so they
-    // sit under the reviewer grid behind a divider.
-    const auditNames = state.agents
-        .filter(a => a.role === 'audit')
-        .map(a => a.name);
-    const auditBandH = auditNames.length ? 110 : 0;
-    const reviewerGridBottom = gridBottom - auditBandH;
-
-    // 4x2 grid for the 8 reviewers, centered in the bullpen body above the
-    // audit band.
-    const reviewerNames = state.agents
-        .filter(a => a.role === 'reviewer')
-        .map(a => a.name);
-    const cols = 4, rows = 2;
-    const colStep = reviewersBox.w / (cols + 1);
-    const gridH = reviewerGridBottom - gridTop;
-    reviewerNames.forEach((name, i) => {
-        const col = i % cols;
-        const row = Math.floor(i / cols);
-        positions.set(name, {
-            x: reviewersBox.x + colStep * (col + 1),
-            y: gridTop + (gridH / (rows + 1)) * (row + 1),
-        });
-    });
-
-    let auditBand = null;
-    if (auditNames.length) {
-        auditBand = {
-            x: reviewersBox.x,
-            y: reviewerGridBottom + 6,
-            w: reviewersBox.w,
-            h: auditBandH - 6,
-        };
-        const aStep = reviewersBox.w / (auditNames.length + 1);
-        // Pin the sprite center to a fixed clearance above the bullpen's
-        // bottom edge so the disc (26px up) and the label beneath it (~50px
-        // down) both stay inside the zone instead of spilling over.
-        const auditY = gridBottom - 60;
-        auditNames.forEach((name, i) => {
-            positions.set(name, {
-                x: reviewersBox.x + aStep * (i + 1),
-                y: auditY,
-            });
-        });
-    }
-
-    // Debate stage: two podiums facing each other at mid-height.
-    positions.set('advocate', {
-        x: debateBox.x + debateBox.w * 0.30,
-        y: rowY(debateBox, 0, 1),
-    });
-    positions.set('skeptic', {
-        x: debateBox.x + debateBox.w * 0.70,
-        y: rowY(debateBox, 0, 1),
-    });
-
-    // Editorial column: synthesis → author → editor → journal scout.
-    const synthNames = ['meta_reviewer', 'author_rebuttal', 'editor', 'journal_recommender'];
-    synthNames.forEach((name, i) => {
-        positions.set(name, {
-            x: synthesisBox.x + synthesisBox.w * 0.5,
-            y: rowY(synthesisBox, i, synthNames.length),
-        });
-    });
-
-    return { positions, reviewersBox, debateBox, synthesisBox, auditBand };
-}
-
-// --- Pixi bootstrapping ------------------------------------------------
-
-const app = new Application();
-await app.init({
-    background: 0x0f1118,
-    resizeTo: els.room,
-    antialias: true,
-    autoDensity: true,
-    resolution: window.devicePixelRatio || 1,
-});
-els.room.appendChild(app.canvas);
-
-const world = new Container();
-app.stage.addChild(world);
-
-// Persistent layers so we can clear/redraw the floor on resize without
-// nuking sprites.
-const floorLayer  = new Container();
-const labelLayer  = new Container();
-const spriteLayer = new Container();
-world.addChild(floorLayer, labelLayer, spriteLayer);
-
-let layout = null;
-
-function drawFloor() {
-    floorLayer.removeChildren();
-    labelLayer.removeChildren();
-    if (!layout) return;
-    const zones = [
-        { box: layout.reviewersBox, label: 'Reviewers',  color: 0x232a3d },
-        { box: layout.debateBox,    label: 'Debate',     color: 0x2a2438 },
-        { box: layout.synthesisBox, label: 'Editorial',  color: 0x222c34 },
-    ];
-    for (const z of zones) {
-        const g = new Graphics();
-        g.roundRect(z.box.x, z.box.y, z.box.w, z.box.h, 14)
-         .fill({ color: z.color, alpha: 0.85 })
-         .stroke({ color: 0x303749, width: 1, alpha: 0.9 });
-        floorLayer.addChild(g);
-
-        const t = new Text({
-            text: z.label.toUpperCase(),
-            style: new TextStyle({
-                fontFamily: 'system-ui, sans-serif',
-                fontSize: 12,
-                fontWeight: '700',
-                fill: 0x6e7691,
-                letterSpacing: 2,
-            }),
-        });
-        t.position.set(z.box.x + 14, z.box.y + 10);
-        labelLayer.addChild(t);
-    }
-
-    // Audit lane divider + caption inside the reviewers bullpen.
-    if (layout.auditBand) {
-        const b = layout.auditBand;
-        const line = new Graphics();
-        line.moveTo(b.x + 12, b.y).lineTo(b.x + b.w - 12, b.y)
-            .stroke({ color: 0x303749, width: 1, alpha: 0.9 });
-        floorLayer.addChild(line);
-
-        const t = new Text({
-            text: 'AUDITS → EDITOR',
-            style: new TextStyle({
-                fontFamily: 'system-ui, sans-serif',
-                fontSize: 10,
-                fontWeight: '700',
-                fill: 0x6e7691,
-                letterSpacing: 2,
-            }),
-        });
-        t.position.set(b.x + 14, b.y + 4);
-        labelLayer.addChild(t);
-    }
-}
-
-// --- Sprite construction ----------------------------------------------
-
-const STATUS_COLOR = {
-    pending: 0x3a4256,
-    running: 0xf6c177,
-    done:    0x6ed392,
-    error:   0xef6c6c,
-};
-
+// role -> CSS custom property carrying the desk glow tint.
 const ROLE_TINT = {
-    reviewer:  0x6ea8ff,
-    audit:     0xf2c14e,
-    debate:    0xb388ff,
-    synthesis: 0x88d4c2,
-    verifier:  0xffadad,
-    editor:    0xff9f1c,
-    recommend: 0x9fd6ff,
+    reviewer:  '--t-reviewer',
+    audit:     '--t-audit',
+    debate:    '--t-debate',
+    synthesis: '--t-synth',
+    verifier:  '--t-verify',
+    editor:    '--t-editor',
+    recommend: '--t-reviewer',
 };
 
-function buildSprite(agent) {
-    const container = new Container();
-    container.eventMode = 'static';
-    container.cursor = 'pointer';
-    container.label = agent.name;
+// A one-line description of each agent's remit — gives every desk something
+// truthful to say without fabricating "live" reasoning from the token stream
+// (which is usually structured-output JSON fragments, not prose).
+const BLURBS = {
+    desk_screen:               'Triage — can reject before the full panel runs.',
+    reviewer_methodology:      'Does the design actually support the conclusions?',
+    reviewer_data_analysis:    'Tests, n, error bars, leakage, multiple comparisons.',
+    reviewer_novelty:          'Is the contribution genuinely new and significant?',
+    reviewer_clarity:          'Can a competent reader follow it without guessing?',
+    reviewer_literature:       'Are citations accurate and prior work covered?',
+    reviewer_rigor:            'Each load-bearing claim vs. the evidence for it.',
+    reviewer_reproducibility:  'Enough data, code and detail to reproduce it?',
+    reviewer_ethics:           'Approvals, consent, disclosures, dual-use.',
+    audit_methods_completeness:'Required identifiers & reagent traceability.',
+    audit_citation_integrity:  'Do the citations resolve and support their claims?',
+    advocate:                  'Argues the strongest case for acceptance.',
+    skeptic:                   'Tests whether the flaws are fatal or fixable.',
+    meta_reviewer:             'Synthesises the panel + debate into one call.',
+    author_rebuttal:           'Plays author; fixable vs. disputable critiques.',
+    editor:                    'Weighs it all; writes the decision letter.',
+    journal_recommender:       'Recommends tiered venues for the verdict.',
+};
 
-    const ring = new Graphics();
-    container.addChild(ring);
+// --- helpers -----------------------------------------------------------
 
-    const disc = new Graphics();
-    disc.circle(0, 0, 26).fill({ color: 0x1c2030 })
-                          .stroke({ color: 0x2a3145, width: 2 });
-    container.addChild(disc);
-
-    const emoji = new Text({
-        text: agent.emoji || '·',
-        style: new TextStyle({ fontFamily: 'system-ui, "Segoe UI Emoji"', fontSize: 30 }),
-    });
-    emoji.anchor.set(0.5);
-    container.addChild(emoji);
-
-    const label = new Text({
-        text: agent.label,
-        style: new TextStyle({
-            fontFamily: 'system-ui, sans-serif',
-            fontSize: 11,
-            fontWeight: '600',
-            fill: 0xc8cee0,
-        }),
-    });
-    label.anchor.set(0.5, 0);
-    label.position.set(0, 36);
-    container.addChild(label);
-
-    // Thinking bubble — shown while running, hidden otherwise.
-    const bubble = new Graphics();
-    bubble.circle(18, -26, 4).fill({ color: 0xf6c177 });
-    bubble.circle(26, -32, 3).fill({ color: 0xf6c177, alpha: 0.7 });
-    bubble.circle(32, -36, 2).fill({ color: 0xf6c177, alpha: 0.45 });
-    bubble.visible = false;
-    container.addChild(bubble);
-
-    // Pulse hover effect with the role tint
-    const tint = ROLE_TINT[agent.role] ?? 0x6ea8ff;
-    container.on('pointerover', () => ring.tint = tint);
-    container.on('pointerout',  () => ring.tint = 0xffffff);
-    container.on('pointertap',  () => openPanel(agent.name));
-
-    container._parts = { ring, disc, emoji, label, bubble };
-    container._agent = agent;
-    container._state = 'pending';
-    container._phase = 0;  // animation phase for the bubble bob
-    return container;
+function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[c]));
 }
 
-function setSpriteState(sprite, status) {
-    if (!sprite) return;
-    sprite._state = status;
-    const color = STATUS_COLOR[status] ?? STATUS_COLOR.pending;
-    const isError = status === 'error';
-    const { ring, disc, bubble } = sprite._parts;
-
-    // Failed agents become a filled red circle so they read as failures at
-    // a glance, not just a thin ring tint.
-    ring.clear();
-    ring.circle(0, 0, 32).stroke({
-        color,
-        width: isError ? 4 : 3,
-        alpha: status === 'pending' ? 0.4 : 0.95,
-    });
-
-    disc.clear();
-    disc.circle(0, 0, 26)
-        .fill({ color: isError ? 0x3a1722 : 0x1c2030 })
-        .stroke({ color: isError ? STATUS_COLOR.error : 0x2a3145, width: 2 });
-
-    bubble.visible = status === 'running';
+function renderMarkdown(md) {
+    if (window.marked) return window.marked.parse(md);
+    return `<pre>${escapeHtml(md)}</pre>`;
 }
 
-// --- Layout + sprite placement -----------------------------------------
+const byRole = (role) => state.agents.filter(a => a.role === role).map(a => a.name);
 
-function layoutSprites() {
-    if (!layout) return;
-    for (const agent of state.agents) {
-        const pos = layout.positions.get(agent.name);
-        if (!pos) continue;
-        state.desks.set(agent.name, pos);
-        let sprite = state.sprites.get(agent.name);
-        if (!sprite) {
-            sprite = buildSprite(agent);
-            state.sprites.set(agent.name, sprite);
-            spriteLayer.addChild(sprite);
-            setSpriteState(sprite, state.statusByAgent.get(agent.name) || 'pending');
+// --- desk cards --------------------------------------------------------
+
+function buildDesk(agent) {
+    const el = document.createElement('button');
+    el.type = 'button';
+    el.className = 'desk pending';
+    el.dataset.agent = agent.name;
+    el.style.setProperty('--tint', `var(${ROLE_TINT[agent.role] || '--t-reviewer'})`);
+    el.innerHTML = [
+        '<span class="medallion">',
+        '  <span class="ring"></span>',
+        `  <span class="glyph">${escapeHtml(agent.emoji || '·')}</span>`,
+        '  <span class="stamp"></span>',
+        '</span>',
+        `<span class="name">${escapeHtml(agent.label)}</span>`,
+        '<span class="stat">queued</span>',
+        `<span class="thought">${escapeHtml(BLURBS[agent.name] || 'Working the manuscript.')}</span>`,
+    ].join('');
+    el.addEventListener('click', () => openPanel(agent.name));
+    return el;
+}
+
+function deskStat(status, usage) {
+    const out = usage?.output_tokens || 0;
+    const total = (usage?.input_tokens || 0) + out;
+    const cost = usage?.cost_usd || 0;
+    switch (status) {
+        case 'running': return out ? `streaming · ${(out / 1000).toFixed(1)}k` : 'streaming…';
+        case 'done':    return total ? `${(total / 1000).toFixed(1)}k tok · $${cost.toFixed(3)}` : 'report ready';
+        case 'error':   return 'failed — click for details';
+        default:        return 'queued';
+    }
+}
+
+function applyDesk(name) {
+    const el = state.cards.get(name);
+    if (!el) return;
+    const status = state.statusByAgent.get(name) || 'pending';
+    el.classList.remove('pending', 'running', 'done', 'error');
+    el.classList.add(status);
+    el.querySelector('.stamp').textContent =
+        status === 'done' ? '✓' : status === 'error' ? '✕' : '';
+    el.querySelector('.stat').textContent = deskStat(status, state.usageByAgent.get(name));
+}
+
+// --- zones -------------------------------------------------------------
+
+function zoneMetaText(names) {
+    let done = 0, running = 0, err = 0;
+    for (const n of names) {
+        const s = state.statusByAgent.get(n);
+        if (s === 'done') done++;
+        else if (s === 'running') running++;
+        else if (s === 'error') err++;
+    }
+    const parts = [];
+    if (done) parts.push(`${done} done`);
+    if (running) parts.push(`${running} working`);
+    if (err) parts.push(`${err} failed`);
+    return parts.length ? parts.join(' · ') : 'queued';
+}
+
+function zoneSection(cls, badge, title, agents, cols) {
+    const sec = document.createElement('section');
+    sec.className = `zone ${cls}`;
+    const head = document.createElement('div');
+    head.className = 'zone-head';
+    head.innerHTML =
+        `<span class="badge">${escapeHtml(badge)}</span>` +
+        `<h2>${escapeHtml(title)}</h2>` +
+        `<span class="meta" data-zone-meta></span>`;
+    sec.appendChild(head);
+    const grid = document.createElement('div');
+    grid.className = `desk-grid cols${cols}`;
+    for (const a of agents) {
+        const d = buildDesk(a);
+        grid.appendChild(d);
+        state.cards.set(a.name, d);
+    }
+    sec.appendChild(grid);
+    sec._agents = agents.map(a => a.name);
+    sec._metaEl = head.querySelector('[data-zone-meta]');
+    return sec;
+}
+
+function updateZoneMetas() {
+    for (const sec of state.zones) {
+        sec._metaEl.textContent = zoneMetaText(sec._agents);
+    }
+}
+
+function renderRoom() {
+    els.room.innerHTML = '';
+    state.cards = new Map();
+    state.zones = [];
+
+    // Optional desk-screen triage gate, only when enabled for this job.
+    const gate = state.agents.find(a => a.name === 'desk_screen');
+    if (state.job && state.job.desk_screen && gate) {
+        const sec = zoneSection('gate', 'Triage', 'Desk Screen', [gate], 1);
+        els.room.appendChild(sec);
+        state.zones.push(sec);
+    }
+
+    const reviewers = state.agents.filter(a => a.role === 'reviewer');
+    if (reviewers.length) {
+        const sec = zoneSection('reviewers', 'Bullpen', 'Specialist Reviewers', reviewers, 4);
+        els.room.appendChild(sec);
+        state.zones.push(sec);
+    }
+
+    const audits = state.agents.filter(a => a.role === 'audit');
+    const debate = state.agents.filter(a => a.role === 'debate');
+    if (audits.length || debate.length) {
+        const split = document.createElement('div');
+        split.className = 'zone-split';
+        if (audits.length) {
+            const sec = zoneSection('audits', 'Compliance', 'Auditors', audits, 2);
+            split.appendChild(sec);
+            state.zones.push(sec);
         }
-        sprite.position.set(pos.x, pos.y);
-        sprite._home = { x: pos.x, y: pos.y };
+        if (debate.length) {
+            const sec = zoneSection('debate', 'Adversarial', 'Debate', debate, 2);
+            split.appendChild(sec);
+            state.zones.push(sec);
+        }
+        els.room.appendChild(split);
+    }
+
+    const editorial = state.agents.filter(
+        a => ['synthesis', 'verifier', 'editor', 'recommend'].includes(a.role)
+             && a.name !== 'desk_screen');
+    if (editorial.length) {
+        const sec = zoneSection('editorial', 'Chair & Bench', 'Editorial', editorial, 4);
+        els.room.appendChild(sec);
+        state.zones.push(sec);
+    }
+
+    for (const a of state.agents) applyDesk(a.name);
+    updateZoneMetas();
+}
+
+// --- pipeline rail -----------------------------------------------------
+
+const RAIL = [
+    { key: 'reviewers', label: 'Reviewers',  glyph: '🔬' },
+    { key: 'audits',    label: 'Audits',     glyph: '📋' },
+    { key: 'debate',    label: 'Debate',     glyph: '🗣️' },
+    { key: 'chair',     label: 'Area Chair', glyph: '🧑‍⚖️' },
+    { key: 'editor',    label: 'Editor',     glyph: '👔' },
+    { key: 'verdict',   label: 'Verdict',    glyph: '⚖️' },
+];
+
+function stageNames(key) {
+    switch (key) {
+        case 'reviewers': return byRole('reviewer');
+        case 'audits':    return byRole('audit');
+        case 'debate':    return byRole('debate');
+        case 'chair':     return [...byRole('synthesis'), ...byRole('verifier')];
+        case 'editor':    return byRole('editor').filter(n => n !== 'desk_screen');
+        default:          return [];
     }
 }
 
-function relayout() {
-    layout = computeLayout(app.screen.width, app.screen.height);
-    drawFloor();
-    layoutSprites();
+function stageState(key) {
+    if (key === 'verdict') {
+        const done = !!(state.job && state.job.decision) ||
+                     !!(state.lastFinal && state.lastFinal.status === 'done');
+        return done ? 'done' : 'pending';
+    }
+    const names = stageNames(key);
+    if (!names.length) return 'pending';
+    const st = names.map(n => state.statusByAgent.get(n) || 'pending');
+    if (st.every(s => s === 'done' || s === 'error')) return 'done';
+    if (st.some(s => s === 'running' || s === 'done')) return 'active';
+    return 'pending';
 }
 
-window.addEventListener('resize', () => {
-    // PixiJS resizes the canvas via resizeTo; recompute layout once
-    // the next frame settles.
-    queueMicrotask(relayout);
-});
-
-// --- Animation tick: bob "working" sprites & their bubbles -------------
-
-app.ticker.add((ticker) => {
-    const dt = ticker.deltaMS / 1000;
-    for (const sprite of state.sprites.values()) {
-        if (sprite._state !== 'running') continue;
-        sprite._phase += dt * 4;
-        const bob = Math.sin(sprite._phase) * 3;
-        sprite.position.y = (sprite._home?.y ?? sprite.position.y) + bob;
+function stageCount(key, st) {
+    if (key === 'verdict') {
+        if (state.job && state.job.decision) return DECISION_LABELS[state.job.decision] || state.job.decision;
+        return st === 'done' ? 'ruled' : '—';
     }
-});
+    const names = stageNames(key);
+    if (!names.length) return '—';
+    const done = names.filter(n => {
+        const s = state.statusByAgent.get(n);
+        return s === 'done' || s === 'error';
+    }).length;
+    if (names.length > 1) return `${done} / ${names.length}`;
+    return st === 'done' ? 'done' : st === 'active' ? 'running' : 'queued';
+}
 
-// --- Agent report modal ------------------------------------------------
+function renderRail() {
+    els.rail.innerHTML = '';
+    const track = document.createElement('div');
+    track.className = 'rail-track';
+    els.rail.appendChild(track);
+
+    const fill = document.createElement('div');
+    fill.className = 'rail-fill';
+    const pulse = document.createElement('div');
+    pulse.className = 'rail-pulse';
+    fill.appendChild(pulse);
+    els.rail.appendChild(fill);
+    state.railFill = fill;
+    state.railPulse = pulse;
+
+    state.railNodes = new Map();
+    for (const s of RAIL) {
+        const stage = document.createElement('div');
+        stage.className = 'stage';
+        stage.dataset.key = s.key;
+        stage.innerHTML =
+            `<div class="node">${s.glyph}</div>` +
+            `<div class="nm">${escapeHtml(s.label)}</div>` +
+            `<div class="ct">—</div>`;
+        els.rail.appendChild(stage);
+        state.railNodes.set(s.key, stage);
+    }
+    updateRail();
+}
+
+function updateRail() {
+    if (!state.railNodes || !state.railNodes.size) return;
+    let lastLit = -1;
+    RAIL.forEach((s, i) => {
+        const st = stageState(s.key);
+        const el = state.railNodes.get(s.key);
+        el.classList.remove('done', 'active');
+        if (st === 'done') el.classList.add('done');
+        else if (st === 'active') el.classList.add('active');
+        if (st !== 'pending') lastLit = i;
+        el.querySelector('.ct').textContent = stageCount(s.key, st);
+    });
+
+    const n = RAIL.length, left = 6, track = 88, step = track / n;
+    const center = (i) => left + (i + 0.5) * step;
+    state.railFill.style.width = lastLit < 0 ? '0%' : `${center(lastLit) - left}%`;
+
+    const running = state.job && state.job.status === 'running';
+    state.railPulse.style.display = (running && lastLit >= 0) ? 'block' : 'none';
+}
+
+// --- agent report modal ------------------------------------------------
 
 function openPanel(name) {
     state.selected = name;
@@ -447,72 +383,16 @@ function closePanel() {
 
 els.panelClose.addEventListener('click', closePanel);
 els.panel.addEventListener('click', (e) => {
-    // Click on the backdrop (not the card) dismisses.
-    if (e.target instanceof HTMLElement && e.target.dataset.close === '1') {
-        closePanel();
-    }
+    if (e.target instanceof HTMLElement && e.target.dataset.close === '1') closePanel();
 });
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && !els.panel.hidden) closePanel();
 });
 
-// --- completion overlay handlers --------------------------------------
-
-function dismissCompletion() {
-    els.completion.hidden = true;
-}
-function reopenCompletion() {
-    if (state.lastFinal) renderCompletion(state.lastFinal);
-}
-els.completionClose.addEventListener('click', dismissCompletion);
-els.completionExplore.addEventListener('click', dismissCompletion);
-els.completion.addEventListener('click', (e) => {
-    // Click on the backdrop (not the card itself) dismisses.
-    if (e.target instanceof HTMLElement && e.target.dataset.close === '1') {
-        dismissCompletion();
-    }
-});
-document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !els.completion.hidden) dismissCompletion();
-});
-els.viewSummaryBtn.addEventListener('click', reopenCompletion);
-
-function showSummaryButton(status) {
-    // Topbar entry point for opening the completion modal — it's the
-    // ONLY thing that should pop the modal. We deliberately do not
-    // auto-open the modal on the live 'final' event or on a refresh,
-    // because the user is here to watch the room work; covering it
-    // with an overlay is jarring.
-    if (status === 'done') {
-        els.viewSummaryBtn.textContent = 'View summary';
-        els.viewSummaryBtn.classList.remove('btn-pill-error');
-        els.viewSummaryBtn.hidden = false;
-    } else if (status === 'error') {
-        els.viewSummaryBtn.textContent = 'View error';
-        els.viewSummaryBtn.classList.add('btn-pill-error');
-        els.viewSummaryBtn.hidden = false;
-    } else {
-        els.viewSummaryBtn.hidden = true;
-    }
-}
-
-function pulseSummaryButton() {
-    // Brief attention pulse so the user notices the new button without
-    // shoving a modal in their face.
-    els.viewSummaryBtn.classList.remove('pulse');
-    // Force a reflow so the animation re-triggers if it was already on.
-    void els.viewSummaryBtn.offsetWidth;
-    els.viewSummaryBtn.classList.add('pulse');
-}
-
 function startPanelPoll() {
     stopPanelPoll();
-    // Pull the rendered body on a steady cadence — picks up the
-    // finished markdown body as soon as the worker writes it without
-    // racing the WebSocket node_end event.
     state.panelPollHandle = setInterval(refreshPanel, 750);
 }
-
 function stopPanelPoll() {
     if (state.panelPollHandle != null) {
         clearInterval(state.panelPollHandle);
@@ -528,9 +408,6 @@ async function refreshPanel() {
         { input_tokens: 0, output_tokens: 0, cost_usd: 0 };
 
     let payload = null;
-    // Only hit the REST endpoint when the agent is settled — while it's
-    // running we have nothing finished to show in the body, and the
-    // streaming spinner pulls its data straight from state.
     if (status === 'done' || status === 'error') {
         try {
             const resp = await fetch(`/jobs/${JOB_ID}/agents/${encodeURIComponent(name)}`);
@@ -541,12 +418,9 @@ async function refreshPanel() {
         if (state.selected !== name) return;
     }
 
-    // Finished body (rendered markdown from the agent's pydantic schema)
-    // or the streamed buffer as a fallback if the worker hasn't published
-    // the rendered body yet.
-    const body = (payload && payload.body) || state.buffers.get(name) || (payload && payload.streamed) || '';
+    const body = (payload && payload.body) || state.buffers.get(name) ||
+        (payload && payload.streamed) || '';
 
-    // Panel meta line: status + token counters + cost.
     const streamedBytes = (state.buffers.get(name) || '').length;
     const metaParts = [
         `<span>status: <strong>${status}</strong></span>`,
@@ -555,16 +429,10 @@ async function refreshPanel() {
         `<span>cost: $${(usage.cost_usd || 0).toFixed(4)}</span>`,
     ];
     if (status === 'running' && streamedBytes > 0) {
-        metaParts.splice(1, 0,
-            `<span>streamed: ${streamedBytes.toLocaleString()} chars</span>`,
-        );
+        metaParts.splice(1, 0, `<span>streamed: ${streamedBytes.toLocaleString()} chars</span>`);
     }
     els.panelMeta.innerHTML = metaParts.join('');
 
-    // Running agents get a spinner + live counters. We deliberately don't
-    // render the streaming buffer here — with structured outputs the
-    // bytes flowing through are usually JSON fragments, not human-friendly
-    // prose. Once the node finishes the body renders below.
     if (status === 'running') {
         els.panelBody.innerHTML = renderWorkingState(name, usage, streamedBytes);
         return;
@@ -574,7 +442,6 @@ async function refreshPanel() {
             `<p class="muted">${escapeHtml(name)} hasn't started yet. The panel will fill in once it begins.</p>`;
         return;
     }
-
     if (!body) {
         els.panelBody.innerHTML =
             `<p class="muted">${escapeHtml(name)} finished without producing a body. Check the run log for errors.</p>`;
@@ -583,9 +450,7 @@ async function refreshPanel() {
     els.panelBody.innerHTML = renderMarkdown(body);
     els.panelBody.scrollTop = els.panelBody.scrollHeight;
 
-    if (status === 'done' || status === 'error') {
-        stopPanelPoll();
-    }
+    if (status === 'done' || status === 'error') stopPanelPoll();
 }
 
 function renderWorkingState(name, usage, streamedBytes) {
@@ -612,17 +477,41 @@ function renderWorkingState(name, usage, streamedBytes) {
     ].join('\n');
 }
 
-function escapeHtml(s) {
-    return s.replace(/[&<>"']/g, c => ({
-        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    }[c]));
+// --- completion overlay handlers --------------------------------------
+
+function dismissCompletion() { els.completion.hidden = true; }
+function reopenCompletion() { if (state.lastFinal) renderCompletion(state.lastFinal); }
+els.completionClose.addEventListener('click', dismissCompletion);
+els.completionExplore.addEventListener('click', dismissCompletion);
+els.completion.addEventListener('click', (e) => {
+    if (e.target instanceof HTMLElement && e.target.dataset.close === '1') dismissCompletion();
+});
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !els.completion.hidden) dismissCompletion();
+});
+els.viewSummaryBtn.addEventListener('click', reopenCompletion);
+
+function showSummaryButton(status) {
+    // Topbar entry point for the verdict overlay — the ONLY thing that pops
+    // it. We deliberately never auto-open the overlay: the user is here to
+    // watch the room work, and covering it is jarring.
+    if (status === 'done') {
+        els.viewSummaryBtn.textContent = 'View summary';
+        els.viewSummaryBtn.classList.remove('btn-pill-error');
+        els.viewSummaryBtn.hidden = false;
+    } else if (status === 'error') {
+        els.viewSummaryBtn.textContent = 'View error';
+        els.viewSummaryBtn.classList.add('btn-pill-error');
+        els.viewSummaryBtn.hidden = false;
+    } else {
+        els.viewSummaryBtn.hidden = true;
+    }
 }
 
-function renderMarkdown(md) {
-    if (window.marked) {
-        return window.marked.parse(md);
-    }
-    return `<pre>${escapeHtml(md)}</pre>`;
+function pulseSummaryButton() {
+    els.viewSummaryBtn.classList.remove('pulse');
+    void els.viewSummaryBtn.offsetWidth;   // force reflow so the anim re-triggers
+    els.viewSummaryBtn.classList.add('pulse');
 }
 
 // --- WebSocket event handling -----------------------------------------
@@ -639,34 +528,37 @@ function setCost(usd) {
 function handleEvent(ev) {
     switch (ev.type) {
         case 'job_status':
+            if (state.job) state.job.status = ev.status;
             setJobStatus(ev.status);
+            updateRail();
             break;
         case 'phase':
             state.phase = ev.phase;
             break;
         case 'node_start': {
             state.statusByAgent.set(ev.agent, 'running');
-            setSpriteState(state.sprites.get(ev.agent), 'running');
+            applyDesk(ev.agent);
+            updateZoneMetas();
+            updateRail();
             if (state.selected === ev.agent) startPanelPoll();
             break;
         }
         case 'node_end': {
-            // Don't overwrite an error state.
             const prev = state.statusByAgent.get(ev.agent);
             if (prev !== 'error') {
                 state.statusByAgent.set(ev.agent, 'done');
-                setSpriteState(state.sprites.get(ev.agent), 'done');
+                applyDesk(ev.agent);
             }
-            // Force one more refresh so the panel grabs the final body
-            // even if the polling tick is mid-interval.
+            updateZoneMetas();
+            updateRail();
             if (state.selected === ev.agent) refreshPanel();
             break;
         }
         case 'node_error': {
-            // An agent caught an exception and produced no usable output.
-            // Mark its desk red; this wins over a later/earlier 'done'.
             state.statusByAgent.set(ev.agent, 'error');
-            setSpriteState(state.sprites.get(ev.agent), 'error');
+            applyDesk(ev.agent);
+            updateZoneMetas();
+            updateRail();
             if (ev.text) console.warn(`[${ev.agent}] ${ev.text}`);
             if (state.selected === ev.agent) refreshPanel();
             break;
@@ -674,7 +566,6 @@ function handleEvent(ev) {
         case 'token': {
             const cur = state.buffers.get(ev.agent) || '';
             state.buffers.set(ev.agent, cur + ev.text);
-            // Panel re-renders on the poll tick — no per-token DOM work.
             break;
         }
         case 'usage': {
@@ -684,38 +575,32 @@ function handleEvent(ev) {
             cur.output_tokens += ev.output_tokens || 0;
             cur.cost_usd      += ev.cost_usd      || 0;
             state.usageByAgent.set(ev.agent, cur);
+            applyDesk(ev.agent);   // refresh the live token counter on the desk
             if (ev.total_cost != null) setCost(ev.total_cost);
-            // usage updates land on the panel via the next poll tick.
             break;
         }
         case 'log': {
             console.log(`[${ev.agent}]`, ev.text);
-            if (ev.agent === 'error') {
-                // Flag any sprite whose state is still pending as
-                // unknown rather than the whole UI lighting up red.
-                els.status.classList.add('pill-error');
-            }
+            if (ev.agent === 'error') els.status.classList.add('pill-error');
             break;
         }
         case 'final':
             state.lastFinal = ev;
+            if (state.job) state.job.decision = ev.decision;
             showSummaryButton(ev.status);
-            // Don't auto-pop the modal — it covers the room the user
-            // came to see. Highlight the topbar button instead; the
-            // user opens the modal when they want it.
             pulseSummaryButton();
+            updateRail();
             break;
         default:
-            // Unknown event types are no-ops; forward-compatibility.
             break;
     }
 }
 
 // Top three files the user most wants to land on first.
 const FEATURED_REPORTS = [
-    { file: 'summary.md',                  title: 'Summary',                blurb: 'Decision badge + per-reviewer scores at a glance.' },
-    { file: 'decision_letter.md',          title: 'Decision Letter',        blurb: 'Editor-in-Chief’s reasoning + required revisions.' },
-    { file: 'journal_recommendations.md',  title: 'Journal Recommendations',blurb: 'Tiered venue suggestions (as-is / after revision / fallback).' },
+    { file: 'summary.md',                  title: 'Summary',                 blurb: 'Decision badge + per-reviewer scores at a glance.' },
+    { file: 'decision_letter.md',          title: 'Decision Letter',         blurb: 'Editor-in-Chief’s reasoning + required revisions.' },
+    { file: 'journal_recommendations.md',  title: 'Journal Recommendations', blurb: 'Tiered venue suggestions (as-is / after revision / fallback).' },
 ];
 
 const DECISION_LABELS = {
@@ -729,7 +614,6 @@ async function renderCompletion(ev) {
     const overlay = els.completion;
     overlay.hidden = false;
 
-    // Reset state from a previous (e.g. cached) render.
     els.completionBadge.className = 'decision-badge';
     els.completionStats.innerHTML = '';
     els.completionFeaturedCards.innerHTML = '';
@@ -743,7 +627,7 @@ async function renderCompletion(ev) {
         els.completionBadge.textContent = DECISION_LABELS[ev.decision] || ev.decision;
         els.completionTitle.textContent = 'Review complete';
         els.completionSub.textContent =
-            `Editor-in-Chief returned ${DECISION_LABELS[ev.decision] || ev.decision}.`;
+            `The Editor-in-Chief returned ${DECISION_LABELS[ev.decision] || ev.decision}.`;
     } else {
         els.completionBadge.classList.add('error');
         els.completionBadge.textContent = 'Error';
@@ -754,19 +638,12 @@ async function renderCompletion(ev) {
                 : 'No decision was produced. Check the run log.';
     }
 
-    // Stats row: cost / duration / manuscript / job id.
     const stats = [];
-    if (ev.total_cost != null) {
-        stats.push({ label: 'cost', value: `$${(ev.total_cost || 0).toFixed(4)}` });
-    }
+    if (ev.total_cost != null) stats.push({ label: 'cost', value: `$${(ev.total_cost || 0).toFixed(4)}` });
     const dur = jobDuration(state.job);
     if (dur) stats.push({ label: 'duration', value: dur });
-    if (state.job && state.job.manuscript_filename) {
-        stats.push({ label: 'manuscript', value: state.job.manuscript_filename });
-    }
+    if (state.job && state.job.manuscript_filename) stats.push({ label: 'manuscript', value: state.job.manuscript_filename });
     if (ev.report_dir) {
-        // Just the basename (job id is the slug); the full path is in the
-        // CLI output. Most users don't need the absolute path here.
         const base = ev.report_dir.split('/').filter(Boolean).pop();
         if (base) stats.push({ label: 'job', value: base });
     }
@@ -781,18 +658,13 @@ async function renderCompletion(ev) {
         els.completionStats.appendChild(div);
     }
 
-    // Report files: featured cards + collapsible full list.
     let files = [];
     try {
         const resp = await fetch(`/jobs/${JOB_ID}/reports`);
-        if (resp.ok) {
-            const data = await resp.json();
-            files = data.files || [];
-        }
+        if (resp.ok) files = (await resp.json()).files || [];
     } catch (err) {
         console.warn('failed to list reports', err);
     }
-
     if (files.length === 0) return;
 
     const fileSet = new Set(files);
@@ -805,10 +677,9 @@ async function renderCompletion(ev) {
             a.href = `/jobs/${JOB_ID}/report/${encodeURIComponent(f.file)}`;
             a.target = '_blank';
             a.rel = 'noopener';
-            a.innerHTML = `
-                <span class="report-card-title">${escapeHtml(f.title)}</span>
-                <span class="report-card-meta">${escapeHtml(f.file)}</span>
-            `;
+            a.innerHTML =
+                `<span class="report-card-title">${escapeHtml(f.title)}</span>` +
+                `<span class="report-card-meta">${escapeHtml(f.file)}</span>`;
             els.completionFeaturedCards.appendChild(a);
         }
     }
@@ -828,8 +699,6 @@ async function renderCompletion(ev) {
             els.completionAllList.appendChild(li);
         }
     } else if (featured.length) {
-        // Featured covered everything; still let the user open the
-        // accordion to confirm there's nothing else hiding.
         els.completionAllWrap.hidden = false;
         els.completionAllCount.textContent = String(files.length);
     }
@@ -865,13 +734,11 @@ async function boot() {
         state.usageByAgent.set(name, u);
     }
 
-    relayout();
+    renderRail();
+    renderRoom();
 
-    // If the job already finished (refresh / bookmarked link / a fast-
-    // failing run that completed before the page loaded), don't pop the
-    // modal automatically — that hides the room and is jarring. Just
-    // reveal the "View summary" button so the user can open it when
-    // they want.
+    // A job that already finished (refresh / bookmark / fast fail): don't pop
+    // the overlay automatically — just offer the "View summary" button.
     if (state.job.status === 'done' || state.job.status === 'error') {
         state.lastFinal = {
             status: state.job.status,
@@ -881,6 +748,7 @@ async function boot() {
             errors: state.job.errors,
         };
         showSummaryButton(state.job.status);
+        updateRail();
     }
 
     connectSocket();
@@ -897,11 +765,7 @@ function connectSocket() {
         }
     };
     ws.onclose = () => {
-        // If the job is still running per our local view, retry once
-        // after a beat — handles browser refresh more than real outages.
-        if (els.status.textContent === 'running') {
-            setTimeout(connectSocket, 1500);
-        }
+        if (els.status.textContent === 'running') setTimeout(connectSocket, 1500);
     };
 }
 

@@ -1,0 +1,41 @@
+name = "PLOS Genetics"
+aliases = ["PLoS Genet.", "PLoS Genetics"]
+publisher = "Public Library of Science (PLOS)"
+field = "genetics and genomics (open access)"
+
+impact_factor = 4.0
+impact_factor_year = 2024
+acceptance_rate = "~30%"
+
+audience = "Geneticists and genomicists across humans, model organisms, microbes, and plants."
+
+description = """
+Open-access journal reporting research in genetics and genomics, spanning gene
+function, genome biology, evolution, population and quantitative genetics, and
+disease genetics. Values mechanistic insight and rigorous genetic evidence.
+"""
+
+scope = """
+In scope: studies that advance understanding of heredity and genome biology with
+appropriate genetic, molecular, or statistical evidence. Out of scope: purely
+descriptive datasets without genetic insight, or claims unsupported by adequate
+controls, replication, or statistics.
+"""
+
+max_words = 0
+abstract_max_words = 200
+max_figures = 0
+max_references = 0
+
+guidelines = """
+Reviewers should weigh: strength of the genetic/molecular evidence; adequacy of
+controls, sample sizes, and statistics (including multiple-testing correction);
+whether mechanistic claims are supported; and reproducibility.
+
+Required: full data availability (public repository), including sequencing/array
+accessions; complete methods and statistics; appropriate ethics/consent
+statements. Correlation-as-causation and underpowered designs are common grounds
+for major revision.
+"""
+
+last_updated = "2026-07-21"

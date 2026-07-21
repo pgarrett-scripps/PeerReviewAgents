@@ -1,0 +1,42 @@
+name = "PLOS Neglected Tropical Diseases"
+aliases = ["PLoS Negl. Trop. Dis.", "PLOS NTDs", "PLoS NTDs"]
+publisher = "Public Library of Science (PLOS)"
+field = "neglected tropical diseases (open access)"
+
+impact_factor = 3.4
+impact_factor_year = 2024
+acceptance_rate = "~40%"
+
+audience = "Researchers and public-health workers on neglected tropical diseases and global health."
+
+description = """
+Open-access journal devoted to the pathology, epidemiology, prevention, treatment,
+and control of neglected tropical diseases and their impact on affected
+populations. Like PLOS ONE, judged primarily on technical soundness and rigor
+rather than perceived impact, but must be relevant to NTDs.
+"""
+
+scope = """
+In scope: rigorous, ethically conducted studies relevant to neglected tropical
+diseases (biology, diagnostics, epidemiology, clinical, control, or policy). Out
+of scope: work outside the NTD remit, or studies with flawed methods, unsupported
+conclusions, or inadequate reporting.
+"""
+
+max_words = 0
+abstract_max_words = 300
+max_figures = 0
+max_references = 0
+
+guidelines = """
+Reviewers should judge TECHNICAL SOUNDNESS and NTD relevance: sound methods and
+analysis; conclusions supported by the data; adherence to reporting, ethics, and
+data-sharing standards. Field and clinical studies must report approvals,
+consent, and (where applicable) trial registration.
+
+Required: a Data Availability Statement; ethics/consent statements for human or
+animal work; complete methods and statistics. Perceived importance is not a
+gatekeeping criterion, but NTD relevance is.
+"""
+
+last_updated = "2026-07-21"

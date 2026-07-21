@@ -30,7 +30,10 @@ class ReviewerOutput(BaseModel):
     )
     confidence: int = Field(
         ..., ge=1, le=5,
-        description="How confident the reviewer is in their score (1=low, 5=high).",
+        description="Certainty in the score: 5=squarely the reviewer's expertise "
+                    "with clear manuscript evidence, 3=reasonable read with some "
+                    "ambiguity, 1-2=outside their subarea or the manuscript is too "
+                    "unclear to judge. Prefer lowering confidence over guessing.",
     )
     summary: str = Field(
         ...,

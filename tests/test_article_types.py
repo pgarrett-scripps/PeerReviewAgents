@@ -41,6 +41,22 @@ def test_known_types_render_a_block(key):
     assert "Length limits" not in block
 
 
+@pytest.mark.parametrize("key", ["grant-proposal", "exploratory-grant"])
+def test_grant_types_reframe_as_funding_decision(key):
+    # The grant types must re-point the panel at proposed FUTURE work and remap
+    # the publication verdict scale onto a funding decision (the conference-paper
+    # mechanism), so the editor/meta-reviewer judge fundability, not publishability.
+    framing = ARTICLE_TYPES[key].review_framing.lower()
+    assert "future work" in framing
+    assert "fundable" in framing
+    assert "preliminary data" in framing
+
+
+def test_exploratory_grant_tolerates_missing_preliminary_data():
+    framing = ARTICLE_TYPES["exploratory-grant"].review_framing.lower()
+    assert "not required" in framing or "not be penalized" in framing
+
+
 def test_overrides_inject_caps_and_notes():
     block = article_type_block(
         "letter", max_words=5500, abstract_max_words=150, notes="Inquiry first."
@@ -113,6 +129,35 @@ def test_jpr_profile_defines_all_seven_types():
         "tutorial",
     ):
         assert profile.article_type_limits(key) is not None
+
+
+# --- funder / grant profiles -----------------------------------------------
+
+
+@pytest.mark.parametrize("slug", ["nih-r01", "nih-r21", "nsf", "erc"])
+def test_funder_profiles_load_and_render(slug):
+    # A funder profile is just a JournalProfile whose guidelines carry the
+    # grant criteria; it must load and render a prompt block like any venue.
+    profile = load_journal(slug)
+    assert profile is not None
+    block = profile.to_prompt_block()
+    assert block.startswith("=== TARGET JOURNAL ===")
+    assert profile.guidelines.strip()
+
+
+def test_funder_profiles_attach_grant_type_notes():
+    # The grant-style article type each funder uses carries its page-limit notes.
+    assert load_journal("nih-r01").article_type_limits("grant-proposal") is not None
+    assert load_journal("nih-r21").article_type_limits("exploratory-grant") is not None
+    assert load_journal("nsf").article_type_limits("grant-proposal") is not None
+    assert load_journal("erc").article_type_limits("grant-proposal") is not None
+
+
+def test_funder_profiles_appear_in_listing():
+    from peerreviewagents.journals import list_journals
+
+    slugs = {p.slug for p in list_journals()}
+    assert {"nih-r01", "nih-r21", "nsf", "erc"} <= slugs
 
 
 # --- config wiring ---------------------------------------------------------

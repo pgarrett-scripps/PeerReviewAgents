@@ -1,0 +1,57 @@
+# Models a FUNDER / grant mechanism, not a journal (see nih-r01.toml header).
+# Pair with --article-type exploratory-grant.
+name = "NIH R21 (Exploratory/Developmental Research Grant)"
+aliases = ["NIH R21", "R21"]
+publisher = "U.S. National Institutes of Health"
+field = "biomedical and health sciences"
+
+impact_factor = 0.0
+impact_factor_year = 0
+acceptance_rate = "~10-15% (institute- and payline-dependent)"
+
+audience = "An NIH study section reviewing early-stage, higher-risk projects, plus institute program staff."
+
+description = """
+The NIH R21 supports exploratory and developmental research: early-stage,
+higher-risk/higher-reward projects, typically up to two years and a capped
+budget. It is explicitly intended for work where preliminary data is limited or
+absent and the payoff is potential rather than incremental certainty.
+"""
+
+scope = """
+In scope: novel, exploratory, or high-risk biomedical research that could break
+new ground or establish feasibility for a larger effort. Out of scope: mature
+projects that belong in an R01, or proposals whose risk is just under-developed
+rigor rather than genuine novelty.
+"""
+
+max_words = 0
+abstract_max_words = 0
+max_figures = 0
+max_references = 0
+
+guidelines = """
+Review as an NIH study section would for an EXPLORATORY mechanism. Score
+Significance, Investigators, Innovation, Approach, and Environment on the 1-9
+scale and assign an overall Impact assessment, but apply R21 norms:
+
+- Preliminary data is NOT required and is often absent by design. Do not treat
+  its absence as a weakness.
+- Reward potential impact, innovation, and the value of establishing feasibility
+  over exhaustive rigor or breadth.
+- The scope is deliberately limited (short duration, capped budget); judge the
+  aims against that scale, not an R01's.
+- Still require that the approach is plausible and the aims are feasible within
+  the mechanism's limits, and assess human-subjects / animal / biohazard
+  protections where triggered.
+
+This is a funding decision: fundable (accept/minor) means competitive for this
+exploratory mechanism; major means not fundable as written but resubmittable;
+reject means not competitive. Do not down-score a proposal merely for being
+preliminary or risky — that is what the R21 exists to fund.
+"""
+
+last_updated = "2026-06-18"
+
+[article_types.exploratory-grant]
+notes = "NIH R21 format: Specific Aims ≤ 1 page; Research Strategy ≤ 6 pages. Preliminary data is optional by design."

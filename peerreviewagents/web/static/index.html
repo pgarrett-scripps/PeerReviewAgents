@@ -3,13 +3,16 @@
 <head>
     <meta charset="utf-8">
     <title>PeerReviewAgents</title>
-    <link rel="stylesheet" href="/static/style.css?v=7">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="/static/style.css?v=8">
 </head>
 <body class="upload-page">
     <main class="upload-card">
-        <h1>PeerReviewAgents</h1>
+        <p class="upload-eyebrow">Automated Peer Review</p>
+        <h1>Peer<b>Review</b>Agents</h1>
         <p class="lede">
-            Drop a manuscript and watch a roomful of AI reviewers tear into it.
+            Drop a manuscript and convene a chamber of AI reviewers —
+            they read, debate, and rule while you watch.
         </p>
 
         <form id="upload-form" enctype="multipart/form-data">
@@ -66,6 +69,45 @@
 
         <p id="status" class="status" role="status" aria-live="polite"></p>
     </main>
+
+    <section class="history" id="history" hidden>
+        <div class="history-head">
+            <h2>Recent reviews</h2>
+            <span class="muted" id="history-count"></span>
+        </div>
+        <ul class="history-list" id="history-list"></ul>
+    </section>
+
+    <script>
+        // Recent-reviews list — disk-backed, so it survives server restarts.
+        (async () => {
+            const esc = (s) => String(s).replace(/[&<>"']/g, c => ({
+                '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+            try {
+                const resp = await fetch('/history');
+                if (!resp.ok) return;
+                const { runs } = await resp.json();
+                if (!runs || !runs.length) return;
+                const list = document.getElementById('history-list');
+                document.getElementById('history-count').textContent =
+                    `${runs.length} run${runs.length === 1 ? '' : 's'}`;
+                for (const r of runs) {
+                    const dec = ['accept','minor','major','reject'].includes(r.decision) ? r.decision : '';
+                    const meta = [r.venue, r.date].filter(Boolean).join(' · ');
+                    const li = document.createElement('li');
+                    li.innerHTML =
+                        `<a class="history-link" href="/review.html?run=${encodeURIComponent(r.id)}">` +
+                        `<span class="decision-tag ${dec}">${esc(r.decision_label || r.decision || '—')}</span>` +
+                        `<span class="history-main">` +
+                        `<span class="history-title">${esc(r.title || r.id)}</span>` +
+                        `<span class="history-meta">${esc(meta)}</span>` +
+                        `</span><span class="history-arrow" aria-hidden="true">→</span></a>`;
+                    list.appendChild(li);
+                }
+                document.getElementById('history').hidden = false;
+            } catch (_) { /* no history section if the fetch fails */ }
+        })();
+    </script>
 
     <script>
         const form  = document.getElementById('upload-form');

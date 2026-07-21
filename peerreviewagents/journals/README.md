@@ -48,7 +48,8 @@ reviewer should weigh it, barely changes between journals. So the description
 and review framing for each type live once in
 [`peerreviewagents/article_types.py`](../article_types.py), shared by every
 venue. The selectable keys are `article`, `letter`, `communication`,
-`perspective`, `review`, `technical-note`, and `tutorial`.
+`perspective`, `review`, `technical-note`, `tutorial`, `conference-paper`,
+`grant-proposal`, and `exploratory-grant`.
 
 A journal profile only overrides the **venue-specific specifics** that actually
 differ — word/abstract caps and handling notes — as optional `[article_types.<key>]`
@@ -101,6 +102,22 @@ Wired into the pipeline via `peerreviewagents/journals.py`:
 
 Setting `target_journal = ""` makes the block empty for a fully venue-agnostic
 review with no journal framing at all.
+
+## Funder / grant profiles
+
+A profile can model a **funder or grant mechanism** instead of a journal — the
+`JournalProfile` fields are general enough to carry one. The bundled `nih-r01`,
+`nih-r21`, `nsf`, and `erc` profiles do this: the `guidelines` field holds the
+funding body's review criteria and scoring (NIH's five criteria + 1–9 Impact,
+NSF's Intellectual Merit + Broader Impacts, ERC's excellence criterion),
+`acceptance_rate` holds the payline/success rate, and `impact_factor` is left at
+0 (not applicable). Pair them with the `grant-proposal` (or `exploratory-grant`
+for R21-style mechanisms) article type, whose `review_framing` tells the panel
+to judge proposed *future* work — significance, innovation, feasibility — rather
+than completed results, and to remap the accept/minor/major/reject verdict onto
+a funding decision (fundable / resubmit / not competitive). Page limits live in
+the `[article_types.<key>].notes` field rather than `max_words`, since the
+latter renders as a word count.
 
 ### Selection is fail-fast
 

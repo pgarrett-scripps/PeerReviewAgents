@@ -94,7 +94,7 @@ def make_auditor_node(
     def node(state: ReviewState) -> dict:
         with node_context(node_name):
             config = state["config"]
-            llm = make_llm(config)
+            llm = make_llm(config, agent=node_name, default_tag="audit")
             instructions = _INSTRUCTIONS.format(
                 title=state.get("manuscript_title", "Untitled"),
                 title_role=title,

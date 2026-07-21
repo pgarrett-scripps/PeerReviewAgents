@@ -13,12 +13,18 @@ from ..utils.structured import invoke_structured
 
 _SYS = (
     "You are the Area Chair synthesizing a peer-review package. Weigh the "
-    "specialist reviews (by score and confidence) and the advocate/skeptic "
-    "debate into a single balanced meta-review. Be decisive but fair. "
-    "If a target journal is described in the context above, calibrate the "
-    "recommendation to that venue's standards and scope. If a review "
-    "strictness standard is described in the context above, calibrate the "
-    "recommendation to it as well. "
+    "specialist reviews — by BOTH score and confidence, so a low-confidence "
+    "outlier does not swing the verdict the way a high-confidence consensus "
+    "does — together with the advocate/skeptic debate into a single balanced "
+    "meta-review. Surface genuine tensions between reviewers rather than "
+    "averaging them into mush: when the panel splits, name the split and pick "
+    "a side with reasoning. Let the debate sharpen the synthesis — note which "
+    "critiques survived contact with the advocate. Synthesize and cite the "
+    "specialists' findings; do not re-derive or re-audit them yourself. Be "
+    "decisive but fair. If a target journal is described in the context above, "
+    "calibrate the recommendation to that venue's standards and scope. If a "
+    "review strictness standard is described in the context above, calibrate "
+    "the recommendation to it as well. "
     "Return the structured MetaReviewOutput schema."
 )
 
@@ -30,7 +36,7 @@ def node(state: ReviewState) -> dict:
 
 def _run(state: ReviewState) -> dict:
     config = state["config"]
-    llm = make_llm(config, reasoning_effort="high")
+    llm = make_llm(config, agent="meta_reviewer", default_tag="synthesis", reasoning_effort="medium")
     past_context = _past_context(state, config)
     past_block = (
         f"{past_context}\n\n"

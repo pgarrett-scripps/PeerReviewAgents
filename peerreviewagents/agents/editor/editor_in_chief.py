@@ -32,8 +32,13 @@ _SYS = (
     "that venue's bar and scope, and let required revisions reflect its "
     "standards and submission limits. If a review strictness standard is "
     "described in the context above, apply it to the final decision and let "
-    "it guide borderline accept/reject calls. Return the "
-    "structured EditorDecisionOutput schema."
+    "it guide borderline accept/reject calls. Make required_revisions "
+    "concrete, checkable actions ordered by importance — not vague directives "
+    "like 'improve rigor' — and keep the letter consistent with the verdict "
+    "(a minor-revision decision must not read like a rejection). Let the "
+    "verdict track the evidence rather than the raw average; if you depart "
+    "from the draft recommendation, give the reasoning in "
+    "summary_of_evaluation. Return the structured EditorDecisionOutput schema."
 )
 
 
@@ -44,7 +49,7 @@ def node(state: ReviewState) -> dict:
 
 def _run(state: ReviewState) -> dict:
     config = state["config"]
-    llm = make_llm(config, reasoning_effort="high")
+    llm = make_llm(config, agent="editor", default_tag="synthesis", reasoning_effort="medium")
     rebuttal = state.get("author_rebuttal") or "(no rebuttal provided)"
     user = (
         f"Numerical signal:\n{score_summary(state)}\n\n"

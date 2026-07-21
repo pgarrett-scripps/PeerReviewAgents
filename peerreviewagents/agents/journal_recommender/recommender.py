@@ -20,8 +20,12 @@ _SYS = (
     "You are advising a manuscript's authors on which venues to submit to, "
     "given the editorial panel's verdict. Be realistic: don't suggest top "
     "venues for manuscripts the panel found weak, and don't pigeonhole "
-    "strong work into low-tier outlets. Use venue names exactly as authors "
-    "would write them (e.g. 'Nature Methods', 'JMLR', 'Bioinformatics'). "
+    "strong work into low-tier outlets. Tie each venue's fit to the paper's "
+    "actual topic, scope, and methodology — not generic prestige. You work "
+    "from model knowledge only (no venue lookup), so prefer well-established "
+    "outlets and flag any fit uncertainty in `notes` rather than inventing a "
+    "precise match or a venue that may not exist. Use venue names exactly as "
+    "authors would write them (e.g. 'Nature Methods', 'JMLR', 'Bioinformatics'). "
     "Return the structured JournalRecommendationsOutput schema with at "
     "most 3 venues per bucket; fewer is fine when you don't have good "
     "candidates."
@@ -35,7 +39,7 @@ def node(state: ReviewState) -> dict:
 
 def _run(state: ReviewState) -> dict:
     config = state["config"]
-    llm = make_llm(config, reasoning_effort="high")
+    llm = make_llm(config, agent="journal_recommender", default_tag="synthesis", reasoning_effort="medium")
 
     reviewer_names = ", ".join(r.get("reviewer", "?") for r in state.get("reports") or [])
     decision = state.get("decision") or "(no decision)"

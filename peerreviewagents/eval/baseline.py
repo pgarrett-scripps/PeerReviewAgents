@@ -102,7 +102,7 @@ def single_llm_review(item, rep: int, config: dict[str, Any], leakage_note: str)
         # sees exactly what the panel would: same parsed manuscript, same
         # journal / article-type / strictness prompt blocks.
         state = PeerReviewGraph(config).initial_state(item.pdf_path)
-        llm = make_llm(config, reasoning_effort="high")
+        llm = make_llm(config, agent="baseline", default_tag="synthesis", reasoning_effort="high")
         result = invoke_structured(
             llm,
             BaselineReviewOutput,

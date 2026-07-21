@@ -78,15 +78,28 @@ def test_anthropic_direct_factory(monkeypatch):
     assert type(llm).__name__ == "ChatAnthropic"
 
 
-def test_anthropic_extended_thinking(monkeypatch):
+def test_anthropic_adaptive_thinking(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "stub-key")
+    # Current models (Opus 4.7+/Sonnet 5/Fable): adaptive thinking + the effort
+    # knob, and NO sampling temperature (the API 400s on it).
     llm = make_chat_model(
         _cfg("anthropic", "claude-opus-4-7"),
         reasoning_effort="high",
     )
-    # Extended thinking requires temperature=1 (Anthropic constraint).
+    assert llm.temperature is None
+    assert getattr(llm, "thinking", None) == {"type": "adaptive"}
+    assert getattr(llm, "effort", None) == "high"
+
+
+def test_anthropic_legacy_thinking(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "stub-key")
+    # Older models (Haiku 4.5, Sonnet 4.5, Opus 4.1) keep the fixed-budget
+    # extended-thinking path, which requires temperature=1.
+    llm = make_chat_model(
+        _cfg("anthropic", "claude-haiku-4-5"),
+        reasoning_effort="high",
+    )
     assert llm.temperature == 1.0
-    # The thinking block lives on the model as a constructor kwarg.
     thinking = getattr(llm, "thinking", None)
     assert isinstance(thinking, dict)
     assert thinking.get("type") == "enabled"

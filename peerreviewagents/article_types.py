@@ -161,6 +161,55 @@ ARTICLE_TYPES: dict[str, ArticleType] = {
             "major/reject mean it does not — do not default to major revision."
         ),
     ),
+    "grant-proposal": ArticleType(
+        key="grant-proposal",
+        name="Grant Proposal",
+        description=(
+            "A research-funding application (e.g. NIH R01, NSF standard "
+            "proposal, ERC grant): a proposal of work to be carried out, "
+            "not a report of completed research."
+        ),
+        review_framing=(
+            "Judge it as a proposal of FUTURE work, not a finished manuscript. "
+            "Weigh significance/impact (does success meaningfully advance the "
+            "field?), innovation, and the soundness and feasibility of the "
+            "proposed approach, alongside the rigor of the plan. Preliminary "
+            "data matters only as evidence of feasibility — the absence of "
+            "complete results is expected and is NOT a weakness; do not demand "
+            "the finished evidence you would require of a research article. "
+            "Where the funder profile describes investigator/environment, "
+            "budget, or broader/societal-impact criteria, weigh those too. Map "
+            "the score and verdict to a funding decision rather than a "
+            "publication one: accept/minor mean fundable (high priority); major "
+            "means not fundable as submitted but worth resubmitting with "
+            "revisions; reject means not competitive / would not be funded. Do "
+            "not default to major revision — say plainly whether it would be "
+            "funded."
+        ),
+    ),
+    "exploratory-grant": ArticleType(
+        key="exploratory-grant",
+        name="Exploratory / Seed Grant Proposal",
+        description=(
+            "A short, higher-risk exploratory or seed funding application "
+            "(e.g. NIH R21): early-stage or high-risk/high-reward work where "
+            "preliminary data is limited or absent by design."
+        ),
+        review_framing=(
+            "Judge it as an EXPLORATORY proposal of future work with an "
+            "explicitly higher risk tolerance. Weigh the potential impact and "
+            "innovation of the idea over exhaustive rigor or completeness: "
+            "preliminary data is NOT required and its absence must not be "
+            "penalized, and the scope is deliberately smaller than a full "
+            "research grant. Still require that the approach is plausible and "
+            "the aims are feasible within the mechanism's limits. Map the score "
+            "and verdict to a funding decision: accept/minor mean fundable; "
+            "major means not fundable as submitted but worth resubmitting; "
+            "reject means not competitive. Do not default to major revision, "
+            "and do not down-score it merely for being preliminary or risky — "
+            "that is the point of the mechanism."
+        ),
+    ),
 }
 
 

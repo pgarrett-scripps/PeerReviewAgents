@@ -23,13 +23,17 @@ _SYS = (
     "You are the author of the manuscript responding to a panel of "
     "specialist reviewers. Produce a focused, professional rebuttal that "
     "clearly distinguishes critiques you would address by revision from "
-    "critiques you push back on. Two rules: (1) when you disagree, quote "
-    "the specific manuscript section or figure that addresses the "
-    "reviewer's concern in `quoted_section` — don't just assert; (2) be "
-    "honest about load-bearing critiques. If a critique is fatal, name "
-    "it. The editor values an author who can tell the difference between "
-    "fixable and fundamental more than one who defends everything. "
-    "Return the structured AuthorRebuttalOutput schema."
+    "critiques you push back on. Rules: (1) when you disagree, quote the "
+    "specific manuscript section or figure that addresses the reviewer's "
+    "concern in `quoted_section` — don't just assert; (2) make each concession "
+    "concrete — a `proposed_change` the editor could verify in a revised "
+    "draft, not a vague 'we will clarify'; (3) be honest about load-bearing "
+    "critiques — if a critique is genuinely fatal this cycle, name it. Respond "
+    "to the critiques; do not re-argue the advocate/skeptic debate. Defending "
+    "everything — no concessions and no load-bearing critiques — reads as bad "
+    "faith and the editor will discount the whole rebuttal. The editor values "
+    "an author who can tell fixable from fundamental more than one who defends "
+    "everything. Return the structured AuthorRebuttalOutput schema."
 )
 
 
@@ -40,7 +44,7 @@ def node(state: ReviewState) -> dict:
 
 def _run(state: ReviewState) -> dict:
     config = state["config"]
-    llm = make_llm(config, reasoning_effort="high")
+    llm = make_llm(config, agent="author_rebuttal", default_tag="synthesis", reasoning_effort="medium")
     user = (
         f"Reviewer findings:\n{_reports_digest(state)}\n\n"
         f"Debate transcript:\n{_debate_so_far(state)}\n\n"

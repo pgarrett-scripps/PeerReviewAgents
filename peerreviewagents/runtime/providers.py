@@ -112,27 +112,67 @@ def _make_anthropic(model: str, *, reasoning_effort: str | None = None) -> Any:
         ) from exc
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
-    # Extended thinking budget per effort tier. The total max_tokens
-    # cap must exceed the thinking budget (Anthropic requirement).
     kwargs: dict[str, Any] = {
         "model": model,
-        "temperature": _TEMPERATURE,
         "streaming": True,
+        "stream_usage": True,
         "callbacks": [StreamingCallback(default_model=model)],
         "max_tokens": 8192,
     }
-    if reasoning_effort:
+
+    adaptive = _anthropic_matches(model, _ANTHROPIC_ADAPTIVE_EFFORT)
+    rejects_sampling = _anthropic_matches(model, _ANTHROPIC_NO_SAMPLING)
+
+    # The newest reasoning models (Opus 4.7/4.8, Sonnet 5, Fable/Mythos 5)
+    # 400 on any `temperature`; older models still accept it. Omit it there.
+    if not rejects_sampling:
+        kwargs["temperature"] = _TEMPERATURE
+
+    if adaptive:
+        # Opus 4.6+ / Sonnet 4.6+ / Fable: adaptive thinking + `effort` knob
+        # (the fixed `budget_tokens` budget was removed and now 400s). We
+        # leave thinking OFF unless an effort is explicitly requested, so the
+        # parallel specialist reviewers don't spend extra thinking tokens —
+        # only the synthesis agents (meta-reviewer, editor) pass an effort.
+        if reasoning_effort:
+            kwargs["thinking"] = {"type": "adaptive"}
+            kwargs["effort"] = reasoning_effort  # low | medium | high
+            kwargs["max_tokens"] = 16000  # room for thinking + the answer
+    elif reasoning_effort:
+        # Legacy models (Haiku 4.5, Sonnet 4.5, Opus 4.1): fixed thinking
+        # budget. Extended thinking requires temperature=1 and a max_tokens
+        # cap above the budget.
         budget = _ANTHROPIC_THINKING_BUDGET.get(reasoning_effort, 4096)
         kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
-        # Extended thinking requires temperature=1.
         kwargs["temperature"] = 1.0
         kwargs["max_tokens"] = budget + 4096
+
     if api_key:
         kwargs["api_key"] = api_key
     return ChatAnthropic(**kwargs)
 
 
 _ANTHROPIC_THINKING_BUDGET = {"low": 1024, "medium": 4096, "high": 8192}
+
+# Direct-Anthropic model families (matched as normalized substrings, so both
+# "claude-opus-4-8" and "claude-opus-4.8" hit). ``_ANTHROPIC_ADAPTIVE_EFFORT``
+# = models that use adaptive thinking + the `effort` knob rather than a fixed
+# `budget_tokens` budget. ``_ANTHROPIC_NO_SAMPLING`` = the subset that also
+# rejects `temperature`/`top_p`/`top_k` outright (400). Everything not listed
+# is treated as legacy (temperature ok, thinking via `budget_tokens`).
+_ANTHROPIC_ADAPTIVE_EFFORT: tuple[str, ...] = (
+    "opus-4-6", "opus-4-7", "opus-4-8",
+    "sonnet-4-6", "sonnet-5",
+    "fable-5", "mythos-5",
+)
+_ANTHROPIC_NO_SAMPLING: tuple[str, ...] = (
+    "opus-4-7", "opus-4-8", "sonnet-5", "fable-5", "mythos-5",
+)
+
+
+def _anthropic_matches(model: str, needles: tuple[str, ...]) -> bool:
+    normalized = model.lower().replace(".", "-")
+    return any(n in normalized for n in needles)
 
 
 # --- Registry ---------------------------------------------------------------
@@ -155,39 +195,134 @@ PROVIDERS: dict[str, ProviderSpec] = {
     ),
     "anthropic": ProviderSpec(
         name="anthropic",
+        # Anthropic's native strict structured outputs enforce field types at
+        # the API level — the model cannot return a bulleted string where the
+        # schema wants list[str]. `function_calling` (the langchain default)
+        # relies on the model formatting arrays correctly, which weaker models
+        # (Haiku) fail on long manuscript prompts.
         factory=_make_anthropic,
-        structured_method="tool_call",
+        structured_method="json_schema",
         supports_cache_control=True,
         api_key_env=("ANTHROPIC_API_KEY",),
     ),
 }
 
 
-# --- Public API -------------------------------------------------------------
+# --- Model tags / per-agent resolution --------------------------------------
 
 
-def provider_spec(config: dict) -> ProviderSpec:
-    """Return the :class:`ProviderSpec` selected by ``config['provider']``."""
-    name = (config.get("provider") or "openrouter").lower()
-    spec = PROVIDERS.get(name)
+@dataclass(frozen=True)
+class ModelSpec:
+    """A fully-resolved model choice for one agent: which provider, which
+    model string, and an optional default reasoning effort."""
+
+    provider: str
+    model: str
+    effort: str | None = None
+
+
+def spec_for_provider(name: str | None) -> ProviderSpec:
+    """Return the :class:`ProviderSpec` for a provider name."""
+    key = (name or "openrouter").lower()
+    spec = PROVIDERS.get(key)
     if spec is None:
         raise ValueError(
-            f"unknown provider {name!r}; available: {sorted(PROVIDERS)}"
+            f"unknown provider {key!r}; available: {sorted(PROVIDERS)}"
         )
     return spec
 
 
-def make_chat_model(config: dict, *, reasoning_effort: str | None = None) -> Any:
-    """Build the chat model declared by ``config`` for the active provider.
+def provider_spec(config: dict) -> ProviderSpec:
+    """Return the :class:`ProviderSpec` for the global ``config['provider']``.
 
-    Pass ``reasoning_effort="high"`` for synthesis/judgement agents. The
-    knob maps to whatever the provider supports: OpenRouter's
-    ``reasoning.effort`` field, OpenAI's ``reasoning_effort`` parameter,
-    Anthropic's extended-thinking budget. On models without a reasoning
-    mode the field is silently ignored.
+    Kept for callers that only need the run-wide provider. Per-agent code
+    paths should use :func:`spec_for_llm` so the structured-output method and
+    cache-control flags match the model that agent actually built.
     """
-    spec = provider_spec(config)
-    model = config.get("reasoning_model")
+    return spec_for_provider(config.get("provider"))
+
+
+def spec_for_llm(llm: Any) -> ProviderSpec:
+    """Return the :class:`ProviderSpec` for an already-built chat model.
+
+    Inferred from the instance (class + base_url) rather than from
+    ``config['provider']``, so it stays correct when different agents run on
+    different providers via model tags.
+    """
+    cls = type(llm).__name__
+    if cls == "ChatAnthropic":
+        return PROVIDERS["anthropic"]
+    if cls == "ChatOpenAI":
+        base = str(
+            getattr(llm, "openai_api_base", "")
+            or getattr(llm, "base_url", "")
+            or ""
+        )
+        return PROVIDERS["openrouter"] if "openrouter" in base.lower() else PROVIDERS["openai"]
+    return PROVIDERS["openrouter"]
+
+
+def resolve_model(
+    config: dict,
+    *,
+    agent: str | None = None,
+    default_tag: str = "default",
+) -> ModelSpec:
+    """Resolve the model an ``agent`` should use, honoring model tags.
+
+    Resolution order:
+
+    1. ``config['agent_models'][agent]`` — a tag name (str) or an inline
+       ``{provider?, model?, effort?}`` spec — wins if present.
+    2. Otherwise the agent's code-declared ``default_tag`` (e.g. every
+       synthesis agent shares ``"synthesis"``), looked up in
+       ``config['models']``.
+    3. Any field the chosen tag/spec leaves unset falls back to the global
+       ``config['provider']`` / ``config['reasoning_model']``.
+
+    So with no ``[models]`` / ``[agent_models]`` configured, every agent
+    resolves to the single global model exactly as before. Defining a group
+    tag (``[models.synthesis]``) retargets that whole group; ``[agent_models]``
+    overrides one agent.
+    """
+    agent_models: dict = config.get("agent_models") or {}
+    selection = agent_models.get(agent, default_tag) if agent else default_tag
+
+    if isinstance(selection, dict):
+        raw = selection
+    else:
+        raw = (config.get("models") or {}).get(selection) or {}
+
+    provider = raw.get("provider") or config.get("provider") or "openrouter"
+    model = raw.get("model") or config.get("reasoning_model")
     if not model:
-        raise ValueError("reasoning_model is not set in config")
-    return spec.factory(model, reasoning_effort=reasoning_effort)
+        raise ValueError("no model resolved: set reasoning_model or a model tag")
+    return ModelSpec(provider=provider, model=model, effort=raw.get("effort"))
+
+
+# --- Public API -------------------------------------------------------------
+
+
+def make_chat_model(
+    config: dict,
+    *,
+    agent: str | None = None,
+    default_tag: str = "default",
+    reasoning_effort: str | None = None,
+) -> Any:
+    """Build the chat model an ``agent`` should use.
+
+    ``agent`` + ``default_tag`` select the model via :func:`resolve_model`
+    (model tags). With neither ``[models]`` nor ``[agent_models]`` configured,
+    this collapses to the single global ``provider`` / ``reasoning_model``.
+
+    ``reasoning_effort`` passed here (what synthesis agents do today) takes
+    precedence over any ``effort`` declared on the resolved tag. The knob maps
+    to whatever the provider supports (OpenRouter ``reasoning.effort``, OpenAI
+    ``reasoning_effort``, Anthropic adaptive-thinking effort) and is ignored on
+    non-reasoning models.
+    """
+    spec = resolve_model(config, agent=agent, default_tag=default_tag)
+    prov = spec_for_provider(spec.provider)
+    effort = reasoning_effort if reasoning_effort is not None else spec.effort
+    return prov.factory(spec.model, reasoning_effort=effort)

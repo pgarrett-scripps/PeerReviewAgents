@@ -30,6 +30,14 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel
 
+from ...runtime.providers import spec_for_llm
+from .agent_utils import (
+    _build_messages,
+    _cache_control_supported,
+    _call_cost,
+    run_agent,
+)
+
 # Transient provider/transport failures (e.g. OpenRouter "Provider returned
 # error", rate limits, dropped connections) surface as exceptions from
 # ``structured.invoke``. Retry the call a few times with linear backoff
@@ -37,14 +45,6 @@ from pydantic import BaseModel
 # single upstream blip doesn't silently drop an agent from the run.
 _MAX_PROVIDER_ATTEMPTS = 3
 _RETRY_BACKOFF_S = 2.0
-
-from ...runtime.providers import provider_spec
-from .agent_utils import (
-    _cache_control_supported,
-    _call_cost,
-    _user_message,
-    run_agent,
-)
 
 
 @dataclass(frozen=True)
@@ -70,11 +70,10 @@ def invoke_structured(
     agents catch this in their existing ``except`` block and report a
     node-level error.
     """
-    use_cache = _cache_control_supported(llm)
-    messages = [
-        SystemMessage(content=system_prompt),
-        _user_message(user_prompt, cached_prefix, with_cache_marker=use_cache),
-    ]
+    messages = _build_messages(
+        system_prompt, user_prompt, cached_prefix,
+        cache_supported=_cache_control_supported(llm),
+    )
     return _try_structured(llm, schema, messages, config=config)
 
 
@@ -119,7 +118,7 @@ def _try_structured(
     *,
     config: dict,
 ) -> StructuredResult:
-    spec = provider_spec(config)
+    spec = spec_for_llm(llm)
     structured = _bind(llm, schema, spec.structured_method)
     result = _invoke_with_retries(structured, messages)
     parsed, cost = _unpack(result)

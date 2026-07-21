@@ -45,17 +45,28 @@ def build_graph(config: dict):
     # Author rebuttal sits between meta-reviewer and editor so the
     # editor sees both the panel's verdict and the author's defense.
     g.add_node("author_rebuttal", author_rebuttal.node)
-    g.add_node("editor", editor_in_chief.node)
+    # `defer=True` is load-bearing: the editor joins two lanes of different
+    # depths — the short audit lane (START -> audit -> editor) and the long
+    # rebuttal chain (reviewers -> debate -> meta -> rebuttal -> editor).
+    # LangGraph only barriers edges that settle in the SAME superstep, so a
+    # plain node would fire once when the auditors finish (meta-review,
+    # rebuttal, and scores still empty -> a junk decision letter) and again
+    # after the rebuttal chain. Deferring makes the editor run once, after
+    # every upstream task has drained.
+    g.add_node("editor", editor_in_chief.node, defer=True)
     # Journal recommender runs after the editor so it can condition its
     # venue suggestions on the final accept/minor/major/reject verdict
     # and the required-revisions list in the decision letter.
     g.add_node("journal_recommender", journal_recommender.node)
 
-    # Optional desk-screen gate: a single triage node ahead of the fan-out.
-    # When enabled, START -> desk_screen -> (END on desk-reject | fan out to
-    # all reviewers). When disabled, START fans out to the reviewers directly,
-    # exactly as before.
-    desk_screen_enabled = bool(config.get("desk_screen"))
+    # Optional desk-screen node: a single triage node ahead of the fan-out.
+    # Modes (see desk_screen.screen_mode): "gate" enforces desk-reject
+    # (START -> desk_screen -> END on reject | fan out); "warm" runs it only to
+    # prime the shared manuscript prompt cache before the parallel fan-out
+    # reads it, always proceeding; "off" skips it (START fans out directly).
+    # In warm mode the node returns desk_rejected=False, so the same
+    # route_after_desk_screen fans out unconditionally.
+    desk_screen_enabled = desk_screen.screen_mode(config) != "off"
     if desk_screen_enabled:
         g.add_node("desk_screen", desk_screen.node)
         g.add_edge(START, "desk_screen")
@@ -76,9 +87,9 @@ def build_graph(config: dict):
             g.add_edge(START, f"reviewer_{name}")
         g.add_edge(f"reviewer_{name}", reviewer_sink)
 
-    # Audit lane fans out in parallel and converges on the editor. The editor
-    # therefore waits for both the rebuttal chain and every auditor before it
-    # runs (standard LangGraph join). On a desk-reject, the audits never fire.
+    # Audit lane fans out in parallel and converges on the editor, which is a
+    # deferred node (see above) so it waits for both the rebuttal chain and
+    # every auditor before it runs. On a desk-reject, the audits never fire.
     for name, _ in auditor_nodes:
         if not desk_screen_enabled:
             g.add_edge(START, f"audit_{name}")

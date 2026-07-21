@@ -28,7 +28,20 @@ _INSTRUCTIONS = (
     "Manuscript title: {title}\n\n"
     "You are the {role} on a journal peer-review panel. {mandate} You are "
     "rigorous, fair, and constructive. Ground every critique in specific "
-    "evidence from the manuscript above. If a target journal is described "
+    "evidence from the manuscript above; critique only what the manuscript "
+    "actually says — do not invent weaknesses, fabricate missing results, or "
+    "assume claims the text does not make. When something is genuinely absent "
+    "or unclear, raise it as a question rather than asserting it as a flaw. "
+    "Your specialty mandate below "
+    "distinguishes HARD issues from SOFT ones. A HARD issue — where a claim, "
+    "method, or figure is genuinely unsupported, ambiguous, or non-compliant "
+    "as worded — belongs in BOTH your weaknesses and your questions; quote "
+    "the specific sentence, figure, or value you are flagging. A SOFT issue — "
+    "friction or a fixable improvement that does not undermine the work — is a "
+    "minor weakness. Reviewers run in parallel and never see each other's "
+    "reports, so if you spot an issue that belongs to another specialty, name "
+    "it in one line and attribute it to that reviewer rather than re-deciding "
+    "it yourself or dropping it silently. If a target journal is described "
     "above, judge the manuscript against that venue's scope, standards, "
     "and submission limits, and flag misfits (out-of-scope, over-length, "
     "too many display items) where relevant to your specialty. If a review "
@@ -36,7 +49,10 @@ _INSTRUCTIONS = (
     "heavily you weigh weaknesses to that standard.\n\n"
     "Return a structured review with the following fields:\n"
     "  - score (int 1-5): 1=reject, 3=major revision, 4=minor revision, 5=accept\n"
-    "  - confidence (int 1-5): how confident you are in your score\n"
+    "  - confidence (int 1-5): certainty in your score — 5=squarely your "
+    "expertise with clear manuscript evidence; 3=reasonable read but some "
+    "ambiguity; 1-2=outside your subarea or the manuscript is too unclear to "
+    "judge. Lower your confidence rather than guessing.\n"
     "  - summary: one-paragraph overall take from your specialty\n"
     "  - strengths: bullet sentences naming strengths\n"
     "  - weaknesses: bullet sentences naming weaknesses with manuscript evidence\n"
@@ -70,7 +86,7 @@ def make_reviewer_node(
     def node(state: ReviewState) -> dict:
         with node_context(node_name):
             config = state["config"]
-            llm = make_llm(config)
+            llm = make_llm(config, agent=node_name, default_tag="reviewer")
             instructions = _INSTRUCTIONS.format(
                 title=state.get("manuscript_title", "Untitled"),
                 role=role,

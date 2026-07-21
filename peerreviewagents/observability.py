@@ -111,6 +111,15 @@ def emit(event: AgentEvent) -> None:
 # pricing page; unknown models fall through to None and are billed at $0
 # in the UI rather than a fabricated number. Extend as needed.
 _PRICING_USD_PER_M: dict[str, tuple[float, float]] = {
+    # Direct Anthropic model ids (provider = "anthropic"): no vendor prefix.
+    "claude-opus-4-8": (5.0, 25.0),
+    "claude-opus-4-7": (5.0, 25.0),
+    "claude-opus-4-6": (5.0, 25.0),
+    "claude-sonnet-5": (3.0, 15.0),
+    "claude-sonnet-4-6": (3.0, 15.0),
+    "claude-haiku-4-5": (1.0, 5.0),
+    "claude-fable-5": (10.0, 50.0),
+    # OpenRouter slugs (provider = "openrouter").
     "anthropic/claude-opus-4.1": (15.0, 75.0),
     "anthropic/claude-opus-4": (15.0, 75.0),
     "anthropic/claude-sonnet-4.6": (3.0, 15.0),

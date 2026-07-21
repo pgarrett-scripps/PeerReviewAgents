@@ -1,0 +1,59 @@
+# Models a FUNDER / grant mechanism, not a journal (see nih-r01.toml header).
+# Pair with --article-type grant-proposal.
+name = "NSF (Standard Research Proposal)"
+aliases = ["NSF", "National Science Foundation"]
+publisher = "U.S. National Science Foundation"
+field = "science and engineering (non-biomedical)"
+
+impact_factor = 0.0
+impact_factor_year = 0
+acceptance_rate = "~20-25% (program- and directorate-dependent)"
+
+audience = "An NSF review panel and/or ad hoc reviewers of subject-matter experts, plus the cognizant program officer who makes the funding recommendation."
+
+description = """
+A standard NSF research proposal requests support for proposed work in science,
+engineering, or education within an NSF directorate's mission. It is evaluated
+on its merit as a plan of future work, not on completed results.
+"""
+
+scope = """
+In scope: original research in NSF-supported fields with a clear plan, qualified
+team, and a credible Broader Impacts component. Out of scope: clinical/disease
+research that belongs at NIH, or proposals lacking a genuine Broader Impacts
+plan.
+"""
+
+max_words = 0
+abstract_max_words = 0
+max_figures = 0
+max_references = 0
+
+guidelines = """
+Evaluate against NSF's TWO merit-review criteria, which are CO-EQUAL — a strong
+proposal must satisfy both, and a weak Broader Impacts plan is a substantive
+deficiency, not an afterthought:
+
+1. Intellectual Merit — the potential to advance knowledge. Weigh the
+   importance of the proposed activity, the soundness and feasibility of the
+   plan, the qualifications of the team, and the adequacy of resources.
+2. Broader Impacts — the potential to benefit society and contribute to desired
+   societal outcomes (e.g. broadening participation of underrepresented groups,
+   education and training, public engagement, infrastructure, or societal
+   benefit). Require a concrete, credible plan, not vague aspiration.
+
+Across both, NSF asks reviewers to consider five elements: what is the
+potential to advance knowledge / benefit society; how creative and
+transformative are the activities; is the plan well-reasoned and feasible; is
+the team qualified; are resources adequate.
+
+This is a funding decision, not a publication one. Fundable (accept/minor) means
+competitive for an award; major means not fundable as written but worth
+revising and resubmitting; reject means not competitive. Do not penalize the
+proposal for lacking completed results.
+"""
+
+last_updated = "2026-06-18"
+
+[article_types.grant-proposal]
+notes = "NSF format: Project Description ≤ 15 pages, and it MUST include a distinct, labeled Broader Impacts section. A proposal with no real Broader Impacts plan is non-compliant."

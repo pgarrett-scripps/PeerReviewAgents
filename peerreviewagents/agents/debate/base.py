@@ -44,13 +44,18 @@ def make_debate_node(role: str, stance: str):
     def node(state: ReviewState) -> dict:
         with node_context(role):
             config = state["config"]
-            llm = make_llm(config)
+            llm = make_llm(config, agent=f"debate_{role.lower()}", default_tag="debate")
             rnd = state.get("debate_round", 0) + 1
             system = (
                 f"You are the {role} in an editorial debate about whether to accept a "
-                f"manuscript. {stance} Argue concisely (≤250 words), engage directly "
-                "with the other side's points, and ground every claim in specific text "
-                "from the manuscript above (quote sections or figures by name). "
+                f"manuscript. {stance} Argue concisely (≤250 words) and ground every "
+                "claim in specific text from the manuscript above (quote sections or "
+                "figures by name) and in the specialist reviews — argue FROM the panel's "
+                "findings and the primary text; do not invent new findings of your own. "
+                "Engage directly with the other side's MOST RECENT argument rather than "
+                "restating your own opening, and concede any point they have genuinely "
+                "established — in a debate, credibility comes from picking real battles, "
+                "not from defending the indefensible. "
                 "Return your turn as the structured DebateOutput schema."
             )
             user = (

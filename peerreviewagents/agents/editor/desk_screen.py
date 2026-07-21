@@ -42,6 +42,24 @@ _USER = (
 )
 
 
+def screen_mode(config: dict) -> str:
+    """Resolve the desk-screen mode: ``"off"`` | ``"warm"`` | ``"gate"``.
+
+    - ``gate`` — run triage and enforce a desk-reject (short-circuit the run).
+    - ``warm`` — run triage to prime the manuscript prompt cache for the
+      parallel reviewer fan-out, but *ignore* the reject verdict (always
+      proceed to the full panel). The screen's opinion is still recorded.
+    - ``off`` — don't run the node at all.
+
+    Back-compat: the legacy boolean ``desk_screen`` maps ``True`` → ``gate``,
+    ``False`` → ``off``. An explicit ``desk_screen_mode`` overrides it.
+    """
+    m = str(config.get("desk_screen_mode") or "").lower().strip()
+    if m in ("off", "warm", "gate"):
+        return m
+    return "gate" if config.get("desk_screen") else "off"
+
+
 def node(state: ReviewState) -> dict:
     with node_context("desk_screen"):
         return _run(state)
@@ -50,7 +68,9 @@ def node(state: ReviewState) -> dict:
 def _run(state: ReviewState) -> dict:
     config = state["config"]
     try:
-        llm = make_llm(config)
+        # Use the reviewers' model/tag, not a separate "screen" model, so the
+        # cache this warms is the one the panel reads (caches are per-model).
+        llm = make_llm(config, agent="desk_screen", default_tag="reviewer")
         result = invoke_structured(
             llm,
             DeskScreenOutput,
@@ -65,7 +85,9 @@ def _run(state: ReviewState) -> dict:
 
     output: DeskScreenOutput = result.instance  # type: ignore[assignment]
     body = output.to_markdown()
-    if output.desk_reject:
+    # In "warm" mode we ran only to prime the cache — never short-circuit,
+    # regardless of the verdict.
+    if output.desk_reject and screen_mode(config) == "gate":
         return {
             "desk_rejected": True,
             "decision": "reject",

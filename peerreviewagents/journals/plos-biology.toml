@@ -1,0 +1,41 @@
+name = "PLOS Biology"
+aliases = ["PLoS Biol.", "PLoS Biology"]
+publisher = "Public Library of Science (PLOS)"
+field = "biology (flagship, open access)"
+
+impact_factor = 7.8
+impact_factor_year = 2024
+acceptance_rate = "~15%"
+
+audience = "Broad life-sciences readership; selective flagship for advances of general interest."
+
+description = """
+PLOS's flagship open-access journal for exceptional research across all of
+biology. Unlike PLOS ONE, selection weighs SIGNIFICANCE and general interest, not
+only technical soundness: papers should offer a substantial conceptual or
+methodological advance that will interest researchers beyond a single subfield.
+"""
+
+scope = """
+In scope: rigorous studies reporting a significant advance of broad biological
+interest. Out of scope: technically sound but incremental work of narrow interest
+(better suited to PLOS ONE), or work whose conclusions outrun the evidence.
+"""
+
+max_words = 0
+abstract_max_words = 250
+max_figures = 0
+max_references = 0
+
+guidelines = """
+Reviewers should weigh BOTH significance/general interest AND technical rigor:
+is the advance real and broadly important, and is every central claim supported
+by the data with appropriate controls, statistics, and reproducibility?
+
+Required: full data availability (public repository or justified exception);
+complete methods and statistics; ethics/consent statements where applicable; and
+clear articulation of what is genuinely new. Overclaiming and thin controls are
+grounds for major revision.
+"""
+
+last_updated = "2026-07-21"

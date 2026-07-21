@@ -5,10 +5,9 @@ manuscript truncation, score aggregation, cost capture.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_core.utils.function_calling import convert_to_openai_tool
 
 if TYPE_CHECKING:
     from .agent_states import ReviewState
@@ -67,16 +66,17 @@ def run_agent(
     tool_map = {t.name: t for t in tools}
 
     if tools:
-        bound_tools = [convert_to_openai_tool(t) for t in tools]
-        model = llm.bind(tools=bound_tools)
+        # bind_tools() converts to the active provider's tool format
+        # (Anthropic native vs OpenAI `function`); passing pre-converted
+        # OpenAI-format tools via bind() 400s on the Anthropic API.
+        model = llm.bind_tools(tools)
     else:
         model = llm
 
-    use_cache_marker = _cache_control_supported(llm)
-    messages = [
-        SystemMessage(content=system_prompt),
-        _user_message(user_prompt, cached_prefix, with_cache_marker=use_cache_marker),
-    ]
+    messages = _build_messages(
+        system_prompt, user_prompt, cached_prefix,
+        cache_supported=_cache_control_supported(llm),
+    )
     cost_total = 0.0
     final_resp: AIMessage | None = None
     for _ in range(_MAX_TOOL_STEPS):
@@ -120,25 +120,37 @@ def _cache_control_supported(llm) -> bool:
     return False
 
 
-def _user_message(
+def _build_messages(
+    system_prompt: str,
     user_prompt: str,
     cached_prefix: str | None,
     *,
-    with_cache_marker: bool = True,
-) -> HumanMessage:
-    """Build the user message, optionally with a cache-controlled prefix block."""
-    if cached_prefix is None:
-        return HumanMessage(content=user_prompt)
-    if with_cache_marker:
-        return HumanMessage(
-            content=[
-                {"type": "text", "text": cached_prefix, "cache_control": {"type": "ephemeral"}},
-                {"type": "text", "text": user_prompt},
-            ]
-        )
-    # No provider-side cache markup available: just concatenate so we
-    # don't pay the content-block overhead for nothing.
-    return HumanMessage(content=f"{cached_prefix}\n\n{user_prompt}")
+    cache_supported: bool = True,
+) -> list:
+    """Assemble ``[system, user]`` with any ``cached_prefix`` (the manuscript)
+    placed as a *leading* system block.
+
+    Putting the manuscript first — ahead of each agent's own system prompt —
+    makes the cached region byte-identical across every agent that sends the
+    same manuscript, so a single provider-side cache entry is shared instead
+    of one being written per agent-specific prefix. The agent's system_prompt
+    and the user_prompt sit *after* the cache breakpoint, so they don't
+    fragment the key. This is what lets the desk-screen warmer prime a cache
+    the parallel reviewer fan-out then reads.
+
+    On providers that don't honor ``cache_control`` (OpenAI direct) the prefix
+    is folded into the system prompt as plain text — same ordering, no marker.
+    """
+    if not cached_prefix:
+        return [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
+    if cache_supported:
+        system_content: Any = [
+            {"type": "text", "text": cached_prefix, "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": system_prompt},
+        ]
+    else:
+        system_content = f"{cached_prefix}\n\n{system_prompt}"
+    return [SystemMessage(content=system_content), HumanMessage(content=user_prompt)]
 
 
 def _call_cost(resp: AIMessage) -> float:
@@ -188,9 +200,10 @@ def fit_manuscript(state: ReviewState, budget: int | None = None) -> str:
     """
     text: str = state["manuscript_md"]
     if budget is None:
-        budget = state["config"].get("manuscript_char_budget", 60000)
+        budget = state["config"].get("manuscript_char_budget")
 
-    if len(text) <= budget:
+    # No budget set (None/0) -> send the full manuscript, no truncation.
+    if not budget or len(text) <= budget:
         return text
 
     sections: dict[str, str] = state.get("sections") or {}

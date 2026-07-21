@@ -1,0 +1,59 @@
+# Models a FUNDER / grant mechanism, not a journal (see nih-r01.toml header).
+# Pair with --article-type grant-proposal.
+name = "ERC (European Research Council)"
+aliases = ["ERC", "ERC Starting Grant", "ERC Consolidator Grant", "ERC Advanced Grant"]
+publisher = "European Research Council (European Commission)"
+field = "any discipline (frontier research)"
+
+impact_factor = 0.0
+impact_factor_year = 0
+acceptance_rate = "~10-15% (call- and panel-dependent)"
+
+audience = "An ERC evaluation panel of senior scientists across a broad domain, plus remote referees, assessing both the Principal Investigator and the project."
+
+description = """
+ERC grants (Starting, Consolidator, Advanced) fund investigator-driven frontier
+research led by a single Principal Investigator. They are awarded on scientific
+excellence ALONE, with strong weight on the ground-breaking nature of the
+project and the PI's demonstrated capacity to deliver it.
+"""
+
+scope = """
+In scope: ambitious, high-risk/high-gain frontier research in any field, led by
+a PI whose track record fits the grant tier (early-career for Starting,
+mid-career for Consolidator, established leader for Advanced). Out of scope:
+incremental or low-ambition projects, or proposals where the PI's standing does
+not match the tier.
+"""
+
+max_words = 0
+abstract_max_words = 0
+max_figures = 0
+max_references = 0
+
+guidelines = """
+Evaluate on the SOLE criterion of scientific excellence — there is no separate
+"impact" or "broader benefit" axis to trade against it. Excellence is assessed
+through both the project and the Principal Investigator:
+
+- Ground-breaking nature & ambition: does the project address important
+  challenges with a genuinely novel, high-gain idea, beyond the incremental?
+  High-risk/high-reward is expected and rewarded.
+- Scientific approach: are the objectives, methodology, and feasibility
+  convincing, and is the high risk justified by the potential gain?
+- The Principal Investigator: does the PI's track record and the proposed
+  commitment demonstrate the intellectual capacity, creativity, and standing to
+  deliver the project, at a level appropriate to the grant tier? (Weigh where
+  the PI/CV is described.)
+
+This is a funding decision. Fundable (accept/minor) means competitive for an ERC
+award on excellence grounds; major means not fundable as written but worth
+strengthening; reject means not competitive. Do not penalize the absence of
+completed results, and do not reward safe, incremental work — lack of ambition
+is itself a weakness here.
+"""
+
+last_updated = "2026-06-18"
+
+[article_types.grant-proposal]
+notes = "ERC format: a short Part B1 (extended synopsis + CV/track record) and a full Part B2 scientific proposal. Excellence is the only evaluation criterion; assess the PI as well as the project."

@@ -1,0 +1,70 @@
+# This profile models a FUNDER / grant mechanism, not a journal. The
+# JournalProfile fields are reused: `guidelines` carries the review criteria,
+# `acceptance_rate` carries the payline/success rate, and page limits live in
+# the per-type `notes` (the `max_words` field renders as "words", not pages).
+# Pair with --article-type grant-proposal.
+name = "NIH R01 (Research Project Grant)"
+aliases = ["NIH R01", "R01", "NIH"]
+publisher = "U.S. National Institutes of Health"
+field = "biomedical and health sciences"
+
+# Not applicable to grants; left at 0.
+impact_factor = 0.0
+impact_factor_year = 0
+acceptance_rate = "~15-20% (institute- and payline-dependent)"
+
+audience = "An NIH study section (peer-review panel) of subject-matter experts, plus program staff and the funding institute's advisory council."
+
+description = """
+The NIH R01 is the standard independent research project grant: typically up to
+five years of support for a discrete, hypothesis-driven research program. It
+funds proposed FUTURE work, judged on its potential to advance biomedical
+science, not on completed results.
+"""
+
+scope = """
+In scope: hypothesis-driven biomedical, behavioral, or health research with a
+well-defined set of Specific Aims and a feasible plan, relevant to the mission
+of an NIH institute. Out of scope: work with no clear health relevance, purely
+descriptive efforts with no advance, or aims not supported by the proposed
+approach.
+"""
+
+max_words = 0
+abstract_max_words = 0
+max_figures = 0
+max_references = 0
+
+guidelines = """
+Review the application as an NIH study section would: assign an overall Impact
+assessment reflecting the likelihood the project will exert a sustained,
+powerful influence on its field. Score the five core criteria, each on NIH's
+1 (exceptional) to 9 (poor) scale, and weight Approach heavily:
+
+- Significance: does the project address an important problem or critical
+  barrier? Will success change concepts, methods, or clinical practice?
+- Investigator(s): are the PIs and team suitably trained and well suited to the
+  work? (Weigh where the biosketch/team is described.)
+- Innovation: does it challenge current paradigms or use novel concepts,
+  approaches, or methods?
+- Approach: are the strategy, methodology, and analyses sound and feasible? Are
+  potential problems, alternative strategies, and benchmarks for success
+  considered? This criterion carries the most weight.
+- Environment: will the scientific environment contribute to success?
+
+Also assess the additional review criteria where triggered: protections for
+human subjects, inclusion plans, vertebrate animals (and welfare), biohazards,
+and whether the budget and period are reasonable for the proposed work.
+
+This is a funding decision, not a publication decision. A fundable application
+(accept/minor) is one that would plausibly score within a competitive range; a
+major verdict means it is not fundable as written but could be resubmitted with
+revisions; reject means it is not competitive. Do not penalize the proposal for
+the absence of complete results — preliminary data is evidence of feasibility,
+not a deliverable.
+"""
+
+last_updated = "2026-06-18"
+
+[article_types.grant-proposal]
+notes = "NIH R01 format: Specific Aims ≤ 1 page; Research Strategy ≤ 12 pages. Judge the Aims page as the core of the proposal."

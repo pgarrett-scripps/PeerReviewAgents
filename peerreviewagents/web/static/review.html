@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PeerReviewAgents — past review</title>
+    <link rel="stylesheet" href="/static/style.css?v=8">
+</head>
+<body class="reader-page">
+    <header class="topbar">
+        <a class="brand" href="/">
+            <span class="mark">Peer<b>Review</b>Agents</span>
+            <span class="sub">Archive</span>
+        </a>
+        <span class="doc"><span aria-hidden="true">📄</span> <span id="run-title">Loading…</span></span>
+        <span class="spacer"></span>
+        <span id="run-decision" class="decision-tag" hidden></span>
+        <a class="btn-pill" href="/">New review</a>
+    </header>
+
+    <main class="reader">
+        <aside class="reader-nav">
+            <ul id="file-list"></ul>
+        </aside>
+        <article id="content" class="panel-body markdown reader-body">
+            <p class="empty">Loading report…</p>
+        </article>
+    </main>
+
+    <script type="application/javascript"
+            src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script>
+        const RUN = new URLSearchParams(location.search).get('run');
+        const els = {
+            title:   document.getElementById('run-title'),
+            decision:document.getElementById('run-decision'),
+            list:    document.getElementById('file-list'),
+            content: document.getElementById('content'),
+        };
+
+        function esc(s) {
+            return String(s).replace(/[&<>"']/g, c => ({
+                '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        }
+        function renderMarkdown(md) {
+            return window.marked ? window.marked.parse(md) : `<pre>${esc(md)}</pre>`;
+        }
+
+        // Featured files lead the nav in reading order; everything else follows
+        // alphabetically underneath.
+        const FEATURED = [
+            'summary.md', 'decision_letter.md', 'journal_recommendations.md',
+            'meta_review.md', 'author_rebuttal.md', 'debate_transcript.md', 'desk_screen.md',
+        ];
+        const LABELS = {
+            'summary.md': 'Summary',
+            'decision_letter.md': 'Decision Letter',
+            'journal_recommendations.md': 'Journal Recommendations',
+            'meta_review.md': 'Area Chair',
+            'author_rebuttal.md': 'Author Rebuttal',
+            'debate_transcript.md': 'Debate Transcript',
+            'desk_screen.md': 'Desk Screen',
+        };
+        function labelFor(f) {
+            if (LABELS[f]) return LABELS[f];
+            let base = f.replace(/\.md$/, '')
+                        .replace(/^review_/, 'Review · ')
+                        .replace(/^audit_/, 'Audit · ')
+                        .replace(/^integrity_/, 'Audit · ')
+                        .replace(/[_-]/g, ' ');
+            return base.replace(/\b\w/g, c => c.toUpperCase());
+        }
+        function orderFiles(files) {
+            const lead = FEATURED.filter(f => files.includes(f));
+            const rest = files.filter(f => !FEATURED.includes(f)).sort();
+            return [...lead, ...rest];
+        }
+
+        async function openFile(name) {
+            for (const b of els.list.querySelectorAll('button')) {
+                b.classList.toggle('active', b.dataset.file === name);
+            }
+            els.content.innerHTML = '<p class="empty">Loading…</p>';
+            try {
+                const resp = await fetch(`/history/${encodeURIComponent(RUN)}/report/${encodeURIComponent(name)}`);
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                els.content.innerHTML = renderMarkdown(await resp.text());
+                els.content.scrollTop = 0;
+            } catch (err) {
+                els.content.innerHTML = `<p class="empty">Couldn't load ${esc(name)} (${esc(err.message)}).</p>`;
+            }
+        }
+
+        async function loadMeta() {
+            try {
+                const resp = await fetch('/history');
+                if (!resp.ok) return;
+                const { runs } = await resp.json();
+                const run = (runs || []).find(r => r.id === RUN);
+                if (!run) return;
+                els.title.textContent = run.title || run.id;
+                const dec = ['accept','minor','major','reject'].includes(run.decision) ? run.decision : '';
+                if (run.decision_label || dec) {
+                    els.decision.textContent = run.decision_label || dec;
+                    els.decision.className = `decision-tag ${dec}`;
+                    els.decision.hidden = false;
+                }
+                document.title = `${run.title || run.id} — PeerReviewAgents`;
+            } catch (_) { /* topbar stays generic */ }
+        }
+
+        async function boot() {
+            if (!RUN) {
+                document.body.innerHTML = '<p style="padding:2rem">No run selected.</p>';
+                return;
+            }
+            loadMeta();
+            let files = [];
+            try {
+                const resp = await fetch(`/history/${encodeURIComponent(RUN)}/reports`);
+                if (resp.ok) files = (await resp.json()).files || [];
+            } catch (_) { /* handled below */ }
+
+            if (!files.length) {
+                els.content.innerHTML = '<p class="empty">No report files found for this run.</p>';
+                return;
+            }
+            for (const f of orderFiles(files)) {
+                const li = document.createElement('li');
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.dataset.file = f;
+                btn.textContent = labelFor(f);
+                btn.title = f;
+                btn.addEventListener('click', () => openFile(f));
+                li.appendChild(btn);
+                els.list.appendChild(li);
+            }
+            const first = orderFiles(files)[0];
+            openFile(first);
+        }
+
+        boot();
+    </script>
+</body>
+</html>

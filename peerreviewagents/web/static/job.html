@@ -2,25 +2,33 @@
 <html lang="en">
 <head>
     <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>PeerReviewAgents — review</title>
-    <link rel="stylesheet" href="/static/style.css?v=5">
+    <link rel="stylesheet" href="/static/style.css?v=8">
 </head>
 <body class="job-page">
     <header class="topbar">
-        <a class="brand" href="/">PeerReviewAgents</a>
-        <span id="manuscript-name" class="manuscript-name"></span>
+        <a class="brand" href="/">
+            <span class="mark">Peer<b>Review</b>Agents</span>
+            <span class="sub">Review Chamber</span>
+        </a>
+        <span class="doc"><span aria-hidden="true">📄</span> <span id="manuscript-name"></span></span>
         <span class="spacer"></span>
         <button id="view-summary-btn" class="btn-pill" hidden type="button">View summary</button>
-        <span class="cost-meter">
-            <span class="cost-meter-label">cost</span>
+        <span class="meter">
+            <span class="lbl">cost</span>
             <span id="job-cost" class="cost">$0.0000</span>
         </span>
         <span id="job-status" class="pill pill-pending">pending</span>
     </header>
 
-    <main class="stage">
-        <section id="room" class="room"></section>
-    </main>
+    <!-- Pipeline rail: reviewers → audits → debate → area chair → editor → verdict -->
+    <div class="rail-wrap">
+        <div id="rail" class="rail" aria-label="review pipeline"></div>
+    </div>
+
+    <!-- The room is built from the agent roster served by /jobs/<id>. -->
+    <main class="room" id="room"></main>
 
     <!-- Agent report popup: a centered modal opened by clicking a desk. -->
     <div id="panel" class="agent-modal" hidden>
@@ -38,17 +46,18 @@
         </article>
     </div>
 
-    <!-- Completion overlay: appears centered when the review finishes;
-         dismissible so the user can keep exploring the room. -->
+    <!-- Verdict overlay: appears when the review finishes; dismissible so the
+         user can keep exploring the room. -->
     <div id="completion" class="completion" hidden>
         <div class="completion-backdrop" data-close="1"></div>
         <article class="completion-card" role="dialog" aria-modal="true" aria-labelledby="completion-title">
-            <header class="completion-head">
-                <span id="completion-badge" class="decision-badge"></span>
+            <button id="completion-close" class="panel-icon-btn completion-close" title="Dismiss" aria-label="dismiss">✕</button>
+            <div class="completion-head">
+                <div class="completion-eyebrow">Editor-in-Chief · Decision</div>
                 <h2 id="completion-title">Review complete</h2>
-                <button id="completion-close" class="panel-icon-btn" title="Dismiss" aria-label="dismiss">✕</button>
-            </header>
-            <p id="completion-sub" class="completion-sub muted"></p>
+                <span id="completion-badge" class="decision-badge"></span>
+                <p id="completion-sub" class="completion-sub"></p>
+            </div>
 
             <dl id="completion-stats" class="completion-stats"></dl>
 
@@ -73,8 +82,8 @@
         // Read job id from query string before loading the module.
         window.__JOB_ID = new URLSearchParams(location.search).get('id');
     </script>
-    <script type="module" src="/static/app.js?v=10"></script>
     <script type="application/javascript"
             src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script type="module" src="/static/app.js?v=11"></script>
 </body>
 </html>

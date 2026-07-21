@@ -130,6 +130,9 @@ class FakeLLM:
     def bind(self, **_kwargs):
         return self
 
+    def bind_tools(self, _tools=None, **_kwargs):
+        return self
+
     def invoke(self, _messages, **_kwargs):
         return AIMessage(content="canned free-text")
 
