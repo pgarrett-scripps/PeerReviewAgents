@@ -76,11 +76,18 @@ rather than branching on the provider name directly.
 | Stage | Agent | Schema |
 |---|---|---|
 | Reviewers (×8, parallel from START) | Methodology · Data Analysis · Novelty · Clarity · Literature · Rigor · Reproducibility · Ethics | `ReviewerOutput` |
+| Audit lane (×2, parallel) | Methods Completeness · Citation Integrity | `AuditReport` |
 | Debate | Advocate, Skeptic (N rounds) | `DebateOutput` |
 | Synthesis | Area Chair / Meta-reviewer | `MetaReviewOutput` |
 | Author rebuttal | Plays the manuscript author | `AuthorRebuttalOutput` |
 | Final | Editor-in-Chief | `EditorDecisionOutput` |
 | Post-decision | Journal Scout (venue suggestions) | `JournalRecommendationsOutput` |
+
+The **audit lane** runs beside the reviewers but bypasses the debate: its two
+agents ([`agents/auditors/`](peerreviewagents/agents/auditors/)) produce factual
+checklists — is every method actually described, does every citation support the
+claim attached to it — and route straight to the editor. They're deliberately
+not opinions, so there's nothing for the advocate and skeptic to argue about.
 
 The **Novelty** and **Literature** reviewers can call into a live research layer
 ([`peerreviewagents/research/`](peerreviewagents/research/)) backed by **arXiv**,
@@ -342,10 +349,66 @@ REST endpoints).
 - **`storage/memory.py`** — append-only markdown log with HTML-comment record
   separators; pending entries are patched in place when resolved.
 
+## Docker
+
+The web UI ships as a container. `docker compose` is the recommended path — it
+wires up the bind mounts for reports, uploads, and the manuscript cache:
+
+```bash
+cp .env.example .env                    # API keys + HOST_UID/HOST_GID
+cp peerreview.toml.example peerreview.toml
+mkdir -p reports .peerreview-uploads .cache
+
+docker compose up -d --build            # http://localhost:8765
+docker compose logs -f
+docker compose down
+```
+
+Or plain Docker, without the mounts:
+
+```bash
+docker build -t peerreviewagents .
+docker run -p 8765:8765 --env-file .env peerreviewagents
+```
+
+`HOST_UID`/`HOST_GID` in `.env` matter: the container runs as a non-root user
+and writes into bind-mounted host directories, so the ids have to match yours
+or the writes fail with permission errors. The image builds from the committed
+`uv.lock`, so an image built today installs the same versions as one built in
+six months.
+
+## Benchmark
+
+[`benchmark/`](benchmark/) holds a harness for comparing the panel's reviews
+against real human ones. The corpus is 30 already-published papers for which
+both the bioRxiv preprint and the journal's open referee reports exist — Nature
+Portfolio Peer Review Files, PLOS peer-review pages, and Nature's published
+`peer_review.pdf`.
+
+```bash
+just benchmark-build      # assemble the corpus (downloads + scrape)
+just benchmark-probe      # contamination probe — did the model memorize the paper?
+just benchmark-smoke      # one paper end-to-end, to check the wiring cheaply
+just benchmark-run        # run the panel over each preprint (resumable)
+just benchmark-compare    # scaffold human-vs-AI worksheets
+just benchmark-verify     # adversarially re-check each worksheet's claims
+```
+
+Runs are leakage-free by default: web research is off, temperature is 0, and a
+network tripwire allows only the LLM API while logging any other connection
+attempt. The contamination probe runs *before* the main pass, so you can drop or
+caveat papers the model already recalls rather than discovering it afterwards.
+
+Only the scripts are in this repo. The corpus is copyrighted and gitignored, and
+the derived analysis — filled worksheets, their audits, contamination results —
+lives in a private companion repo until the paper is submitted. Everything is
+reproducible from the scripts; see [`benchmark/README.md`](benchmark/README.md).
+
 ## Paper
 
-LaTeX sources for the arXiv preprint live in [`paper/`](paper/). See
-[`paper/README.md`](paper/README.md) for the build instructions.
+A manuscript describing the system is in preparation, in a private companion
+repository alongside the evaluation analysis. It will be linked here on
+submission.
 
 ## Disclaimer
 

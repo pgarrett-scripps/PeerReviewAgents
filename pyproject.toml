@@ -59,7 +59,9 @@ web-test = ["httpx>=0.27"]
 # matplotlib is only used to render the paper figure (committed as SVG, so
 # the Typst paper build itself needs no Python).
 eval = ["openreview-py>=1.40", "matplotlib>=3.7"]
-dev = ["pytest>=8", "ruff>=0.6"]
+# pyyaml is pulled in transitively today, but tests/test_metadata.py parses
+# CITATION.cff directly — declare it so CI can't lose it to a dep change.
+dev = ["pytest>=8", "ruff>=0.6", "pyyaml>=6"]
 
 [project.urls]
 Homepage = "https://github.com/pgarrett-scripps/PeerReviewAgents"

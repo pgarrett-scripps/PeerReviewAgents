@@ -1418,6 +1418,7 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "pytest" },
+    { name = "pyyaml" },
     { name = "ruff" },
 ]
 eval = [
@@ -1448,6 +1449,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "python-dotenv", specifier = ">=1" },
     { name = "python-multipart", specifier = ">=0.0.9" },
+    { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6" },
     { name = "rank-bm25", specifier = ">=0.2" },
     { name = "requests", marker = "extra == 'research'", specifier = ">=2" },
     { name = "rich", specifier = ">=13" },
