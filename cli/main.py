@@ -160,6 +160,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-tui", action="store_true", help="run headless")
     p.add_argument("--cache-dir", dest="cache_dir",
                    help="Override the manuscript parsing cache directory.")
+    p.add_argument(
+        "--offline", dest="offline", action="store_true",
+        help="Disable all web research tools (novelty/literature/citation "
+             "auditor get no tools; the research router refuses). The run then "
+             "makes no outbound calls except to the LLM inference API — use for "
+             "leakage-free / reproducible evaluation.",
+    )
+    p.add_argument(
+        "--temperature", dest="temperature", type=float, default=None,
+        help="Sampling temperature for models that accept it (e.g. 0 for the "
+             "most reproducible run). Ignored by models that reject sampling "
+             "(Sonnet 5, Opus 4.7/4.8, Fable 5).",
+    )
     return p
 
 
@@ -168,10 +181,13 @@ def config_from_args(args) -> dict:
     for key in ("provider", "reasoning_model", "max_debate_rounds",
                 "output_dir", "cache_dir", "target_journal", "article_type",
                 "review_strictness", "desk_screen", "use_memory",
-                "supplement_path"):
+                "supplement_path", "temperature"):
         val = getattr(args, key, None)
         if val is not None:
             overrides[key] = val
+    # --offline is an inversion: presence means research_enabled=False.
+    if getattr(args, "offline", False):
+        overrides["research_enabled"] = False
     return get_config(config_path=args.config_path, **overrides)
 
 

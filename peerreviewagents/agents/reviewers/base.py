@@ -95,7 +95,7 @@ def make_reviewer_node(
             cached_prefix = context_block(state)
 
             try:
-                if bound_tool_names:
+                if bound_tool_names and config.get("research_enabled", True):
                     from ...research.tools import get_tools_by_name
 
                     result = invoke_structured_after_tools(

@@ -109,6 +109,12 @@ def route(method: str, config: dict | None = None, **kwargs: Any) -> str:
     vendor function in this layer takes the same positional / keyword
     args (``query``, ``max_results``).
     """
+    # Defense-in-depth: in offline mode the reviewer/auditor nodes never bind
+    # research tools, so this is normally unreachable — but if anything does
+    # call route() while research is disabled, refuse before touching a vendor.
+    if config is not None and not config.get("research_enabled", True):
+        return f"[research disabled: offline mode — no vendor called for {method!r}]"
+
     vendors = resolve_vendors(method, config)
     impls = _VENDOR_IMPL.get(method, {})
     if not vendors:

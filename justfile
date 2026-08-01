@@ -207,6 +207,64 @@ eval-strictness-figure:
         --runs {{eval_dir}}/runs_strict1.jsonl,{{eval_dir}}/runs_strict2.jsonl,{{eval_dir}}/runs_strict3.jsonl,{{eval_dir}}/runs_strict4.jsonl,{{eval_dir}}/runs_strict5.jsonl \
         --labels "1,2,3,4,5" --out paper/figures/eval_strictness
 
+# --- Human-vs-AI benchmark (30 published papers) ----------------------------
+# Corpus of published papers with BOTH the preprint (what PRA reviews) and the
+# real human peer reviews, for a human-vs-AI comparison figure in the paper.
+# Batches: A=Nature-portfolio pairs, B=PLOS, C=Nature flagship (10 each).
+
+# Assemble the corpus (idempotent): copy Batch A, download B/C bioRxiv
+# preprints, scrape PLOS peer reviews. Pass e.g. `--only B_plos` or
+# `--skip-network`.  Sources default to the user's Downloads folders.
+benchmark-build *args:
+    uv run python benchmark/build.py {{args}}
+
+# Corpus + AI-run status at a glance
+benchmark-status:
+    uv run python benchmark/status.py
+
+# Contamination probe (run BEFORE the main run): ask the review model, OFFLINE
+# and with no manuscript, whether it already recalls each paper's abstract and
+# its human reviews. Writes benchmark/contamination/REPORT.md + per-paper
+# transcripts so you can drop/caveat high-recall papers.
+benchmark-probe *args:
+    uv run python benchmark/contamination_probe.py {{args}}
+
+# Run the PRA pipeline over the ready corpus (resumable; skips finished papers).
+# Leakage-free by DEFAULT: web research tools OFF (--offline) and every review
+# runs under a network tripwire that allows only the LLM API and logs any other
+# connection attempt (benchmark/ai_reviews/.../_netguard.json). temperature=0.
+# Each paper is conditioned on its real venue + article type. Examples:
+#   just benchmark-run --dry-run          (print commands, no LLM calls)
+#   just benchmark-run --only C_nature
+#   just benchmark-run --ids A-01,B-03
+#   just benchmark-run --jobs 2           (2 papers at once — mind rate limits)
+#   just benchmark-run --online           (ESCAPE HATCH: re-enable web + no guard)
+benchmark-run *args:
+    uv run python benchmark/run.py {{args}}
+
+# Smoke-test one paper end to end (cheap: one full run) before the whole corpus
+benchmark-smoke:
+    uv run python benchmark/run.py --ids A-08 --limit 1
+
+# Build/refresh the per-paper comparison SHEETS + INDEX: an AI-drafted overlap
+# (Shared / Human-only / AI-only + bottom line) followed by a blank scoring
+# table for your team. Runs offline. Sheets with a `<!-- edited-by-human -->`
+# marker are preserved; --force overwrites anyway.
+benchmark-compare *args:
+    uv run python benchmark/precompare.py {{args}}
+
+# Adversarially verify the comparison sheets against the source reviews:
+# re-checks every Shared/Human-only/AI-only bullet and flags false-shared,
+# missed-shared, unsupported, or missing-major errors. Offline.
+# Writes benchmark/verification/REPORT.md + per-paper detail.
+benchmark-verify *args:
+    uv run python benchmark/verify_sheets.py {{args}}
+
+# End-to-end once the corpus is built: run everything, then scaffold worksheets.
+benchmark-all:
+    just benchmark-run
+    just benchmark-compare
+
 # --- Manuscript cache -------------------------------------------------------
 
 # Show what's in the manuscript parsing cache

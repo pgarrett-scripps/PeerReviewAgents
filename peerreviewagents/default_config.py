@@ -42,6 +42,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     #   openai     -> a model id like "gpt-4.1" or "o3"
     "reasoning_model": "anthropic/claude-opus-4.1",
 
+    # Sampling temperature for every text agent. None = the provider default
+    # (0.3). Set 0.0 for the most reproducible/defensible single run. NOTE:
+    # the newest Anthropic models (Sonnet 5, Opus 4.7/4.8, Fable 5) reject the
+    # `temperature` parameter outright, so this only takes effect on models
+    # that accept sampling (e.g. the Haiku reading panel).
+    "temperature": None,
+
     # --- Per-agent models (optional) ---
     # Named model "tags". Each maps a tag to {provider?, model?, effort?};
     # any field left out falls back to the global provider / reasoning_model
@@ -107,6 +114,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "supplement_path": None,
 
     # --- Research vendors ---
+    # Master switch for the web research tools (find_related_work,
+    # search_biomedical_literature, search_preprints — used by the novelty and
+    # literature reviewers and the citation-integrity auditor). True = tools
+    # are bound and may hit PubMed / Semantic Scholar / bioRxiv / arXiv.
+    # False (offline mode, via --offline) = those agents get NO tools and the
+    # research router refuses, so the pipeline makes no outbound calls except
+    # to the LLM inference API. Use False for leakage-free benchmark runs.
+    "research_enabled": True,
+
     # Per-category default vendor list (comma-separated, primary first).
     # Used by peerreviewagents.research.interface.route to pick which
     # vendor serves each logical operation; on rate-limit the router
@@ -234,6 +250,10 @@ _ENV_INT_KEYS = {
 _ENV_BOOL_KEYS = {
     "PEERREVIEW_DESK_SCREEN": "desk_screen",
     "PEERREVIEW_USE_MEMORY": "use_memory",
+    "PEERREVIEW_RESEARCH_ENABLED": "research_enabled",
+}
+_ENV_FLOAT_KEYS = {
+    "PEERREVIEW_TEMPERATURE": "temperature",
 }
 _TRUE_STRINGS = {"1", "true", "yes", "on"}
 _FALSE_STRINGS = {"0", "false", "no", "off"}
@@ -260,6 +280,13 @@ def _env_overrides() -> dict[str, Any]:
                 out[cfg_key] = True
             elif low in _FALSE_STRINGS:
                 out[cfg_key] = False
+    for env_key, cfg_key in _ENV_FLOAT_KEYS.items():
+        val = os.environ.get(env_key)
+        if val:
+            try:
+                out[cfg_key] = float(val)
+            except ValueError:
+                pass
     return out
 
 

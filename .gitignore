@@ -18,3 +18,9 @@ reports/*
 
 # Evaluation corpus + runs (PDFs, jsonl, reports)
 data/
+
+# Human-vs-AI benchmark: ignore copyrighted PDFs/reviews + AI outputs,
+# but keep the scaffolding (scripts, manifest, README, filled worksheets).
+benchmark/corpus/
+benchmark/ai_reviews/
+benchmark/manifest.csv

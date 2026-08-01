@@ -56,7 +56,8 @@ class ProviderSpec:
 # --- Provider factories -----------------------------------------------------
 
 
-def _make_openrouter(model: str, *, reasoning_effort: str | None = None) -> Any:
+def _make_openrouter(model: str, *, reasoning_effort: str | None = None,
+                     temperature: float = _TEMPERATURE) -> Any:
     from langchain_openai import ChatOpenAI
 
     api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")
@@ -69,7 +70,7 @@ def _make_openrouter(model: str, *, reasoning_effort: str | None = None) -> Any:
 
     kwargs: dict[str, Any] = {
         "model": model,
-        "temperature": _TEMPERATURE,
+        "temperature": temperature,
         "base_url": _OPENROUTER_BASE_URL,
         "default_headers": _OPENROUTER_HEADERS,
         "extra_body": extra_body,
@@ -82,13 +83,14 @@ def _make_openrouter(model: str, *, reasoning_effort: str | None = None) -> Any:
     return ChatOpenAI(**kwargs)
 
 
-def _make_openai(model: str, *, reasoning_effort: str | None = None) -> Any:
+def _make_openai(model: str, *, reasoning_effort: str | None = None,
+                 temperature: float = _TEMPERATURE) -> Any:
     from langchain_openai import ChatOpenAI
 
     api_key = os.environ.get("OPENAI_API_KEY")
     kwargs: dict[str, Any] = {
         "model": model,
-        "temperature": _TEMPERATURE,
+        "temperature": temperature,
         "streaming": True,
         "stream_usage": True,
         "callbacks": [StreamingCallback(default_model=model)],
@@ -102,7 +104,8 @@ def _make_openai(model: str, *, reasoning_effort: str | None = None) -> Any:
     return ChatOpenAI(**kwargs)
 
 
-def _make_anthropic(model: str, *, reasoning_effort: str | None = None) -> Any:
+def _make_anthropic(model: str, *, reasoning_effort: str | None = None,
+                    temperature: float = _TEMPERATURE) -> Any:
     try:
         from langchain_anthropic import ChatAnthropic
     except ImportError as exc:  # pragma: no cover
@@ -126,7 +129,7 @@ def _make_anthropic(model: str, *, reasoning_effort: str | None = None) -> Any:
     # The newest reasoning models (Opus 4.7/4.8, Sonnet 5, Fable/Mythos 5)
     # 400 on any `temperature`; older models still accept it. Omit it there.
     if not rejects_sampling:
-        kwargs["temperature"] = _TEMPERATURE
+        kwargs["temperature"] = temperature
 
     if adaptive:
         # Opus 4.6+ / Sonnet 4.6+ / Fable: adaptive thinking + `effort` knob
@@ -325,4 +328,6 @@ def make_chat_model(
     spec = resolve_model(config, agent=agent, default_tag=default_tag)
     prov = spec_for_provider(spec.provider)
     effort = reasoning_effort if reasoning_effort is not None else spec.effort
-    return prov.factory(spec.model, reasoning_effort=effort)
+    temp = config.get("temperature")
+    temp = _TEMPERATURE if temp is None else float(temp)
+    return prov.factory(spec.model, reasoning_effort=effort, temperature=temp)
