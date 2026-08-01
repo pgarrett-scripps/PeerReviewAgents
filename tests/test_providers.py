@@ -119,3 +119,61 @@ def test_spec_table_consistency():
         assert spec.name == name
         assert isinstance(spec.api_key_env, tuple) and spec.api_key_env
         assert spec.structured_method in ("json_schema", "tool_call", "function_calling")
+
+
+# --- generation matching ----------------------------------------------------
+#
+# Two independent properties, and they changed in different releases:
+#   adaptive thinking  — Opus/Sonnet 4.6 and newer
+#   rejects sampling   — 4.7 and newer (4.6 still accepts `temperature`)
+#
+# The needle lists are substring matches and go stale the moment a model
+# ships: `claude-opus-5` matched neither, so it was treated as legacy and sent
+# both `temperature` and `budget_tokens` — a 400 on each. A version parse
+# backstops the lists so the next release is handled without an edit.
+
+
+@pytest.mark.parametrize(
+    "model,adaptive,rejects_sampling",
+    [
+        ("claude-opus-5", True, True),
+        ("claude-opus-4-8", True, True),
+        ("claude-opus-4-7", True, True),
+        ("claude-sonnet-5", True, True),
+        ("claude-fable-5", True, True),
+        ("anthropic/claude-opus-4.8", True, True),
+        ("claude-opus-6", True, True),            # unreleased — must not regress
+        ("claude-opus-4-6", True, False),         # adaptive, but sampling still ok
+        ("claude-sonnet-4-6", True, False),
+        ("claude-haiku-4-5", False, False),
+        ("claude-opus-4-1", False, False),
+        ("claude-opus-4-1-20250805", False, False),
+        ("claude-3-5-sonnet-20241022", False, False),   # legacy version-first id
+    ],
+)
+def test_anthropic_generation_matching(monkeypatch, model, adaptive, rejects_sampling):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "stub-key")
+    llm = make_chat_model(_cfg("anthropic", model), reasoning_effort="high")
+    thinking = getattr(llm, "thinking", None) or {}
+
+    if adaptive:
+        assert thinking.get("type") == "adaptive", f"{model} should think adaptively"
+        assert "budget_tokens" not in thinking
+    else:
+        assert thinking.get("budget_tokens", 0) > 0, f"{model} should use a budget"
+
+    if rejects_sampling:
+        assert llm.temperature is None, f"{model} must not send temperature"
+    else:
+        assert llm.temperature is not None, f"{model} still accepts temperature"
+
+
+def test_opus_5_payload_omits_rejected_params(monkeypatch):
+    """The specific regression: Opus 5 fell through to the legacy path."""
+    from langchain_core.messages import HumanMessage
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "stub-key")
+    llm = make_chat_model(_cfg("anthropic", "claude-opus-5"), reasoning_effort="xhigh")
+    payload = llm._get_request_payload([HumanMessage("hi")])
+    assert "temperature" not in payload
+    assert payload["thinking"] == {"type": "adaptive"}

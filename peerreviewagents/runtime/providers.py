@@ -16,6 +16,7 @@ flags rather than branching on the provider name directly.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
@@ -164,18 +165,52 @@ _ANTHROPIC_THINKING_BUDGET = {"low": 1024, "medium": 4096, "high": 8192}
 # rejects `temperature`/`top_p`/`top_k` outright (400). Everything not listed
 # is treated as legacy (temperature ok, thinking via `budget_tokens`).
 _ANTHROPIC_ADAPTIVE_EFFORT: tuple[str, ...] = (
-    "opus-4-6", "opus-4-7", "opus-4-8",
+    "opus-4-6", "opus-4-7", "opus-4-8", "opus-5",
     "sonnet-4-6", "sonnet-5",
     "fable-5", "mythos-5",
 )
 _ANTHROPIC_NO_SAMPLING: tuple[str, ...] = (
-    "opus-4-7", "opus-4-8", "sonnet-5", "fable-5", "mythos-5",
+    "opus-4-7", "opus-4-8", "opus-5", "sonnet-5", "fable-5", "mythos-5",
 )
+
+# Families whose whole line is adaptive, whatever version ships next.
+_ANTHROPIC_ADAPTIVE_FAMILIES: tuple[str, ...] = ("claude-fable", "claude-mythos")
+
+# First generation that dropped fixed thinking budgets and sampling params.
+_ANTHROPIC_ADAPTIVE_FROM: tuple[int, int] = (4, 7)
+
+_ANTHROPIC_VERSION_RE = re.compile(r"claude-(?:opus|sonnet|haiku)-(\d+)(?:[.-](\d+))?")
+
+
+def _anthropic_version(model: str) -> tuple[int, int] | None:
+    """Best-effort ``(major, minor)`` from a modern Anthropic model id.
+
+    ``None`` for ids we can't parse, including the legacy version-first
+    spelling (``claude-3-5-sonnet-...``) — those all predate the change, so
+    falling through to the permissive path is correct.
+    """
+    match = _ANTHROPIC_VERSION_RE.search(model.lower().rsplit("/", 1)[-1])
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2) or 0)
 
 
 def _anthropic_matches(model: str, needles: tuple[str, ...]) -> bool:
+    """Whether ``model`` is in the given generation bucket.
+
+    The explicit needle list stays authoritative, but a bare substring list
+    goes stale the moment a model ships: `claude-opus-5` matched neither
+    tuple, so it was treated as legacy and sent `temperature` plus
+    `budget_tokens` — a 400 on both counts. The version parse is the
+    backstop, so a future `claude-opus-6` is handled without an edit here.
+    """
     normalized = model.lower().replace(".", "-")
-    return any(n in normalized for n in needles)
+    if any(n in normalized for n in needles):
+        return True
+    if any(normalized.startswith(f) for f in _ANTHROPIC_ADAPTIVE_FAMILIES):
+        return True
+    version = _anthropic_version(model)
+    return version is not None and version >= _ANTHROPIC_ADAPTIVE_FROM
 
 
 # --- Registry ---------------------------------------------------------------
