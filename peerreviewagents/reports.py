@@ -39,6 +39,8 @@ def write_reports(state: ReviewState) -> str:
         )
         _write(run_dir, "debate_transcript.md", f"# Debate Transcript\n\n{transcript}")
 
+    if state.get("integrity"):
+        _write(run_dir, "integrity.md", state["integrity"])
     if state.get("desk_screen"):
         _write(run_dir, "desk_screen.md", state["desk_screen"])
     if state.get("meta_review"):
@@ -72,6 +74,9 @@ def _summary(state: ReviewState) -> str:
     strictness = _strictness_line(state)
     if strictness:
         lines.append(f"**Review strictness:** {strictness}")
+    integrity = _integrity_line(state)
+    if integrity:
+        lines.append(f"**Submission integrity:** {integrity}")
     if state.get("desk_rejected"):
         lines.append("**Outcome:** Desk reject (screened before full review)")
         return "\n".join(lines)
@@ -100,6 +105,19 @@ def _summary(state: ReviewState) -> str:
     if state.get("errors"):
         lines += ["", "## Run Warnings"] + [f"- {e}" for e in state["errors"]]
     return "\n".join(lines)
+
+
+def _integrity_line(state: ReviewState) -> str:
+    """One-line integrity verdict for the summary, or '' when nothing was found.
+
+    Read off the rendered report's Outcome line rather than re-scanning, so
+    the summary can never disagree with ``integrity.md``.
+    """
+    body = state.get("integrity") or ""
+    for line in body.splitlines():
+        if line.startswith("**Outcome:**"):
+            return f"{line[len('**Outcome:**'):].strip()} — see integrity.md"
+    return ""
 
 
 def _target_venue(state: ReviewState) -> str:

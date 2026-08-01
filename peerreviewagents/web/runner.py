@@ -52,8 +52,14 @@ def _phase_for(node: str) -> str | None:
 
 
 def _desk_screen_body(state: dict):
-    """Body + meta for the desk-screen agent panel."""
-    return state.get("desk_screen"), {"desk_rejected": bool(state.get("desk_rejected"))}
+    """Body + meta for the desk-screen agent panel.
+
+    Falls back to the integrity report: with the LLM triage gate off, the
+    desk node runs the submission-integrity screen alone and writes only
+    ``integrity``, which is exactly the finding the panel should show.
+    """
+    body = state.get("desk_screen") or state.get("integrity")
+    return body, {"desk_rejected": bool(state.get("desk_rejected"))}
 
 
 class JobRunner:

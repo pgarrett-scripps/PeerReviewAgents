@@ -32,7 +32,7 @@ _NODE_LABELS = {
     "skeptic": "Skeptic responds",
     "meta_reviewer": "Area Chair synthesizes",
     "author_rebuttal": "Author rebuts",
-    "desk_screen": "Editor desk-screens (triage)",
+    "desk_screen": "Editor screens the submission at the desk",
     "editor": "Editor-in-Chief decides",
     "journal_recommender": "Journal Scout suggests venues",
 }
@@ -119,6 +119,25 @@ def build_parser() -> argparse.ArgumentParser:
              "full panel runs. Off by default.",
     )
     p.add_argument(
+        "--no-injection-screen",
+        dest="injection_screen",
+        action="store_const",
+        const=False,
+        default=None,
+        help="Disable the submission-integrity screen. On by default, it "
+             "desk-rejects files that hide instructions to an automated "
+             "reviewer (white/invisible text) before any model reads them.",
+    )
+    p.add_argument(
+        "--flag-injection",
+        dest="injection_screen_action",
+        action="store_const",
+        const="flag",
+        default=None,
+        help="Report concealed prompt injection in the run's integrity.md "
+             "but review the manuscript anyway, instead of desk-rejecting it.",
+    )
+    p.add_argument(
         "--no-memory",
         dest="use_memory",
         action="store_const",
@@ -181,6 +200,7 @@ def config_from_args(args) -> dict:
     for key in ("provider", "reasoning_model", "max_debate_rounds",
                 "output_dir", "cache_dir", "target_journal", "article_type",
                 "review_strictness", "desk_screen", "use_memory",
+                "injection_screen", "injection_screen_action",
                 "supplement_path", "temperature"):
         val = getattr(args, key, None)
         if val is not None:
@@ -341,7 +361,8 @@ def run_server(args) -> None:
     overrides: dict = {}
     for key in ("provider", "reasoning_model", "max_debate_rounds",
                 "output_dir", "cache_dir", "target_journal", "article_type",
-                "review_strictness", "desk_screen"):
+                "review_strictness", "desk_screen",
+                "injection_screen", "injection_screen_action"):
         val = getattr(args, key, None)
         if val is not None:
             overrides[key] = val
@@ -433,6 +454,14 @@ def run() -> None:
                         action="store_const", const=True, default=None,
                         help="Enable the desk-screen gate by default for jobs "
                              "(the web form can override per-upload).")
+        sp.add_argument("--no-injection-screen", dest="injection_screen",
+                        action="store_const", const=False, default=None,
+                        help="Disable the submission-integrity screen for all "
+                             "jobs. On by default.")
+        sp.add_argument("--flag-injection", dest="injection_screen_action",
+                        action="store_const", const="flag", default=None,
+                        help="Report concealed prompt injection instead of "
+                             "desk-rejecting the upload.")
         run_server(sp.parse_args(argv[1:]))
         return
 

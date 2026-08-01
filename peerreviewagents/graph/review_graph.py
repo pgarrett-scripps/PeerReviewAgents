@@ -63,14 +63,18 @@ def build_graph(config: dict):
     # and the required-revisions list in the decision letter.
     g.add_node("journal_recommender", journal_recommender.node)
 
-    # Optional desk-screen node: a single triage node ahead of the fan-out.
-    # Modes (see desk_screen.screen_mode): "gate" enforces desk-reject
+    # The desk node: submission-integrity screen + optional triage gate.
+    # Triage modes (see desk_screen.screen_mode): "gate" enforces desk-reject
     # (START -> desk_screen -> END on reject | fan out); "warm" runs it only to
     # prime the shared manuscript prompt cache before the parallel fan-out
-    # reads it, always proceeding; "off" skips it (START fans out directly).
+    # reads it, always proceeding; "off" skips the LLM triage.
     # In warm mode the node returns desk_rejected=False, so the same
     # route_after_desk_screen fans out unconditionally.
-    desk_screen_enabled = desk_screen.screen_mode(config) != "off"
+    # The node is still wired in when triage is "off" as long as the
+    # integrity screen is on (the default) — it then costs no tokens but is
+    # what stands between a prompt-injected file and the panel that would
+    # read it. Both screens off means START fans out directly, as before.
+    desk_screen_enabled = desk_screen.node_enabled(config)
     if desk_screen_enabled:
         g.add_node("desk_screen", desk_screen.node)
         g.add_edge(START, "desk_screen")
@@ -145,6 +149,7 @@ class PeerReviewGraph:
             article_type_block=self._article_type_block(),
             strictness_block=self._strictness_block(),
             desk_rejected=False,
+            integrity="",
             reports=[],
             audits=[],
             debate=[],

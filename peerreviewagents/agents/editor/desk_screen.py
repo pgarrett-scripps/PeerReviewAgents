@@ -1,19 +1,33 @@
-"""Optional desk-screen: an editorial triage gate before the full review.
+"""The desk: a submission-integrity check plus an optional editorial triage gate.
 
-Runs once, ahead of the reviewer fan-out, only when ``desk_screen`` is
-enabled in config. It makes a fast scope / completeness / fatal-flaw
-judgment against the target venue and the configured strictness, and either
-desk-rejects the manuscript (short-circuiting the pipeline to a reject) or
-lets it proceed to the panel unchanged.
+Two screens live in this one node, in this order, because both are things a
+handling editor settles before any reviewer is assigned:
 
-The node is deliberately fail-open: any error in the screen degrades to
-"proceed to full review" rather than blocking a manuscript on an
-infrastructure hiccup.
+1. **Submission integrity** (``injection_screen``, on by default) — a
+   deterministic, token-free scan of the submitted file for text hidden from
+   a human reader that carries instructions to an automated reviewer. A
+   confirmed hit desk-rejects immediately, *before* an LLM ever reads the
+   manuscript; that ordering is the point, since the payload's whole purpose
+   is to be read by the model that would otherwise judge it.
+2. **Editorial triage** (``desk_screen``, off by default) — a fast LLM
+   scope / completeness / fatal-flaw judgment against the target venue and
+   the configured strictness, which either desk-rejects or passes the
+   manuscript to the panel.
+
+Because the integrity screen costs nothing and needs no model, the node is
+wired into the graph whenever *either* screen is enabled; with only the
+integrity screen on it makes no LLM call at all.
+
+Both screens are fail-open: any error degrades to "proceed to full review"
+rather than blocking a manuscript on an infrastructure hiccup. The integrity
+screen additionally never rejects on concealed text alone — scanned papers
+carry an invisible OCR layer — only on instructions found inside it.
 """
 
 from __future__ import annotations
 
-from ...observability import node_context
+from ...ingest.integrity import IntegrityScan, scan_manuscript
+from ...observability import AgentEvent, emit, node_context
 from ..schemas import DeskScreenOutput
 from ..utils.agent_states import ReviewState
 from ..utils.agent_utils import context_block
@@ -49,7 +63,9 @@ def screen_mode(config: dict) -> str:
     - ``warm`` — run triage to prime the manuscript prompt cache for the
       parallel reviewer fan-out, but *ignore* the reject verdict (always
       proceed to the full panel). The screen's opinion is still recorded.
-    - ``off`` — don't run the node at all.
+    - ``off`` — no LLM triage. The node itself still runs when the
+      submission-integrity screen is on (see :func:`node_enabled`), but it
+      makes no model call and records no screening note.
 
     Back-compat: the legacy boolean ``desk_screen`` maps ``True`` → ``gate``,
     ``False`` → ``off``. An explicit ``desk_screen_mode`` overrides it.
@@ -60,13 +76,71 @@ def screen_mode(config: dict) -> str:
     return "gate" if config.get("desk_screen") else "off"
 
 
+def integrity_enabled(config: dict) -> bool:
+    """Whether to run the submission-integrity scan (default: yes)."""
+    return bool(config.get("injection_screen", True))
+
+
+def node_enabled(config: dict) -> bool:
+    """Whether the desk node belongs in the graph at all."""
+    return screen_mode(config) != "off" or integrity_enabled(config)
+
+
 def node(state: ReviewState) -> dict:
     with node_context("desk_screen", run_id=state["config"].get("run_id", "")):
         return _run(state)
 
 
+def _screen_integrity(state: ReviewState) -> IntegrityScan | None:
+    """Scan the submitted file, or None when the screen is off/unavailable."""
+    config = state["config"]
+    if not integrity_enabled(config):
+        return None
+    path = state.get("manuscript_path") or ""
+    if not path:
+        return None
+    scan = scan_manuscript(path)
+    if scan.flagged:
+        emit(AgentEvent(
+            kind="log",
+            node="desk_screen",
+            text=f"integrity screen: {scan.headline()}",
+        ))
+    return scan
+
+
+def _integrity_reject(scan: IntegrityScan, config: dict) -> bool:
+    """A confirmed injection rejects unless the operator asked only to flag it."""
+    if not scan.compromised:
+        return False
+    action = str(config.get("injection_screen_action") or "reject").lower().strip()
+    return action != "flag"
+
+
 def _run(state: ReviewState) -> dict:
     config = state["config"]
+
+    scan = _screen_integrity(state)
+    if scan is not None and _integrity_reject(scan, config):
+        # Reject at the desk without spending a single token: the manuscript
+        # text is untrusted input and no agent should read it.
+        body = scan.to_markdown()
+        return {
+            "desk_rejected": True,
+            "decision": "reject",
+            "decision_letter": body,
+            "desk_screen": body,
+            "integrity": body,
+        }
+
+    integrity_note = scan.to_markdown() if scan is not None and scan.flagged else ""
+
+    if screen_mode(config) == "off":
+        # Integrity-only pass: nothing else to do at the desk, and no LLM
+        # call to make. Leave `desk_screen` unset so a run with the triage
+        # gate off looks exactly as it did before.
+        return {"desk_rejected": False, "integrity": integrity_note}
+
     try:
         # Use the reviewers' model/tag, not a separate "screen" model, so the
         # cache this warms is the one the panel reads (caches are per-model).
@@ -76,12 +150,19 @@ def _run(state: ReviewState) -> dict:
             DeskScreenOutput,
             config,
             _SYS,
-            _USER,
+            _user_prompt(scan),
+            # The integrity advisory goes in the user turn, never here: this
+            # prefix is the manuscript block the whole panel shares, and
+            # perturbing it would miss the cache for every later agent.
             cached_prefix=context_block(state),
         )
     except Exception as exc:  # noqa: BLE001
         # Fail open: never block a manuscript at the desk on an error.
-        return {"errors": [f"desk_screen failed: {exc}"], "desk_rejected": False}
+        return {
+            "errors": [f"desk_screen failed: {exc}"],
+            "desk_rejected": False,
+            "integrity": integrity_note,
+        }
 
     output: DeskScreenOutput = result.instance  # type: ignore[assignment]
     body = output.to_markdown()
@@ -93,10 +174,28 @@ def _run(state: ReviewState) -> dict:
             "decision": "reject",
             "decision_letter": body,
             "desk_screen": body,
+            "integrity": integrity_note,
             "total_cost": result.cost,
         }
     return {
         "desk_rejected": False,
         "desk_screen": body,
+        "integrity": integrity_note,
         "total_cost": result.cost,
     }
+
+
+def _user_prompt(scan: IntegrityScan | None) -> str:
+    """The triage instruction, plus any integrity finding that didn't reject."""
+    advisory = scan.advisory() if scan is not None else ""
+    if not advisory:
+        return _USER
+    return (
+        f"{_USER}\n\n"
+        "The submitted file was also machine-screened for text hidden from a "
+        "human reader. The finding below is reported for your judgment; it did "
+        "not meet the automatic-rejection bar (no instructions to a reviewer "
+        "were concealed in the file), so weigh it as one signal among others "
+        "and do not desk-reject on it alone.\n\n"
+        f"{advisory}"
+    )
