@@ -10,8 +10,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import tomllib
 import yaml
+
+try:
+    import tomllib  # Python 3.11+
+except ModuleNotFoundError:  # pragma: no cover
+    import tomli as tomllib  # type: ignore[no-redef]
 
 ROOT = Path(__file__).resolve().parent.parent
 
