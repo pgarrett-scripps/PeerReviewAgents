@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import uuid
+from functools import lru_cache
+from typing import Annotated, Any, Callable, get_args, get_origin, get_type_hints
+
 from langgraph.graph import END, START, StateGraph
 
-from ..agents.author import rebuttal as author_rebuttal
 from ..agents.auditors import get_auditor_nodes
+from ..agents.author import rebuttal as author_rebuttal
 from ..agents.debate import advocate, skeptic
 from ..agents.editor import desk_screen, editor_in_chief
 from ..agents.journal_recommender import recommender as journal_recommender
@@ -114,8 +118,17 @@ class PeerReviewGraph:
     """High-level entry point, analogous to TradingAgentsGraph."""
 
     def __init__(self, config: dict | None = None):
-        self.config = config or get_config()
+        self.config = dict(config or get_config())
+        # Tag every event this run emits so a consumer can watch one review
+        # without seeing another's. Callers wanting that isolation pass
+        # `graph.run_id` to register_observer; registering without one still
+        # receives everything.
+        self.config.setdefault("run_id", uuid.uuid4().hex[:12])
         self.graph = build_graph(self.config)
+
+    @property
+    def run_id(self) -> str:
+        return self.config["run_id"]
 
     def initial_state(self, manuscript_path: str) -> ReviewState:
         title, md, sections = load_manuscript(manuscript_path, self.config)
@@ -227,7 +240,8 @@ class PeerReviewGraph:
         a naive consumer doing dict.update.
         """
         # Emit a start event BEFORE parsing so the CLI/TUI shows activity
-        # while the Datalab API is parsing the PDF.
+        # while pypdf works through the document — a long PDF takes a
+        # while and the UI would otherwise look hung.
         yield "_ingest_start", {"manuscript_path": manuscript_path}
         state = self.initial_state(manuscript_path)
         accumulated: dict = dict(state)
@@ -238,15 +252,35 @@ class PeerReviewGraph:
                 yield node_name, dict(accumulated)
 
 
-_LIST_MERGE_KEYS = ("reports", "audits", "debate", "errors")
-_SUM_MERGE_KEYS = ("total_cost",)
+@lru_cache(maxsize=1)
+def _state_reducers() -> dict[str, Callable[[Any, Any], Any]]:
+    """Read the reducers straight off ``ReviewState``'s annotations.
+
+    Fields written by parallel nodes are declared as
+    ``Annotated[list[X], operator.add]`` so LangGraph combines rather than
+    overwrites them. ``stream()`` has to apply the same rule while
+    accumulating, and that used to be a hand-maintained list of key names —
+    so adding a reducer field and forgetting the list silently downgraded
+    streaming to overwrite. Only ``review()`` would look right, while the
+    CLI, TUI, and web UI all consume ``stream()``. Deriving it from the one
+    declaration removes the chance to forget.
+    """
+    reducers: dict[str, Callable[[Any, Any], Any]] = {}
+    for key, hint in get_type_hints(ReviewState, include_extras=True).items():
+        if get_origin(hint) is not Annotated:
+            continue
+        for meta in get_args(hint)[1:]:
+            if callable(meta):
+                reducers[key] = meta
+                break
+    return reducers
 
 
 def _merge_partial(accumulated: dict, partial: dict) -> None:
+    reducers = _state_reducers()
     for key, value in partial.items():
-        if key in _LIST_MERGE_KEYS and isinstance(value, list):
-            accumulated[key] = (accumulated.get(key) or []) + value
-        elif key in _SUM_MERGE_KEYS and isinstance(value, (int, float)):
-            accumulated[key] = (accumulated.get(key) or 0.0) + float(value)
+        reduce = reducers.get(key)
+        if reduce is not None and key in accumulated:
+            accumulated[key] = reduce(accumulated[key], value)
         else:
             accumulated[key] = value

@@ -33,7 +33,6 @@ from peerreviewagents.agents.schemas import (
 )
 from peerreviewagents.web import create_app
 
-
 SAMPLE = os.path.join(os.path.dirname(__file__), "sample_manuscript.md")
 
 # One canned structured instance per agent boundary. Mirrors the

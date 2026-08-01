@@ -43,7 +43,7 @@ _SYS = (
 
 
 def node(state: ReviewState) -> dict:
-    with node_context("editor"):
+    with node_context("editor", run_id=state["config"].get("run_id", "")):
         return _run(state)
 
 

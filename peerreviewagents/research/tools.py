@@ -18,7 +18,6 @@ from langchain_core.tools import tool
 
 from .interface import available_methods, route
 
-
 # Module-level config holder — set by ``get_tools_by_name(names, config)``
 # before agent execution so the @tool functions (which can't take a
 # config arg per LangChain's tool schema rules) can read it.

@@ -1,0 +1,37 @@
+name: Feature request
+description: A new agent, provider, research vendor, or capability.
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of addition?
+      options:
+        - New reviewer / agent
+        - New LLM provider
+        - New research vendor (literature search)
+        - Pipeline or orchestration change
+        - UI (TUI / web)
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: |
+        What does the pipeline currently get wrong or miss? Concrete beats
+        abstract — a manuscript it misjudged is more useful than a category.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: |
+        For a new agent, what would its structured output contain and where
+        would it sit in the graph? See CONTRIBUTING.md for the shape.
+    validations:
+      required: false

@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Matches requires-python = ">=3.10,<3.14"
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: pip install --quiet -e '.[research,web-test,dev]'
+
+      # The suite stubs the LLM layer, so no provider key is needed and no
+      # network call is made. If this ever starts needing a secret, something
+      # has leaked into the test path.
+      - name: Test
+        run: pytest tests/ -q
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install --quiet -e '.[dev]'
+
+      - run: ruff check .
+
+      # `ruff format --check` is deliberately not enforced. The codebase is
+      # hand-formatted in places the formatter would flatten (aligned literal
+      # tables, grouped kwargs), and adopting it would reformat 53 of 198
+      # files in one mechanical diff. If you want it, run `ruff format .` as
+      # its own commit and add the check back here.

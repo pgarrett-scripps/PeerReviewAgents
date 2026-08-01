@@ -27,7 +27,6 @@ from peerreviewagents.reports import write_reports
 from .bus import EventBus
 from .jobs import AGENT_NAMES, JobState
 
-
 _VALID_DECISIONS = {"accept", "minor", "major", "reject"}
 
 # Maps node names to phase labels so the frontend can scroll the camera
@@ -87,7 +86,11 @@ class JobRunner:
     # ------------------------------------------------------------------
 
     def _run(self) -> None:
-        register_observer(self._events)
+        # Scope this run's events to the job id so a second concurrent job
+        # can't interleave into this consumer. PeerReviewGraph picks the same
+        # id up from config via setdefault.
+        self.config["run_id"] = self.job.id
+        register_observer(self._events, self.job.id)
         self.job.status = "running"
         self.job.started_at = time.time()
         self._emit({
@@ -116,7 +119,7 @@ class JobRunner:
             time.sleep(0.1)
             self._events.put(_STOP_SENTINEL)
             forwarder.join(timeout=2.0)
-            clear_observer()
+            clear_observer(self.job.id)
 
         self._finalize()
 

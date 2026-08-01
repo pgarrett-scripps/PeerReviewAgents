@@ -20,6 +20,7 @@ PDF ingest is fully local (pypdf) — no external API key required.
 from __future__ import annotations
 
 import os
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -190,6 +191,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "cache_dir": None,
 
     # --- Runtime ---
+    # Identifies one review run. Generated per PeerReviewGraph unless set;
+    # tags emitted events so concurrent runs don't share an observer queue.
+    "run_id": None,
     "debug": False,
 }
 
@@ -220,15 +224,33 @@ def _read_toml(path: Path) -> dict[str, Any]:
         return tomllib.load(fh)
 
 
-def _normalize_toml(raw: dict[str, Any]) -> dict[str, Any]:
-    """Map TOML keys to internal config keys; ignore unknown keys silently
-    rather than crashing, but they have no effect."""
+def _normalize_toml(raw: dict[str, Any], source: Path | None = None) -> dict[str, Any]:
+    """Map TOML keys to internal config keys.
+
+    Unknown keys are ignored rather than fatal — a stray key shouldn't stop a
+    review — but they warn. Dropping them silently meant a typo like
+    ``reasoning_modl`` ran the default model with no indication anything was
+    wrong, which is miserable to debug from the outside.
+    """
     out: dict[str, Any] = {}
     valid_keys = set(DEFAULT_CONFIG.keys())
+    unknown: list[str] = []
     for k, v in raw.items():
         internal = _TOML_KEY_RENAMES.get(k, k)
         if internal in valid_keys:
             out[internal] = v
+        else:
+            unknown.append(k)
+
+    if unknown:
+        where = f" in {source}" if source else ""
+        known = ", ".join(sorted(valid_keys | set(_TOML_KEY_RENAMES)))
+        warnings.warn(
+            f"Ignoring unrecognized config key(s){where}: "
+            f"{', '.join(sorted(unknown))}. Recognized keys: {known}.",
+            UserWarning,
+            stacklevel=3,
+        )
     return out
 
 
@@ -309,7 +331,7 @@ def get_config(config_path: str | os.PathLike | None = None, **overrides: Any) -
     if config_path is not None:
         toml_paths.append(Path(config_path))
     for path in toml_paths:
-        cfg.update(_normalize_toml(_read_toml(path)))
+        cfg.update(_normalize_toml(_read_toml(path), source=path))
 
     cfg.update(_env_overrides())
     cfg.update(overrides)

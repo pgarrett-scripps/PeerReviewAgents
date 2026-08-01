@@ -57,7 +57,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-
 _BEGIN_RE = re.compile(
     r"<!--\s*BEGIN ENTRY job=(?P<id>[^\s]+)\s+status=(?P<status>\w+)\s+ts=(?P<ts>[^\s]+)\s*-->"
 )

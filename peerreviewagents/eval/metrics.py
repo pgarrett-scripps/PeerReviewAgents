@@ -83,7 +83,7 @@ def cohen_kappa(a: list[str], b: list[str]) -> float | None:
     labels = sorted(set(a) | set(b))
     po = sum(1 for x, y in zip(a, b) if x == y) / n
     ca, cb = Counter(a), Counter(b)
-    pe = sum((ca[l] / n) * (cb[l] / n) for l in labels)
+    pe = sum((ca[label] / n) * (cb[label] / n) for label in labels)
     if pe == 1:
         return 1.0
     return round((po - pe) / (1 - pe), 4)

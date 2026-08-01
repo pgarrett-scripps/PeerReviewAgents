@@ -9,7 +9,6 @@ import pytest
 from peerreviewagents.agents.schemas import MemoryReflection
 from peerreviewagents.storage.memory import MemoryEntry, MemoryLog
 
-
 SAMPLE_REPORTS = [
     {"reviewer": "methodology", "score": 4.0, "confidence": 4.0, "body": "..."},
     {"reviewer": "novelty",     "score": 3.0, "confidence": 5.0, "body": "..."},

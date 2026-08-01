@@ -14,7 +14,6 @@ from dataclasses import dataclass, field
 from threading import Lock
 from typing import Any
 
-
 JOB_STATUS = ("pending", "running", "done", "error")
 
 # Display order of the canonical agents in the office. The frontend reads

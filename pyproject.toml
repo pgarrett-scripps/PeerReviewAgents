@@ -59,6 +59,7 @@ web-test = ["httpx>=0.27"]
 # matplotlib is only used to render the paper figure (committed as SVG, so
 # the Typst paper build itself needs no Python).
 eval = ["openreview-py>=1.40", "matplotlib>=3.7"]
+dev = ["pytest>=8", "ruff>=0.6"]
 
 [project.urls]
 Homepage = "https://github.com/pgarrett-scripps/PeerReviewAgents"
@@ -67,6 +68,15 @@ Issues = "https://github.com/pgarrett-scripps/PeerReviewAgents/issues"
 
 [project.scripts]
 peerreview = "cli.main:run"
+
+[tool.ruff]
+# Pinned explicitly: ruff's default rule selection widens between releases, so
+# without this a version bump silently changes what CI accepts.
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
 
 [tool.setuptools.packages.find]
 include = ["peerreviewagents*", "cli*"]

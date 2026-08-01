@@ -16,7 +16,6 @@ from peerreviewagents.strictness import (
     strictness_label,
 )
 
-
 # --- rendering -------------------------------------------------------------
 
 

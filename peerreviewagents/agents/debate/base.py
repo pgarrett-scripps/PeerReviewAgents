@@ -42,7 +42,7 @@ def _debate_so_far(state: ReviewState) -> str:
 
 def make_debate_node(role: str, stance: str):
     def node(state: ReviewState) -> dict:
-        with node_context(role):
+        with node_context(role, run_id=state["config"].get("run_id", "")):
             config = state["config"]
             llm = make_llm(config, agent=f"debate_{role.lower()}", default_tag="debate")
             rnd = state.get("debate_round", 0) + 1

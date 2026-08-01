@@ -8,15 +8,14 @@ from __future__ import annotations
 
 import os
 
+from test_pipeline import _CANNED, SAMPLE, _patch_llms
+
+from cli.main import _run_failed
 from peerreviewagents.agents.reviewers import REVIEWER_NAMES
 from peerreviewagents.agents.schemas import DeskScreenOutput
 from peerreviewagents.default_config import get_config
 from peerreviewagents.graph.review_graph import PeerReviewGraph
 from peerreviewagents.reports import write_reports
-
-from cli.main import _run_failed
-from test_pipeline import SAMPLE, _CANNED, _patch_llms
-
 
 # --- config wiring ---------------------------------------------------------
 

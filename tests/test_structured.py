@@ -20,7 +20,6 @@ from peerreviewagents.agents.utils.structured import (
     invoke_structured,
 )
 
-
 # ---------- schema construction + render ------------------------------------
 
 

@@ -92,7 +92,7 @@ def make_auditor_node(
     bound_tool_names = list(tool_names or [])
 
     def node(state: ReviewState) -> dict:
-        with node_context(node_name):
+        with node_context(node_name, run_id=state["config"].get("run_id", "")):
             config = state["config"]
             llm = make_llm(config, agent=node_name, default_tag="audit")
             instructions = _INSTRUCTIONS.format(

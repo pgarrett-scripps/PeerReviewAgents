@@ -18,7 +18,6 @@ from peerreviewagents.default_config import get_config
 from peerreviewagents.journals import load_journal
 from peerreviewagents.strictness import strictness_block
 
-
 # --- registry & rendering --------------------------------------------------
 
 

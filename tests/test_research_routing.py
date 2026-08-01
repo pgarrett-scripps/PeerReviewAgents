@@ -7,7 +7,6 @@ import pytest
 from peerreviewagents.research import RateLimitError, interface
 from peerreviewagents.research import tools as research_tools
 
-
 # --- resolve_vendors --------------------------------------------------------
 
 

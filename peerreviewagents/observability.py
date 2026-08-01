@@ -16,6 +16,7 @@ the same queue.
 from __future__ import annotations
 
 import contextlib
+import re
 import threading
 import time
 from collections.abc import Iterator
@@ -24,7 +25,6 @@ from queue import Queue
 from typing import Any
 
 from langchain_core.callbacks.base import BaseCallbackHandler
-
 
 # --- Event types ------------------------------------------------------------
 
@@ -38,6 +38,7 @@ class AgentEvent:
     input_tokens: int = 0
     output_tokens: int = 0
     cost_usd: float = 0.0
+    run_id: str = ""    # which review produced this; routes it to a consumer
     timestamp: float = field(default_factory=time.time)
 
 
@@ -53,51 +54,93 @@ def current_node() -> str:
     return getattr(_CURRENT, "node", "")
 
 
+def current_run() -> str:
+    """The run id of whatever review this thread is working on.
+
+    Set by :func:`node_context` inside each LangGraph worker thread, so
+    anything called beneath a node — the streaming callback, the ingest
+    loader — picks it up without it being threaded through every signature.
+    """
+    return getattr(_CURRENT, "run_id", "")
+
+
 @contextlib.contextmanager
-def node_context(name: str) -> Iterator[None]:
+def node_context(name: str, run_id: str = "") -> Iterator[None]:
     """Mark a block of code as 'this is what node X is doing right now'.
 
     Emits node_start at entry and node_end at exit so the UI can move
-    the row from pending → running → done.
+    the row from pending -> running -> done. ``run_id`` routes those events
+    to the consumer watching that particular review.
     """
-    prev = getattr(_CURRENT, "node", "")
+    prev_node = getattr(_CURRENT, "node", "")
+    prev_run = getattr(_CURRENT, "run_id", "")
     _CURRENT.node = name
-    emit(AgentEvent(kind="node_start", node=name))
+    _CURRENT.run_id = run_id or prev_run
+    emit(AgentEvent(kind="node_start", node=name, run_id=_CURRENT.run_id))
     started = time.time()
     try:
         yield
     finally:
-        _CURRENT.node = prev
         emit(AgentEvent(
             kind="node_end",
             node=name,
             text=f"{time.time() - started:.1f}s",
+            run_id=_CURRENT.run_id,
         ))
+        _CURRENT.node = prev_node
+        _CURRENT.run_id = prev_run
 
 
 # --- Global event sink ------------------------------------------------------
 
-_QUEUE: Queue | None = None
-_QUEUE_LOCK = threading.Lock()
+# One mailbox per run, keyed by run id. This was a single module global,
+# which meant two concurrent reviews interleaved into the same consumer —
+# the reason the web server is capped at one job.
+#
+# ``_DEFAULT_RUN`` is the un-keyed mailbox. A consumer that registers without
+# a run id (the TUI) still receives everything, because emitters fall back to
+# it when their own run has no registered consumer.
+_DEFAULT_RUN = "__default__"
+
+_QUEUES: dict[str, Queue] = {}
+_QUEUES_LOCK = threading.Lock()
 
 
-def register_observer(queue: Queue) -> None:
-    """Attach a queue that will receive every AgentEvent emitted from now on."""
-    global _QUEUE
-    with _QUEUE_LOCK:
-        _QUEUE = queue
+def register_observer(queue: Queue, run_id: str | None = None) -> None:
+    """Attach a queue that receives AgentEvents for ``run_id``.
+
+    Omit ``run_id`` to receive events from every run that doesn't have its
+    own registered consumer.
+    """
+    with _QUEUES_LOCK:
+        _QUEUES[run_id or _DEFAULT_RUN] = queue
 
 
-def clear_observer() -> None:
-    global _QUEUE
-    with _QUEUE_LOCK:
-        _QUEUE = None
+def clear_observer(run_id: str | None = None) -> None:
+    with _QUEUES_LOCK:
+        _QUEUES.pop(run_id or _DEFAULT_RUN, None)
 
 
-def emit(event: AgentEvent) -> None:
-    q = _QUEUE
+def _observer_for(run_id: str | None) -> Queue | None:
+    with _QUEUES_LOCK:
+        if run_id is not None:
+            queue = _QUEUES.get(run_id)
+            if queue is not None:
+                return queue
+        return _QUEUES.get(_DEFAULT_RUN)
+
+
+def emit(event: AgentEvent, run_id: str | None = None) -> None:
+    # Explicit argument wins, then the event's own tag, then whatever run
+    # this thread is executing — so callers deep in a node need do nothing.
+    target = run_id or event.run_id or current_run() or None
+    q = _observer_for(target)
     if q is None:
         return
+    # Stamp the resolved run so consumers can read it off the event rather
+    # than inferring it from which queue it arrived on.
+    if target and not event.run_id:
+        event.run_id = target
     try:
         q.put_nowait(event)
     except Exception:  # noqa: BLE001
@@ -107,46 +150,65 @@ def emit(event: AgentEvent) -> None:
 
 # --- Cost estimation --------------------------------------------------------
 
-# $/million tokens, (input, output). Updated against OpenRouter's public
-# pricing page; unknown models fall through to None and are billed at $0
-# in the UI rather than a fabricated number. Extend as needed.
+# $/million tokens, (input, output).
+#
+# Keyed by *normalized* model name — see :func:`_normalize_model_key`. One
+# model reaches this table under several spellings depending on the route:
+# "anthropic/claude-opus-4.8" via OpenRouter, "claude-opus-4-8" direct,
+# "claude-opus-4-1-20250805" as a dated snapshot. Maintaining a separate
+# entry per spelling meant a route with no entry silently fell through to
+# the family heuristic; normalizing collapses them onto one key.
 _PRICING_USD_PER_M: dict[str, tuple[float, float]] = {
-    # Direct Anthropic model ids (provider = "anthropic"): no vendor prefix.
+    # Anthropic — current generation
+    "claude-fable-5": (10.0, 50.0),
+    "claude-mythos-5": (10.0, 50.0),
+    "claude-opus-5": (5.0, 25.0),
     "claude-opus-4-8": (5.0, 25.0),
     "claude-opus-4-7": (5.0, 25.0),
     "claude-opus-4-6": (5.0, 25.0),
+    "claude-opus-4-5": (5.0, 25.0),
     "claude-sonnet-5": (3.0, 15.0),
     "claude-sonnet-4-6": (3.0, 15.0),
+    "claude-sonnet-4-5": (3.0, 15.0),
     "claude-haiku-4-5": (1.0, 5.0),
-    "claude-fable-5": (10.0, 50.0),
-    # OpenRouter slugs (provider = "openrouter").
-    "anthropic/claude-opus-4.1": (15.0, 75.0),
-    "anthropic/claude-opus-4": (15.0, 75.0),
-    "anthropic/claude-sonnet-4.6": (3.0, 15.0),
-    "anthropic/claude-sonnet-4.5": (3.0, 15.0),
-    "anthropic/claude-sonnet-4": (3.0, 15.0),
-    "anthropic/claude-haiku-4.5": (1.0, 5.0),
-    "anthropic/claude-haiku-4": (1.0, 5.0),
-    "anthropic/claude-3.5-sonnet": (3.0, 15.0),
-    "anthropic/claude-3.5-haiku": (0.8, 4.0),
-    "anthropic/claude-3-opus": (15.0, 75.0),
-    "openai/gpt-4o": (2.5, 10.0),
-    "openai/gpt-4o-mini": (0.15, 0.6),
-    "openai/gpt-4.1": (2.0, 8.0),
-    "openai/gpt-4.1-mini": (0.4, 1.6),
-    "openai/o3": (10.0, 40.0),
-    "openai/o4-mini": (1.1, 4.4),
-    "google/gemini-2.5-pro": (1.25, 10.0),
-    "google/gemini-2.5-flash": (0.3, 2.5),
-    "google/gemini-2.0-flash": (0.1, 0.4),
+    # Anthropic — legacy, priced at the old Opus/Sonnet tiers
+    "claude-opus-4-1": (15.0, 75.0),
+    "claude-opus-4": (15.0, 75.0),
+    "claude-sonnet-4": (3.0, 15.0),
+    "claude-haiku-4": (1.0, 5.0),
+    "claude-3-5-sonnet": (3.0, 15.0),
+    "claude-3-5-haiku": (0.8, 4.0),
+    "claude-3-opus": (15.0, 75.0),
+    # OpenAI
+    "gpt-4o": (2.5, 10.0),
+    "gpt-4o-mini": (0.15, 0.6),
+    "gpt-4-1": (2.0, 8.0),
+    "gpt-4-1-mini": (0.4, 1.6),
+    "o3": (10.0, 40.0),
+    "o4-mini": (1.1, 4.4),
+    # Google
+    "gemini-2-5-pro": (1.25, 10.0),
+    "gemini-2-5-flash": (0.3, 2.5),
+    "gemini-2-0-flash": (0.1, 0.4),
 }
+
+
+def _normalize_model_key(model: str) -> str:
+    """Collapse the provider-specific spellings of a model id into one key.
+
+    ``anthropic/claude-opus-4.8`` and ``claude-opus-4-8`` are the same model;
+    so are ``claude-opus-4-1`` and ``claude-opus-4-1-20250805``.
+    """
+    key = model.lower().rsplit("/", 1)[-1]   # drop any vendor prefix
+    key = re.sub(r"-\d{8}$", "", key)        # drop a dated snapshot suffix
+    return key.replace(".", "-")             # unify 4.8 / 4-8 spellings
 
 
 def estimate_cost(model: str | None, input_tokens: int, output_tokens: int) -> float:
     """Best-effort cost estimate from a static pricing table."""
     if not model:
         return 0.0
-    rates = _PRICING_USD_PER_M.get(model)
+    rates = _PRICING_USD_PER_M.get(_normalize_model_key(model))
     if rates is None:
         # Fall back to a per-family heuristic so the cost field isn't always 0.
         rates = _family_rate(model)
@@ -157,9 +219,14 @@ def estimate_cost(model: str | None, input_tokens: int, output_tokens: int) -> f
 
 
 def _family_rate(model: str) -> tuple[float, float] | None:
+    """Last-resort guess for a model not in the table.
+
+    Only fires for something unreleased; every legacy tier is listed
+    explicitly above, so current-generation rates are the better default.
+    """
     m = model.lower()
     if "opus" in m:
-        return (15.0, 75.0)
+        return (5.0, 25.0)
     if "sonnet" in m:
         return (3.0, 15.0)
     if "haiku" in m:
@@ -198,7 +265,7 @@ class StreamingCallback(BaseCallbackHandler):
     def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
         if not token:
             return
-        emit(AgentEvent(kind="token", node=current_node(), text=token))
+        emit(AgentEvent(kind="token", node=current_node(), text=token, run_id=current_run()))
 
     def on_llm_end(self, response: Any, **kwargs: Any) -> None:
         usage = _extract_usage(response)
@@ -213,10 +280,11 @@ class StreamingCallback(BaseCallbackHandler):
             input_tokens=in_tok,
             output_tokens=out_tok,
             cost_usd=cost,
+            run_id=current_run(),
         ))
 
     def on_llm_error(self, error: BaseException, **kwargs: Any) -> None:
-        emit(AgentEvent(kind="log", node=current_node(), text=f"LLM error: {error}"))
+        emit(AgentEvent(kind="log", node=current_node(), text=f"LLM error: {error}", run_id=current_run()))
 
 
 def _extract_usage(response: Any) -> tuple[int, int, float, str | None] | None:

@@ -23,8 +23,8 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.types import Scope
 
-from peerreviewagents.default_config import get_config
 from peerreviewagents.article_types import ARTICLE_TYPES, normalize_article_type
+from peerreviewagents.default_config import get_config
 from peerreviewagents.journals import list_journals, load_journal
 from peerreviewagents.strictness import DEFAULT_LEVEL, LABELS, normalize_strictness
 

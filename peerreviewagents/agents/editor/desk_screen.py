@@ -61,7 +61,7 @@ def screen_mode(config: dict) -> str:
 
 
 def node(state: ReviewState) -> dict:
-    with node_context("desk_screen"):
+    with node_context("desk_screen", run_id=state["config"].get("run_id", "")):
         return _run(state)
 
 

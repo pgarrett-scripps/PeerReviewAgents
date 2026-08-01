@@ -24,7 +24,6 @@ from typing import Any, Callable
 
 from . import RateLimitError, arxiv, biorxiv, pubmed, semantic_scholar
 
-
 # --- Category & method registry --------------------------------------------
 
 # Each method has a category (which gets a default vendor list in

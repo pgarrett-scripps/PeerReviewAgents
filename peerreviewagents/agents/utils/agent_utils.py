@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
+from ...observability import estimate_cost
+
 if TYPE_CHECKING:
     from .agent_states import ReviewState
 
@@ -154,16 +156,34 @@ def _build_messages(
 
 
 def _call_cost(resp: AIMessage) -> float:
-    """Best-effort extraction of OpenRouter's reported USD cost."""
+    """Best-effort USD cost for a single model call.
+
+    OpenRouter reports actual spend on the response; Anthropic and OpenAI
+    direct do not. They do return token counts, so fall back to pricing those
+    from the static table. Without the fallback the whole ``total_cost`` chain
+    reads 0.0 on every direct-API run, including the figure written into
+    summary.md and any downstream provenance record.
+    """
     meta = getattr(resp, "response_metadata", None) or {}
     usage = meta.get("token_usage") or meta.get("usage") or {}
+
     cost = usage.get("cost")
-    if cost is None:
+    if cost is not None:
+        try:
+            return float(cost)
+        except (TypeError, ValueError):
+            pass  # malformed vendor field — fall through to the estimate
+
+    tokens = getattr(resp, "usage_metadata", None) or {}
+    in_tok = tokens.get("input_tokens") or usage.get("prompt_tokens") or usage.get("input_tokens")
+    out_tok = (
+        tokens.get("output_tokens") or usage.get("completion_tokens") or usage.get("output_tokens")
+    )
+    if not in_tok and not out_tok:
         return 0.0
-    try:
-        return float(cost)
-    except (TypeError, ValueError):
-        return 0.0
+
+    model = meta.get("model_name") or meta.get("model") or ""
+    return estimate_cost(model, int(in_tok or 0), int(out_tok or 0))
 
 
 def _text(content) -> str:

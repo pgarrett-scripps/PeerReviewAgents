@@ -1,0 +1,49 @@
+name: Bug report
+description: Something in the pipeline misbehaves.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: |
+        The exact command, and the manuscript type (PDF / Markdown / LaTeX / DOCX).
+        Please don't attach an unpublished manuscript — a description of its shape
+        (page count, sections present) is usually enough.
+      render: shell
+      placeholder: peerreview paper.pdf --no-tui --provider anthropic
+    validations:
+      required: true
+
+  - type: input
+    id: provider
+    attributes:
+      label: Provider and model
+      placeholder: openrouter / anthropic/claude-sonnet-5
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`pip show peerreviewagents | grep Version`, or the commit SHA."
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Traceback or relevant output
+      description: Scrub any API keys before pasting.
+      render: shell
+    validations:
+      required: false
