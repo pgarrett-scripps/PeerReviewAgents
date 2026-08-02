@@ -21,12 +21,40 @@ Verdict = Literal["accept", "minor", "major", "reject"]
 
 
 class ReviewerOutput(BaseModel):
-    """One specialist reviewer's verdict + critique."""
+    """One specialist reviewer's verdict + critique.
 
-    score: int = Field(
-        ..., ge=1, le=5,
+    ``score`` is nullable because not every dimension applies to every paper,
+    and a reviewer with nothing in its remit to judge was previously forced to
+    invent a number. It reliably invented a flattering one: on a qualitative
+    interview study the data-analysis reviewer wrote that there were "no
+    p-values, confidence intervals, effect sizes, sample-size calculations, or
+    statistical claims to evaluate" and then scored the paper 5/5 — the
+    highest data-analysis score in that corpus — pulling the panel mean up on
+    the strength of having nothing to review. The ethics reviewer did the same
+    thing more quietly across every paper, never once scoring below 4.
+
+    A null score means "outside my remit for this manuscript" and is left out
+    of the panel mean rather than counted as a good one. It is not an escape
+    from a hard judgement: something missing that *should* be there is a low
+    score with high confidence, not N/A.
+    """
+
+    score: int | None = Field(
+        default=None, ge=1, le=5,
         description="1=reject, 2=major-reject, 3=major-revision, "
-                    "4=minor-revision, 5=accept",
+                    "4=minor-revision, 5=accept. Use null ONLY when the "
+                    "manuscript contains nothing within your dimension to "
+                    "judge at all — for example a data-analysis review of a "
+                    "paper with no quantitative analysis in it. Null is NOT "
+                    "for work that is poor, thin, or missing something you "
+                    "expected to find: that is a low score. If you can form "
+                    "any view of this paper on your dimension, give a number.",
+    )
+    not_applicable_reason: str = Field(
+        default="",
+        description="Required when score is null, ignored otherwise. One "
+                    "sentence naming what is absent from the manuscript that "
+                    "puts it outside your dimension.",
     )
     confidence: int = Field(
         ..., ge=1, le=5,
@@ -56,6 +84,19 @@ class ReviewerOutput(BaseModel):
         parts: list[str] = [
             f"# {role}",
             "",
+        ]
+        # State an unscorable dimension at the top of the report rather than
+        # leaving a reader to notice a missing number further down.
+        if self.score is None:
+            parts += [
+                "**Not applicable to this manuscript — no score given, and "
+                "this dimension is excluded from the panel mean.**",
+                "",
+                self.not_applicable_reason.strip()
+                or "This manuscript contains nothing within this reviewer's remit.",
+                "",
+            ]
+        parts += [
             "## Summary",
             self.summary.strip() or "(no summary provided)",
         ]

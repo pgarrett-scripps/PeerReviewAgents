@@ -127,7 +127,21 @@ def _summary(state: ReviewState) -> str:
         "## Reviewer Scores",
     ]
     for r in state.get("reports", []):
-        lines.append(f"- **{r['reviewer']}** — score {r['score']}/5 (confidence {r['confidence']}/5)")
+        if isinstance(r.get("score"), (int, float)):
+            lines.append(
+                f"- **{r['reviewer']}** — score {r['score']}/5 "
+                f"(confidence {r['confidence']}/5)"
+            )
+        else:
+            # Named rather than dropped: that a dimension did not apply is a
+            # fact about the paper, and omitting the row would leave a reader
+            # counting seven reports and wondering which one failed.
+            reason = str(r.get("not_applicable_reason") or "").strip()
+            lines.append(
+                f"- **{r['reviewer']}** — not applicable"
+                + (f" ({reason})" if reason else "")
+                + ", excluded from the mean"
+            )
     avg = _avg(state)
     if avg is not None:
         lines.append("")
@@ -203,7 +217,13 @@ def _strictness_line(state: ReviewState) -> str:
 
 
 def _avg(state: ReviewState):
-    scores = [r["score"] for r in state.get("reports", [])]
+    # Reviewers that found nothing in their remit return a null score. They
+    # are left out rather than counted, so a paper is neither rewarded nor
+    # penalised for not having, say, a statistics section at all.
+    scores = [
+        r["score"] for r in state.get("reports", [])
+        if isinstance(r.get("score"), (int, float))
+    ]
     return sum(scores) / len(scores) if scores else None
 
 

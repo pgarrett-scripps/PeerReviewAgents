@@ -64,7 +64,20 @@ _INSTRUCTIONS = (
     "strictness standard is described above, calibrate your score and how "
     "heavily you weigh weaknesses to that standard.\n\n"
     "Return a structured review with the following fields:\n"
-    "  - score (int 1-5): 1=reject, 3=major revision, 4=minor revision, 5=accept\n"
+    "  - score (int 1-5, or null): 1=reject, 3=major revision, "
+    "4=minor revision, 5=accept.\n"
+    "    Return null ONLY if this manuscript contains nothing your dimension "
+    "covers — a data-analysis review of a paper with no quantitative analysis "
+    "in it, say. Then set not_applicable_reason and still write the summary: "
+    "'this paper has no statistics to check' is useful to a reader.\n"
+    "    Null is NOT for work you judge harshly. Thin, unclear, missing what "
+    "you expected, or evidence you cannot verify are all LOW SCORES, not "
+    "N/A. If you can form any view of this paper on your dimension, give a "
+    "number. Do not use a high score to mean 'nothing here concerned me "
+    "because there was nothing here' — that inflates the panel and is exactly "
+    "what null exists to prevent.\n"
+    "  - not_applicable_reason: required when score is null, one sentence "
+    "naming what is absent that puts this paper outside your dimension\n"
     "  - confidence (int 1-5): certainty in your score — 5=squarely your "
     "expertise with clear manuscript evidence; 3=reasonable read but some "
     "ambiguity; 1-2=outside your subarea or the manuscript is too unclear to "
@@ -277,7 +290,12 @@ def _first_pass(
     output: ReviewerOutput = result.instance  # type: ignore[assignment]
     report: ReviewReport = {
         "reviewer": name,
-        "score": float(output.score),
+        # None when this dimension had nothing to judge in this manuscript.
+        # Kept as None all the way through rather than coerced to a number:
+        # every aggregate downstream filters it out, and a placeholder here
+        # would be indistinguishable from a real score by the time it got there.
+        "score": None if output.score is None else float(output.score),
+        "not_applicable_reason": output.not_applicable_reason.strip(),
         "confidence": float(output.confidence),
         # Promoted so the round record can id each weakness and hand
         # this reviewer its own points back in a later round. Reading
@@ -327,7 +345,7 @@ def _revision_pass(
 
     report: ReviewReport = {
         "reviewer": name,
-        "score": float(output.score),
+        "score": None if output.score is None else float(output.score),
         "confidence": float(output.confidence),
         "weaknesses": _carried_weaknesses(output, prior, name),
         "questions": list(output.questions),

@@ -26,10 +26,12 @@ def _reports_digest(state: ReviewState) -> str:
     """
     out = []
     for r in state.get("reports", []):
-        out.append(
-            f"### {r['reviewer']} (score {r['score']}, conf {r['confidence']})\n"
-            f"{r['body'].strip()}"
+        head = (
+            f"(score {r['score']}, conf {r['confidence']})"
+            if isinstance(r.get("score"), (int, float))
+            else "(not applicable to this manuscript)"
         )
+        out.append(f"### {r['reviewer']} {head}\n{r['body'].strip()}")
     return "\n\n".join(out)
 
 

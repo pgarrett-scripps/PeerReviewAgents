@@ -332,9 +332,22 @@ def score_summary(state: ReviewState) -> str:
     into their prompts anchors the decision in the aggregated signal —
     they can still argue against it, but they have to do so explicitly.
     """
-    reports = state.get("reports") or []
-    if not reports:
+    all_reports = state.get("reports") or []
+    if not all_reports:
         return "(no reviewer scores yet)"
+
+    # A reviewer that found nothing in its remit returns no score. It is left
+    # out of every aggregate here — but still named, because "this paper has
+    # no statistics to check" is something the editor should weigh, and a
+    # dimension silently vanishing from the panel line would hide it.
+    reports = [r for r in all_reports if isinstance(r.get("score"), (int, float))]
+    unscored = [r for r in all_reports if not isinstance(r.get("score"), (int, float))]
+    if not reports:
+        return (
+            "(no reviewer could score this manuscript: "
+            + ", ".join(r["reviewer"] for r in unscored)
+            + " all reported nothing in their dimension to judge)"
+        )
 
     total_w = sum(r["confidence"] for r in reports) or 1.0
     weighted = sum(r["score"] * r["confidence"] for r in reports) / total_w
@@ -345,6 +358,10 @@ def score_summary(state: ReviewState) -> str:
         f"{r['reviewer']} {r['score']:.0f}/5@{r['confidence']:.0f}"
         for r in reports
     )
+    if unscored:
+        per_reviewer += "; " + "; ".join(
+            f"{r['reviewer']} n/a" for r in unscored
+        )
 
     buckets: dict[str, int] = {}
     for r in reports:
@@ -357,7 +374,10 @@ def score_summary(state: ReviewState) -> str:
 
     return (
         f"Confidence-weighted reviewer score: {weighted:.2f}/5  "
-        f"(unweighted: {raw:.2f}/5, n={len(reports)})\n"
+        f"(unweighted: {raw:.2f}/5, n={len(reports)}"        + (f" of {len(all_reports)}; "
+                 + ", ".join(r["reviewer"] for r in unscored)
+                 + " not applicable" if unscored else "")
+              + ")\n"
         f"Verdict distribution: {distrib}\n"
         f"Per-reviewer: {per_reviewer}"
     )

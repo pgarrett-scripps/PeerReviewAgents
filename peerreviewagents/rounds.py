@@ -154,11 +154,24 @@ class RoundRecord:
         report = self.report_for(reviewer)
         if report is None:
             return ""
+        scored = isinstance(report.score, (int, float))
         lines = [
             f"## Your review in round {self.round}",
             "",
-            f"You scored the manuscript {report.score:g}/5 "
-            f"(confidence {report.confidence:g}/5).",
+            (
+                f"You scored the manuscript {report.score:g}/5 "
+                f"(confidence {report.confidence:g}/5)."
+                if scored
+                # A reviewer that found nothing in its remit last round is
+                # told so plainly. Formatting None here used to crash; showing
+                # it as a number would be worse, because the revision prompt
+                # then asks the reviewer to justify moving a score it never
+                # gave.
+                else "You found nothing in your dimension to judge in that "
+                     "draft and gave no score. If the revision has added "
+                     "something your dimension covers, score it now; if not, "
+                     "return null again."
+            ),
         ]
         if report.weaknesses:
             lines += ["", "Weaknesses you raised, by id:"]
@@ -305,10 +318,22 @@ def _normalize(text: str) -> str:
 
 
 def _weighted_score(state: dict) -> float | None:
-    reports = state.get("reports") or []
+    """Confidence-weighted panel score, over the reviewers that actually scored.
+
+    A null score means the dimension did not apply to this manuscript, so it
+    leaves the average entirely — numerator *and* denominator. Counting it as
+    a zero would punish a paper for not being the kind of paper that has a
+    statistics section; leaving it in the denominator alone does the same
+    thing more quietly. Returns None when nobody could score, which is a
+    finding worth surfacing rather than a number worth inventing.
+    """
+    reports = [
+        r for r in (state.get("reports") or [])
+        if isinstance(r.get("score"), (int, float))
+    ]
     if not reports:
         return None
     total_w = sum(r.get("confidence", 0) for r in reports) or 1.0
     return round(
-        sum(r.get("score", 0) * r.get("confidence", 0) for r in reports) / total_w, 4
+        sum(r["score"] * r.get("confidence", 0) for r in reports) / total_w, 4
     )

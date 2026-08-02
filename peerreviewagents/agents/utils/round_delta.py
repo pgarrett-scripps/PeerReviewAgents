@@ -286,8 +286,12 @@ def _weighted(reports: list) -> float | None:
 
     Must stay identical to ``rounds._weighted_score``, which produced the
     number on the other side of the comparison — a then/now pair computed two
-    different ways would show movement that never happened.
+    different ways would show movement that never happened. That includes how
+    unscored dimensions are treated: a null score leaves the numerator and the
+    denominator both, so a reviewer moving to N/A between rounds does not read
+    as the panel changing its mind.
     """
+    reports = [r for r in reports if isinstance(r.get("score"), (int, float))]
     if not reports:
         return None
     total_w = sum(_float(r.get("confidence"), 0.0) for r in reports) or 1.0
