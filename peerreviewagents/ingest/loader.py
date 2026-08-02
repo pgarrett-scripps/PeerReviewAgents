@@ -1,12 +1,19 @@
 """Manuscript ingestion: file -> text + a coarse section map.
 
-PDF parsing is local — no external API, no API key, no GPU — and has two
-backends. :mod:`.structured` converts to Markdown with rustypdf, keeping
-headings, tables and equations; ``pypdf`` extracts the raw text layer
-page-by-page and flattens everything. The first is much better and is
-optional; the second is a hard dependency and always works. ``pdf_backend``
-picks between them and defaults to ``"auto"``: try the good one, fall back,
-and record which happened so a published review can say how it was read.
+PDF parsing is local — no external API, no API key, no GPU — and goes through
+exactly one converter, :mod:`.structured`, which renders the PDF to Markdown
+with rustypdf and keeps headings, tables and equations.
+
+**There is deliberately no fallback.** pypdf, which this used to fall back to,
+returns the raw text layer in content-stream order: on one real submission it
+fused 2% of all words into runs like
+``comparableefficacyatlowerdoseusingonlycausallyavailableinformation``, lost
+about a sixth of the content, and flattened every heading and table into
+prose. A panel reading that produces a review of a document the authors did
+not write, and a fallback makes it happen on exactly the runs nobody is
+watching. A missing converter is now an error with an install line in it.
+(pypdf is still a dependency — the integrity screen replays PDF content
+streams with it — but it no longer produces anything an agent reads.)
 
 **The file handed in is always the original.** Converting a PDF to Markdown
 before calling the pipeline looks equivalent and is not: the submission
@@ -62,15 +69,12 @@ def ingest_config(config: dict | None = None) -> dict:
     """The slice of config that changes what ingestion produces.
 
     Split out because it is hashed into the manuscript cache key. Two runs
-    that read the same bytes through different backends — or at different
-    compression levels — are two different manuscripts, and letting them
-    share a cache entry would serve one run the other's text.
+    that read the same bytes at different compression levels are two
+    different manuscripts, and letting them share a cache entry would serve
+    one run the other's text.
     """
     config = config or {}
-    return {
-        "pdf_backend": config.get("pdf_backend") or "auto",
-        "caveman": config.get("caveman") or "off",
-    }
+    return {"caveman": config.get("caveman") or "off"}
 
 
 @dataclass(frozen=True)
@@ -81,25 +85,18 @@ class Manuscript:
     text: str
     sections: dict[str, str] = field(default_factory=dict)
     # Published verbatim in a review's provenance. Shape:
-    #   format  "markdown" (converted, structure preserved) | "text" (flat)
+    #   format  "markdown" (structure preserved) | "text" (flat)
     #   tool    what produced it, with version, e.g. "rustypdf 0.1.0"
     #   caveman compression level applied, or None
     #   chars   length of the parsed text
-    #   reason  why the structured backend was not used; "" when it was
     ingest: dict = field(default_factory=dict)
 
     def as_triple(self) -> tuple[str, str, dict[str, str]]:
         return self.title, self.text, self.sections
 
 
-def _plain_ingest(tool: str, text: str, reason: str = "") -> dict:
-    return {
-        "format": "text",
-        "tool": tool,
-        "caveman": None,
-        "chars": len(text),
-        "reason": reason,
-    }
+def _plain_ingest(tool: str, text: str) -> dict:
+    return {"format": "text", "tool": tool, "caveman": None, "chars": len(text)}
 
 
 def load_manuscript(
@@ -175,100 +172,37 @@ def _load_uncached(path: str, config: dict | None = None) -> Manuscript:
 
 
 def _read_pdf(path: str, ingest: dict) -> tuple[str, str, str, dict]:
-    """Read a PDF through the configured backend.
+    """Convert a PDF to Markdown.
 
-    Returns ``(text, title, references_anchor, record)``. The title is empty
-    unless the backend identified one itself, in which case it beats the
-    loader's heuristic; the anchor is empty unless it located a bibliography.
+    Returns ``(text, title, references_anchor, record)``. The title is the
+    converter's own, which beats the loader's line-order heuristic; the anchor
+    is where the bibliography starts, empty when it found none.
 
-    ``pdf_backend`` is ``"auto"`` (prefer rustypdf, fall back to pypdf),
-    ``"rustypdf"`` (require it) or ``"pypdf"`` (never try it). Only ``auto``
-    falls back — an explicit choice that silently became a different choice
-    would be worse than an error, because the difference shows up in the
-    review rather than in the log.
+    Raises when the converter is unavailable, rather than reading the PDF a
+    worse way. See this module's docstring for why there is no second path.
     """
-    backend = ingest["pdf_backend"]
     caveman = ingest["caveman"]
-    if backend not in ("auto", "rustypdf", "pypdf"):
-        raise ValueError(
-            f"unknown pdf_backend {backend!r}; expected 'auto', 'rustypdf' or 'pypdf'"
-        )
-
-    reason = ""
-    if backend in ("auto", "rustypdf"):
-        try:
-            converted = structured.convert(path, caveman)
-        except structured.Unavailable as exc:
-            if backend == "rustypdf":
-                raise RuntimeError(
-                    f"pdf_backend is 'rustypdf' but it could not read {path}: {exc}"
-                ) from exc
-            reason = str(exc)
-            emit(AgentEvent(
-                kind="log", node="ingest",
-                text=f"falling back to pypdf — {reason}",
-            ))
-        else:
-            emit(AgentEvent(
-                kind="log", node="ingest",
-                text=f"read {os.path.basename(path)} as markdown via "
-                     f"{converted.tool}"
-                     + (f" (caveman {caveman})" if caveman != "off" else ""),
-            ))
-            return converted.markdown, converted.title, converted.references_anchor, {
-                "format": "markdown",
-                "tool": converted.tool,
-                "caveman": None if caveman == "off" else caveman,
-                "chars": len(converted.markdown),
-                "reason": "",
-            }
-
-    return _read_pypdf(path), "", "", _plain_ingest("pypdf", "", reason)
-
-
-def _read_pypdf(path: str) -> str:
-    """Extract text from a PDF using pypdf, page-by-page.
-
-    Pages are joined with a blank line so downstream section-splitting
-    sees natural paragraph boundaries. Pages whose text extraction
-    raises (corrupt page, font issues) are skipped rather than aborting
-    the whole document.
-    """
     try:
-        from pypdf import PdfReader
-    except ImportError as exc:  # pragma: no cover
+        converted = structured.convert(path, caveman)
+    except structured.Unavailable as exc:
         raise RuntimeError(
-            "PDF ingest requires the `pypdf` package. "
-            "Install with: pip install pypdf"
+            f"Could not read {os.path.basename(path)}: {exc}\n"
+            "PDF ingest requires rustypdf, which is not published yet — "
+            "install it from a checkout:\n"
+            "    pip install -e /path/to/rustypdf2markdown/python"
         ) from exc
 
-    emit(AgentEvent(kind="log", node="ingest", text=f"reading PDF: {os.path.basename(path)}"))
-    reader = PdfReader(path)
-    parts: list[str] = []
-    for i, page in enumerate(reader.pages):
-        try:
-            page_text = page.extract_text() or ""
-        except Exception as exc:  # noqa: BLE001
-            emit(AgentEvent(
-                kind="log",
-                node="ingest",
-                text=f"page {i + 1}: extraction failed ({exc}); skipping",
-            ))
-            continue
-        if page_text.strip():
-            parts.append(page_text)
-    if not parts:
-        raise RuntimeError(
-            f"pypdf extracted no text from {path}. The PDF may be scanned "
-            "(image-only) with no text layer — OCR is out of scope for this "
-            "ingest path; convert to text/Markdown first."
-        )
     emit(AgentEvent(
-        kind="log",
-        node="ingest",
-        text=f"extracted {len(parts)} of {len(reader.pages)} pages",
+        kind="log", node="ingest",
+        text=f"read {os.path.basename(path)} as markdown via {converted.tool}"
+             + (f" (caveman {caveman})" if caveman != "off" else ""),
     ))
-    return "\n\n".join(parts)
+    return converted.markdown, converted.title, converted.references_anchor, {
+        "format": "markdown",
+        "tool": converted.tool,
+        "caveman": None if caveman == "off" else caveman,
+        "chars": len(converted.markdown),
+    }
 
 
 def _read_docx(path: str) -> str:
@@ -289,13 +223,16 @@ def _normalize(text: str) -> str:
 def _drop_surrogates(text: str) -> str:
     """Replace lone surrogates, which are not encodable as UTF-8.
 
-    A PDF with a broken encoding map makes pypdf emit unpaired surrogates.
-    Python holds them happily and then refuses to encode them, so they used
-    to abort the run at the first thing that serialises the text — in
+    Python holds an unpaired surrogate happily and then refuses to encode it,
+    so one aborts the run at the first thing that serialises the text — in
     practice the cache write, several seconds into a review, with a
-    ``UnicodeEncodeError`` that names a codec rather than a manuscript. Every
-    provider request would have hit the same wall a moment later. One
-    substitution here keeps the rest of the pipeline unable to encounter it.
+    ``UnicodeEncodeError`` naming a codec rather than a manuscript. Every
+    provider request would have hit the same wall a moment later.
+
+    The PDF path can no longer produce them: Rust strings are UTF-8 by
+    construction, and pypdf — which emitted them from a broken encoding map —
+    is no longer in it. DOCX still can, and one substitution here is cheaper
+    than reasoning about which reader is safe.
     """
     try:
         text.encode("utf-8")

@@ -78,6 +78,25 @@ def _text_op(text: str, *, prefix: str = "", size: float = 11, x: int = 72,
 VISIBLE_BODY = _text_op("A perfectly ordinary manuscript sentence.", y=740)
 
 
+def _bulk_body(lines: int = 90) -> str:
+    """A visible body long enough to pass ingestion.
+
+    Most tests here call the scanner directly, which is happy with one
+    sentence. A test that runs the whole graph goes through the loader first,
+    and the converter refuses anything too short to be a manuscript — the
+    guard that catches an image-only scan whose text layer is a few stray
+    glyphs. This is roughly two pages of text spread down one page, which is
+    nonsense to look at and exactly what the scanner needs: visible text.
+    """
+    sentence = (
+        "A perfectly ordinary manuscript sentence carrying no instructions "
+        "whatsoever to any reader, automated or otherwise, sits here."
+    )
+    return "".join(
+        _text_op(f"{i}. {sentence}", y=740 - (i % 60)) for i in range(lines)
+    )
+
+
 # --- phrase matching --------------------------------------------------------
 
 
@@ -524,9 +543,11 @@ def test_graph_short_circuits_on_an_injected_manuscript(monkeypatch, tmp_path):
     from peerreviewagents.reports import write_reports
 
     _patch_llms(monkeypatch)
+    # Unlike the scan-only tests, this one runs the whole graph, so the file
+    # has to survive ingestion before it reaches the desk.
     pdf = _build_pdf(
         str(tmp_path / "injected.pdf"),
-        VISIBLE_BODY + _text_op(PAYLOAD, prefix="1 1 1 rg", y=650),
+        _bulk_body() + _text_op(PAYLOAD, prefix="1 1 1 rg", y=650),
     )
     graph = PeerReviewGraph(get_config(max_debate_rounds=1, output_dir=str(tmp_path)))
     state = graph.review(pdf)

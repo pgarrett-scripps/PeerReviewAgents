@@ -218,20 +218,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--no-tui", action="store_true", help="run headless")
     p.add_argument(
-        "--pdf-backend", dest="pdf_backend",
-        choices=("auto", "rustypdf", "pypdf"),
-        help="Which PDF reader produces the text the agents read. auto "
-             "(default) prefers rustypdf, which converts to Markdown and keeps "
-             "headings, tables and equations, and falls back to pypdf's flat "
-             "text layer when it is not installed. rustypdf requires it and "
-             "errors rather than degrading; pypdf never tries it.",
-    )
-    p.add_argument(
         "--caveman", dest="caveman", choices=("off", "light", "hard"),
         help="Telegraphically compress the manuscript to save tokens. Off by "
              "default: it saves well under a cent a review, and a reviewer has "
              "been measured criticising the authors for grammar the compressor "
-             "broke. Needs the rustypdf backend.",
+             "broke.",
     )
     p.add_argument("--cache-dir", dest="cache_dir",
                    help="Override the manuscript parsing cache directory.")
@@ -258,7 +249,7 @@ def config_from_args(args) -> dict:
                 "review_strictness", "desk_screen", "use_memory",
                 "injection_screen", "injection_screen_action",
                 "revision_of", "author_statement_path", "revision_mode",
-                "supplement_path", "temperature", "pdf_backend", "caveman"):
+                "supplement_path", "temperature", "caveman"):
         val = getattr(args, key, None)
         if val is not None:
             overrides[key] = val
@@ -463,7 +454,7 @@ def run_server(args) -> None:
     for key in ("provider", "reasoning_model", "max_debate_rounds",
                 "output_dir", "cache_dir", "target_journal", "article_type",
                 "review_strictness", "desk_screen",
-                "injection_screen", "injection_screen_action", "pdf_backend"):
+                "injection_screen", "injection_screen_action"):
         val = getattr(args, key, None)
         if val is not None:
             overrides[key] = val
@@ -563,10 +554,6 @@ def run() -> None:
                         action="store_const", const="flag", default=None,
                         help="Report concealed prompt injection instead of "
                              "desk-rejecting the upload.")
-        sp.add_argument("--pdf-backend", dest="pdf_backend", default=None,
-                        choices=("auto", "rustypdf", "pypdf"),
-                        help="Which PDF reader every uploaded manuscript is "
-                             "read with. Default auto.")
         run_server(sp.parse_args(argv[1:]))
         return
 

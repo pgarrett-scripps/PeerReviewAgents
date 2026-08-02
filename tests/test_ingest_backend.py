@@ -1,10 +1,9 @@
-"""Backend selection, and the things that go wrong quietly when it is wrong.
+"""What the loader does with a PDF, and what it refuses to do.
 
-None of these tests need rustypdf installed: the structured backend is stubbed
-out, because what is being checked is the loader's contract with it — which
-backend it picks, what it records, and what it does when the good one is not
-there. The one thing that cannot be faked is a real PDF, so the cases that
-need one skip when the sample is absent.
+None of these tests need rustypdf installed: the converter is stubbed out,
+because what is being checked is the loader's contract with it — what it
+records, and that a missing converter stops the run rather than quietly
+producing a worse manuscript.
 """
 
 from __future__ import annotations
@@ -25,7 +24,7 @@ def cache_dir(tmp_path):
 
 
 def _fake_pdf(tmp_path):
-    """A file with a .pdf suffix. Never actually read — both backends are
+    """A file with a .pdf suffix. Never actually read — the converter is
     stubbed in the tests that use it."""
     path = tmp_path / "paper.pdf"
     path.write_bytes(b"%PDF-1.7\n")
@@ -48,58 +47,38 @@ def _stub_unavailable(monkeypatch, reason="rustypdf unavailable (ImportError: no
     monkeypatch.setattr(structured, "convert", convert)
 
 
-def _stub_pypdf(monkeypatch, text="Introduction\n\nFlat text.\n"):
-    monkeypatch.setattr(loader, "_read_pypdf", lambda path: text)
+# --- there is one converter, and no fallback -------------------------------
 
 
-# --- backend selection ------------------------------------------------------
-
-
-def test_auto_prefers_the_structured_backend(tmp_path, monkeypatch, cache_dir):
+def test_a_pdf_is_converted_to_markdown(tmp_path, monkeypatch, cache_dir):
     _stub_convert(monkeypatch)
-    _stub_pypdf(monkeypatch)
     parsed = loader.load_manuscript_record(_fake_pdf(tmp_path), cache_dir)
     assert parsed.ingest["format"] == "markdown"
     assert parsed.ingest["tool"] == "rustypdf 9.9.9"
-    assert parsed.ingest["reason"] == ""
     # The converter's own title beats the loader's line-order heuristic.
     assert parsed.title == "Real Title"
 
 
-def test_auto_falls_back_and_says_why(tmp_path, monkeypatch, cache_dir):
+def test_a_missing_converter_stops_the_run(tmp_path, monkeypatch, cache_dir):
+    """No fallback, by design.
+
+    The alternative reader flattens structure and fuses words across column
+    boundaries, and a panel reading that reviews a document the authors did
+    not write. Degrading silently would do that on exactly the runs nobody
+    is watching, so this raises — with the install line in the message.
+    """
     _stub_unavailable(monkeypatch, "rustypdf unavailable (ImportError: nope)")
-    _stub_pypdf(monkeypatch)
-    parsed = loader.load_manuscript_record(_fake_pdf(tmp_path), cache_dir)
-    assert parsed.ingest["format"] == "text"
-    assert parsed.ingest["tool"] == "pypdf"
-    # A degraded read that does not say it degraded is the failure mode this
-    # whole record exists to prevent.
-    assert "ImportError" in parsed.ingest["reason"]
+    with pytest.raises(RuntimeError) as excinfo:
+        loader.load_manuscript_record(_fake_pdf(tmp_path), cache_dir)
+    assert "ImportError" in str(excinfo.value)
+    assert "pip install" in str(excinfo.value)
 
 
-def test_explicit_rustypdf_is_an_error_not_a_downgrade(tmp_path, monkeypatch, cache_dir):
-    _stub_unavailable(monkeypatch)
-    _stub_pypdf(monkeypatch)
-    config = {**cache_dir, "pdf_backend": "rustypdf"}
-    with pytest.raises(RuntimeError, match="pdf_backend is 'rustypdf'"):
-        loader.load_manuscript_record(_fake_pdf(tmp_path), config)
-
-
-def test_pypdf_never_calls_the_structured_backend(tmp_path, monkeypatch, cache_dir):
-    def explode(*a, **k):
-        raise AssertionError("pdf_backend='pypdf' must not reach rustypdf")
-
-    monkeypatch.setattr(structured, "convert", explode)
-    _stub_pypdf(monkeypatch)
-    config = {**cache_dir, "pdf_backend": "pypdf"}
-    parsed = loader.load_manuscript_record(_fake_pdf(tmp_path), config)
-    assert parsed.ingest["tool"] == "pypdf"
-
-
-def test_unknown_backend_is_rejected(tmp_path, cache_dir):
-    config = {**cache_dir, "pdf_backend": "pdfminer"}
-    with pytest.raises(ValueError, match="unknown pdf_backend"):
-        loader.load_manuscript_record(_fake_pdf(tmp_path), config)
+def test_an_unreadable_pdf_stops_the_run(tmp_path, monkeypatch, cache_dir):
+    """A scan has no text layer. Neither reader can help, so say so."""
+    _stub_unavailable(monkeypatch, "rustypdf produced only 12 characters")
+    with pytest.raises(RuntimeError, match="only 12 characters"):
+        loader.load_manuscript_record(_fake_pdf(tmp_path), cache_dir)
 
 
 def test_unknown_caveman_level_is_rejected(tmp_path):
@@ -108,13 +87,6 @@ def test_unknown_caveman_level_is_rejected(tmp_path):
 
 
 # --- the cache key has to cover the ingest config ---------------------------
-
-
-def test_cache_key_separates_backends(tmp_path):
-    path = _fake_pdf(tmp_path)
-    assert cache.cache_key(path, {"pdf_backend": "rustypdf"}) != cache.cache_key(
-        path, {"pdf_backend": "pypdf"}
-    )
 
 
 def test_cache_key_separates_compression_levels(tmp_path):
@@ -140,7 +112,7 @@ def test_cache_key_ignores_unrelated_config(tmp_path):
 
 
 def test_cached_entry_reports_the_original_ingest(tmp_path, monkeypatch, cache_dir):
-    """A cache hit must not relabel a rustypdf read as a pypdf one."""
+    """A cache hit must report the ingest record the original parse made."""
     _stub_convert(monkeypatch)
     path = _fake_pdf(tmp_path)
     first = loader.load_manuscript_record(path, cache_dir)
@@ -218,15 +190,16 @@ def test_a_real_references_heading_still_wins(tmp_path):
 
 
 def test_lone_surrogates_do_not_abort_the_run(tmp_path, monkeypatch, cache_dir):
-    """A broken encoding map makes pypdf emit unpaired surrogates.
+    """Unpaired surrogates are held by Python and then refused by its codec.
 
-    Python holds them and then refuses to encode them, so before this they
-    aborted the review at the cache write — seconds in, with a UnicodeEncode
-    error naming a codec rather than a manuscript.
+    One used to abort the review at the cache write — seconds in, with a
+    UnicodeEncodeError naming a codec rather than a manuscript. A DOCX can
+    still carry them.
     """
-    _stub_unavailable(monkeypatch)
-    _stub_pypdf(monkeypatch, text="Introduction\n\nBroken \ud835 glyph.\n")
-    parsed = loader.load_manuscript_record(_fake_pdf(tmp_path), cache_dir)
+    monkeypatch.setattr(loader, "_read_docx", lambda path: "Broken \ud835 glyph.")
+    path = tmp_path / "paper.docx"
+    path.write_bytes(b"PK\x03\x04")
+    parsed = loader.load_manuscript_record(str(path), cache_dir)
     parsed.text.encode("utf-8")  # must not raise
     assert "Broken" in parsed.text
 

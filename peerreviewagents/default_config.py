@@ -14,8 +14,7 @@ in TOML or ``--provider anthropic`` on the CLI. API keys live in the
 environment / ``.env`` (OPENROUTER_API_KEY, ANTHROPIC_API_KEY,
 OPENAI_API_KEY) and are never read by this module.
 
-PDF ingest is fully local — no external API key required. Two backends;
-see ``pdf_backend`` below.
+PDF ingest is fully local (rustypdf) — no external API key required.
 """
 
 from __future__ import annotations
@@ -269,16 +268,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "use_memory": True,
 
     # --- Manuscript ingest ---
-    # Which PDF reader produces the text every agent reads.
-    #   auto     — rustypdf if it is installed, else pypdf (the default)
-    #   rustypdf — require it; error rather than silently read the PDF worse
-    #   pypdf    — never try rustypdf
-    # rustypdf converts to Markdown and keeps headings, tables and equations;
-    # pypdf returns the flat text layer, which on a two-column paper fuses
-    # words across the column boundary and loses structure entirely. It is an
-    # optional compiled extension, hence "auto": a missing wheel degrades the
-    # review rather than failing it, and the run records which path it took.
-    "pdf_backend": "auto",
+    # PDFs are converted to Markdown by rustypdf, which keeps headings,
+    # tables and equations. There is no second backend and no fallback: the
+    # alternative was pypdf's flat text layer, which on a two-column paper
+    # fuses words across the column boundary and loses structure entirely,
+    # and a panel reading that reviews a document the authors did not write.
+    # A missing converter is an error. See peerreviewagents.ingest.loader.
+    #
     # Telegraphic compression of the manuscript, for models billed by the
     # token: "off" (the default), "light" (drops articles and copulas) or
     # "hard" (also prepositions and connectives). Mathematics, tables and
@@ -379,7 +375,6 @@ _ENV_STR_KEYS = {
     "PEERREVIEW_JOURNALS_DIR": "journals_dir",
     "PEERREVIEW_ARTICLE_TYPE": "article_type",
     "PEERREVIEW_INJECTION_ACTION": "injection_screen_action",
-    "PEERREVIEW_PDF_BACKEND": "pdf_backend",
     "PEERREVIEW_CAVEMAN": "caveman",
 }
 _ENV_INT_KEYS = {
