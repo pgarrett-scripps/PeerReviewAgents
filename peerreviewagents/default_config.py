@@ -143,6 +143,37 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # how many remain, so an endless revise-and-resubmit loop reads as the
     # failure it is rather than continuing indefinitely.
     "max_rounds": 3,
+    # What kind of follow-up run this is. Both need `revision_of`; they differ
+    # in what changed, and therefore in what is allowed to run.
+    #
+    #   "revision"   (default) the AUTHORS changed the manuscript. Diff the
+    #                drafts, run the compliance auditor over the previous
+    #                letter's required revisions, decide on the delta.
+    #
+    #   "correction" the manuscript is UNCHANGED and the review itself is
+    #                challenged. The compliance auditor must not run: against
+    #                an identical draft it would correctly report every
+    #                required revision as undone and push the verdict down —
+    #                punishing an author who was right that a reviewer misread
+    #                the paper. The diff is skipped for the same reason: there
+    #                is nothing to compare. The response verifier still runs,
+    #                and it is what separates a checkable factual claim from a
+    #                disagreement about judgment.
+    "revision_mode": "revision",
+    # Restrict the specialist fan-out to these reviewers by name, e.g.
+    # ["methodology", "data_analysis"]. Empty (default) = the full panel.
+    #
+    # Built for corrections. If one reviewer misread a table, only that
+    # reviewer's assessment should move; re-running all eight lets the other
+    # seven drift on resampling noise and overstates what the correction
+    # actually changed. Isolating it is the accurate thing, not just the cheap
+    # one.
+    #
+    # Reviewers left out are NOT dropped: their prior reports are carried
+    # forward from `revision_of`, so the meta-reviewer and editor still see a
+    # full panel rather than an aggregate over the one agent that re-ran.
+    # Requires `revision_of` for that reason.
+    "only_reviewers": [],
 
     # Optional path to a supplementary-information file (pdf/md/tex/docx).
     # When set, the SI is parsed and passed IN FULL to the

@@ -129,6 +129,27 @@ def build_parser() -> argparse.ArgumentParser:
              "draft, and the editor decides on the delta.",
     )
     p.add_argument(
+        "--correction",
+        dest="revision_mode",
+        action="store_const",
+        const="correction",
+        help="The manuscript is UNCHANGED and the review itself is being "
+             "challenged. Skips the compliance auditor and the draft diff, "
+             "which only mean something against a changed manuscript — run "
+             "against an identical draft the auditor would report every "
+             "required revision as undone and push the verdict down. Pair "
+             "with --only-reviewers. Requires --revision-of.",
+    )
+    p.add_argument(
+        "--only-reviewers",
+        dest="only_reviewers",
+        metavar="NAMES",
+        help="Comma-separated reviewers to re-run, e.g. 'methodology,rigor'. "
+             "The others keep their previous reports, so the panel is still "
+             "scored over all of them rather than over the subset that ran. "
+             "Requires --revision-of.",
+    )
+    p.add_argument(
         "--author-statement",
         dest="author_statement_path",
         metavar="PATH",
@@ -220,11 +241,17 @@ def config_from_args(args) -> dict:
                 "output_dir", "cache_dir", "target_journal", "article_type",
                 "review_strictness", "desk_screen", "use_memory",
                 "injection_screen", "injection_screen_action",
-                "revision_of", "author_statement_path",
+                "revision_of", "author_statement_path", "revision_mode",
                 "supplement_path", "temperature"):
         val = getattr(args, key, None)
         if val is not None:
             overrides[key] = val
+    # Comma-separated on the command line, a list in config.
+    raw_only = getattr(args, "only_reviewers", None)
+    if raw_only:
+        overrides["only_reviewers"] = [
+            n.strip() for n in str(raw_only).split(",") if n.strip()
+        ]
     # An author statement only means something against a prior round: without
     # one there are no reviewer points or required revisions for it to answer.
     if overrides.get("author_statement_path") and not overrides.get("revision_of"):
@@ -232,6 +259,14 @@ def config_from_args(args) -> dict:
             "--author-statement requires --revision-of: a response letter "
             "answers a previous round's review, so there has to be one."
         )
+    # Both of these are defined relative to a previous round — one skips work
+    # that only makes sense against it, the other carries reports forward from
+    # it. Caught here so the failure names the flag rather than surfacing from
+    # inside the graph build.
+    for flag, key in (("--correction", "revision_mode"),
+                      ("--only-reviewers", "only_reviewers")):
+        if overrides.get(key) and not overrides.get("revision_of"):
+            raise SystemExit(f"{flag} requires --revision-of.")
     # --offline is an inversion: presence means research_enabled=False.
     if getattr(args, "offline", False):
         overrides["research_enabled"] = False

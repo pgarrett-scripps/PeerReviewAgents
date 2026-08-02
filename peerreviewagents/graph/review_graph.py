@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import uuid
 from functools import lru_cache
 from typing import Annotated, Any, Callable, get_args, get_origin, get_type_hints
@@ -33,6 +34,47 @@ def is_revision(config: dict) -> bool:
     return bool(config.get("revision_of"))
 
 
+def is_correction(config: dict) -> bool:
+    """Whether this run challenges the review rather than the manuscript.
+
+    A correction is still anchored to a prior round — it needs the reviewers'
+    own earlier points to rule on — but the manuscript has not changed, so the
+    two things that only make sense against a changed draft (the diff and the
+    compliance auditor) are not run. See ``revision_mode`` in default_config.
+    """
+    return is_revision(config) and str(
+        config.get("revision_mode") or "revision"
+    ).lower().strip() == "correction"
+
+
+def selected_reviewers(config: dict) -> list[str]:
+    """Names of the specialists that will actually run this round.
+
+    An unknown name is an error rather than a silent omission: a typo in
+    ``only_reviewers`` would otherwise quietly shrink the panel, and a review
+    that ran five reviewers when it was asked for six is not something the
+    output makes obvious.
+    """
+    from ..agents.reviewers import REVIEWER_NAMES
+
+    chosen = [str(n).strip() for n in (config.get("only_reviewers") or []) if str(n).strip()]
+    if not chosen:
+        return list(REVIEWER_NAMES)
+    unknown = [n for n in chosen if n not in REVIEWER_NAMES]
+    if unknown:
+        raise ValueError(
+            f"only_reviewers names no such reviewer: {', '.join(sorted(unknown))}. "
+            f"Available: {', '.join(REVIEWER_NAMES)}."
+        )
+    if not config.get("revision_of"):
+        raise ValueError(
+            "only_reviewers requires revision_of: the reviewers left out have "
+            "their prior reports carried forward from that round, and without "
+            "one the panel would be scored on a subset without saying so."
+        )
+    return chosen
+
+
 def build_graph(config: dict):
     g = StateGraph(ReviewState)
 
@@ -43,7 +85,8 @@ def build_graph(config: dict):
     # ordering structural instead of a convention someone can forget.
     verify_response = revision and bool(config.get("author_statement_path"))
 
-    reviewer_nodes = get_reviewer_nodes()
+    chosen = set(selected_reviewers(config))
+    reviewer_nodes = [(n, fn) for n, fn in get_reviewer_nodes() if n in chosen]
     for name, fn in reviewer_nodes:
         g.add_node(f"reviewer_{name}", fn)
 
@@ -54,7 +97,11 @@ def build_graph(config: dict):
     # required revisions against the new draft, which is a factual checklist
     # of exactly the kind the lane exists for, and like the others it feeds
     # only the editor and carries no score.
-    auditor_nodes = get_auditor_nodes(revision=revision)
+    # A correction gets the standing auditors but not the compliance one:
+    # the draft is identical, so it would report every required revision as
+    # undone and drive the verdict down for a submission whose complaint is
+    # that the *review* was wrong.
+    auditor_nodes = get_auditor_nodes(revision=revision and not is_correction(config))
     for name, fn in auditor_nodes:
         g.add_node(f"audit_{name}", fn)
 
@@ -203,13 +250,69 @@ class PeerReviewGraph:
             verified_claims_block="",
             desk_rejected=False,
             integrity="",
-            reports=[],
+            reports=self._carried_reports(prior),
             audits=[],
             debate=[],
             debate_round=0,
             errors=[],
             total_cost=0.0,
         )
+
+    def _carried_reports(self, prior) -> list:
+        """Prior reports for the reviewers that are not re-running this round.
+
+        With ``only_reviewers`` set, the panel that runs is a subset — but the
+        panel that was *assessed* is still all eight. Seeding the state with
+        the untouched reviewers' earlier reports is what keeps the weighted
+        score, the debate digest and the editor's view over the whole panel
+        instead of over whichever agent happened to re-run. Without this a
+        correction that re-ran one reviewer would publish a mean over one
+        report and call it the panel's score.
+
+        The rendered bodies come from the prior round's report directory,
+        since the round record stores scalars and weaknesses but not prose. A
+        body that cannot be read falls back to the record's own summary of
+        that reviewer, so a missing file costs detail rather than the report.
+        """
+        chosen = set(selected_reviewers(self.config))
+        if prior is None or len(chosen) == len(getattr(prior, "reviewer_reports", [])):
+            return []
+
+        carried = []
+        for report in prior.reviewer_reports:
+            if report.reviewer in chosen:
+                continue  # this one is re-running; its fresh output replaces it
+            carried.append(
+                {
+                    "reviewer": report.reviewer,
+                    "score": report.score,
+                    "confidence": report.confidence,
+                    "weaknesses": [w.text for w in report.weaknesses],
+                    "questions": list(report.questions),
+                    "new_issues": [],
+                    "body": self._prior_body(report),
+                }
+            )
+        return carried
+
+    def _prior_body(self, report) -> str:
+        """The rendered markdown of one carried-forward reviewer report."""
+        job_id = str(self.config.get("revision_of") or "")
+        header = (
+            f"*Carried forward unchanged from the previous round: this reviewer "
+            f"was not re-run, so its assessment stands as written.*\n\n"
+        )
+        try:
+            run_dir = rounds_mod.resolve_run_dir(job_id, self.config)
+            path = os.path.join(run_dir, f"review_{report.reviewer}.md")
+            with open(path, "r", encoding="utf-8") as fh:
+                return header + fh.read()
+        except (OSError, FileNotFoundError, ValueError):
+            pass
+        lines = [f"### {report.reviewer} (carried forward)", ""]
+        if report.weaknesses:
+            lines += ["Weaknesses raised:"] + [f"- {w.text}" for w in report.weaknesses]
+        return header + "\n".join(lines)
 
     def _load_prior_round(self):
         """Load the previous round's record, or None for a first-round run.
@@ -233,6 +336,14 @@ class PeerReviewGraph:
         """
         if prior is None:
             return None
+        if is_correction(self.config):
+            # Nothing changed by definition — the complaint is about the
+            # review, not the draft. Reporting "no changes" as a finding would
+            # read as the authors having ignored the letter.
+            return ingest_diff.unavailable(
+                "this is a correction to the previous review, not a revised "
+                "draft: the manuscript is unchanged and was not re-compared"
+            )
         if not prior.manuscript_cache_key:
             return ingest_diff.unavailable(
                 "the previous round did not record a manuscript cache key"
