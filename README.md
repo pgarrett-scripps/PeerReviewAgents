@@ -120,7 +120,7 @@ It is a compiled Rust extension and is not published yet, so install it from a
 checkout:
 
 ```bash
-pip install -e /path/to/rustypdf2markdown/python
+pip install -e /path/to/rustypdf/python
 ```
 
 **There is no fallback, on purpose.** The pipeline used to fall back to
@@ -151,7 +151,7 @@ under a cent a review, and under `light` the clarity reviewer criticised the
 authors three times for grammar the compressor had broken. When it is on,
 every agent is told the text was machine-compressed.
 
-[rustypdf]: https://github.com/pgarrett-scripps/rustypdf2markdown
+[rustypdf]: https://github.com/pgarrett-scripps/rustypdf
 
 ## API keys
 

@@ -15,17 +15,15 @@ the literature reviewer looking for a reference list — is built by matching
 heading text. Given pypdf's output that matching is a guess; given Markdown
 it is a read.
 
-**Optional by design.** This is a compiled extension, and a review that could
-otherwise run should not fail because a wheel is missing. Every failure here
-raises :class:`Unavailable` with a reason, and the loader falls back to pypdf
-and records that it did. The one exception is an explicit
-``pdf_backend = "rustypdf"``, which the loader turns into a hard error —
-asking for a specific backend and silently getting another is worse than
-stopping.
+**Required, and the only converter.** Every failure here raises
+:class:`Unavailable` with a reason, and the loader turns that into an error
+rather than reading the PDF a worse way — see its module docstring for why
+there is no second path.
 
-Installing it, while the converter is still a local checkout::
+It is a compiled extension, so it has to be installed separately. While the
+converter is still a local checkout::
 
-    pip install -e /path/to/rustypdf2markdown/python
+    pip install -e /path/to/rustypdf/python
 """
 
 from __future__ import annotations
@@ -37,7 +35,7 @@ from dataclasses import dataclass
 # publish whatever it invented. Real papers clear this by an order of
 # magnitude — the shortest in the review corpus is about 40 000 characters —
 # so anything under this is an image-only PDF whose text layer is a handful
-# of stray glyphs, and pypdf should get its turn to say so.
+# of stray glyphs. OCR is out of scope, so the run stops here.
 MIN_PLAUSIBLE_CHARS = 4000
 
 # What the converter will accept. `off` is the default everywhere; see
@@ -54,10 +52,9 @@ _ANCHOR_CHARS = 48
 class Unavailable(Exception):
     """The structured backend could not produce a manuscript from this file.
 
-    Carries the reason as its message, because the reason is published: a
-    reader looking at a review needs to know whether the panel read a clean
-    conversion or a pypdf fallback, and "rustypdf unavailable" and "this PDF
-    is a scan" are very different things to have happened.
+    Carries the reason as its message, because the reason is what the caller
+    shows a human: "rustypdf is not installed" and "this PDF is a scan" both
+    stop the run, and they ask for completely different things next.
     """
 
 

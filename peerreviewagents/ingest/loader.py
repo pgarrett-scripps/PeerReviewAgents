@@ -189,7 +189,7 @@ def _read_pdf(path: str, ingest: dict) -> tuple[str, str, str, dict]:
             f"Could not read {os.path.basename(path)}: {exc}\n"
             "PDF ingest requires rustypdf, which is not published yet — "
             "install it from a checkout:\n"
-            "    pip install -e /path/to/rustypdf2markdown/python"
+            "    pip install -e /path/to/rustypdf/python"
         ) from exc
 
     emit(AgentEvent(
