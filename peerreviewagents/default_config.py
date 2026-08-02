@@ -115,6 +115,23 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # submission outright; "flag" records the evidence and lets the review
     # proceed, which is the right setting when studying such manuscripts.
     "injection_screen_action": "reject",
+    # What a reviewer-directed phrase found in *visible* text does. Concealed
+    # payloads are self-evidently deceptive and reject without judgment; a
+    # visible one needs someone to decide what it is, because a paper that
+    # studies prompt injection quotes payloads as its subject matter.
+    #
+    #   "judge"  (default) hand it to the desk screen with the discriminator
+    #            spelled out — does the passage address the reviewer, or
+    #            describe attacks addressed to one? Instructions aimed at the
+    #            panel are rejected even in plain sight; quoted material in a
+    #            paper about the topic proceeds. When no LLM triage is running
+    #            there is nothing to judge with, so this falls through to a
+    #            reject rather than waving it past unexamined.
+    #   "reject" desk-reject any reviewer-directed phrase, hidden or not. The
+    #            strict reading — text aimed at a reviewer has no place in a
+    #            manuscript — at the cost of rejecting genuine security papers.
+    #   "note"   record it and proceed. The prior behaviour.
+    "visible_injection_action": "judge",
     # Optional cap on manuscript chars sent to a single agent. None (default)
     # sends the FULL manuscript — no truncation. Set an int to cap it: long
     # papers are then truncated section-aware, preserving the most load-bearing
