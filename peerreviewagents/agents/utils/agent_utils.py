@@ -245,13 +245,35 @@ def fit_manuscript(state: ReviewState, budget: int | None = None) -> str:
     return text[:budget] + "\n\n[...manuscript truncated...]"
 
 
+# Telegraphic compression strips articles and copulas, which leaves every
+# content word standing and not every sentence grammatical. Without this
+# notice the clarity reviewer criticises the authors for it — measured, three
+# times on a paper whose uncompressed run reported no such problem. It sits
+# inside the manuscript block so it stays part of the one shared cached
+# prefix rather than forming a second.
+_COMPRESSED_NOTICE = (
+    "NOTE: this manuscript has been machine-compressed for length — "
+    "grammatical scaffolding (articles, copulas{hard}) was stripped "
+    "automatically. Missing words are an artifact of that process, not of "
+    "the authors' writing. Do not treat the telegraphic style, dropped "
+    "function words or broken grammar as a defect of the paper, and quote "
+    "from it only as paraphrase: the original wording is not recoverable "
+    "from this text."
+)
+
+
 def manuscript_block(state: ReviewState) -> str:
     """Return the cache-eligible manuscript block used by every agent that
     sends the manuscript text. Centralizing the wrapper format keeps the
     block byte-identical across reviewers, debaters, meta-reviewer,
     author rebuttal, and editor so they all share the same provider-side
     cache entry."""
-    return f"=== MANUSCRIPT ===\n{fit_manuscript(state)}\n=== END MANUSCRIPT ==="
+    caveman = (state.get("ingest") or {}).get("caveman")
+    notice = ""
+    if caveman:
+        hard = ", prepositions and connectives" if caveman == "hard" else ""
+        notice = _COMPRESSED_NOTICE.format(hard=hard) + "\n\n"
+    return f"=== MANUSCRIPT ===\n{notice}{fit_manuscript(state)}\n=== END MANUSCRIPT ==="
 
 
 def supplement_block(state: ReviewState) -> str:

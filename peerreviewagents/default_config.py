@@ -14,7 +14,8 @@ in TOML or ``--provider anthropic`` on the CLI. API keys live in the
 environment / ``.env`` (OPENROUTER_API_KEY, ANTHROPIC_API_KEY,
 OPENAI_API_KEY) and are never read by this module.
 
-PDF ingest is fully local (pypdf) — no external API key required.
+PDF ingest is fully local — no external API key required. Two backends;
+see ``pdf_backend`` below.
 """
 
 from __future__ import annotations
@@ -267,9 +268,38 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # appended to the log — the run is fully memory-free.
     "use_memory": True,
 
+    # --- Manuscript ingest ---
+    # Which PDF reader produces the text every agent reads.
+    #   auto     — rustypdf if it is installed, else pypdf (the default)
+    #   rustypdf — require it; error rather than silently read the PDF worse
+    #   pypdf    — never try rustypdf
+    # rustypdf converts to Markdown and keeps headings, tables and equations;
+    # pypdf returns the flat text layer, which on a two-column paper fuses
+    # words across the column boundary and loses structure entirely. It is an
+    # optional compiled extension, hence "auto": a missing wheel degrades the
+    # review rather than failing it, and the run records which path it took.
+    "pdf_backend": "auto",
+    # Telegraphic compression of the manuscript, for models billed by the
+    # token: "off" (the default), "light" (drops articles and copulas) or
+    # "hard" (also prepositions and connectives). Mathematics, tables and
+    # bibliography entries are exempt at every level.
+    #
+    # Off by default because it was measured, not assumed. Under "light" the
+    # clarity reviewer reported "grammatical errors that obscure the main
+    # claims" three times on a paper where the uncompressed run reported
+    # none — it read the compressor's work as the authors' writing. Against
+    # that, the manuscript is a cached prefix read by the cheapest model
+    # tier, so compressing it saves well under a cent a review.
+    #
+    # When it IS on, manuscript_block() tells every agent the text was
+    # machine-compressed, which is the least a published review owes an
+    # author whose prose it is about to criticise. Even so, prefer it on
+    # paths that never publish a referee's words.
+    "caveman": "off",
+
     # --- Manuscript cache ---
-    # Parsed (title, markdown, sections) triples are always cached on disk,
-    # keyed by file content + the ingest config slice. Default location is
+    # Parsed manuscripts are always cached on disk, keyed by file content +
+    # the two ingest knobs above. Default location is
     # ~/.cache/peerreviewagents/manuscripts/; set cache_dir to override.
     # Wipe with `just cache-clear`.
     "cache_dir": None,
@@ -349,6 +379,8 @@ _ENV_STR_KEYS = {
     "PEERREVIEW_JOURNALS_DIR": "journals_dir",
     "PEERREVIEW_ARTICLE_TYPE": "article_type",
     "PEERREVIEW_INJECTION_ACTION": "injection_screen_action",
+    "PEERREVIEW_PDF_BACKEND": "pdf_backend",
+    "PEERREVIEW_CAVEMAN": "caveman",
 }
 _ENV_INT_KEYS = {
     "PEERREVIEW_DEBATE_ROUNDS": "max_debate_rounds",

@@ -52,6 +52,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The structure-aware PDF backend (`pdf_backend = "rustypdf"`) has no extra
+# here on purpose: rustypdf is not published yet, and an extra naming a
+# package that does not exist fails the install rather than skipping it.
+# Install it from a checkout:
+#   pip install -e /path/to/rustypdf2markdown/python
 research = ["arxiv>=2", "requests>=2"]
 web-test = ["httpx>=0.27"]
 # Evaluation harness: fetch a labeled OpenReview corpus and score the

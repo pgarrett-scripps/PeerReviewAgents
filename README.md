@@ -14,8 +14,8 @@ and tiered venue suggestions, with full reports at every stage.
                                 ┌─ methodology
                                 ├─ data analysis
    ingest      desk screen      ├─ novelty
-   (pypdf,  ─→ (integrity +  ─→ ├─ clarity        (8 specialists, parallel)
-   local)      optional         ┤  literature
+   (rustypdf─→ (integrity +  ─→ ├─ clarity        (8 specialists, parallel)
+   /pypdf)     optional         ┤  literature
                triage)          ├─ rigor
                    │            ├─ reproducibility
                    ▼            └─ ethics
@@ -47,7 +47,8 @@ verdicts. The manuscript is threaded as a `cache_control: ephemeral` prefix
 through every stage that supports it, so all 13 LLM-calling nodes share one
 provider-side cache entry.
 
-PDF ingest is fully local via `pypdf` — no external API key needed.
+PDF ingest is fully local — no external API key needed — and has two backends.
+See [Manuscript ingest](#manuscript-ingest).
 
 Reviews can be **venue-specific**: point the run at a target journal and its
 scope, standards, and submission limits are threaded into the reviewer,
@@ -110,6 +111,46 @@ pip install -e '.[research]'
 Base deps include `pypdf` (PDF ingest), `langchain-openai`, `langchain-anthropic`,
 `rank-bm25` (memory retrieval). No system dependencies; no `Pillow`; no OCR; no
 external paid services beyond your chosen LLM provider.
+
+## Manuscript ingest
+
+Two PDF backends, selected by `pdf_backend`:
+
+| | `pypdf` (base dependency) | `rustypdf` (optional) |
+|---|---|---|
+| Output | the flat text layer | Markdown |
+| Structure | none — headings, tables and equations all flatten to prose | headings, tables, LaTeX for display maths |
+| Two-column pages | fuses words across the column boundary | reads columns in order |
+
+On one real submission pypdf fused 2% of all words into runs like
+`comparableefficacyatlowerdoseusingonlycausallyavailableinformation` and lost
+about a sixth of the content; rustypdf read the same file with 3 fused tokens
+instead of 235.
+
+The default is `pdf_backend = "auto"`: use rustypdf when it is installed, fall
+back to pypdf otherwise, and record which happened. Every run carries that
+record — backend, version, compression level — on `state["ingest"]`, so a
+published review can say how the panel read the paper rather than implying it
+read the PDF. `"rustypdf"` requires it and errors instead of degrading;
+`"pypdf"` never tries it.
+
+rustypdf is a compiled extension and is not yet published, so install it from
+a local checkout:
+
+```bash
+pip install -e /path/to/rustypdf2markdown/python
+```
+
+**Convert here, not before.** Handing the pipeline a `.md` you converted
+yourself looks equivalent and is not: the integrity screen dispatches on file
+type, and only the PDF path can see text hidden in a content stream. Give it
+the PDF and let the loader convert.
+
+`caveman` (`"off"` / `"light"` / `"hard"`) telegraphically compresses the
+manuscript for models billed by the token. Off by default — the saving is well
+under a cent a review, and under `light` the clarity reviewer criticised the
+authors three times for grammar the compressor had broken. When it is on,
+every agent is told the text was machine-compressed.
 
 ## API keys
 

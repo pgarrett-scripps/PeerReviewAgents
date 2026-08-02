@@ -71,6 +71,13 @@ class ReviewState(TypedDict, total=False):
     manuscript_title: str
     manuscript_md: str           # normalized full text
     sections: dict[str, str]     # section name -> text
+    # How the manuscript was read, from ingest.loader.Manuscript.ingest:
+    # format, tool (with version), caveman level, chars, and the reason the
+    # structured backend was not used. Carried on the state because it is
+    # published in a review's provenance — a reader checking a quotation
+    # against the PDF needs to know whether the panel read a conversion of
+    # it, and whether that conversion was compressed.
+    ingest: dict
     # Optional supplementary information, parsed from a separate SI file when
     # one is provided (config["supplement_path"]). Passed in FULL (untruncated)
     # only to agents that opt in — currently just the methods_completeness

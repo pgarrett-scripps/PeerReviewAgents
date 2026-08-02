@@ -23,7 +23,7 @@ from ..article_types import article_type_block, normalize_article_type
 from ..default_config import get_config
 from ..ingest import cache as ingest_cache
 from ..ingest import diff as ingest_diff
-from ..ingest.loader import load_manuscript
+from ..ingest.loader import load_manuscript, load_manuscript_record
 from ..journals import load_journal
 from ..strictness import DEFAULT_LEVEL, normalize_strictness, strictness_block
 from .conditional_logic import make_desk_route, should_continue_debate
@@ -229,7 +229,8 @@ class PeerReviewGraph:
         return self.config["run_id"]
 
     def initial_state(self, manuscript_path: str) -> ReviewState:
-        title, md, sections = load_manuscript(manuscript_path, self.config)
+        parsed = load_manuscript_record(manuscript_path, self.config)
+        title, md, sections = parsed.as_triple()
         sup_md, sup_sections = self._load_supplement()
         prior = self._load_prior_round()
         return ReviewState(
@@ -237,6 +238,7 @@ class PeerReviewGraph:
             manuscript_title=title,
             manuscript_md=md,
             sections=sections,
+            ingest=parsed.ingest,
             supplement_md=sup_md,
             supplement_sections=sup_sections,
             config=self.config,
@@ -353,8 +355,7 @@ class PeerReviewGraph:
             return ingest_diff.unavailable(
                 "the previous draft is no longer in the manuscript cache"
             )
-        _title, _text, old_sections = cached
-        return ingest_diff.diff_sections(old_sections, sections)
+        return ingest_diff.diff_sections(cached.sections, sections)
 
     def _load_author_statement(self) -> str:
         """Parse the real authors' response letter, or '' when none was given.

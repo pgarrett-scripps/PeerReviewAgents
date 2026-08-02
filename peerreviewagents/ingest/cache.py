@@ -8,7 +8,7 @@ Layout: one directory per entry under
 ``$XDG_CACHE_HOME/peerreviewagents/manuscripts/<key>/``::
 
     <key>/
-        metadata.json    # schema_version, title, sections, meta
+        metadata.json    # schema_version, title, sections, ingest, meta
         manuscript.md    # extracted text
 """
 
@@ -22,11 +22,13 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-# v4: dropped image caching; entries are just text + metadata. The
-# pypdf-based loader has no config knobs that change its output, so the
-# cache key is now solely (file bytes, file extension). v1..v3 entries
-# are invalidated automatically by the bumped version.
-_SCHEMA_VERSION = 4
+# v4: dropped image caching; entries are just text + metadata.
+# v5: the key covers the ingest config as well as the file. Until PDFs had
+# one possible reading that was unnecessary; now the backend and the caveman
+# level both change the text, and keying on bytes alone would serve a
+# compressed manuscript to a run that asked for an uncompressed one. Entries
+# from earlier versions are invalidated automatically.
+_SCHEMA_VERSION = 5
 
 
 def cache_root(config: dict | None = None) -> Path:
@@ -42,11 +44,19 @@ def cache_root(config: dict | None = None) -> Path:
 
 
 def cache_key(path: str | os.PathLike, config: dict | None = None) -> str:
-    """sha256 over (file bytes, file extension). Config is unused today —
-    kept in the signature so callers don't churn if a knob is added later."""
-    del config  # unused
+    """sha256 over (ingest config, file extension, file bytes).
+
+    The config slice comes first so that a change to which knobs count is a
+    visible edit here rather than a silent collision. Note that this key is
+    recorded in a round record and re-derived a round later to recover the
+    previous draft — so anything that changes it also invalidates every
+    revision baseline, and belongs behind a schema-version bump.
+    """
+    from .loader import ingest_config
+
     h = hashlib.sha256()
     p = Path(path)
+    h.update(json.dumps(ingest_config(config), sort_keys=True).encode())
     h.update(p.suffix.lower().encode())
     with p.open("rb") as fh:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
@@ -58,10 +68,10 @@ def _entry_dir(key: str, config: dict | None = None) -> Path:
     return cache_root(config) / key
 
 
-def get(
-    key: str, config: dict | None = None
-) -> tuple[str, str, dict[str, str]] | None:
-    """Return ``(title, text, sections)`` or ``None`` on miss."""
+def get(key: str, config: dict | None = None):
+    """Return the cached :class:`~.loader.Manuscript`, or ``None`` on miss."""
+    from .loader import Manuscript
+
     entry = _entry_dir(key, config)
     meta_path = entry / "metadata.json"
     md_path = entry / "manuscript.md"
@@ -79,18 +89,20 @@ def get(
             text = fh.read()
     except OSError:
         return None
-    return (
-        meta.get("title", ""),
-        text,
-        meta.get("sections", {}),
+    return Manuscript(
+        title=meta.get("title", ""),
+        text=text,
+        sections=meta.get("sections", {}),
+        # Cached alongside the text so that a served entry reports the same
+        # provenance the original parse did. Without it the second review of
+        # a paper would publish "read via pypdf" for text rustypdf produced.
+        ingest=meta.get("ingest", {}),
     )
 
 
 def put(
     key: str,
-    title: str,
-    text: str,
-    sections: dict[str, str],
+    manuscript,
     *,
     source_path: str | os.PathLike,
     config: dict | None = None,
@@ -101,15 +113,16 @@ def put(
 
     meta: dict[str, Any] = {
         "schema_version": _SCHEMA_VERSION,
-        "title": title,
-        "sections": sections,
+        "title": manuscript.title,
+        "sections": manuscript.sections,
+        "ingest": manuscript.ingest,
         "meta": {
             "source_path": str(source_path),
             "cached_at": _dt.datetime.now().isoformat(timespec="seconds"),
         },
     }
 
-    (entry / "manuscript.md").write_text(text, encoding="utf-8")
+    (entry / "manuscript.md").write_text(manuscript.text, encoding="utf-8")
 
     # metadata.json (atomic-ish write)
     tmp_meta = entry / "metadata.json.tmp"
