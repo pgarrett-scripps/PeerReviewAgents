@@ -14,7 +14,7 @@ and tiered venue suggestions, with full reports at every stage.
                                 ┌─ methodology
                                 ├─ data analysis
    ingest      desk screen      ├─ novelty
-   (rustypdf─→ (integrity +  ─→ ├─ clarity        (8 specialists, parallel)
+   (rustypaper─→ (integrity +  ─→ ├─ clarity        (8 specialists, parallel)
    →markdown)  optional         ┤  literature
                triage)          ├─ rigor
                    │            ├─ reproducibility
@@ -47,7 +47,7 @@ verdicts. The manuscript is threaded as a `cache_control: ephemeral` prefix
 through every stage that supports it, so all 13 LLM-calling nodes share one
 provider-side cache entry.
 
-PDF ingest is fully local via `rustypdf` — no external API key needed. See
+PDF ingest is fully local via `rustypaper` — no external API key needed. See
 [Manuscript ingest](#manuscript-ingest).
 
 Reviews can be **venue-specific**: point the run at a target journal and its
@@ -114,20 +114,20 @@ external paid services beyond your chosen LLM provider.
 
 ## Manuscript ingest
 
-PDFs are converted to Markdown by [rustypdf][rustypdf], which keeps headings,
+PDFs are converted to Markdown by [rustypaper][rustypaper], which keeps headings,
 tables and display mathematics, and reads a two-column page in reading order.
-It is a compiled Rust extension and is not published yet, so install it from a
-checkout:
+It is a compiled Rust extension, shipped as a per-platform wheel and pulled in
+as a normal dependency:
 
 ```bash
-pip install -e /path/to/rustypdf/python
+pip install rustypaper
 ```
 
 **There is no fallback, on purpose.** The pipeline used to fall back to
 `pypdf`'s flat text layer. On one real submission that fused 2% of all words
 into runs like `comparableefficacyatlowerdoseusingonlycausallyavailableinformation`,
 lost about a sixth of the content, and flattened every heading and table into
-prose; rustypdf read the same file with 3 fused tokens instead of 235. A panel
+prose; rustypaper read the same file with 3 fused tokens instead of 235. A panel
 given the first version reviews a document the authors did not write, and a
 silent fallback arranges for that to happen on exactly the runs nobody is
 watching. A missing or failing converter is now an error.
@@ -151,7 +151,7 @@ under a cent a review, and under `light` the clarity reviewer criticised the
 authors three times for grammar the compressor had broken. When it is on,
 every agent is told the text was machine-compressed.
 
-[rustypdf]: https://github.com/pgarrett-scripps/rustypdf
+[rustypaper]: https://github.com/pgarrett-scripps/rustypaper
 
 ## API keys
 

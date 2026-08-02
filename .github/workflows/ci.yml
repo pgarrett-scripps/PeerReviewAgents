@@ -30,6 +30,12 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
+      # TEMPORARY, until rustypaper 0.1.0 is on PyPI. Installing it first
+      # satisfies the dependency below from source, so the rest resolves
+      # normally. Delete this step once the release is out.
+      - name: Install the converter from source
+        run: pip install --quiet "rustypaper @ git+https://github.com/pgarrett-scripps/rustypaper#subdirectory=python"
+
       - name: Install
         run: pip install --quiet -e '.[research,web-test,dev]'
 

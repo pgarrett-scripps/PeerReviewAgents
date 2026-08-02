@@ -95,7 +95,7 @@ def get(key: str, config: dict | None = None):
         sections=meta.get("sections", {}),
         # Cached alongside the text so that a served entry reports the same
         # provenance the original parse did. Without it the second review of
-        # a paper would publish "read via pypdf" for text rustypdf produced.
+        # a paper would publish "read via pypdf" for text rustypaper produced.
         ingest=meta.get("ingest", {}),
     )
 

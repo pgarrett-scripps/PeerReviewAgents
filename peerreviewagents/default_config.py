@@ -14,7 +14,7 @@ in TOML or ``--provider anthropic`` on the CLI. API keys live in the
 environment / ``.env`` (OPENROUTER_API_KEY, ANTHROPIC_API_KEY,
 OPENAI_API_KEY) and are never read by this module.
 
-PDF ingest is fully local (rustypdf) — no external API key required.
+PDF ingest is fully local (rustypaper) — no external API key required.
 """
 
 from __future__ import annotations
@@ -268,7 +268,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "use_memory": True,
 
     # --- Manuscript ingest ---
-    # PDFs are converted to Markdown by rustypdf, which keeps headings,
+    # PDFs are converted to Markdown by rustypaper, which keeps headings,
     # tables and equations. There is no second backend and no fallback: the
     # alternative was pypdf's flat text layer, which on a two-column paper
     # fuses words across the column boundary and loses structure entirely,

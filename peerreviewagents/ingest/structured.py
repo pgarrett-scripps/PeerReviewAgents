@@ -1,11 +1,11 @@
-"""Structure-aware PDF ingest, via the rustypdf converter.
+"""Structure-aware PDF ingest, via the rustypaper converter.
 
 pypdf reads a PDF's text layer in content-stream order and returns a flat
 string. That is adequate on a single-column preprint and poor on anything
 else: on a real submission it fused 2% of all words into runs like
 ``comparableefficacyatlowerdoseusingonlycausallyavailableinformation``, lost
 about a sixth of the content outright, and flattened every heading, table and
-equation into undifferentiated prose. rustypdf reads the same file with 3
+equation into undifferentiated prose. rustypaper reads the same file with 3
 fused tokens instead of 235 and emits Markdown — headings as headings, tables
 as tables, display equations as LaTeX.
 
@@ -20,10 +20,9 @@ it is a read.
 rather than reading the PDF a worse way — see its module docstring for why
 there is no second path.
 
-It is a compiled extension, so it has to be installed separately. While the
-converter is still a local checkout::
+It is a compiled extension shipped as a per-platform wheel::
 
-    pip install -e /path/to/rustypdf/python
+    pip install rustypaper
 """
 
 from __future__ import annotations
@@ -53,7 +52,7 @@ class Unavailable(Exception):
     """The structured backend could not produce a manuscript from this file.
 
     Carries the reason as its message, because the reason is what the caller
-    shows a human: "rustypdf is not installed" and "this PDF is a scan" both
+    shows a human: "rustypaper is not installed" and "this PDF is a scan" both
     stop the run, and they ask for completely different things next.
     """
 
@@ -91,23 +90,23 @@ def convert(path: str, caveman: str = "off") -> Converted:
         )
 
     try:
-        import rustypdf  # noqa: PLC0415 - optional, imported at point of use
+        import rustypaper  # noqa: PLC0415 - optional, imported at point of use
     except Exception as exc:  # noqa: BLE001 - a broken wheel and a missing one are the same outcome
         raise Unavailable(
-            f"rustypdf unavailable ({exc.__class__.__name__}: {exc})"
+            f"rustypaper unavailable ({exc.__class__.__name__}: {exc})"
         ) from exc
 
-    version = getattr(rustypdf, "__version__", "unknown")
+    version = getattr(rustypaper, "__version__", "unknown")
     try:
-        markdown = rustypdf.to_markdown(path, caveman)
+        markdown = rustypaper.to_markdown(path, caveman)
     except Exception as exc:  # noqa: BLE001 - scanned, malformed, or pdfium missing
         raise Unavailable(
-            f"rustypdf could not convert the file ({exc.__class__.__name__}: {exc})"
+            f"rustypaper could not convert the file ({exc.__class__.__name__}: {exc})"
         ) from exc
 
     if len(markdown) < MIN_PLAUSIBLE_CHARS:
         raise Unavailable(
-            f"rustypdf produced only {len(markdown)} characters, which is not a "
+            f"rustypaper produced only {len(markdown)} characters, which is not a "
             "readable manuscript — the PDF is most likely scanned or image-only"
         )
 
@@ -118,7 +117,7 @@ def convert(path: str, caveman: str = "off") -> Converted:
     # the loader's heuristics still run.
     title, anchor = "", ""
     try:
-        doc = rustypdf.to_document(path, caveman)
+        doc = rustypaper.to_document(path, caveman)
         title = (doc.get("title") or "").strip()
         anchor = _first_reference(doc)
     except Exception:  # noqa: BLE001 - both are refinements, not requirements
@@ -127,7 +126,7 @@ def convert(path: str, caveman: str = "off") -> Converted:
     return Converted(
         markdown=markdown,
         title=title,
-        tool=f"rustypdf {version}",
+        tool=f"rustypaper {version}",
         references_anchor=anchor,
     )
 

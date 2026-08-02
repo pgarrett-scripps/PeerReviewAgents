@@ -1,6 +1,6 @@
 """What the loader does with a PDF, and what it refuses to do.
 
-None of these tests need rustypdf installed: the converter is stubbed out,
+None of these tests need rustypaper installed: the converter is stubbed out,
 because what is being checked is the loader's contract with it — what it
 records, and that a missing converter stops the run rather than quietly
 producing a worse manuscript.
@@ -34,13 +34,13 @@ def _fake_pdf(tmp_path):
 def _stub_convert(monkeypatch, markdown="# Real Title\n\n## Methods\n\nWe did it.\n"):
     def convert(path, caveman="off"):
         return structured.Converted(
-            markdown=markdown, title="Real Title", tool="rustypdf 9.9.9"
+            markdown=markdown, title="Real Title", tool="rustypaper 9.9.9"
         )
 
     monkeypatch.setattr(structured, "convert", convert)
 
 
-def _stub_unavailable(monkeypatch, reason="rustypdf unavailable (ImportError: no)"):
+def _stub_unavailable(monkeypatch, reason="rustypaper unavailable (ImportError: no)"):
     def convert(path, caveman="off"):
         raise structured.Unavailable(reason)
 
@@ -54,7 +54,7 @@ def test_a_pdf_is_converted_to_markdown(tmp_path, monkeypatch, cache_dir):
     _stub_convert(monkeypatch)
     parsed = loader.load_manuscript_record(_fake_pdf(tmp_path), cache_dir)
     assert parsed.ingest["format"] == "markdown"
-    assert parsed.ingest["tool"] == "rustypdf 9.9.9"
+    assert parsed.ingest["tool"] == "rustypaper 9.9.9"
     # The converter's own title beats the loader's line-order heuristic.
     assert parsed.title == "Real Title"
 
@@ -67,7 +67,7 @@ def test_a_missing_converter_stops_the_run(tmp_path, monkeypatch, cache_dir):
     not write. Degrading silently would do that on exactly the runs nobody
     is watching, so this raises — with the install line in the message.
     """
-    _stub_unavailable(monkeypatch, "rustypdf unavailable (ImportError: nope)")
+    _stub_unavailable(monkeypatch, "rustypaper unavailable (ImportError: nope)")
     with pytest.raises(RuntimeError) as excinfo:
         loader.load_manuscript_record(_fake_pdf(tmp_path), cache_dir)
     assert "ImportError" in str(excinfo.value)
@@ -76,7 +76,7 @@ def test_a_missing_converter_stops_the_run(tmp_path, monkeypatch, cache_dir):
 
 def test_an_unreadable_pdf_stops_the_run(tmp_path, monkeypatch, cache_dir):
     """A scan has no text layer. Neither reader can help, so say so."""
-    _stub_unavailable(monkeypatch, "rustypdf produced only 12 characters")
+    _stub_unavailable(monkeypatch, "rustypaper produced only 12 characters")
     with pytest.raises(RuntimeError, match="only 12 characters"):
         loader.load_manuscript_record(_fake_pdf(tmp_path), cache_dir)
 
@@ -156,7 +156,7 @@ def test_long_unnumbered_line_does_not_open_a_section():
 
 
 def test_reference_anchor_finds_a_bibliography_with_no_heading():
-    """rustypdf fuses "References" into the first entry on some papers.
+    """rustypaper fuses "References" into the first entry on some papers.
 
     The Markdown then contains no References heading at all, and the section
     map loses the bibliography — unless it is told where the typed reference

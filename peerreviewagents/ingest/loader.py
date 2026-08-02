@@ -2,7 +2,7 @@
 
 PDF parsing is local — no external API, no API key, no GPU — and goes through
 exactly one converter, :mod:`.structured`, which renders the PDF to Markdown
-with rustypdf and keeps headings, tables and equations.
+with rustypaper and keeps headings, tables and equations.
 
 **There is deliberately no fallback.** pypdf, which this used to fall back to,
 returns the raw text layer in content-stream order: on one real submission it
@@ -86,7 +86,7 @@ class Manuscript:
     sections: dict[str, str] = field(default_factory=dict)
     # Published verbatim in a review's provenance. Shape:
     #   format  "markdown" (structure preserved) | "text" (flat)
-    #   tool    what produced it, with version, e.g. "rustypdf 0.1.0"
+    #   tool    what produced it, with version, e.g. "rustypaper 0.1.0"
     #   caveman compression level applied, or None
     #   chars   length of the parsed text
     ingest: dict = field(default_factory=dict)
@@ -187,9 +187,9 @@ def _read_pdf(path: str, ingest: dict) -> tuple[str, str, str, dict]:
     except structured.Unavailable as exc:
         raise RuntimeError(
             f"Could not read {os.path.basename(path)}: {exc}\n"
-            "PDF ingest requires rustypdf, which is not published yet — "
-            "install it from a checkout:\n"
-            "    pip install -e /path/to/rustypdf/python"
+            "PDF ingest requires rustypaper:\n"
+            "    pip install rustypaper\n"
+            "or, from a checkout, pip install -e /path/to/rustypaper/python"
         ) from exc
 
     emit(AgentEvent(
