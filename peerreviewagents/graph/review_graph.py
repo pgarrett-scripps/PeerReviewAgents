@@ -299,8 +299,8 @@ class PeerReviewGraph:
         """The rendered markdown of one carried-forward reviewer report."""
         job_id = str(self.config.get("revision_of") or "")
         header = (
-            f"*Carried forward unchanged from the previous round: this reviewer "
-            f"was not re-run, so its assessment stands as written.*\n\n"
+            "*Carried forward unchanged from the previous round: this reviewer "
+            "was not re-run, so its assessment stands as written.*\n\n"
         )
         try:
             run_dir = rounds_mod.resolve_run_dir(job_id, self.config)
