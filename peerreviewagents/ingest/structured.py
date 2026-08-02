@@ -99,7 +99,7 @@ def convert(path: str, caveman: str = "off") -> Converted:
     version = getattr(rustypaper, "__version__", "unknown")
     try:
         markdown = rustypaper.to_markdown(path, caveman)
-    except Exception as exc:  # noqa: BLE001 - scanned, malformed, or pdfium missing
+    except Exception as exc:  # noqa: BLE001 - scanned, malformed, or unreadable
         raise Unavailable(
             f"rustypaper could not convert the file ({exc.__class__.__name__}: {exc})"
         ) from exc
