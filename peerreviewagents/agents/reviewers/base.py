@@ -124,6 +124,11 @@ def make_reviewer_node(
                 "reviewer": name,
                 "score": float(output.score),
                 "confidence": float(output.confidence),
+                # Promoted so the round record can id each weakness and hand
+                # this reviewer its own points back in a later round. Reading
+                # them out of `body` would mean parsing markdown.
+                "weaknesses": list(output.weaknesses),
+                "questions": list(output.questions),
                 "body": output.to_markdown(role=role),
             }
             return {"reports": [report], "total_cost": result.cost}

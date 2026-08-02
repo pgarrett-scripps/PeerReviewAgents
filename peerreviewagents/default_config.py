@@ -122,6 +122,28 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # appendices/supplements first. Raise a cap only to bound cost on very long
     # papers; cost scales with manuscript length × the ~14 agents that read it.
     "manuscript_char_budget": None,
+    # --- Revision rounds ---
+    # Job ID (or report directory) of the previous round for this manuscript.
+    # Setting it turns the run into a revision round: each reviewer receives
+    # its OWN prior report and rules on every point it raised, a compliance
+    # auditor checks the previous decision letter's numbered required
+    # revisions against the new draft, and the editor decides on the delta.
+    # None (default) = an ordinary first-round review. See
+    # peerreviewagents.rounds for the record format.
+    "revision_of": None,
+    # Optional path to the REAL authors' response letter (pdf/md/tex/docx) —
+    # the human scientists' reply, not the simulated author-rebuttal agent.
+    # Treated as untrusted, interested-party input: it is screened for
+    # injection like the manuscript, never shown to the panel as prose, and
+    # reaches reviewers only as verified pointers to manuscript passages they
+    # must re-read and judge for themselves. It can redirect attention; it
+    # cannot move a score on its own. None = no statement supplied.
+    "author_statement_path": None,
+    # Hard cap on revision rounds. The editor is told which round it is and
+    # how many remain, so an endless revise-and-resubmit loop reads as the
+    # failure it is rather than continuing indefinitely.
+    "max_rounds": 3,
+
     # Optional path to a supplementary-information file (pdf/md/tex/docx).
     # When set, the SI is parsed and passed IN FULL to the
     # methods_completeness auditor only (reagent/key-resources tables and

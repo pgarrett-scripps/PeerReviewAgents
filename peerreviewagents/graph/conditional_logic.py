@@ -4,27 +4,25 @@ from __future__ import annotations
 
 from langgraph.graph import END
 
-from ..agents.auditors import AUDITOR_NAMES
-from ..agents.reviewers import REVIEWER_NAMES
 from ..agents.utils.agent_states import ReviewState
 
-# Reviewer + auditor node names the desk-screen gate fans out to when a
-# manuscript passes triage (mirrors the START fan-out in the no-desk-screen
-# graph). Both lanes are skipped entirely on a desk-reject.
-_REVIEWER_NODES = [f"reviewer_{name}" for name in REVIEWER_NAMES]
-_AUDIT_NODES = [f"audit_{name}" for name in AUDITOR_NAMES]
 
+def make_desk_route(targets: list[str]):
+    """Build a desk-screen router that fans out to ``targets`` on a pass.
 
-def route_after_desk_screen(state: ReviewState):
-    """Desk-reject short-circuits to END; otherwise fan out to reviewers + auditors.
-
-    Returning a list of node names triggers LangGraph's parallel fan-out,
-    so a passed manuscript reaches exactly the same reviewer panel and audit
-    lane it would have from START in the default (no-desk-screen) graph.
+    The desk node's successor is not fixed: a first-round run fans straight
+    out to the panel, while a revision round with an author statement routes
+    through the response verifier first, so the letter is adjudicated before
+    any reviewer exists to be persuaded by it. Both still short-circuit to
+    END on a desk reject.
     """
-    if state.get("desk_rejected"):
-        return END
-    return [*_REVIEWER_NODES, *_AUDIT_NODES]
+
+    def route(state: ReviewState):
+        if state.get("desk_rejected"):
+            return END
+        return list(targets)
+
+    return route
 
 
 def should_continue_debate(state: ReviewState) -> str:

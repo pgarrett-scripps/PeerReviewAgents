@@ -41,6 +41,8 @@ def write_reports(state: ReviewState) -> str:
 
     if state.get("integrity"):
         _write(run_dir, "integrity.md", state["integrity"])
+    if state.get("response_verification"):
+        _write(run_dir, "author_response_verification.md", state["response_verification"])
     if state.get("desk_screen"):
         _write(run_dir, "desk_screen.md", state["desk_screen"])
     if state.get("meta_review"):
@@ -53,8 +55,43 @@ def write_reports(state: ReviewState) -> str:
         _write(run_dir, "journal_recommendations.md", state["journal_recommendations"])
 
     _write(run_dir, "summary.md", _summary(state))
+    _write_round_record(state, run_dir)
 
     return run_dir
+
+
+def _write_round_record(state: ReviewState, run_dir: str) -> None:
+    """Write ``round.json`` — what makes this run revisable.
+
+    Best-effort: a review whose artifacts are on disk should not fail at the
+    last step because the record could not be built. The cost of skipping it
+    is that this run cannot be used as the basis of a revision round, which
+    the next run reports clearly.
+    """
+    from . import rounds
+
+    try:
+        record = rounds.build_from_state(
+            state,
+            job_id=os.path.basename(run_dir.rstrip(os.sep)),
+            cache_key=_manuscript_cache_key(state),
+        )
+        rounds.save(record, run_dir)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _manuscript_cache_key(state: ReviewState) -> str:
+    """Ingest cache key of the reviewed manuscript, for the next round's diff."""
+    from .ingest import cache
+
+    path = state.get("manuscript_path") or ""
+    if not path:
+        return ""
+    try:
+        return cache.cache_key(path, state.get("config") or {})
+    except OSError:
+        return ""
 
 
 def _summary(state: ReviewState) -> str:
@@ -74,6 +111,11 @@ def _summary(state: ReviewState) -> str:
     strictness = _strictness_line(state)
     if strictness:
         lines.append(f"**Review strictness:** {strictness}")
+    prior = state.get("prior_round")
+    if prior is not None:
+        lines.append(f"**Round:** {prior.round + 1} (revision of {prior.job_id})")
+        if prior.weighted_score is not None:
+            lines.append(f"**Previous decision:** {_VERDICT_LABEL.get(prior.decision, prior.decision)}")
     integrity = _integrity_line(state)
     if integrity:
         lines.append(f"**Submission integrity:** {integrity}")

@@ -93,5 +93,9 @@ def _run(state: ReviewState) -> dict:
     return {
         "decision": decision,
         "decision_letter": output.to_markdown(),
+        # Structured asks travel alongside the rendered letter so the round
+        # record can id them for a later revision round to check off.
+        "required_revisions": list(output.required_revisions),
+        "minor_suggestions": list(output.minor_suggestions),
         "total_cost": result.cost,
     }

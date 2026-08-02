@@ -8,8 +8,10 @@ from typing import Annotated, Any, Callable, get_args, get_origin, get_type_hint
 
 from langgraph.graph import END, START, StateGraph
 
+from .. import rounds as rounds_mod
 from ..agents.auditors import get_auditor_nodes
 from ..agents.author import rebuttal as author_rebuttal
+from ..agents.author import response_verifier
 from ..agents.debate import advocate, skeptic
 from ..agents.editor import desk_screen, editor_in_chief
 from ..agents.journal_recommender import recommender as journal_recommender
@@ -18,14 +20,28 @@ from ..agents.synthesis import meta_reviewer
 from ..agents.utils.agent_states import ReviewState
 from ..article_types import article_type_block, normalize_article_type
 from ..default_config import get_config
+from ..ingest import cache as ingest_cache
+from ..ingest import diff as ingest_diff
 from ..ingest.loader import load_manuscript
 from ..journals import load_journal
 from ..strictness import DEFAULT_LEVEL, normalize_strictness, strictness_block
-from .conditional_logic import route_after_desk_screen, should_continue_debate
+from .conditional_logic import make_desk_route, should_continue_debate
+
+
+def is_revision(config: dict) -> bool:
+    """Whether this run is a revision round (a prior round was named)."""
+    return bool(config.get("revision_of"))
 
 
 def build_graph(config: dict):
     g = StateGraph(ReviewState)
+
+    revision = is_revision(config)
+    # The author's response letter is adjudicated BEFORE the fan-out, because
+    # its only sanctioned route to a reviewer is the verifier's pointer list.
+    # Wiring it as a gate rather than a parallel branch is what makes that
+    # ordering structural instead of a convention someone can forget.
+    verify_response = revision and bool(config.get("author_statement_path"))
 
     reviewer_nodes = get_reviewer_nodes()
     for name, fn in reviewer_nodes:
@@ -33,8 +49,12 @@ def build_graph(config: dict):
 
     # Editorial audit lane: factual-checklist auditors that fan out alongside
     # the reviewers but route their reports straight to the editor (not into
-    # the scored panel, debate, or meta-review).
-    auditor_nodes = get_auditor_nodes()
+    # the scored panel, debate, or meta-review). A revision round adds the
+    # compliance auditor to this lane — it checks the previous letter's
+    # required revisions against the new draft, which is a factual checklist
+    # of exactly the kind the lane exists for, and like the others it feeds
+    # only the editor and carries no score.
+    auditor_nodes = get_auditor_nodes(revision=revision)
     for name, fn in auditor_nodes:
         g.add_node(f"audit_{name}", fn)
 
@@ -46,9 +66,13 @@ def build_graph(config: dict):
         g.add_node("advocate", advocate.node)
         g.add_node("skeptic", skeptic.node)
     g.add_node("meta_reviewer", meta_reviewer.node)
-    # Author rebuttal sits between meta-reviewer and editor so the
-    # editor sees both the panel's verdict and the author's defense.
-    g.add_node("author_rebuttal", author_rebuttal.node)
+    # Author rebuttal sits between meta-reviewer and editor so the editor sees
+    # both the panel's verdict and the author's defense. It is SKIPPED when
+    # the real authors supplied a response letter: simulating their defense
+    # while holding the genuine article would be strictly worse, and the
+    # verifier has already turned that letter into checked claims.
+    if not verify_response:
+        g.add_node("author_rebuttal", author_rebuttal.node)
     # `defer=True` is load-bearing: the editor joins two lanes of different
     # depths — the short audit lane (START -> audit -> editor) and the long
     # rebuttal chain (reviewers -> debate -> meta -> rebuttal -> editor).
@@ -75,23 +99,42 @@ def build_graph(config: dict):
     # what stands between a prompt-injected file and the panel that would
     # read it. Both screens off means START fans out directly, as before.
     desk_screen_enabled = desk_screen.node_enabled(config)
+
+    # Everything the fan-out reaches: the scored panel plus the audit lane.
+    fan_out = [
+        *[f"reviewer_{name}" for name, _ in reviewer_nodes],
+        *[f"audit_{name}" for name, _ in auditor_nodes],
+    ]
+
+    # Gates that must run, in order, before the fan-out. Each one's output is
+    # something every downstream agent reads, so they are serial by nature.
+    if verify_response:
+        g.add_node("response_verifier", response_verifier.node)
+
+    # The desk node's successor is the verifier when there is one, else the
+    # fan-out itself.
+    after_desk = ["response_verifier"] if verify_response else fan_out
+
     if desk_screen_enabled:
         g.add_node("desk_screen", desk_screen.node)
         g.add_edge(START, "desk_screen")
         g.add_conditional_edges(
-            "desk_screen",
-            route_after_desk_screen,
-            [
-                END,
-                *[f"reviewer_{name}" for name, _ in reviewer_nodes],
-                *[f"audit_{name}" for name, _ in auditor_nodes],
-            ],
+            "desk_screen", make_desk_route(after_desk), [END, *after_desk],
         )
+    elif verify_response:
+        g.add_edge(START, "response_verifier")
+
+    if verify_response:
+        for target in fan_out:
+            g.add_edge("response_verifier", target)
+
     # With debate on, reviewers feed the advocate; with debate ablated, they
     # fan straight into the meta-reviewer.
     reviewer_sink = "advocate" if debate_enabled else "meta_reviewer"
+    # True when nothing precedes the fan-out, so START feeds it directly.
+    fan_out_from_start = not desk_screen_enabled and not verify_response
     for name, _ in reviewer_nodes:
-        if not desk_screen_enabled:
+        if fan_out_from_start:
             g.add_edge(START, f"reviewer_{name}")
         g.add_edge(f"reviewer_{name}", reviewer_sink)
 
@@ -99,7 +142,7 @@ def build_graph(config: dict):
     # deferred node (see above) so it waits for both the rebuttal chain and
     # every auditor before it runs. On a desk-reject, the audits never fire.
     for name, _ in auditor_nodes:
-        if not desk_screen_enabled:
+        if fan_out_from_start:
             g.add_edge(START, f"audit_{name}")
         g.add_edge(f"audit_{name}", "editor")
 
@@ -109,9 +152,13 @@ def build_graph(config: dict):
         g.add_edge("advocate", "skeptic")
         g.add_conditional_edges("skeptic", should_continue_debate, ["advocate", "meta_reviewer"])
 
-    # meta_reviewer -> author_rebuttal -> editor -> journal_recommender (linear).
-    g.add_edge("meta_reviewer", "author_rebuttal")
-    g.add_edge("author_rebuttal", "editor")
+    # meta_reviewer -> author_rebuttal -> editor -> journal_recommender (linear),
+    # with the rebuttal hop dropped when the real letter replaced it.
+    if verify_response:
+        g.add_edge("meta_reviewer", "editor")
+    else:
+        g.add_edge("meta_reviewer", "author_rebuttal")
+        g.add_edge("author_rebuttal", "editor")
     g.add_edge("editor", "journal_recommender")
     g.add_edge("journal_recommender", END)
 
@@ -137,6 +184,7 @@ class PeerReviewGraph:
     def initial_state(self, manuscript_path: str) -> ReviewState:
         title, md, sections = load_manuscript(manuscript_path, self.config)
         sup_md, sup_sections = self._load_supplement()
+        prior = self._load_prior_round()
         return ReviewState(
             manuscript_path=manuscript_path,
             manuscript_title=title,
@@ -148,6 +196,11 @@ class PeerReviewGraph:
             journal_block=self._journal_block(),
             article_type_block=self._article_type_block(),
             strictness_block=self._strictness_block(),
+            prior_round=prior,
+            manuscript_diff=self._manuscript_diff(prior, sections),
+            author_statement=self._load_author_statement(),
+            response_verification="",
+            verified_claims_block="",
             desk_rejected=False,
             integrity="",
             reports=[],
@@ -157,6 +210,59 @@ class PeerReviewGraph:
             errors=[],
             total_cost=0.0,
         )
+
+    def _load_prior_round(self):
+        """Load the previous round's record, or None for a first-round run.
+
+        A named-but-unloadable prior round is fatal on purpose. Everything
+        else in this file degrades gracefully, but silently downgrading a
+        revision round to a fresh review would give the authors a decision
+        letter that ignores the revisions they were asked to make — a wrong
+        answer delivered confidently, which is worse than a clear failure.
+        """
+        job_id = self.config.get("revision_of")
+        if not job_id:
+            return None
+        return rounds_mod.load_prior(str(job_id), self.config)
+
+    def _manuscript_diff(self, prior, sections: dict[str, str]):
+        """Compare this draft against the one the prior round reviewed.
+
+        The previous text comes from the ingest cache by key, so no second
+        copy is kept on disk. A cleared cache costs the diff, not the run.
+        """
+        if prior is None:
+            return None
+        if not prior.manuscript_cache_key:
+            return ingest_diff.unavailable(
+                "the previous round did not record a manuscript cache key"
+            )
+        cached = ingest_cache.get(prior.manuscript_cache_key, self.config)
+        if cached is None:
+            return ingest_diff.unavailable(
+                "the previous draft is no longer in the manuscript cache"
+            )
+        _title, _text, old_sections = cached
+        return ingest_diff.diff_sections(old_sections, sections)
+
+    def _load_author_statement(self) -> str:
+        """Parse the real authors' response letter, or '' when none was given.
+
+        Parsed with the same loader as the manuscript, which means it also
+        passes through the ingest cache. It is NOT screened here — the desk
+        node screens it, so an injected letter is caught at the same gate as
+        an injected manuscript.
+        """
+        path = self.config.get("author_statement_path")
+        if not path:
+            return ""
+        try:
+            _title, text, _sections = load_manuscript(str(path), self.config)
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(
+                f"Could not read the author statement at {path}: {exc}"
+            ) from exc
+        return text
 
     def _load_supplement(self) -> tuple[str, dict[str, str]]:
         """Parse the optional supplementary-information file, or ('', {}) if none.

@@ -119,6 +119,25 @@ def build_parser() -> argparse.ArgumentParser:
              "full panel runs. Off by default.",
     )
     p.add_argument(
+        "--revision-of",
+        dest="revision_of",
+        metavar="JOB_ID",
+        help="Job ID (or report directory) of the previous round for this "
+             "manuscript. Turns the run into a revision round: each reviewer "
+             "rules on the points it raised before, a compliance auditor "
+             "checks the previous letter's required revisions against the new "
+             "draft, and the editor decides on the delta.",
+    )
+    p.add_argument(
+        "--author-statement",
+        dest="author_statement_path",
+        metavar="PATH",
+        help="The real authors' response letter (pdf/md/tex/docx). Verified "
+             "against the manuscript before the panel runs; reviewers see only "
+             "corroborated pointers to passages they must re-read, never the "
+             "letter itself. Requires --revision-of.",
+    )
+    p.add_argument(
         "--no-injection-screen",
         dest="injection_screen",
         action="store_const",
@@ -201,10 +220,18 @@ def config_from_args(args) -> dict:
                 "output_dir", "cache_dir", "target_journal", "article_type",
                 "review_strictness", "desk_screen", "use_memory",
                 "injection_screen", "injection_screen_action",
+                "revision_of", "author_statement_path",
                 "supplement_path", "temperature"):
         val = getattr(args, key, None)
         if val is not None:
             overrides[key] = val
+    # An author statement only means something against a prior round: without
+    # one there are no reviewer points or required revisions for it to answer.
+    if overrides.get("author_statement_path") and not overrides.get("revision_of"):
+        raise SystemExit(
+            "--author-statement requires --revision-of: a response letter "
+            "answers a previous round's review, so there has to be one."
+        )
     # --offline is an inversion: presence means research_enabled=False.
     if getattr(args, "offline", False):
         overrides["research_enabled"] = False

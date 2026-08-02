@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import operator
-from typing import Annotated, TypedDict
+from typing import Annotated, Any, TypedDict
 
 
 class ReviewReport(TypedDict):
@@ -19,6 +19,11 @@ class ReviewReport(TypedDict):
     # 1 (reject) .. 5 (accept), per-reviewer confidence-weighted score
     score: float
     confidence: float
+    # Promoted alongside the scalars so a revision round can give this
+    # reviewer its own prior points back, addressable by id, without parsing
+    # them out of the rendered body.
+    weaknesses: list[str]
+    questions: list[str]
     body: str
 
 
@@ -95,6 +100,28 @@ class ReviewState(TypedDict, total=False):
     # desk_rejected/decision from this same report.
     integrity: str
 
+    # --- revision round (set only when config["revision_of"] is given) ---
+    # The previous round's structured record (peerreviewagents.rounds.RoundRecord).
+    # Its presence is what puts every agent into revision mode: reviewers get
+    # their own prior report, the compliance auditor gets the required-revision
+    # list, and the editor gets a round-over-round delta. None on a first round.
+    prior_round: Any
+    # Section-aware v1 -> v2 comparison (ingest.diff.ManuscriptDiff). Always
+    # present in a revision round; `available=False` when the previous draft
+    # could not be recovered from the ingest cache.
+    manuscript_diff: Any
+    # The real author's response letter, as submitted. Untrusted input: it is
+    # never placed in an agent's prompt as prose. Only the verifier reads it,
+    # and only its adjudicated output reaches the panel.
+    author_statement: str
+    # Rendered ResponseVerificationOutput markdown; written to
+    # author_response_verification.md. Empty when no statement was supplied.
+    response_verification: str
+    # The verifier's panel-facing block: corroborated pointers only, no
+    # conclusions. This is the ONLY channel by which the author's letter
+    # reaches a reviewer.
+    verified_claims_block: str
+
     # --- reviewer pass (parallel writers, hence reducers) ---
     reports: Annotated[list[ReviewReport], operator.add]
 
@@ -121,6 +148,12 @@ class ReviewState(TypedDict, total=False):
     # --- final ---
     decision: str                # accept | minor | major | reject
     decision_letter: str
+    # The editor's structured asks, kept alongside the rendered letter so the
+    # round record can assign stable ids to them and a later round can check
+    # them off. Without these, referencing round N-1 would mean parsing
+    # numbered bullets back out of markdown.
+    required_revisions: list[str]
+    minor_suggestions: list[str]
 
     # --- post-decision: venue recommendations ---
     # Rendered markdown from JournalRecommendationsOutput.to_markdown().
