@@ -4,6 +4,7 @@ Usage:
     peerreview <manuscript> [options]      # launches the Textual TUI
     peerreview <manuscript> --no-tui       # headless run with live Rich output
     peerreview serve [options]             # launch the FastAPI web UI
+    peerreview outcome <job-id> <outcome>  # record what the venue actually did
 """
 
 from __future__ import annotations
@@ -190,7 +191,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--journal",
         dest="target_journal",
         help="Slug of a target journal to review against (see "
-             "--list-journals). Reviews venue-agnostically if omitted.",
+             "--list-journals). Defaults to 'general', a field-general "
+             "stand-in profile; pass --journal \"\" for a review with no "
+             "venue framing at all.",
     )
     p.add_argument(
         "--list-journals",
@@ -202,7 +205,8 @@ def build_parser() -> argparse.ArgumentParser:
         dest="article_type",
         help="Kind of submission being reviewed (see --list-article-types): "
              "article, letter, communication, perspective, review, "
-             "technical-note, tutorial. No manuscript-type framing if omitted.",
+             "technical-note, tutorial, conference-paper, grant-proposal, "
+             "exploratory-grant. No manuscript-type framing if omitted.",
     )
     p.add_argument(
         "--list-article-types",

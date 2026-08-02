@@ -463,7 +463,7 @@ class PeerReviewGraph:
         a naive consumer doing dict.update.
         """
         # Emit a start event BEFORE parsing so the CLI/TUI shows activity
-        # while pypdf works through the document — a long PDF takes a
+        # while the converter works through the document — a long PDF takes a
         # while and the UI would otherwise look hung.
         yield "_ingest_start", {"manuscript_path": manuscript_path}
         state = self.initial_state(manuscript_path)

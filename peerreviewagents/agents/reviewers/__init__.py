@@ -1,4 +1,10 @@
-"""Registry of specialist reviewers — the full panel always runs."""
+"""Registry of specialist reviewers — the full panel unless subset.
+
+All eight run on a normal review. ``only_reviewers`` (a revision round or a
+correction) re-runs a named subset and carries the rest of the panel's prior
+reports forward, so the aggregate still covers all eight either way — see
+``PeerReviewGraph._carried_reports``.
+"""
 
 from __future__ import annotations
 

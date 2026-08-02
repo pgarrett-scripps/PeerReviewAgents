@@ -24,10 +24,20 @@
 # Single text model used by every reviewer, debater, synthesizer,
 # author rebuttal, editor, and journal recommender. The model string
 # is interpreted by the active provider:
-#   openrouter -> e.g. "anthropic/claude-opus-4.1"
-#   anthropic  -> e.g. "claude-opus-4-7" or "claude-sonnet-4-6"
+#   openrouter -> e.g. "anthropic/claude-opus-5"
+#   anthropic  -> e.g. "claude-opus-5" or "claude-sonnet-5"
 #   openai     -> e.g. "gpt-4.1", "o3"
-reasoning_model = "anthropic/claude-opus-4.1"
+reasoning_model = "anthropic/claude-opus-5"
+
+# Sampling temperature. Unset = the provider default. Set 0.0 for the most
+# reproducible run. The current Anthropic models (Opus 5, Sonnet 5, Opus
+# 4.7/4.8, Fable 5) reject the parameter outright, so it only takes effect on
+# models that still accept sampling.
+# temperature = 0.0
+
+# Different models per group of agents: see the [models] / [agent_models]
+# tables at the bottom of this file. Leave them out and every agent uses
+# reasoning_model above.
 
 # ---------------------------------------------------------------------------
 # Workflow
@@ -35,6 +45,10 @@ reasoning_model = "anthropic/claude-opus-4.1"
 
 # Advocate ⇄ Skeptic debate rounds.
 debate_rounds = 2
+
+# The debate itself. false ablates it — the reviewers feed the meta-reviewer
+# directly — which is how the eval harness measures what the debate adds.
+# enable_debate = true
 
 # ---------------------------------------------------------------------------
 # Review strictness
@@ -67,6 +81,24 @@ debate_rounds = 2
 # manuscript anyway. Override per-run with `--flag-injection` /
 # `--no-injection-screen` (or PEERREVIEW_INJECTION_ACTION).
 # injection_screen_action = "reject"
+#
+# What a reviewer-directed phrase in VISIBLE text does. "judge" (default)
+# hands it to the desk screen, which decides whether the passage addresses
+# the reviewer or merely quotes such an attack (a paper about prompt
+# injection does the latter); "reject" treats any such phrase as a reject;
+# "note" records it and proceeds.
+# visible_injection_action = "judge"
+
+# Optional supplementary-information file (pdf/md/tex/docx), read in full and
+# passed to the methods-completeness auditor only. Usually per-run as
+# `--si PATH`.
+# supplement_path = ""
+
+# Cap on the manuscript characters sent to a single agent. Unset (default)
+# sends the whole thing. An integer truncates section-aware, keeping abstract
+# /methods/results/discussion/conclusion and dropping appendices first — only
+# worth setting to bound cost on a very long paper.
+# manuscript_char_budget = 120000
 
 # ---------------------------------------------------------------------------
 # Revision rounds
@@ -91,6 +123,18 @@ debate_rounds = 2
 # many remain, so an endless revise-and-resubmit loop reads as the failure it
 # is rather than continuing indefinitely.
 # max_rounds = 3
+#
+# "revision" (default) = the authors changed the manuscript. "correction"
+# (`--correction`) = the manuscript is unchanged and the review itself is
+# being challenged, which skips the draft diff and the compliance auditor
+# since both only mean something against a changed draft. Needs revision_of.
+# revision_mode = "revision"
+#
+# Re-run only these reviewers; the rest carry their previous reports forward,
+# so the panel is still scored over all eight. Built for corrections, where
+# re-running the other seven would drift on resampling noise. Needs
+# revision_of. Usually per-run as `--only-reviewers methodology,rigor`.
+# only_reviewers = []
 
 # ---------------------------------------------------------------------------
 # Target journal
@@ -120,7 +164,8 @@ debate_rounds = 2
 #
 # The kind of submission being reviewed. The taxonomy is venue-general — one
 # of: article, letter, communication, perspective, review, technical-note,
-# tutorial (list them with `peerreview --list-article-types`). Naming the type
+# tutorial, conference-paper, grant-proposal, exploratory-grant (list them
+# with `peerreview --list-article-types`). Naming the type
 # tells the panel how to weigh the work (e.g. a Letter or Review is not held to
 # a research Article's bar for novel data). Any per-type word limits come from
 # the target journal's profile. Override per-run with `--article-type <key>`
@@ -128,21 +173,14 @@ debate_rounds = 2
 # article_type = ""
 
 # ---------------------------------------------------------------------------
-# Research vendors
+# Research
 # ---------------------------------------------------------------------------
 #
-# Per-category default vendor for the literature lookups the Novelty and
-# Literature reviewers make. The router tries vendors in order and falls
-# through to the next on rate-limit. Override per-tool with [tool_vendors]
-# below if you want one specific operation to use a different vendor.
-
-# [data_vendors]
-# paper_search = "semantic_scholar,arxiv"
-# biomedical   = "pubmed,biorxiv"
-# preprints    = "biorxiv,arxiv"
-
-# [tool_vendors]
-# find_related_work = "arxiv"     # force arXiv for this one operation
+# Master switch for the web research tools. false (same as `--offline`) gives
+# the novelty and literature reviewers and the citation-integrity auditor no
+# tools and makes the research router refuse, so the run's only outbound call
+# is to the LLM API. Use it for leakage-free evaluation.
+# research_enabled = true
 
 # ---------------------------------------------------------------------------
 # Output
@@ -152,13 +190,75 @@ debate_rounds = 2
 output_dir = "./reports"
 
 # ---------------------------------------------------------------------------
+# Cross-run memory
+# ---------------------------------------------------------------------------
+#
+# Each finished review is appended to a markdown log; `peerreview outcome
+# <job-id> <what-happened>` resolves an entry and records a lesson, and the
+# meta-reviewer retrieves the most topically similar resolved lessons on later
+# runs. false (same as `--no-memory`) retrieves nothing and writes nothing.
+# use_memory = true
+# memory_path = "~/.peerreviewagents/memory/review_memory.md"
+# memory_k = 3
+
+# ---------------------------------------------------------------------------
+# Manuscript ingest
+# ---------------------------------------------------------------------------
+#
+# PDFs are converted to Markdown by rustypaper — one converter, no fallback,
+# no configuration. The only ingest knob is telegraphic compression, for
+# models billed by the token: "off" (default), "light" (drops articles and
+# copulas) or "hard" (also prepositions and connectives). Leave it off unless
+# tokens really are the constraint: it saves well under a cent a review, and
+# under "light" the clarity reviewer has been measured criticising the authors
+# for grammar the compressor broke. Also `--caveman <level>` /
+# PEERREVIEW_CAVEMAN.
+# caveman = "off"
+
+# ---------------------------------------------------------------------------
 # Manuscript cache
 # ---------------------------------------------------------------------------
 #
-# Parsed (title, text, sections) triples are cached on disk keyed by the
-# file content, so re-running on the same paper is instant. Inspect or
-# wipe with `just cache-info` / `just cache-clear`.
+# Parsed (title, text, sections) triples are cached on disk, keyed by file
+# content plus the caveman level, so re-running on the same paper is instant.
+# Inspect or wipe with `just cache-info` / `just cache-clear`.
 
 # Where to store cache entries. Leave unset to use $XDG_CACHE_HOME (or
 # ~/.cache) under peerreviewagents/manuscripts/.
 # cache_dir = "~/.cache/peerreviewagents/manuscripts"
+
+# ---------------------------------------------------------------------------
+# Tables — keep these LAST
+# ---------------------------------------------------------------------------
+#
+# A TOML table header ends the top-level section, so any plain key written
+# after one belongs to the table rather than to the config.
+
+# Per-agent models. A [models.<tag>] table retargets a whole group of agents;
+# an [agent_models] entry retargets a single agent and wins over its tag.
+# Tags: "reviewer" (the specialist panel), "debate", "audit", "screen" (desk
+# triage), "synthesis" (editor, meta-reviewer, rebuttal, recommender). Any
+# field left out falls back to the provider / reasoning_model above.
+
+# [models.reviewer]
+# model = "claude-haiku-4-5"
+
+# [models.synthesis]
+# model = "claude-opus-5"
+# effort = "high"
+
+# [agent_models]
+# reviewer_novelty = "synthesis"
+# editor = { model = "claude-opus-5", effort = "max" }
+
+# Per-category default vendor for the literature lookups the novelty and
+# literature reviewers make. The router tries vendors in order and falls
+# through to the next on rate-limit. [tool_vendors] overrides one operation.
+
+# [data_vendors]
+# paper_search = "semantic_scholar,arxiv"
+# biomedical   = "pubmed,biorxiv"
+# preprints    = "biorxiv,arxiv"
+
+# [tool_vendors]
+# find_related_work = "arxiv"     # force arXiv for this one operation

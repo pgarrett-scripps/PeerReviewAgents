@@ -80,7 +80,7 @@ profile is obvious.
 
 ## How this gets used
 
-Wired into the pipeline via `peerreviewagents/journals.py`:
+Wired into the pipeline via `peerreviewagents/journals/__init__.py`:
 
 - `load_journal(slug, config)` parses a `.toml` into a `JournalProfile`, and
   `JournalProfile.to_prompt_block()` renders it for the agents.
@@ -94,11 +94,14 @@ Wired into the pipeline via `peerreviewagents/journals.py`:
   an unlisted journal still gets a sensible journal-style review. It's pinned to
   the top of the web dropdown and marked `(default)`.
 - `PeerReviewGraph.initial_state` renders the block once into
-  `ReviewState["journal_block"]`; `context_block()` in
-  `agents/utils/agent_utils.py` prepends it to the manuscript block so the
-  reviewers, meta-reviewer, and editor share one provider-side cache entry. The
-  journal recommender injects it into its own prompt to frame suggestions around
-  the intended target. The chosen venue is recorded in each run's `summary.md`.
+  `ReviewState["journal_block"]`. `context_block()` in
+  `agents/utils/agent_utils.py` prepends it to the manuscript for the reviewers
+  and auditors, so that whole fan-out shares one provider-side cache entry. The
+  meta-reviewer and editor get `directives_block()` — the same venue framing
+  without the manuscript, since they judge the panel's reports rather than
+  re-reading the paper. The journal recommender injects the venue into its own
+  prompt to frame suggestions around the intended target. The chosen venue is
+  recorded in each run's `summary.md`.
 
 Setting `target_journal = ""` makes the block empty for a fully venue-agnostic
 review with no journal framing at all.

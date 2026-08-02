@@ -295,7 +295,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
     # --- Manuscript cache ---
     # Parsed manuscripts are always cached on disk, keyed by file content +
-    # the two ingest knobs above. Default location is
+    # the caveman level above. Default location is
     # ~/.cache/peerreviewagents/manuscripts/; set cache_dir to override.
     # Wipe with `just cache-clear`.
     "cache_dir": None,

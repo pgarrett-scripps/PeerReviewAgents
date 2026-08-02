@@ -14,7 +14,7 @@ install:
     [ -d .venv ] || uv venv
     uv pip install -e .
 
-# Install with every optional extra
+# Install with the research extra (arXiv/Semantic Scholar lookups)
 install-all:
     [ -d .venv ] || uv venv
     uv pip install -e ".[research]"
@@ -56,7 +56,7 @@ run-sample *args:
 serve *args:
     uv run peerreview serve {{args}}
 
-# Smoke-test local PDF ingestion (pypdf, no LLM calls, no API keys).
+# Smoke-test local PDF ingestion (rustypaper, no LLM calls, no API keys).
 # Writes the extracted text to reports/_ingest_test.md and prints a summary.
 # Usage:  just test-ingest ~/Downloads/paper.pdf
 test-ingest path:

@@ -43,9 +43,11 @@ Built on **LangGraph** (orchestration), with a **Textual** TUI, a headless Rich 
 and a browser-based 2D "room" UI. Every agent emits a typed
 [pydantic schema](peerreviewagents/agents/schemas.py) via the provider's
 structured-output mode — no YAML-frontmatter parsing, no string-matching for
-verdicts. The manuscript is threaded as a `cache_control: ephemeral` prefix
-through every stage that supports it, so all 13 LLM-calling nodes share one
-provider-side cache entry.
+verdicts. The 14 agents that read the manuscript send it as a
+`cache_control: ephemeral` prefix, so a run pays for those input tokens about
+once rather than once per agent. The meta-reviewer and the Editor-in-Chief
+never receive the manuscript at all: they judge the panel's reports, and giving
+them the primary text invites them to re-review instead of synthesize.
 
 PDF ingest is fully local via `rustypaper` — no external API key needed. See
 [Manuscript ingest](#manuscript-ingest).
@@ -61,8 +63,8 @@ Three are wired up. Pick one with `--provider` or the `provider` TOML key.
 
 | Provider | Default | API key | Model id format |
 |---|---|---|---|
-| `openrouter` | ✅ | `OPENROUTER_API_KEY` | slug, e.g. `anthropic/claude-opus-4.1` |
-| `anthropic`  |    | `ANTHROPIC_API_KEY`  | model id, e.g. `claude-opus-4-1-20250805` |
+| `openrouter` | ✅ | `OPENROUTER_API_KEY` | slug, e.g. `anthropic/claude-opus-5` |
+| `anthropic`  |    | `ANTHROPIC_API_KEY`  | model id, e.g. `claude-opus-5` |
 | `openai`     |    | `OPENAI_API_KEY`     | model id, e.g. `gpt-4.1`, `o3` |
 
 Provider abstraction lives in [`peerreviewagents/runtime/providers.py`](peerreviewagents/runtime/providers.py).
@@ -72,17 +74,23 @@ rather than branching on the provider name directly.
 
 ## Agent roster
 
-14 agents, all emitting structured outputs:
+16 agents run in a default review, all emitting structured outputs:
 
 | Stage | Agent | Schema |
 |---|---|---|
 | Reviewers (×8, parallel from START) | Methodology · Data Analysis · Novelty · Clarity · Literature · Rigor · Reproducibility · Ethics | `ReviewerOutput` |
-| Audit lane (×2, parallel) | Methods Completeness · Citation Integrity | `AuditReport` |
+| Audit lane (×2, parallel) | Methods Completeness · Citation Integrity | `AuditOutput` |
 | Debate | Advocate, Skeptic (N rounds) | `DebateOutput` |
 | Synthesis | Area Chair / Meta-reviewer | `MetaReviewOutput` |
 | Author rebuttal | Plays the manuscript author | `AuthorRebuttalOutput` |
 | Final | Editor-in-Chief | `EditorDecisionOutput` |
 | Post-decision | Journal Scout (venue suggestions) | `JournalRecommendationsOutput` |
+
+Three more are conditional: the desk screen (`--desk-screen`,
+`DeskScreenOutput`), and on a revision round the revision-compliance auditor
+(`RevisionComplianceOutput`) and the author-response verifier
+(`ResponseVerificationOutput`). On a revision round the eight reviewers emit
+`RevisionReviewerOutput` instead.
 
 The **audit lane** runs beside the reviewers but bypasses the debate: its two
 agents ([`agents/auditors/`](peerreviewagents/agents/auditors/)) produce factual
@@ -99,6 +107,21 @@ vendor-routing dispatcher picks the configured vendor per category and falls
 through to the next on rate-limit. The routing pattern mirrors TradingAgents'
 `dataflows/interface.py`.
 
+### Scores
+
+Each reviewer returns a 1–5 score and a 1–5 confidence; the line the debate,
+meta-reviewer, rebuttal and editor all see is the confidence-weighted mean plus
+the verdict distribution.
+
+A reviewer may also decline to score, returning `score: null` with a
+one-sentence `not_applicable_reason`. Nulls are excluded from the mean rather
+than counted as good scores, and the abstaining reviewer is still named on the
+panel line. This exists because forcing a number produced flattering ones: on a
+qualitative interview study the data-analysis reviewer wrote that there were no
+statistical claims to evaluate and then scored the paper 5/5. The schema
+rejects a null with no reason, so "nothing to judge" cannot stand in for a hard
+call on work that is thin or missing something it should have.
+
 ## Install
 
 ```bash
@@ -108,20 +131,17 @@ pip install -e .
 pip install -e '.[research]'
 ```
 
-Base deps include `pypdf` (the integrity screen), `langchain-openai`, `langchain-anthropic`,
-`rank-bm25` (memory retrieval). No system dependencies; no `Pillow`; no OCR; no
-external paid services beyond your chosen LLM provider.
+Base deps include `rustypaper` (PDF → Markdown), `pypdf` (the integrity screen
+only), `langchain-openai`, `langchain-anthropic`, and `rank-bm25` (memory
+retrieval). No system dependencies; no `Pillow`; no OCR; no external paid
+services beyond your chosen LLM provider.
 
 ## Manuscript ingest
 
 PDFs are converted to Markdown by [rustypaper][rustypaper], which keeps headings,
 tables and display mathematics, and reads a two-column page in reading order.
-It is a compiled Rust extension, shipped as a per-platform wheel and pulled in
-as a normal dependency:
-
-```bash
-pip install rustypaper
-```
+It is a compiled Rust extension shipped as a per-platform wheel, and a required
+dependency — `pip install -e .` pulls it in.
 
 **There is no fallback, on purpose.** The pipeline used to fall back to
 `pypdf`'s flat text layer. On one real submission that fused 2% of all words
@@ -143,13 +163,17 @@ conversion of it.
 **Convert here, not before.** Handing the pipeline a `.md` you converted
 yourself looks equivalent and is not: the integrity screen dispatches on file
 type, and only the PDF path can see text hidden in a content stream. Give it
-the PDF.
+the PDF. Manuscripts that are natively `.md`, `.tex`, `.txt` or `.docx` are
+read directly and screened by the path for their own format — the rule is
+about not pre-converting a PDF, not about refusing other formats.
 
 `caveman` (`"off"` / `"light"` / `"hard"`) telegraphically compresses the
 manuscript for models billed by the token. Off by default — the saving is well
 under a cent a review, and under `light` the clarity reviewer criticised the
 authors three times for grammar the compressor had broken. When it is on,
-every agent is told the text was machine-compressed.
+every agent is told the text was machine-compressed. Set it with
+`--caveman <level>`, the `caveman` TOML key, or `PEERREVIEW_CAVEMAN`. It is the
+only ingest knob: there is no backend to choose.
 
 [rustypaper]: https://github.com/pgarrett-scripps/rustypaper
 
@@ -184,12 +208,18 @@ peerreview path/to/manuscript.pdf --no-tui
 # Override the provider / model / debate length for a single run
 peerreview paper.pdf --no-tui \
   --provider anthropic \
-  --reasoning-model claude-opus-4-1-20250805 \
+  --reasoning-model claude-opus-5 \
   --debate-rounds 3
 
 # Review against a specific journal (see --list-journals for slugs)
 peerreview paper.pdf --no-tui --journal nature-methods
 peerreview --list-journals
+
+# Hand the methods-completeness auditor the supplementary information too
+peerreview paper.pdf --no-tui --si supplementary.pdf
+
+# No web research at all — the only outbound call is to the LLM API
+peerreview paper.pdf --no-tui --offline
 
 # Browser-based "room" UI — upload + watch agents work
 peerreview serve                              # http://127.0.0.1:8765
@@ -198,6 +228,13 @@ peerreview serve --host 0.0.0.0 --port 8080   # bind to all interfaces
 # Record the real-world outcome of a past review for cross-run reflection
 peerreview outcome <job-id> {accepted|rejected|minor|major|withdrawn}
 ```
+
+`--si` goes to the methods-completeness auditor and nowhere else, untruncated:
+reagent tables and full protocols usually live in the supplement, and that
+auditor is the one checking whether every method is actually described.
+`--offline` strips the research tools from the Novelty and Literature reviewers
+and the citation-integrity auditor, and makes the research router refuse — use
+it when a run has to be reproducible or provably leakage-free.
 
 ### Web UI
 
@@ -212,8 +249,10 @@ the pipeline completes, the topbar shows a **View summary** button — click it
 to open a completion card with the decision badge, stats, and report-file
 links. The MVP runs **one job at a time**, in-process, with no auth — host it
 behind a reverse proxy if you put it on a public network. The upload form
-includes a **target-journal** dropdown (populated from `GET /journals`) so you
-can pick the venue per submission.
+carries the per-submission settings: a **target-journal** dropdown (populated
+from `GET /journals`), article type, strictness, the desk-screen and memory
+toggles, and an optional supplementary-information file. Revision rounds are
+CLI-only.
 
 ### Target journal
 
@@ -233,8 +272,11 @@ peerreview paper.pdf --journal ""                # fully venue-agnostic, no fram
 Select a venue with `--journal <slug>`, the `target_journal` TOML key,
 `PEERREVIEW_TARGET_JOURNAL`, or the web dropdown. The default is **`general`** —
 a stand-in profile with sound, field-general standards, ideal when the intended
-journal isn't one of the bundled profiles. ~30 journals ship across the natural
-sciences, bioinformatics, chemistry, ML, and medicine; add your own by copying
+journal isn't one of the bundled profiles. 37 profiles ship: 33 journals across
+the natural sciences, bioinformatics, chemistry, ML and medicine, plus four
+funder mechanisms (`nih-r01`, `nih-r21`, `nsf`, `erc`) whose guidelines carry
+the funding body's review criteria — pair those with the `grant-proposal` or
+`exploratory-grant` article type. Add your own by copying
 [`_template.toml`](peerreviewagents/journals/_template.toml) into a directory of
 your own and pointing `journals_dir` / `PEERREVIEW_JOURNALS_DIR` at it. A
 `--journal` slug that doesn't resolve is rejected at startup with the list of
@@ -244,10 +286,9 @@ for the schema and details.
 ### Review strictness
 
 A 1–5 dial controls how easy or harsh the panel is. The level renders to a
-directive that's injected into the **reviewer**, **meta-reviewer**, and
-**editor** prompts (sharing the same provider-side cache entry as the
-journal/manuscript context), so it changes how the manuscript is *judged*
-without touching the author rebuttal or the venue recommendations.
+directive injected into the **reviewer**, **meta-reviewer**, and **editor**
+prompts, so it changes how the manuscript is *judged* without touching the
+author rebuttal or the venue recommendations.
 
 | Level | Meaning |
 |---|---|
@@ -270,11 +311,13 @@ is recorded in `summary.md`.
 
 Tell the panel what *kind* of submission it's reviewing. The taxonomy is
 venue-general — `article`, `letter`, `communication`, `perspective`, `review`,
-`technical-note`, `tutorial` — and naming it injects a manuscript-type block
-into the reviewer/meta-reviewer/editor prompts so the work is judged
-appropriately (a Letter or Review isn't held to a research Article's bar for
-novel data). Any per-type word limits come from the **target journal's**
-profile, which may declare them per type (e.g. Journal of Proteome Research).
+`technical-note`, `tutorial`, `conference-paper`, `grant-proposal`,
+`exploratory-grant` — and naming it injects a manuscript-type block into the
+reviewer/meta-reviewer/editor prompts so the work is judged appropriately (a
+Letter or Review isn't held to a research Article's bar for novel data; a grant
+proposal is judged on work not yet done). Any per-type word limits come from
+the **target journal's** profile, which may declare them per type (e.g. Journal
+of Proteome Research).
 
 ```bash
 peerreview paper.pdf --no-tui --journal journal-of-proteome-research --article-type review
@@ -461,30 +504,45 @@ ranked over title + abstract) and injects them into its prompt as **prior
 calibration**.
 
 Log lives at `~/.peerreviewagents/memory/review_memory.md` by default; override
-with `memory_path` in TOML or `PEERREVIEW_MEMORY_PATH` in the environment.
+with `memory_path` in TOML. `--no-memory` (config `use_memory = false`,
+`PEERREVIEW_USE_MEMORY=0`) turns the whole loop off for a run: no lessons
+retrieved, nothing appended.
 
 ## Configuration
 
-See [`peerreviewagents/default_config.py`](peerreviewagents/default_config.py).
-TOML, environment vars, and CLI flags all layer on top of the built-in defaults
-(precedence: defaults → user TOML → project TOML → `--config` → env → flags).
+See [`peerreviewagents/default_config.py`](peerreviewagents/default_config.py) —
+every key is documented there, and that file is the reference. TOML, environment
+vars, and CLI flags all layer on top of the built-in defaults (precedence:
+defaults → user TOML → project TOML → `--config` → env → flags). An unrecognized
+TOML key warns rather than failing, so a typo isn't silent.
 
-The full knob list: `provider`, `reasoning_model`, `max_debate_rounds`,
-`manuscript_char_budget`, `target_journal`, `journals_dir`, `article_type`,
-`review_strictness`, `desk_screen`, `injection_screen`, `injection_screen_action`,
-`output_dir`, `cache_dir`, `memory_path`, `memory_k`,
-`data_vendors`, `tool_vendors`. See
-`peerreview.toml.example` for an annotated template.
+The keys, by group:
+
+- Model: `provider`, `reasoning_model`, `temperature`, `models`, `agent_models`
+- Workflow: `max_debate_rounds`, `enable_debate`, `desk_screen`,
+  `desk_screen_mode`, `injection_screen`, `injection_screen_action`,
+  `visible_injection_action`, `manuscript_char_budget`, `supplement_path`
+- Revision rounds: `revision_of`, `revision_mode`, `only_reviewers`,
+  `author_statement_path`, `max_rounds`
+- Venue and framing: `target_journal`, `journals_dir`, `article_type`,
+  `review_strictness`
+- Research: `research_enabled`, `data_vendors`, `tool_vendors`
+- Ingest and storage: `caveman`, `cache_dir`, `output_dir`, `memory_path`,
+  `memory_k`, `use_memory`
+
+`peerreview.toml.example` is an annotated template covering the common ones.
 
 ## Output
 
 Each run writes to `reports/<timestamp>-<slug>/`:
 
 - `integrity.md` — submission-integrity findings (only when something was found)
+- `desk_screen.md` — triage verdict (only when the desk screen ran)
 - `round.json` — structured record of this round (ids, asks, scores) — what `--revision-of` reads
+- `review_<reviewer>.md` × 8 — per-specialist reports
+- `audit_methods_completeness.md`, `audit_citation_integrity.md` — the audit lane
 - `audit_revision_compliance.md` — per-item required-revision compliance (revision rounds)
 - `author_response_verification.md` — adjudicated author letter (when one was supplied)
-- `review_<reviewer>.md` × 8 — per-specialist reports
 - `debate_transcript.md` — full advocate/skeptic transcript
 - `meta_review.md` — Area Chair synthesis
 - `author_rebuttal.md` — author's defense
@@ -500,11 +558,13 @@ pytest tests/ -q             # runs the full pipeline with a fake LLM, no API ke
 ```
 
 The test suite covers ingest, the submission-integrity screen (every
-concealment vector, against hand-built PDFs), structured-output round-trip + retry fallback,
-provider factories, research-vendor routing with rate-limit fallback, journal
-profile loading + context-block injection, the memory log lifecycle, and
-end-to-end web pipeline (uploading → running → reading finished bodies via the
-REST endpoints).
+concealment vector, against hand-built PDFs), structured-output round-trip +
+retry fallback, provider factories, research-vendor routing with rate-limit
+fallback, journal profile loading + context-block injection, revision rounds
+and corrections (including the adversarial suite that resubmits an unchanged
+manuscript and requires it to resolve nothing), the author-response verifier,
+the memory log lifecycle, and the end-to-end web pipeline (uploading → running
+→ reading finished bodies via the REST endpoints).
 
 ## Architecture notes
 
@@ -567,8 +627,8 @@ just benchmark-build      # assemble the corpus (downloads + scrape)
 just benchmark-probe      # contamination probe — did the model memorize the paper?
 just benchmark-smoke      # one paper end-to-end, to check the wiring cheaply
 just benchmark-run        # run the panel over each preprint (resumable)
-just benchmark-compare    # scaffold human-vs-AI worksheets
-just benchmark-verify     # adversarially re-check each worksheet's claims
+just benchmark-compare    # draft the per-paper human-vs-AI overlap sheets
+just benchmark-verify     # adversarially re-check each sheet's claims
 ```
 
 Runs are leakage-free by default: web research is off, temperature is 0, and a
@@ -586,6 +646,13 @@ reproducible from the scripts; see [`benchmark/README.md`](benchmark/README.md).
 A manuscript describing the system is in preparation, in a private companion
 repository alongside the evaluation analysis. It will be linked here on
 submission.
+
+## Citation
+
+See [`CITATION.cff`](CITATION.cff). Patrick Garrett, Aleix Navarro Garrido and
+Ricard Garcia-Carbonell contributed equally; the CFF format has no field for
+shared first authorship, so a citation generated from that file renders them as
+an ordinary author list.
 
 ## Disclaimer
 

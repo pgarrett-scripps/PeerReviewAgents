@@ -53,9 +53,11 @@ def _run(state: ReviewState) -> dict:
         "Compose your rebuttal."
     )
     try:
-        # Author needs primary-source access to defend specific quotes;
-        # cached_prefix is byte-identical to the reviewer block so this
-        # lands a prompt-cache hit.
+        # Author needs primary-source access to defend specific quotes. The
+        # prefix is the bare manuscript block, byte-identical to the one the
+        # debate and the scout send, so those share a cache entry. (The
+        # reviewers' prefix puts the journal/strictness directives ahead of
+        # the manuscript, which makes it a different entry.)
         result = invoke_structured(
             llm,
             AuthorRebuttalOutput,

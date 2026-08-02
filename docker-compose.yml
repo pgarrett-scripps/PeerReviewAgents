@@ -35,7 +35,7 @@ services:
       # owns rather than the image-owned /app.
       - HOME=/app/.cache
       - XDG_CACHE_HOME=/app/.cache
-    # API keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, TAVILY_API_KEY, ...).
+    # API keys (OPENROUTER_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY).
     env_file:
       - .env
     volumes:

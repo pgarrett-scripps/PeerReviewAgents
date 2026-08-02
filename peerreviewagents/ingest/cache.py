@@ -1,8 +1,9 @@
 """On-disk cache for parsed manuscripts.
 
 Caches the ``(title, text, sections)`` triple produced by :mod:`.loader`.
-Keyed by file content + extension; the same manuscript re-parses
-instantly on a second run.
+Keyed by file content, extension, and the ingest config (see
+:func:`.loader.ingest_config`); the same manuscript re-parses instantly on a
+second run.
 
 Layout: one directory per entry under
 ``$XDG_CACHE_HOME/peerreviewagents/manuscripts/<key>/``::
@@ -23,11 +24,11 @@ from pathlib import Path
 from typing import Any
 
 # v4: dropped image caching; entries are just text + metadata.
-# v5: the key covers the ingest config as well as the file. Until PDFs had
-# one possible reading that was unnecessary; now the backend and the caveman
-# level both change the text, and keying on bytes alone would serve a
-# compressed manuscript to a run that asked for an uncompressed one. Entries
-# from earlier versions are invalidated automatically.
+# v5: the key covers the ingest config as well as the file. While a PDF had
+# exactly one possible reading that was unnecessary; the caveman level changes
+# the text, and keying on bytes alone would serve a compressed manuscript to a
+# run that asked for an uncompressed one. Entries from earlier versions are
+# invalidated automatically.
 _SCHEMA_VERSION = 5
 
 

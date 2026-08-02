@@ -66,9 +66,12 @@ def make_debate_node(role: str, stance: str):
                 f"Make your argument for this round (round {rnd})."
             )
             try:
-                # Manuscript goes as cached_prefix — byte-identical to the
-                # reviewer prefix, so this lands a prompt-cache hit rather
-                # than paying full input-token price per debate turn.
+                # Manuscript goes as cached_prefix — the bare block, identical
+                # across every debate turn and shared with the rebuttal and
+                # the scout, so a turn lands a prompt-cache hit rather than
+                # paying full input-token price. (The reviewers' prefix leads
+                # with the journal/strictness directives, so it is a separate
+                # cache entry.)
                 result = invoke_structured(
                     llm,
                     DebateOutput,

@@ -7,8 +7,12 @@ Bug reports, new reviewer agents, and additional providers are all welcome.
 ```bash
 git clone https://github.com/pgarrett-scripps/PeerReviewAgents.git
 cd PeerReviewAgents
-just install-dev          # or: uv venv && uv pip install -e '.[research,web-test,dev]'
+uv venv && uv pip install -e '.[research,web-test,dev]'
 ```
+
+That is what CI installs. `just install-dev` is a shorter path but omits the
+`web-test` and `dev` extras, so `tests/test_web.py` (httpx) and
+`tests/test_metadata.py` (pyyaml) won't have what they import.
 
 ## Before you open a PR
 
@@ -18,8 +22,9 @@ just test                 # pytest tests/ -q
 ```
 
 Note: `just check` also runs `ruff format --check`, which currently fails —
-the codebase predates the formatter and adopting it would reformat 53 of 198
-files in one mechanical diff. Formatting is not enforced in CI. Match the surrounding style instead.
+the codebase predates the formatter and adopting it would reformat 70 of its
+117 Python files in one mechanical diff. Formatting is not enforced in CI.
+Match the surrounding style instead.
 
 The test suite stubs the LLM layer, so **it needs no API key and makes no
 network calls**. If a change makes the tests require a key, that's a signal

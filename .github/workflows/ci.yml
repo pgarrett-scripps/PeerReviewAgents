@@ -55,6 +55,6 @@ jobs:
 
       # `ruff format --check` is deliberately not enforced. The codebase is
       # hand-formatted in places the formatter would flatten (aligned literal
-      # tables, grouped kwargs), and adopting it would reformat 53 of 198
+      # tables, grouped kwargs), and adopting it would reformat 70 of 117
       # files in one mechanical diff. If you want it, run `ruff format .` as
       # its own commit and add the check back here.
