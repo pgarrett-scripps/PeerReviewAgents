@@ -29,3 +29,6 @@ benchmark/manifest.csv
 benchmark/comparison/
 benchmark/verification/
 benchmark/contamination/
+
+# Agent worktrees (transient, created by Claude Code)
+.claude/worktrees/

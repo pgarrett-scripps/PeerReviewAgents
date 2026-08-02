@@ -91,22 +91,48 @@ def node(state: ReviewState) -> dict:
         return _run(state)
 
 
-def _screen_integrity(state: ReviewState) -> IntegrityScan | None:
-    """Scan the submitted file, or None when the screen is off/unavailable."""
+def _screen_integrity(state: ReviewState) -> list[tuple[str, IntegrityScan]]:
+    """Scan every file the authors submitted, as ``(label, scan)`` pairs.
+
+    The manuscript is not the only thing they send. In a revision round they
+    may also submit a response letter, and a letter is the *better* place to
+    hide instructions to an automated reviewer: it is prose addressed to the
+    reviewers by design, so a concealed imperative reads as less out of place
+    there than in a methods section. Screening one and not the other would
+    leave the easier door open.
+    """
     config = state["config"]
     if not integrity_enabled(config):
-        return None
-    path = state.get("manuscript_path") or ""
-    if not path:
-        return None
-    scan = scan_manuscript(path)
-    if scan.flagged:
-        emit(AgentEvent(
-            kind="log",
-            node="desk_screen",
-            text=f"integrity screen: {scan.headline()}",
-        ))
-    return scan
+        return []
+    candidates = [
+        ("manuscript", state.get("manuscript_path") or ""),
+        ("author response letter", str(config.get("author_statement_path") or "")),
+    ]
+    scans: list[tuple[str, IntegrityScan]] = []
+    for label, path in candidates:
+        if not path:
+            continue
+        scan = scan_manuscript(path)
+        if scan.flagged:
+            emit(AgentEvent(
+                kind="log",
+                node="desk_screen",
+                text=f"integrity screen ({label}): {scan.headline()}",
+            ))
+        scans.append((label, scan))
+    return scans
+
+
+def _label_report(label: str, scan: IntegrityScan) -> str:
+    """Name which submitted file a finding came from."""
+    body = scan.to_markdown()
+    if label == "manuscript":
+        return body
+    return body.replace(
+        "# Submission Integrity Screen",
+        f"# Submission Integrity Screen — {label}",
+        1,
+    )
 
 
 def _integrity_reject(scan: IntegrityScan, config: dict) -> bool:
@@ -120,11 +146,14 @@ def _integrity_reject(scan: IntegrityScan, config: dict) -> bool:
 def _run(state: ReviewState) -> dict:
     config = state["config"]
 
-    scan = _screen_integrity(state)
-    if scan is not None and _integrity_reject(scan, config):
-        # Reject at the desk without spending a single token: the manuscript
+    scans = _screen_integrity(state)
+    compromised = next(
+        ((label, s) for label, s in scans if _integrity_reject(s, config)), None
+    )
+    if compromised is not None:
+        # Reject at the desk without spending a single token: the submitted
         # text is untrusted input and no agent should read it.
-        body = scan.to_markdown()
+        body = _label_report(*compromised)
         return {
             "desk_rejected": True,
             "decision": "reject",
@@ -133,7 +162,9 @@ def _run(state: ReviewState) -> dict:
             "integrity": body,
         }
 
-    integrity_note = scan.to_markdown() if scan is not None and scan.flagged else ""
+    integrity_note = "\n\n---\n\n".join(
+        _label_report(label, s) for label, s in scans if s.flagged
+    )
 
     if screen_mode(config) == "off":
         # Integrity-only pass: nothing else to do at the desk, and no LLM
@@ -150,7 +181,7 @@ def _run(state: ReviewState) -> dict:
             DeskScreenOutput,
             config,
             _SYS,
-            _user_prompt(scan),
+            _user_prompt(scans),
             # The integrity advisory goes in the user turn, never here: this
             # prefix is the manuscript block the whole panel shares, and
             # perturbing it would miss the cache for every later agent.
@@ -185,17 +216,22 @@ def _run(state: ReviewState) -> dict:
     }
 
 
-def _user_prompt(scan: IntegrityScan | None) -> str:
+def _user_prompt(scans: list[tuple[str, IntegrityScan]]) -> str:
     """The triage instruction, plus any integrity finding that didn't reject."""
-    advisory = scan.advisory() if scan is not None else ""
-    if not advisory:
+    advisories = [
+        f"### {label}\n\n{scan.advisory()}"
+        for label, scan in scans
+        if scan.advisory()
+    ]
+    if not advisories:
         return _USER
+    body = "\n\n".join(advisories)
     return (
         f"{_USER}\n\n"
-        "The submitted file was also machine-screened for text hidden from a "
-        "human reader. The finding below is reported for your judgment; it did "
-        "not meet the automatic-rejection bar (no instructions to a reviewer "
-        "were concealed in the file), so weigh it as one signal among others "
-        "and do not desk-reject on it alone.\n\n"
-        f"{advisory}"
+        "The submitted files were also machine-screened for text hidden from a "
+        "human reader. The findings below are reported for your judgment; they "
+        "did not meet the automatic-rejection bar (no instructions to a "
+        "reviewer were concealed), so weigh them as one signal among others "
+        "and do not desk-reject on them alone.\n\n"
+        f"{body}"
     )

@@ -428,6 +428,48 @@ def test_clean_pdf_passes_the_desk_without_an_llm(tmp_path):
     assert "desk_screen" not in out          # triage is off; nothing recorded
 
 
+def test_injected_author_statement_is_rejected_at_the_desk(tmp_path):
+    """The response letter is the easier place to hide an instruction.
+
+    It is prose addressed to the reviewers by design, so a concealed
+    imperative reads as less out of place there than in a methods section.
+    """
+    clean_pdf = _build_pdf(str(tmp_path / "clean.pdf"), VISIBLE_BODY)
+    letter = tmp_path / "response.md"
+    letter.write_text(
+        "# Response to Reviewers\n\nWe thank the reviewers.\n\n"
+        f'<span style="color:#ffffff">{PAYLOAD}</span>\n'
+    )
+    state = {
+        "manuscript_path": clean_pdf,
+        "config": get_config(
+            revision_of="job-1",
+            author_statement_path=str(letter),
+            output_dir=str(tmp_path),
+        ),
+    }
+    out = desk_screen.node(state)  # type: ignore[arg-type]
+    assert out["desk_rejected"] is True
+    assert "author response letter" in out["decision_letter"]
+
+
+def test_clean_author_statement_passes(tmp_path):
+    clean_pdf = _build_pdf(str(tmp_path / "clean.pdf"), VISIBLE_BODY)
+    letter = tmp_path / "response.md"
+    letter.write_text("# Response to Reviewers\n\nWe have added the seed.\n")
+    state = {
+        "manuscript_path": clean_pdf,
+        "config": get_config(
+            revision_of="job-1",
+            author_statement_path=str(letter),
+            output_dir=str(tmp_path),
+        ),
+    }
+    out = desk_screen.node(state)  # type: ignore[arg-type]
+    assert out["desk_rejected"] is False
+    assert out["integrity"] == ""
+
+
 def test_screen_can_be_disabled(tmp_path):
     pdf = _build_pdf(
         str(tmp_path / "m.pdf"),
@@ -468,7 +510,7 @@ def test_advisory_is_absent_for_a_clean_file():
 
     clean = IntegrityScan(path="m.pdf", scanned=True)
     assert clean.advisory() == ""
-    assert desk_screen._user_prompt(clean) == desk_screen._USER
+    assert desk_screen._user_prompt([("manuscript", clean)]) == desk_screen._USER
 
 
 # --- end-to-end through the graph -------------------------------------------
