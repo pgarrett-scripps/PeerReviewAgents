@@ -10,16 +10,32 @@ frontmatter back out of the body.
 The manuscript block is sent with prompt-cache markup (on providers
 that support it) so the parallel reviewer fan-out shares one
 provider-side cache entry.
+
+**Revision rounds.** When the state carries a ``prior_round``, the same
+node re-reviews a revised draft instead: it emits
+:class:`RevisionReviewerOutput`, which forces a ruling on every point this
+reviewer raised before, and it is shown its own prior report, the section
+diff, and — only if the authors' letter survived verification — the
+pointers that letter offers. It is never shown another reviewer's report;
+independence is why eight verdicts are worth more than one, and it does not
+lapse because this is a second look.
+
+The revision path also carries the score-consistency guard (see
+:func:`_challenge_stuck_score`), which catches the characteristic failure
+of a second round: a reviewer marking its own points resolved and then
+declining to move the score anyway.
 """
 
 from __future__ import annotations
 
-from ...observability import node_context
-from ..schemas import ReviewerOutput
+from ...ingest.diff import render_diff_block
+from ...observability import AgentEvent, current_node, emit, node_context
+from ..schemas import ReviewerOutput, RevisionReviewerOutput
 from ..utils.agent_states import ReviewReport, ReviewState
 from ..utils.agent_utils import context_block
 from ..utils.llm import make_llm
 from ..utils.structured import (
+    StructuredResult,
     invoke_structured,
     invoke_structured_after_tools,
 )
@@ -67,6 +83,129 @@ _SYSTEM = (
 )
 
 
+# --- revision round ---------------------------------------------------------
+
+_REVISION_SYSTEM = (
+    "You are a specialist on a journal peer-review editorial panel, "
+    "re-reviewing a manuscript you reviewed once already, now that the authors "
+    "have revised it. Your role and mandate are in the user message; follow "
+    "them strictly. Rule on every point you raised before, under the id you "
+    "were given, and never invent an id. Return your verdict as the structured "
+    "RevisionReviewerOutput schema."
+)
+
+_REVISION_HEADER = (
+    "Manuscript title: {title}\n\n"
+    "You are the {role} on a journal peer-review panel. You reviewed an "
+    "earlier draft of this manuscript in round {round_no}; the authors have "
+    "since revised it, and the text above is the REVISED draft. Your job now "
+    "is to judge what the revision did about the critique you gave — not to "
+    "review the manuscript again from scratch.\n\n"
+    "{mandate}\n\n"
+    "As in the previous round you are shown your own review and nothing from "
+    "any other reviewer, and you are the only one ruling on your points."
+)
+
+# Shown instead of the prior report when this reviewer has none on record —
+# a panel that gained a specialist since round 1, or a prior round that ended
+# at the desk. The schema still demands a prior_score, so it needs an answer.
+_NO_PRIOR_REPORT = (
+    "## Your review in the previous round\n\n"
+    "You have no report on record for the previous round, so there are no "
+    "points of yours to rule on: leave prior_points empty, set prior_score "
+    "equal to the score you give now, and judge the revised draft on its own "
+    "terms."
+)
+
+# Appended under the verifier's pointer list. That list is already framed as
+# pointers, but the reviewer has to be told the same thing in its own
+# instructions: this is the only channel by which the authors' words reach it,
+# and routing them through verification buys nothing if they read as findings.
+_AUTHOR_POINTERS_NOTE = (
+    "Every line above is a pointer, not a finding. The authors wrote them, and "
+    "the authors want a better outcome than they got last round: they are an "
+    "interested party, not a source. Go to the passage named, read what it now "
+    "says, and rule on the point yourself. The manuscript is the evidence; "
+    "their letter never is. A pointer you cannot corroborate in the text "
+    "changes nothing, and \"the authors say they addressed it\" is never a "
+    "reason to mark anything resolved."
+)
+
+_REVISION_TASK = (
+    "## What to return\n\n"
+    "Return the structured RevisionReviewerOutput schema.\n"
+    "  - prior_score: the score you gave last round, copied from your report "
+    "above. Do not re-derive it.\n"
+    "  - prior_points: one ruling for EVERY weakness id listed above — none "
+    "skipped, including any you now consider minor. Mark it resolved, partial, "
+    "or outstanding, and cite the revised text you read to decide. For "
+    "anything short of resolved, say what you looked for and where, so the "
+    "authors know what would satisfy it.\n"
+    "  - new_issues: prefer none. This round judges the response to the "
+    "critique that was given, not a fresh hunt for faults. Raise something new "
+    "only if the revision created it, or if staying silent would let a real "
+    "defect through — and either way set caused_by_the_revision honestly. The "
+    "\"what changed\" block above tells you which it is; the editor is shown "
+    "the flag, and an issue that was equally visible in the draft you already "
+    "reviewed is a goalpost moved, not a finding.\n"
+    "  - score: your score for the REVISED manuscript on the same 1-5 scale "
+    "(1=reject, 3=major revision, 4=minor revision, 5=accept).\n"
+    "  - score_rationale: why the score moved, or specifically what still "
+    "holds it where it was.\n"
+    "  - confidence, summary, strengths, questions: as in your first review.\n\n"
+    "On the score: an improvement has to be earned, and when it is earned it "
+    "has to be given. If the authors did what you asked, the score moves — "
+    "reporting your own points resolved and then leaving the score untouched "
+    "is not rigor, it is a verdict that contradicts its own evidence. Equally, "
+    "do not reward effort: a point is resolved when the text answers it, not "
+    "when the authors say they tried. If real concerns stand, keep the score "
+    "and name exactly what stands."
+)
+
+# The re-ask. It quotes the reviewer's own rulings back at it and demands one
+# of two specific answers, because what is being caught is not a wrong number
+# — it is a verdict nobody has had to justify.
+_CONSISTENCY_CHALLENGE = (
+    "## One thing has to be reconciled before this is recorded\n\n"
+    "You reported every point you raised in round {round_no} as resolved, you "
+    "recorded no issue that the revision itself created, and you scored the "
+    "revised manuscript {score}/5 against your previous {prior_score}/5.\n\n"
+    "Your rulings, in your own words:\n"
+    "{rulings}\n\n"
+    "Your stated reason for the score:\n"
+    "> {rationale}\n\n"
+    "Those do not fit together. If nothing you asked for is still open and the "
+    "revision broke nothing, then by your own account there is nothing left "
+    "holding the score down. Answer with a corrected RevisionReviewerOutput "
+    "that resolves it whichever of these two ways is true:\n"
+    "  1. The score should move. Raise it to what the revised manuscript now "
+    "earns, and say so in score_rationale.\n"
+    "  2. Something genuinely does still hold it down. Then name it exactly: "
+    "downgrade the prior point(s) you called resolved to partial or "
+    "outstanding, citing the evidence you overlooked, or record the blocker as "
+    "a new issue with caused_by_the_revision set honestly.\n\n"
+    "What does not answer this: a fresh objection you could have raised on the "
+    "previous draft, or the same rationale restated. Raising the bar once the "
+    "authors have met it is precisely the failure this check exists to catch. "
+    "Leave the rest of your review as it stands — change only the part that is "
+    "wrong. If the work earned a better score, give it."
+)
+
+# Appended to the body when the reviewer was challenged and answered with
+# neither a moved score nor a named blocker. The verdict stands as the
+# reviewer left it — the guard forces an explanation, it does not manufacture
+# a number no reviewer endorsed — but the editor sees that it went
+# unexplained.
+_UNRESOLVED_GUARD_NOTE = (
+    "\n\n---\n\n"
+    "_Consistency check: this reviewer marked every point it raised as "
+    "resolved and recorded no issue introduced by the revision, yet did not "
+    "move its score. Asked once to either raise the score or name what still "
+    "holds it down, it did neither. The score above is the reviewer's own and "
+    "has not been adjusted._"
+)
+
+
 def make_reviewer_node(
     name: str,
     role: str,
@@ -79,59 +218,283 @@ def make_reviewer_node(
     ``tool_names`` is a list of logical research-tool names this reviewer
     should call (see :mod:`peerreviewagents.research.tools` for the
     registry). Pass ``None`` (default) for a tool-free reviewer.
+
+    The returned node handles both a first review and a revision round;
+    ``state["prior_round"]`` decides which, so the graph wires the same eight
+    reviewers either way and every one of them re-reviews.
     """
     node_name = f"reviewer_{name}"
     bound_tool_names = list(tool_names or [])
 
     def node(state: ReviewState) -> dict:
         with node_context(node_name, run_id=state["config"].get("run_id", "")):
-            config = state["config"]
-            llm = make_llm(config, agent=node_name, default_tag="reviewer")
-            instructions = _INSTRUCTIONS.format(
-                title=state.get("manuscript_title", "Untitled"),
+            llm = make_llm(state["config"], agent=node_name, default_tag="reviewer")
+            # Byte-identical across the fan-out in both modes, so a revision
+            # round still shares one provider-side cache entry. Everything
+            # round-specific goes in the user turn, after the breakpoint.
+            cached_prefix = context_block(state)
+            run_pass = (
+                _revision_pass if state.get("prior_round") is not None else _first_pass
+            )
+            return run_pass(
+                state,
+                llm,
+                cached_prefix,
+                name=name,
                 role=role,
                 mandate=mandate,
+                tool_names=bound_tool_names,
             )
-            cached_prefix = context_block(state)
-
-            try:
-                if bound_tool_names and config.get("research_enabled", True):
-                    from ...research.tools import get_tools_by_name
-
-                    result = invoke_structured_after_tools(
-                        llm,
-                        ReviewerOutput,
-                        config,
-                        _SYSTEM,
-                        instructions,
-                        get_tools_by_name(bound_tool_names, config),
-                        cached_prefix=cached_prefix,
-                    )
-                else:
-                    result = invoke_structured(
-                        llm,
-                        ReviewerOutput,
-                        config,
-                        _SYSTEM,
-                        instructions,
-                        cached_prefix=cached_prefix,
-                    )
-            except Exception as exc:  # noqa: BLE001
-                return {"errors": [f"{name} reviewer failed: {exc}"]}
-
-            output: ReviewerOutput = result.instance  # type: ignore[assignment]
-            report: ReviewReport = {
-                "reviewer": name,
-                "score": float(output.score),
-                "confidence": float(output.confidence),
-                # Promoted so the round record can id each weakness and hand
-                # this reviewer its own points back in a later round. Reading
-                # them out of `body` would mean parsing markdown.
-                "weaknesses": list(output.weaknesses),
-                "questions": list(output.questions),
-                "body": output.to_markdown(role=role),
-            }
-            return {"reports": [report], "total_cost": result.cost}
 
     node.__name__ = node_name
     return node
+
+
+def _first_pass(
+    state: ReviewState,
+    llm,
+    cached_prefix: str,
+    *,
+    name: str,
+    role: str,
+    mandate: str,
+    tool_names: list[str],
+) -> dict:
+    """Review a draft this panel has not seen before."""
+    instructions = _INSTRUCTIONS.format(
+        title=state.get("manuscript_title", "Untitled"),
+        role=role,
+        mandate=mandate,
+    )
+    try:
+        result = _call_model(
+            llm, ReviewerOutput, state["config"], _SYSTEM, instructions,
+            tool_names=tool_names, cached_prefix=cached_prefix,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"errors": [f"{name} reviewer failed: {exc}"]}
+
+    output: ReviewerOutput = result.instance  # type: ignore[assignment]
+    report: ReviewReport = {
+        "reviewer": name,
+        "score": float(output.score),
+        "confidence": float(output.confidence),
+        # Promoted so the round record can id each weakness and hand
+        # this reviewer its own points back in a later round. Reading
+        # them out of `body` would mean parsing markdown.
+        "weaknesses": list(output.weaknesses),
+        "questions": list(output.questions),
+        "body": output.to_markdown(role=role),
+    }
+    return {"reports": [report], "total_cost": result.cost}
+
+
+def _revision_pass(
+    state: ReviewState,
+    llm,
+    cached_prefix: str,
+    *,
+    name: str,
+    role: str,
+    mandate: str,
+    tool_names: list[str],
+) -> dict:
+    """Re-review a revised draft against this reviewer's own prior critique."""
+    config = state["config"]
+    prior = state["prior_round"]
+    instructions = _revision_instructions(state, name=name, role=role, mandate=mandate)
+
+    try:
+        result = _call_model(
+            llm, RevisionReviewerOutput, config, _REVISION_SYSTEM, instructions,
+            tool_names=tool_names, cached_prefix=cached_prefix,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"errors": [f"{name} reviewer failed: {exc}"]}
+
+    output: RevisionReviewerOutput = result.instance  # type: ignore[assignment]
+    cost = result.cost
+    guard_note = ""
+    if output.score_is_inconsistent():
+        answered, challenge_cost = _challenge_stuck_score(
+            llm, config, instructions, cached_prefix, output, prior.round
+        )
+        cost += challenge_cost
+        if answered is not None:
+            output = answered
+        else:
+            guard_note = _UNRESOLVED_GUARD_NOTE
+
+    report: ReviewReport = {
+        "reviewer": name,
+        "score": float(output.score),
+        "confidence": float(output.confidence),
+        "weaknesses": _carried_weaknesses(output, prior, name),
+        "questions": list(output.questions),
+        "body": output.to_markdown(role=role) + guard_note,
+    }
+    return {"reports": [report], "total_cost": cost}
+
+
+def _call_model(
+    llm,
+    schema,
+    config: dict,
+    system: str,
+    instructions: str,
+    *,
+    tool_names: list[str],
+    cached_prefix: str,
+) -> StructuredResult:
+    """Structured call, through the research-tool loop when this reviewer has one."""
+    if tool_names and config.get("research_enabled", True):
+        from ...research.tools import get_tools_by_name
+
+        return invoke_structured_after_tools(
+            llm,
+            schema,
+            config,
+            system,
+            instructions,
+            get_tools_by_name(tool_names, config),
+            cached_prefix=cached_prefix,
+        )
+    return invoke_structured(
+        llm, schema, config, system, instructions, cached_prefix=cached_prefix
+    )
+
+
+def _revision_instructions(
+    state: ReviewState, *, name: str, role: str, mandate: str
+) -> str:
+    """Assemble the round-N user prompt for one reviewer.
+
+    Every block is scoped to this reviewer or to the manuscript itself.
+    Nothing another reviewer wrote, and nothing the authors wrote except the
+    verifier's corroborated pointers, is allowed in.
+    """
+    prior = state["prior_round"]
+    diff = state.get("manuscript_diff")
+    blocks = [
+        _REVISION_HEADER.format(
+            title=state.get("manuscript_title", "Untitled"),
+            role=role,
+            round_no=prior.round,
+            mandate=mandate,
+        ),
+        prior.prior_report_block(name) or _NO_PRIOR_REPORT,
+        render_diff_block(diff) if diff is not None else "",
+        _author_pointers(state),
+        _REVISION_TASK,
+    ]
+    return "\n\n".join(b for b in blocks if b)
+
+
+def _author_pointers(state: ReviewState) -> str:
+    """The verified pointer list plus its handling rule, or '' when there is none."""
+    block = (state.get("verified_claims_block") or "").strip()
+    if not block:
+        return ""
+    return f"{block}\n\n{_AUTHOR_POINTERS_NOTE}"
+
+
+def _challenge_stuck_score(
+    llm,
+    config: dict,
+    instructions: str,
+    cached_prefix: str,
+    output: RevisionReviewerOutput,
+    round_no: int,
+) -> tuple[RevisionReviewerOutput | None, float]:
+    """Re-ask once when a reviewer's own rulings contradict its score.
+
+    Returns the corrected verdict and the cost of the extra call, or
+    ``(None, cost)`` when the reviewer failed to answer — the caller then
+    keeps the original verdict. The guard never edits a score itself: a
+    number no reviewer endorsed would be a fabrication dressed as a panel
+    opinion, and the panel's scores are what the editor weighs.
+
+    Deliberately tool-free even for reviewers that carry research tools. The
+    reviewer is being asked to reconcile what it already wrote; handing it a
+    literature search at that moment invites exactly the fresh objection this
+    guard exists to prevent.
+    """
+    emit(AgentEvent(
+        kind="log",
+        node=current_node(),
+        text=(
+            "score-consistency guard: every prior point resolved but score held "
+            f"at {output.score}/5; re-asking once"
+        ),
+    ))
+    challenge = _CONSISTENCY_CHALLENGE.format(
+        round_no=round_no,
+        score=output.score,
+        prior_score=output.prior_score,
+        rulings="\n".join(
+            f"- [{p.id}] resolved — {p.evidence.strip()}" for p in output.prior_points
+        ),
+        rationale=output.score_rationale.strip() or "(none given)",
+    )
+    try:
+        result = invoke_structured(
+            llm,
+            RevisionReviewerOutput,
+            config,
+            _REVISION_SYSTEM,
+            f"{instructions}\n\n---\n\n{challenge}",
+            cached_prefix=cached_prefix,
+        )
+    except Exception:  # noqa: BLE001
+        # A failed re-ask is not a failed review. The first verdict is a real
+        # verdict; dropping this reviewer from the panel over the guard would
+        # cost the round more than the unexplained contradiction does.
+        return None, 0.0
+
+    answered: RevisionReviewerOutput = result.instance  # type: ignore[assignment]
+    # A second pass that lands back in the same contradiction has not
+    # answered. Neither has one that answers by scoring *lower* than before —
+    # the re-ask demands a justification and must not become a way to punish
+    # having been asked for one.
+    if answered.score_is_inconsistent() or answered.score < output.score:
+        return None, result.cost
+    return answered, result.cost
+
+
+def _carried_weaknesses(
+    output: RevisionReviewerOutput, prior, name: str
+) -> list[str]:
+    """What this round hands to the next: still-open prior points, then new issues.
+
+    A resolved point is dropped — carrying it forward would put the authors
+    back where they started and reopen a question this round settled.
+    Anything short of resolved keeps the wording it was first raised in, so a
+    third round hands back the same ask rather than a paraphrase of a
+    paraphrase, with this round's finding appended as the update.
+    """
+    prior_report = prior.report_for(name)
+    original = {w.id: w.text for w in prior_report.weaknesses} if prior_report else {}
+
+    carried: list[str] = []
+    for point in output.prior_points:
+        if point.status == "resolved":
+            continue
+        standing = (
+            "still unaddressed" if point.status == "outstanding"
+            else "only partly addressed"
+        )
+        detail = point.evidence.strip()
+        text = original.get(point.id, "")
+        if text:
+            carried.append(f"{text} ({standing} in the revision: {detail})")
+        elif detail:
+            # An id with no match in the prior record: the reviewer's own
+            # account of the point is all there is to carry forward.
+            carried.append(f"[{point.id}] {standing} in the revision: {detail}")
+    for issue in output.new_issues:
+        origin = (
+            "introduced by the revision" if issue.caused_by_the_revision
+            else "not raised in the previous round"
+        )
+        carried.append(f"{issue.issue} ({origin})")
+    return carried
