@@ -24,6 +24,12 @@ class ReviewReport(TypedDict):
     # them out of the rendered body.
     weaknesses: list[str]
     questions: list[str]
+    # Revision rounds only: issues this reviewer raised for the first time
+    # this round, each flagged with whether the revision created it. The
+    # editor's round-delta counts the ones the reviewer admits were visible
+    # last round — goalpost drift — and that count has to come from the
+    # structured verdict, not from the rendered prose.
+    new_issues: list[dict]
     body: str
 
 
@@ -43,6 +49,11 @@ class AuditReport(TypedDict):
     title: str          # human-facing title for rendering
     hard_gaps: int
     soft_gaps: int
+    # Revision-compliance auditor only: one entry per required revision, as
+    # ``{id, status, blocking}``. The editor's round-delta needs per-item
+    # outcomes, and recovering them by parsing the rendered body would put
+    # a string dependency on someone else's markdown.
+    findings: list[dict]
     body: str
 
 
@@ -110,9 +121,11 @@ class ReviewState(TypedDict, total=False):
     # present in a revision round; `available=False` when the previous draft
     # could not be recovered from the ingest cache.
     manuscript_diff: Any
-    # The real author's response letter, as submitted. Untrusted input: it is
-    # never placed in an agent's prompt as prose. Only the verifier reads it,
-    # and only its adjudicated output reaches the panel.
+    # The real author's response letter, as submitted. Untrusted input, and
+    # the only input written by someone with a stake in the verdict. Two
+    # editor-facing agents read it as quoted data — the response verifier and
+    # the revision-compliance auditor — and NEITHER forwards it as prose. The
+    # panel sees it only as the verifier's checked pointers.
     author_statement: str
     # Rendered ResponseVerificationOutput markdown; written to
     # author_response_verification.md. Empty when no statement was supplied.

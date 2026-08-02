@@ -9,13 +9,19 @@ from peerreviewagents.agents.schemas import (
     AuditFinding,
     AuditOutput,
     AuthorRebuttalOutput,
+    ComplianceFinding,
     DebateOutput,
     DeskScreenOutput,
     EditorDecisionOutput,
     JournalRecommendationsOutput,
     JournalSuggestion,
     MetaReviewOutput,
+    PriorPointVerdict,
+    ResponseVerificationOutput,
     ReviewerOutput,
+    RevisionComplianceOutput,
+    RevisionReviewerOutput,
+    VerifiedClaim,
 )
 from peerreviewagents.default_config import get_config
 from peerreviewagents.graph.review_graph import PeerReviewGraph
@@ -104,6 +110,63 @@ _CANNED: dict[type, object] = {
         ],
         notes="Avoid headline venues until the second cluster is added.",
     ),
+    # --- revision round -----------------------------------------------------
+    # Defaults describe an honest, successful revision: the reviewer's point
+    # was fixed and the score moved because of it. Tests that need a stuck
+    # score, a stonewalling author, or an unchanged draft override these with
+    # monkeypatch.setitem rather than editing this module.
+    RevisionReviewerOutput: RevisionReviewerOutput(
+        prior_score=3,
+        score=4,
+        confidence=4,
+        prior_points=[
+            PriorPointVerdict(
+                id="methodology-1",
+                status="resolved",
+                evidence="Methods now report results for all three clusters.",
+            ),
+        ],
+        new_issues=[],
+        summary="The revision addresses the single-cluster limitation I raised.",
+        score_rationale="The one weakness I raised is resolved, so the score rises.",
+        strengths=["Clear reporting of the added clusters."],
+        questions=[],
+    ),
+    RevisionComplianceOutput: RevisionComplianceOutput(
+        summary="One of two required revisions is carried out; the other is not.",
+        findings=[
+            ComplianceFinding(
+                id="R1-01",
+                status="addressed",
+                manuscript_evidence="Results now report per-cluster error.",
+                author_claim="We added per-cluster results.",
+                claim_accuracy="corroborated",
+                blocking=False,
+            ),
+            ComplianceFinding(
+                id="R1-02",
+                status="not_addressed",
+                manuscript_evidence="",
+                author_claim="",
+                claim_accuracy="no_claim",
+                blocking=False,
+            ),
+        ],
+        undisclosed_changes=[],
+    ),
+    ResponseVerificationOutput: ResponseVerificationOutput(
+        summary="The authors point at one passage, which checks out.",
+        claims=[
+            VerifiedClaim(
+                claim="Per-cluster results were added to the Results section.",
+                targets="R1-01",
+                manuscript_locator="Results: reports error for all three clusters.",
+                verdict="corroborated",
+                note="The cited passage says what the letter says it says.",
+            ),
+        ],
+        instruction_attempts=[],
+    ),
 }
 
 
@@ -150,6 +213,11 @@ def _patch_llms(monkeypatch):
         "peerreviewagents.agents.editor.desk_screen",
         "peerreviewagents.agents.editor.editor_in_chief",
         "peerreviewagents.agents.journal_recommender.recommender",
+        # Revision-round nodes. Both resolve make_llm in their own module
+        # rather than through auditors.base, so patching the base is not
+        # enough to keep a full-graph revision run off the network.
+        "peerreviewagents.agents.auditors.revision_compliance",
+        "peerreviewagents.agents.author.response_verifier",
     ]
     # Accept arbitrary kwargs so the meta-reviewer / editor can pass
     # reasoning_effort= without blowing up the lambda signature.

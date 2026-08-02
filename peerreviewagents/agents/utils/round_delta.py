@@ -227,10 +227,12 @@ def _drift_line(state: ReviewState) -> str:
 def _compliance_findings(state: ReviewState) -> list[tuple[str, bool]]:
     """(status, blocking) for every compliance finding we can recover.
 
-    Two sources, in order of trust: structured findings promoted onto the audit
-    entry, then the rendered body. The second exists because ``AuditReport``
-    only guarantees ``body`` — promoting findings is the auditor track's choice,
-    not a contract we can lean on.
+    ``AuditReport.findings`` is the source of truth — the compliance auditor
+    promotes per-item outcomes precisely so this does not have to read them
+    back out of prose. The body parse below is a backstop for an audit entry
+    that somehow lacks them; it must never become the normal path, because a
+    verdict recovered by string matching is one rendering change away from
+    silently reporting zero.
     """
     for audit in state.get("audits") or []:
         if str(_get(audit, "auditor", "")) != _COMPLIANCE_AUDITOR:
@@ -258,9 +260,12 @@ def _parse_findings(body: str) -> list[tuple[str, bool]]:
 def _drift_count(report: Any) -> int:
     """Drifted new-issue count for one reviewer, from whatever state carries.
 
-    Prefers promoted structure; falls back to counting the origin tag in the
-    rendered body. Returns 0 when neither is present, which the caller treats
-    as "nothing to report" rather than "nothing happened".
+    ``ReviewReport.new_issues`` is the source of truth — the reviewer promotes
+    each new issue with its ``caused_by_the_revision`` flag for exactly this
+    count. The body scan is a backstop, not the normal path. Returns 0 when
+    nothing is present, which the caller treats as "nothing to report" rather
+    than "nothing happened" — the distinction matters, since reporting "no
+    drift" on a signal that was never captured asserts something unchecked.
     """
     promoted = _get(report, "drifted_issues", None)
     if isinstance(promoted, list):

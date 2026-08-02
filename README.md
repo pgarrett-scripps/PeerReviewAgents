@@ -261,6 +261,75 @@ Enable it with `--desk-screen`, the `desk_screen` TOML key,
 `PEERREVIEW_DESK_SCREEN`, or the web form's checkbox. A desk reject writes
 `desk_screen.md` + a `decision_letter.md`, and `summary.md` records the outcome.
 
+### Revision rounds (second and third pass)
+
+Real review is iterative. Point a run at a previous round and it re-reviews
+the revised draft as a revision instead of a fresh submission:
+
+```bash
+peerreview revised.pdf --revision-of 20260801-143022-widget-throughput
+peerreview revised.pdf --revision-of <job-id> --author-statement response.docx
+```
+
+The whole panel runs again — all 8 reviewers, debate, meta-review, editor —
+but each stage now asks a different question:
+
+- **Each reviewer sees its OWN prior report** and must rule on every weakness
+  it raised, by id, as `resolved` / `partial` / `outstanding`. It never sees
+  another reviewer's report: independence is why eight verdicts are worth
+  more than one, and it doesn't lapse because this is a second look.
+- **A section-aware diff** of the previous draft against this one is computed
+  locally (`difflib`, no tokens) and injected as a "what changed" block. The
+  previous text is recovered from the ingest cache by key, so no second copy
+  is kept.
+- **A compliance auditor** joins the audit lane and checks the previous
+  decision letter's numbered required revisions (`R1-01`, …) against the new
+  draft — one finding per item, editor-only, no score.
+- **The editor decides on the delta**: score then vs now, how many asks were
+  verified addressed, which still-open items are blocking, and unresolved
+  items carried forward under their original ids.
+
+Every run writes `round.json` with stable ids, which is what makes round 3
+possible — the lineage chains back through `prior_job_id`.
+
+**Scores are allowed to improve, but only when earned.** A reviewer that
+marks all its points resolved and then declines to raise its score is a
+contradiction, so a deterministic check re-asks that reviewer once, with its
+own rulings quoted back, demanding either a higher score or a named blocker.
+It never fabricates a number the reviewer didn't endorse. The counterweight
+is `caused_by_the_revision` on every new issue: a reviewer raising an
+objection it admits was visible last round is goalpost drift, it's counted,
+and the editor is shown the count.
+
+The adversarial test suite is the real specification here — an identical
+manuscript resubmitted unchanged must resolve nothing and improve nothing
+(`tests/test_revision_adversarial.py`).
+
+#### Author response letters
+
+`--author-statement` accepts the **real authors'** reply — the human
+scientists', not the simulated author-rebuttal agent (which is skipped when a
+real letter is present). It exists so a scientist can correct a review that
+is genuinely wrong. It is also the one input written by someone with a direct
+stake in the verdict, so it is treated as untrusted:
+
+> **Only the manuscript supplies evidence. The letter can only point at it.**
+
+- It is screened for prompt injection at the desk, exactly like the manuscript.
+- A verifier node runs **before** the reviewer fan-out and turns it into
+  checked claims: `corroborated` / `overstated` / `contradicted` /
+  `unlocatable`.
+- The panel never sees the letter as prose — only corroborated *pointers*
+  ("the authors ask you to re-read §3.2"), with no conclusions attached. The
+  reviewer re-reads and decides for itself.
+- A claim pointing nowhere checkable moves nothing. An author claim can never
+  mark a required revision `addressed` — only manuscript text can.
+- Passages that try to direct the review rather than argue about the science
+  are recorded for the editor and carry no weight.
+
+That ordering is enforced by the graph, not by a prompt: the reviewers' only
+inbound edge comes from the verifier.
+
 ### Submission integrity screen (prompt injection)
 
 Authors have been caught hiding instructions to AI reviewers inside their
@@ -370,6 +439,9 @@ The full knob list: `provider`, `reasoning_model`, `max_debate_rounds`,
 Each run writes to `reports/<timestamp>-<slug>/`:
 
 - `integrity.md` — submission-integrity findings (only when something was found)
+- `round.json` — structured record of this round (ids, asks, scores) — what `--revision-of` reads
+- `audit_revision_compliance.md` — per-item required-revision compliance (revision rounds)
+- `author_response_verification.md` — adjudicated author letter (when one was supplied)
 - `review_<reviewer>.md` × 8 — per-specialist reports
 - `debate_transcript.md` — full advocate/skeptic transcript
 - `meta_review.md` — Area Chair synthesis

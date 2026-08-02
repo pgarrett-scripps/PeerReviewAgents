@@ -221,10 +221,16 @@ def test_undisclosed_changes_reach_the_report(monkeypatch):
 def test_audit_entry_shape_matches_the_editor_digest(monkeypatch):
     result = _run(monkeypatch)
     audit = _audit(result)
-    assert set(audit) == {"auditor", "title", "hard_gaps", "soft_gaps", "body"}
+    assert set(audit) == {
+        "auditor", "title", "hard_gaps", "soft_gaps", "findings", "body",
+    }
     assert audit["auditor"] == "revision_compliance"
     assert audit["title"] == "Revision Compliance"
     assert "total_cost" in result
+    # Per-item outcomes travel structured so the editor's round-delta reads
+    # them directly rather than parsing them back out of the body.
+    assert [f["id"] for f in audit["findings"]] == ["R1-01", "R1-02"]
+    assert all({"id", "status", "blocking"} == set(f) for f in audit["findings"])
 
     digest = audit_digest({"audits": result["audits"]})
     assert "Revision Compliance" in digest

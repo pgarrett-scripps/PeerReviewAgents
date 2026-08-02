@@ -172,6 +172,12 @@ def _run(state: ReviewState) -> dict:
         # revision, everything else still open is a suggestion.
         "hard_gaps": len(output.blocking_open()),
         "soft_gaps": len(soft_gaps(output)),
+        # Per-item outcomes, structured, so the editor's round-delta reads
+        # them directly instead of parsing them back out of the markdown.
+        "findings": [
+            {"id": f.id, "status": f.status, "blocking": f.blocking}
+            for f in output.findings
+        ],
         "body": output.to_markdown(title=AUDITOR_TITLE),
     }
     return {"audits": [report], "total_cost": result.cost}

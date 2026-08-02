@@ -285,6 +285,29 @@ def _validate_strictness(config: dict) -> None:
         sys.exit(1)
 
 
+def _validate_revision_inputs(config: dict) -> None:
+    """Fail fast on a revision round whose prior round or letter can't be read.
+
+    These are the two inputs a revision round is *about*. Discovering mid-run
+    that neither exists would burn the panel on what is silently a first-round
+    review — a wrong answer delivered confidently — so both are resolved here,
+    before a single token is spent.
+    """
+    from peerreviewagents import rounds
+
+    job_id = config.get("revision_of")
+    if job_id:
+        try:
+            rounds.load_prior(str(job_id), config)
+        except FileNotFoundError as exc:
+            console.print(f"[red]{exc}[/red]")
+            sys.exit(1)
+    statement = config.get("author_statement_path")
+    if statement and not os.path.exists(str(statement)):
+        console.print(f"[red]Author statement not found:[/red] {statement}")
+        sys.exit(1)
+
+
 def _print_article_types(config: dict) -> None:
     """Print the selectable article-type keys and what each is for."""
     from peerreviewagents.article_types import ARTICLE_TYPES
@@ -528,6 +551,7 @@ def run() -> None:
     _validate_target_journal(config)
     _validate_article_type(config)
     _validate_strictness(config)
+    _validate_revision_inputs(config)
 
     if args.no_tui:
         run_headless(args.manuscript, config)

@@ -331,6 +331,12 @@ def _revision_pass(
         "confidence": float(output.confidence),
         "weaknesses": _carried_weaknesses(output, prior, name),
         "questions": list(output.questions),
+        # Structured, so the editor's round-delta can count goalpost drift
+        # without reading it back out of the rendered body.
+        "new_issues": [
+            {"issue": i.issue, "caused_by_the_revision": i.caused_by_the_revision}
+            for i in output.new_issues
+        ],
         "body": output.to_markdown(role=role) + guard_note,
     }
     return {"reports": [report], "total_cost": cost}

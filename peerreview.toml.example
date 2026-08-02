@@ -69,6 +69,30 @@ debate_rounds = 2
 # injection_screen_action = "reject"
 
 # ---------------------------------------------------------------------------
+# Revision rounds
+# ---------------------------------------------------------------------------
+#
+# Job ID (or report directory) of the previous round for this manuscript.
+# Normally passed per-run with `--revision-of <job-id>` rather than set here,
+# since it changes every round. Setting it turns the run into a revision
+# round: each reviewer rules on the points it raised before, a compliance
+# auditor checks the previous letter's required revisions against the new
+# draft, and the editor decides on the round-over-round delta.
+# revision_of = ""
+#
+# The REAL authors' response letter (pdf/md/tex/docx) — not the simulated
+# author-rebuttal agent, which is skipped when this is supplied. Untrusted,
+# interested-party input: screened for injection at the desk, never shown to
+# the panel as prose, and reaching reviewers only as verified pointers to
+# passages they must re-read. Usually passed as `--author-statement PATH`.
+# author_statement_path = ""
+#
+# Hard cap on revision rounds. The editor is told which round it is and how
+# many remain, so an endless revise-and-resubmit loop reads as the failure it
+# is rather than continuing indefinitely.
+# max_rounds = 3
+
+# ---------------------------------------------------------------------------
 # Target journal
 # ---------------------------------------------------------------------------
 #

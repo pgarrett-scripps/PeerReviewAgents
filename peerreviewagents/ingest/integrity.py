@@ -218,6 +218,11 @@ class HiddenRun:
         return one_line[:EXCERPT_CHARS] + "…"
 
 
+def _where(page: int) -> str:
+    """Page reference, or nothing at all for formats that have no pages."""
+    return f" (p.{page})" if page else ""
+
+
 @dataclass(frozen=True)
 class InjectionMatch:
     """One injection rule that fired, and whether it fired on concealed text."""
@@ -306,7 +311,7 @@ class IntegrityScan:
         if self.concealed_matches:
             parts += ["", "## Instructions found in concealed text"]
             parts += [
-                f'- **{m.rule}** (p.{m.page}) — "{m.excerpt}"'
+                f'- **{m.rule}**{_where(m.page)} — "{m.excerpt}"'
                 for m in self.concealed_matches
             ]
         if self.hidden_runs:
@@ -325,7 +330,7 @@ class IntegrityScan:
                 "paper about prompt injection quotes these strings legitimately._",
             ]
             parts += [
-                f'- **{m.rule}** (p.{m.page}) — "{m.excerpt}"'
+                f'- **{m.rule}**{_where(m.page)} — "{m.excerpt}"'
                 for m in self.visible_matches
             ]
         if self.notes:
