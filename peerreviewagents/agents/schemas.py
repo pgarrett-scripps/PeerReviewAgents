@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 Verdict = Literal["accept", "minor", "major", "reject"]
 
@@ -56,6 +56,7 @@ class ReviewerOutput(BaseModel):
                     "sentence naming what is absent from the manuscript that "
                     "puts it outside your dimension.",
     )
+
     confidence: int = Field(
         ..., ge=1, le=5,
         description="Certainty in the score: 5=squarely the reviewer's expertise "
@@ -79,6 +80,33 @@ class ReviewerOutput(BaseModel):
         default_factory=list,
         description="Bullet questions for the authors.",
     )
+
+    @model_validator(mode="after")
+    def _abstention_must_be_justified(self) -> ReviewerOutput:
+        """A null score without a reason is rejected, not accepted silently.
+
+        Describing the reason as required in the field description was not
+        enough. Observed on the first live run: a clarity reviewer returned a
+        null score with no reason at all, while its own summary called the
+        manuscript "generally well-structured and mostly clear" — it plainly
+        held an opinion and used the null as a way out of committing to one.
+
+        That is the same defect as the forced-number problem this field was
+        added to fix, pointed the other way: a reviewer that abstains from a
+        dimension it can judge removes its verdict from the panel instead of
+        inflating it. Rejecting the output makes the structured-output layer
+        ask again, which costs one retry and turns an unenforceable
+        instruction into a constraint.
+        """
+        if self.score is None and not self.not_applicable_reason.strip():
+            raise ValueError(
+                "score is null but not_applicable_reason is empty. Give a null "
+                "score only when the manuscript contains nothing your dimension "
+                "covers, and say what is absent. If you can form any view of "
+                "this paper on your dimension — including a poor one — give a "
+                "number instead."
+            )
+        return self
 
     def to_markdown(self, role: str = "Reviewer") -> str:
         parts: list[str] = [
