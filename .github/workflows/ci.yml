@@ -55,6 +55,9 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      # TEMPORARY, until rustypaper 0.1.0 is on PyPI, same as the test job.
+      - run: pip install --quiet "rustypaper @ git+https://github.com/pgarrett-scripps/rustypaper#subdirectory=python"
+
       - run: pip install --quiet -e '.[dev]'
 
       - run: ruff check .
