@@ -133,6 +133,26 @@ DEFAULT_CONFIG: dict[str, Any] = {
     #            manuscript — at the cost of rejecting genuine security papers.
     #   "note"   record it and proceed. The prior behaviour.
     "visible_injection_action": "judge",
+    # What a failed PDF conversion does. Measured deterministically at ingest
+    # (peerreviewagents.ingest.prose) and checked before any agent is paid.
+    #
+    #   "broken"   (default) stop the run when the text arrives as
+    #              `well-definedsitecanbeengaged` — words fused, spaces gone.
+    #              Raises ManuscriptUnreadable rather than desk-rejecting: a
+    #              converter failure is a fact about a file, and recording it
+    #              as a verdict would follow the paper around as a rejection
+    #              of work no model ever read.
+    #   "degraded" also stop on lesser damage. For callers who would rather
+    #              fix the conversion than have a panel read around it.
+    #   "off"      review whatever arrives. The prior behaviour.
+    #
+    # On the calibration corpus there is no middle ground to worry about:
+    # healthy conversions score 0.0 fused tokens per 1000 words and the broken
+    # ones score ~23, so the default costs nothing on a readable paper. Damage
+    # short of the gate is not silently absorbed either — it is named to every
+    # reviewer inside the manuscript block, so nobody writes up the authors
+    # for the converter's spacing.
+    "conversion_gate": "broken",
     # Optional cap on manuscript chars sent to a single agent. None (default)
     # sends the FULL manuscript — no truncation. Set an int to cap it: long
     # papers are then truncated section-aware, preserving the most load-bearing
@@ -375,6 +395,7 @@ _ENV_STR_KEYS = {
     "PEERREVIEW_ARTICLE_TYPE": "article_type",
     "PEERREVIEW_INJECTION_ACTION": "injection_screen_action",
     "PEERREVIEW_CAVEMAN": "caveman",
+    "PEERREVIEW_CONVERSION_GATE": "conversion_gate",
 }
 _ENV_INT_KEYS = {
     "PEERREVIEW_DEBATE_ROUNDS": "max_debate_rounds",

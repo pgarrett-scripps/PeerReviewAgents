@@ -323,18 +323,72 @@ _COMPRESSED_NOTICE = (
     "from this text."
 )
 
+# Same failure as the compression notice above, from a different cause. PDF
+# conversion loses spaces between words and leaves hyphens sitting where a
+# line used to break, and a reviewer reading that without being told writes up
+# the authors for typography no human reader of the PDF would ever see.
+#
+# Only the *measured* damage is named, and only the kinds that were actually
+# found, so the notice never invites a reviewer to discount a real writing
+# problem it has no evidence for. A conversion worse than this does not reach
+# an agent at all — see ingest.loader.require_readable.
+_DEGRADED_NOTICE = (
+    "NOTE: this manuscript was converted from PDF and the conversion is "
+    "imperfect: {damage}. That damage is the converter's, not the authors' — "
+    "the PDF a human reader opens does not contain it. Do not report spacing, "
+    "hyphenation, run-together words or broken formatting as a defect of the "
+    "paper. Judge the science; where a passage is too mangled to judge, say "
+    "you could not read it rather than guessing at what it said."
+)
+
+# Health fields, in the order they read best in a sentence, paired with how to
+# say each one to a reviewer rather than to an engineer.
+_DAMAGE_PHRASES = (
+    ("fused_per_1k", "words have run together where spaces were lost"),
+    ("hyphen_breaks_per_1k", "hyphens survive from line breaks mid-word"),
+    ("missing_space_per_1k", "some sentences run into the next without a space"),
+)
+
+
+def _conversion_notice(state: ReviewState) -> str:
+    """The degraded-conversion advisory, or '' when the file converted cleanly.
+
+    Silent on a clean read. A warning that appears on every run is one every
+    reader — human or model — learns to skip.
+    """
+    from ...ingest import prose
+
+    ingest = state.get("ingest") or {}
+    if prose.verdict_of(ingest) == prose.CLEAN:
+        return ""
+    health = prose.health_of(ingest)
+    damage = [
+        phrase for key, phrase in _DAMAGE_PHRASES
+        if float(health.get(key) or 0) > 0
+    ]
+    if not damage:
+        # Degraded on section coverage alone: nothing here is about the words
+        # themselves, so there is nothing to warn a reviewer about.
+        return ""
+    return _DEGRADED_NOTICE.format(damage="; ".join(damage)) + "\n\n"
+
 
 def manuscript_block(state: ReviewState) -> str:
     """Return the cache-eligible manuscript block used by every agent that
     sends the manuscript text. Centralizing the wrapper format keeps the
     block byte-identical across reviewers, debaters, meta-reviewer,
     author rebuttal, and editor so they all share the same provider-side
-    cache entry."""
+    cache entry.
+
+    Both notices are constant for a whole run, so prepending them costs one
+    cache write of a few dozen tokens and nothing per agent after that.
+    """
     caveman = (state.get("ingest") or {}).get("caveman")
     notice = ""
     if caveman:
         hard = ", prepositions and connectives" if caveman == "hard" else ""
         notice = _COMPRESSED_NOTICE.format(hard=hard) + "\n\n"
+    notice += _conversion_notice(state)
     return f"=== MANUSCRIPT ===\n{notice}{fit_manuscript(state)}\n=== END MANUSCRIPT ==="
 
 

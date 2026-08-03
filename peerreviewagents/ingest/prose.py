@@ -37,6 +37,36 @@ produced more false statements than true ones:
 
 Figure/table cross-reference integrity and per-section statistics are viable
 but need the section map, so they are not in this module yet.
+
+What reaches a prompt, and what does not
+----------------------------------------
+
+Health does, twice, and both times as a fact about the file:
+
+* a ``broken`` verdict stops the run before an agent is paid
+  (:func:`peerreviewagents.ingest.loader.require_readable`);
+* a ``degraded`` one is named to every reviewer inside the manuscript block
+  (``agent_utils._conversion_notice``), so nobody writes up the authors for
+  the converter's lost spaces.
+
+**Counts and Density never do.** They are published, and a reader can weigh
+them, but no agent is handed a number and asked what it thinks. Two reasons,
+and the second is the load-bearing one:
+
+* They measure style, and style is not what the panel is for. A referee who
+  catches "the authors claim X, but Y would produce the same result" is not
+  counting adverbs, and the reviewers already carry more checklist than they
+  can attend to.
+* A model handed ``boosters_per_1k = 8.4`` will write a finding about it. That
+  is the mechanism, not a risk: give an agent a number with a prompt attached
+  and it produces prose about the number. "Mean sentence length is 28.4 words"
+  is true and says nothing about whether the paper is right, and it would
+  arrive with the same weight as a finding that does.
+
+The word-count-against-a-venue-limit check is the near miss, and it is left
+out for a third reason: preprints are not formatted to any venue's limit, so
+the check would fire on almost every submission and report a fact about
+formatting as a finding about the work.
 """
 
 from __future__ import annotations
@@ -289,6 +319,37 @@ class ProseStats:
             "density": asdict(self.density) if self.density else None,
             "caveman": self.caveman,
         }
+
+
+# ---------------------------------------------------------------------------
+# Reading the record back
+# ---------------------------------------------------------------------------
+#
+# Three callers ask the same question of a stored ingest record — the desk
+# gate, the reviewers' conversion advisory, and the report writer — and each
+# one digging through `ingest["prose"]["health"]["verdict"]` by hand is three
+# chances to spell a key wrong and get "clean" for free.
+
+
+def health_of(ingest: dict | None) -> dict:
+    """The health block of a stored ingest record, or ``{}``."""
+    return ((ingest or {}).get("prose") or {}).get("health") or {}
+
+
+def verdict_of(ingest: dict | None) -> str:
+    """Conversion verdict from a stored record, defaulting to ``clean``.
+
+    Unmeasured reads clean on purpose. The only documents reaching a caller
+    without statistics are ones built by something that bypassed the parser —
+    a test fixture, a plain-text handoff — and refusing those would turn a
+    missing measurement into a failed review.
+    """
+    return str(health_of(ingest).get("verdict") or CLEAN)
+
+
+def notes_of(ingest: dict | None) -> list[str]:
+    """Plain-language reasons behind a non-clean verdict."""
+    return list(health_of(ingest).get("notes") or [])
 
 
 # ---------------------------------------------------------------------------

@@ -1,7 +1,6 @@
-"""The desk: a submission-integrity check plus an optional editorial triage gate.
+"""The desk: what an editor settles before a single reviewer is assigned.
 
-Two screens live in this one node, in this order, because both are things a
-handling editor settles before any reviewer is assigned:
+Three screens live in this one node, and the order between them is load-bearing:
 
 1. **Submission integrity** (``injection_screen``, on by default) — a
    deterministic, token-free scan of the submitted file for text hidden from
@@ -9,24 +8,41 @@ handling editor settles before any reviewer is assigned:
    confirmed hit desk-rejects immediately, *before* an LLM ever reads the
    manuscript; that ordering is the point, since the payload's whole purpose
    is to be read by the model that would otherwise judge it.
-2. **Editorial triage** (``desk_screen``, off by default) — a fast LLM
+2. **Conversion health** (``conversion_gate``, ``"broken"`` by default) — a
+   deterministic verdict on how the PDF converted, measured at ingest by
+   :mod:`peerreviewagents.ingest.prose`. Text that arrived as
+   ``well-definedsitecanbeengaged`` stops the run rather than being reviewed
+   by seventeen agents at full price.
+3. **Editorial triage** (``desk_screen``, off by default) — a fast LLM
    scope / completeness / fatal-flaw judgment against the target venue and
    the configured strictness, which either desk-rejects or passes the
    manuscript to the panel.
 
-Because the integrity screen costs nothing and needs no model, the node is
-wired into the graph whenever *either* screen is enabled; with only the
-integrity screen on it makes no LLM call at all.
+Integrity runs before conversion health deliberately, and the two overlap more
+than they look like they should: a scanned, image-only PDF is both the usual
+cause of a broken conversion *and* the usual innocent cause of a hidden-text
+finding, because its OCR layer is invisible text. Screening first means an
+injected payload is still recorded on a file nobody can read. Reversing them
+would let a bad conversion swallow a fraud finding.
 
-Both screens are fail-open: any error degrades to "proceed to full review"
-rather than blocking a manuscript on an infrastructure hiccup. The integrity
-screen additionally never rejects on concealed text alone — scanned papers
-carry an invisible OCR layer — only on instructions found inside it.
+The two deterministic screens differ in what they produce, and that difference
+is the point. Integrity desk-rejects: a verdict, a letter, a published bundle.
+Conversion health raises
+:class:`~peerreviewagents.ingest.loader.ManuscriptUnreadable` and produces
+nothing at all — a desk rejection is a judgment about a manuscript, and a
+converter failure is a fact about a file. Recording the second as the first
+would attach a rejection to work no model ever read.
+
+Both LLM-facing paths are fail-open: any error degrades to "proceed to full
+review" rather than blocking a manuscript on an infrastructure hiccup. The
+integrity screen never rejects on concealed text alone — again, the OCR layer
+— only on instructions found inside it.
 """
 
 from __future__ import annotations
 
 from ...ingest.integrity import IntegrityScan, scan_manuscript
+from ...ingest.loader import conversion_gate, require_readable
 from ...observability import AgentEvent, emit, node_context
 from ..schemas import DeskScreenOutput
 from ..utils.agent_states import ReviewState
@@ -82,8 +98,18 @@ def integrity_enabled(config: dict) -> bool:
 
 
 def node_enabled(config: dict) -> bool:
-    """Whether the desk node belongs in the graph at all."""
-    return screen_mode(config) != "off" or integrity_enabled(config)
+    """Whether the desk node belongs in the graph at all.
+
+    Any of the three screens is enough. The conversion gate counts because it
+    is the one that stops a run from being paid for, and a config that turned
+    off both other screens would otherwise send an unreadable file to the
+    full panel.
+    """
+    return (
+        screen_mode(config) != "off"
+        or integrity_enabled(config)
+        or conversion_gate(config) != "off"
+    )
 
 
 def node(state: ReviewState) -> dict:
@@ -181,6 +207,13 @@ def _run(state: ReviewState) -> dict:
             "desk_screen": body,
             "integrity": body,
         }
+
+    # Second, and only now: is this file readable at all? After the integrity
+    # scan because a scanned PDF is the common cause of both findings, and a
+    # concealed payload is worth recording even on a file the panel will never
+    # get to read. This raises rather than returning a verdict — see the module
+    # docstring on why an unreadable file must not look like a rejection.
+    require_readable(state.get("ingest"), config)
 
     integrity_note = "\n\n---\n\n".join(
         _label_report(label, s) for label, s in scans if s.flagged

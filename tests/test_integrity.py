@@ -406,7 +406,12 @@ def test_node_runs_for_integrity_even_with_triage_off():
     config = get_config()
     assert desk_screen.screen_mode(config) == "off"
     assert desk_screen.node_enabled(config) is True
-    assert desk_screen.node_enabled(get_config(injection_screen=False)) is False
+    # Both other screens off still leaves the conversion gate, which needs the
+    # node to run in; the empty graph takes turning that off too.
+    assert desk_screen.node_enabled(get_config(injection_screen=False)) is True
+    assert desk_screen.node_enabled(
+        get_config(injection_screen=False, conversion_gate="off")
+    ) is False
 
 
 def test_desk_node_rejects_injected_pdf_without_calling_an_llm(tmp_path):

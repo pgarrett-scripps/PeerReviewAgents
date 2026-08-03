@@ -375,14 +375,29 @@ def _validate_article_type(config: dict) -> None:
 
 
 def run_headless(manuscript: str, config: dict) -> None:
+    from peerreviewagents.ingest.loader import ManuscriptUnreadable
+
     console.print(Panel.fit(f"[bold]PeerReviewAgents[/bold]\n{manuscript}", border_style="cyan"))
     graph = PeerReviewGraph(config)
     final = {}
-    for node, partial in graph.stream(manuscript):
-        final.update(partial)
-        label = _NODE_LABELS.get(node, node.replace("reviewer_", "Reviewer: "))
-        glyph = "[yellow]…[/yellow]" if node.endswith("_start") else "[green]✓[/green]"
-        console.print(f"  {glyph} {label}")
+    try:
+        for node, partial in graph.stream(manuscript):
+            final.update(partial)
+            label = _NODE_LABELS.get(node, node.replace("reviewer_", "Reviewer: "))
+            glyph = "[yellow]…[/yellow]" if node.endswith("_start") else "[green]✓[/green]"
+            console.print(f"  {glyph} {label}")
+    except ManuscriptUnreadable as exc:
+        # Deliberately not "review failed": nothing failed, and no judgment was
+        # made about the paper. A distinct exit code lets a caller tell "fix
+        # the file" apart from "the run broke".
+        console.print(Panel.fit(
+            "[bold yellow]Unreadable manuscript — no review was run."
+            f"[/bold yellow]\n\n{exc}\n\nRe-export the PDF with a real text "
+            "layer, or set [cyan]conversion_gate = \"off\"[/cyan] to review it "
+            "as it stands.",
+            border_style="yellow",
+        ))
+        sys.exit(3)
 
     reason = _run_failed(final)
     if reason:

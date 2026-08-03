@@ -282,3 +282,179 @@ def test_no_stats_file_when_nothing_was_measured():
     from peerreviewagents import reports
 
     assert reports._prose_report({"ingest": {}, "config": {}}) == ""
+
+
+# --- the gate: a broken conversion never reaches an agent ------------------
+
+
+def _ingest(text, sections=None, caveman=None):
+    """An ingest record shaped exactly as the loader stores one."""
+    return {
+        "format": "markdown",
+        "tool": "rustypaper 9.9.9",
+        "prose": prose.analyze(text, sections=sections, caveman=caveman).to_dict(),
+    }
+
+
+_FUSED = "whicharemosteffectivewhenasmallwelldefinedsitecanbeengaged"
+_CLEAN = "We measured the thing carefully and reported it. " * 40
+_BROKEN = f"Some words here {_FUSED} " * 12
+# Enough fused tokens to pass FUSED_DEGRADED but not FUSED_BROKEN.
+_DEGRADED = _CLEAN + f" {_FUSED} " * 3
+
+
+def test_a_clean_manuscript_passes_the_gate():
+    from peerreviewagents.ingest import loader
+
+    loader.require_readable(_ingest(_CLEAN), {})  # does not raise
+
+
+def test_a_broken_conversion_stops_the_run():
+    import pytest
+
+    from peerreviewagents.ingest import loader
+
+    with pytest.raises(loader.ManuscriptUnreadable) as exc:
+        loader.require_readable(_ingest(_BROKEN), {})
+    # The message has to tell a submitter this is about the file, not the work.
+    assert "conversion failure, not an assessment" in str(exc.value)
+    assert exc.value.verdict == prose.BROKEN
+
+
+def test_a_stopped_run_is_not_a_rejection():
+    """The exception carries no verdict, decision or letter — by design.
+
+    A desk rejection is a judgment about a manuscript. This is a statement
+    about a file, and the two must not arrive looking the same.
+    """
+    from peerreviewagents.ingest import loader
+
+    assert not hasattr(loader.ManuscriptUnreadable, "decision")
+    assert issubclass(loader.ManuscriptUnreadable, RuntimeError)
+
+
+def test_degraded_passes_the_default_gate():
+    from peerreviewagents.ingest import loader
+
+    record = _ingest(_DEGRADED)
+    assert prose.verdict_of(record) == prose.DEGRADED
+    loader.require_readable(record, {})  # does not raise
+
+
+def test_the_gate_can_be_tightened_to_degraded():
+    import pytest
+
+    from peerreviewagents.ingest import loader
+
+    with pytest.raises(loader.ManuscriptUnreadable):
+        loader.require_readable(_ingest(_DEGRADED), {"conversion_gate": "degraded"})
+
+
+def test_the_gate_can_be_turned_off():
+    from peerreviewagents.ingest import loader
+
+    loader.require_readable(_ingest(_BROKEN), {"conversion_gate": "off"})
+
+
+def test_an_unmeasured_manuscript_passes():
+    """A caller that bypassed the parser is not a failed conversion."""
+    from peerreviewagents.ingest import loader
+
+    assert prose.verdict_of({}) == prose.CLEAN
+    loader.require_readable({}, {})
+    loader.require_readable(None, {})
+
+
+def test_a_nonsense_gate_value_falls_back_to_the_default():
+    from peerreviewagents.ingest import loader
+
+    assert loader.conversion_gate({"conversion_gate": "yes please"}) == "broken"
+    assert loader.conversion_gate(None) == "broken"
+
+
+# --- the advisory: damage short of the gate is named to the panel ----------
+
+
+def test_a_clean_manuscript_carries_no_advisory():
+    from peerreviewagents.agents.utils import agent_utils
+
+    assert agent_utils._conversion_notice(_state(_CLEAN)) == ""
+
+
+def test_a_degraded_manuscript_warns_the_reviewers():
+    from peerreviewagents.agents.utils import agent_utils
+
+    notice = agent_utils._conversion_notice(_state(_DEGRADED))
+    assert "converter's, not the authors'" in notice
+    assert "run together" in notice
+
+
+def test_the_advisory_only_names_damage_that_was_found():
+    """No blanket list. A paper with fused words is not told about hyphens."""
+    from peerreviewagents.agents.utils import agent_utils
+
+    notice = agent_utils._conversion_notice(_state(_DEGRADED))
+    assert "hyphens survive" not in notice
+
+
+def test_the_advisory_rides_inside_the_manuscript_block():
+    """Not a second cached block: the panel shares one prefix, and a separate
+    block would make every reviewer write the manuscript again."""
+    from peerreviewagents.agents.utils import agent_utils
+
+    state = _state(_DEGRADED, manuscript_md=_DEGRADED, sections={})
+    block = agent_utils.manuscript_block(state)
+    assert block.startswith("=== MANUSCRIPT ===")
+    assert "converter's, not the authors'" in block
+    assert block.count("=== MANUSCRIPT ===") == 1
+
+
+def test_a_section_only_degradation_says_nothing_to_reviewers():
+    """`preamble_share` degrades the verdict but is not about the words, so
+    there is nothing to warn a reviewer about."""
+    from peerreviewagents.agents.utils import agent_utils
+
+    state = _state(_CLEAN, sections={"_preamble": _CLEAN, "methods": "x"})
+    assert state["ingest"]["prose"]["health"]["verdict"] == prose.DEGRADED
+    assert agent_utils._conversion_notice(state) == ""
+
+
+def test_density_never_reaches_a_prompt():
+    """The doctrine, asserted rather than only documented: no prompt-building
+    helper mentions sentence length, hedging or lexical diversity."""
+    import inspect
+
+    from peerreviewagents.agents.utils import agent_utils
+
+    src = inspect.getsource(agent_utils)
+    for term in ("sentence_len", "hedges_per_1k", "boosters_per_1k", "mattr"):
+        assert term not in src
+
+
+# --- where the gate sits, and why ------------------------------------------
+
+
+def test_the_gate_runs_at_the_desk_after_the_integrity_scan():
+    """Ordering, asserted rather than only commented.
+
+    A scanned PDF is both the usual cause of a broken conversion and the usual
+    innocent cause of a hidden-text finding. Screening integrity first means an
+    injected payload is still recorded on a file nobody can read; reversing
+    them would let a bad conversion swallow a fraud finding.
+    """
+    import inspect
+
+    from peerreviewagents.agents.editor import desk_screen
+
+    body = inspect.getsource(desk_screen._run)
+    assert body.index("_screen_integrity") < body.index("require_readable")
+    assert body.index("_integrity_reject") < body.index("require_readable")
+
+
+def test_the_desk_node_is_wired_in_for_the_gate_alone():
+    """With both other screens off, the gate still has somewhere to run."""
+    from peerreviewagents.agents.editor import desk_screen
+
+    bare = {"injection_screen": False, "desk_screen_mode": "off"}
+    assert desk_screen.node_enabled(bare) is True
+    assert desk_screen.node_enabled({**bare, "conversion_gate": "off"}) is False

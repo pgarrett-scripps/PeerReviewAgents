@@ -95,6 +95,68 @@ class Manuscript:
     def as_triple(self) -> tuple[str, str, dict[str, str]]:
         return self.title, self.text, self.sections
 
+    def health(self) -> str:
+        """Conversion verdict from :mod:`.prose`, or ``"clean"`` if unmeasured."""
+        return prose.verdict_of(self.ingest)
+
+    def health_notes(self) -> list[str]:
+        """Plain-language reasons behind a non-clean verdict."""
+        return prose.notes_of(self.ingest)
+
+
+class ManuscriptUnreadable(RuntimeError):
+    """The file converted badly enough that reviewing it would be reviewing
+    the converter.
+
+    Raised before any agent is paid, and deliberately *not* a desk rejection:
+    a desk rejection is a judgment about a manuscript, and this is a statement
+    about a file. The two must not arrive looking the same, because a review
+    bundle recording "reject" would follow the paper around as a verdict on
+    work no model ever read.
+    """
+
+    def __init__(self, verdict: str, notes: list[str]):
+        self.verdict = verdict
+        self.notes = list(notes)
+        detail = "; ".join(self.notes) or "see the ingest statistics"
+        super().__init__(
+            f"the manuscript converted {verdict}: {detail}. No review was run. "
+            "This is a conversion failure, not an assessment of the paper — a "
+            "scanned or image-only PDF is the usual cause."
+        )
+
+
+def conversion_gate(config: dict | None = None) -> str:
+    """Resolve the conversion-health gate: ``"broken"`` | ``"degraded"`` | ``"off"``.
+
+    Default ``"broken"``. The calibration corpus found no middle ground —
+    healthy conversions score 0.0 fused tokens per 1000 words and broken ones
+    score 22.8 — so stopping at ``broken`` costs nothing on a readable paper
+    and saves a full panel on an unreadable one. ``degraded`` is for callers
+    who would rather resubmit than read around damage; ``off`` restores the
+    prior behaviour of reviewing whatever arrives.
+    """
+    raw = str((config or {}).get("conversion_gate") or "broken").lower().strip()
+    return raw if raw in ("broken", "degraded", "off") else "broken"
+
+
+def require_readable(ingest: dict | None, config: dict | None = None) -> None:
+    """Raise :class:`ManuscriptUnreadable` if the conversion failed the gate.
+
+    Takes the stored ingest record rather than a :class:`Manuscript` so the
+    desk node can ask the question straight off ``state["ingest"]``.
+
+    Called at the desk, on the manuscript only — not inside the parser, which
+    also reads supplementary information and prior rounds. A damaged SI table
+    is a reason to note something, not to abandon the review.
+    """
+    gate = conversion_gate(config)
+    if gate == "off":
+        return
+    verdict = prose.verdict_of(ingest)
+    if verdict == prose.BROKEN or (gate == "degraded" and verdict == prose.DEGRADED):
+        raise ManuscriptUnreadable(verdict, prose.notes_of(ingest))
+
 
 def _plain_ingest(tool: str, text: str) -> dict:
     return {"format": "text", "tool": tool, "caveman": None, "chars": len(text)}
