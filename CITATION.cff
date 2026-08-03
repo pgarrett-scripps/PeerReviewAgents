@@ -33,8 +33,8 @@ authors:
     orcid: "https://orcid.org/0000-0001-5267-1672"
 repository-code: "https://github.com/pgarrett-scripps/PeerReviewAgents"
 license: MIT
-version: 0.1.0
-date-released: "2026-08-01"
+version: 0.2.0
+date-released: "2026-08-03"
 keywords:
   - peer review
   - large language models

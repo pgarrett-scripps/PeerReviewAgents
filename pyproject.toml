@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "peerreviewagents"
-version = "0.1.0"
+version = "0.2.0"
 description = "Multi-agent LLM peer-review framework (an editorial board for manuscripts)"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
-license = { text = "MIT" }
+license = "MIT"
 authors = [
     { name = "Patrick Garrett", email = "pgarrett@scripps.edu" },
 ]
@@ -23,7 +23,6 @@ keywords = [
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
