@@ -36,7 +36,7 @@ and tiered venue suggestions, with full reports at every stage.
                           Journal Scout         (tiered venue suggestions)
                                        │
                                        ▼
-                              reports + memory log
+                                    reports
 ```
 
 Built on **LangGraph** (orchestration), with a **Textual** TUI, a headless Rich CLI,
@@ -132,8 +132,8 @@ pip install -e '.[research]'
 ```
 
 Base deps include `rustypaper` (PDF → Markdown), `pypdf` (the integrity screen
-only), `langchain-openai`, `langchain-anthropic`, and `rank-bm25` (memory
-retrieval). No system dependencies; no `Pillow`; no OCR; no external paid
+only), `langchain-openai`, and `langchain-anthropic`.
+No system dependencies; no `Pillow`; no OCR; no external paid
 services beyond your chosen LLM provider.
 
 ## Manuscript ingest
@@ -250,8 +250,8 @@ to open a completion card with the decision badge, stats, and report-file
 links. The MVP runs **one job at a time**, in-process, with no auth — host it
 behind a reverse proxy if you put it on a public network. The upload form
 carries the per-submission settings: a **target-journal** dropdown (populated
-from `GET /journals`), article type, strictness, the desk-screen and memory
-toggles, and an optional supplementary-information file. Revision rounds are
+from `GET /journals`), article type, strictness, the desk-screen toggle,
+and an optional supplementary-information file. Revision rounds are
 CLI-only.
 
 ### Target journal
@@ -484,30 +484,6 @@ print(state["journal_recommendations"])
 write_reports(state)
 ```
 
-## Cross-run memory
-
-Each completed review writes a `status: pending` entry to a markdown memory log
-([`storage/memory.py`](peerreviewagents/storage/memory.py)) containing the
-manuscript title + abstract + per-reviewer scores + the editor's decision.
-
-When you know the real-world outcome:
-
-```bash
-peerreview outcome <job-id> accepted
-```
-
-This flips the entry to `status: resolved`, calls the LLM with a
-[`MemoryReflection`](peerreviewagents/agents/schemas.py) schema for a
-2–4-sentence lesson, and patches the entry in place. On subsequent runs, the
-meta-reviewer fetches the top-K most topically-similar resolved lessons (BM25
-ranked over title + abstract) and injects them into its prompt as **prior
-calibration**.
-
-Log lives at `~/.peerreviewagents/memory/review_memory.md` by default; override
-with `memory_path` in TOML. `--no-memory` (config `use_memory = false`,
-`PEERREVIEW_USE_MEMORY=0`) turns the whole loop off for a run: no lessons
-retrieved, nothing appended.
-
 ## Configuration
 
 See [`peerreviewagents/default_config.py`](peerreviewagents/default_config.py) —
@@ -527,8 +503,7 @@ The keys, by group:
 - Venue and framing: `target_journal`, `journals_dir`, `article_type`,
   `review_strictness`
 - Research: `research_enabled`, `data_vendors`, `tool_vendors`
-- Ingest and storage: `caveman`, `cache_dir`, `output_dir`, `memory_path`,
-  `memory_k`, `use_memory`
+- Ingest and output: `caveman`, `cache_dir`, `output_dir`
 
 `peerreview.toml.example` is an annotated template covering the common ones.
 
@@ -563,7 +538,7 @@ retry fallback, provider factories, research-vendor routing with rate-limit
 fallback, journal profile loading + context-block injection, revision rounds
 and corrections (including the adversarial suite that resubmits an unchanged
 manuscript and requires it to resolve nothing), the author-response verifier,
-the memory log lifecycle, and the end-to-end web pipeline (uploading → running
+and the end-to-end web pipeline (uploading → running
 → reading finished bodies via the REST endpoints).
 
 ## Architecture notes
@@ -583,8 +558,6 @@ the memory log lifecycle, and the end-to-end web pipeline (uploading → running
 - **`research/interface.py`** — category-level `data_vendors` map + per-method
   `tool_vendors` override; rate-limit triggers fall-through, other errors
   propagate.
-- **`storage/memory.py`** — append-only markdown log with HTML-comment record
-  separators; pending entries are patched in place when resolved.
 
 ## Docker
 

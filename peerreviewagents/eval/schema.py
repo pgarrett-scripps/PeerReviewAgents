@@ -36,7 +36,6 @@ _DIGEST_KEYS = (
     "max_debate_rounds",
     "enable_debate",
     "desk_screen",
-    "memory_k",
     "manuscript_char_budget",
 )
 

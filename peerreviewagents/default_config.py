@@ -256,18 +256,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # --- Output ---
     "output_dir": os.path.join(os.getcwd(), "reports"),
 
-    # --- Persistence ---
-    "memory_path": os.path.join(
-        os.path.expanduser("~"), ".peerreviewagents", "memory", "review_memory.md"
-    ),
-    # How many resolved past-review lessons to inject into the meta-
-    # reviewer's prompt (BM25-ranked by manuscript topic).
-    "memory_k": 3,
-    # Master switch for the cross-run memory loop. When False, the
-    # meta-reviewer retrieves no past lessons and completed runs are not
-    # appended to the log — the run is fully memory-free.
-    "use_memory": True,
-
     # --- Manuscript ingest ---
     # PDFs are converted to Markdown by rustypaper, which keeps headings,
     # tables and equations. There is no second backend and no fallback: the
@@ -385,7 +373,6 @@ _ENV_INT_KEYS = {
 _ENV_BOOL_KEYS = {
     "PEERREVIEW_DESK_SCREEN": "desk_screen",
     "PEERREVIEW_INJECTION_SCREEN": "injection_screen",
-    "PEERREVIEW_USE_MEMORY": "use_memory",
     "PEERREVIEW_RESEARCH_ENABLED": "research_enabled",
 }
 _ENV_FLOAT_KEYS = {

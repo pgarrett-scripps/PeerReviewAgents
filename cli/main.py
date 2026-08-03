@@ -4,7 +4,6 @@ Usage:
     peerreview <manuscript> [options]      # launches the Textual TUI
     peerreview <manuscript> --no-tui       # headless run with live Rich output
     peerreview serve [options]             # launch the FastAPI web UI
-    peerreview outcome <job-id> <outcome>  # record what the venue actually did
 """
 
 from __future__ import annotations
@@ -20,7 +19,6 @@ from rich.panel import Panel
 from peerreviewagents.default_config import get_config
 from peerreviewagents.graph.review_graph import PeerReviewGraph
 from peerreviewagents.reports import write_reports
-from peerreviewagents.storage.memory import MemoryLog
 
 console = Console()
 
@@ -179,15 +177,6 @@ def build_parser() -> argparse.ArgumentParser:
              "but review the manuscript anyway, instead of desk-rejecting it.",
     )
     p.add_argument(
-        "--no-memory",
-        dest="use_memory",
-        action="store_const",
-        const=False,
-        default=None,
-        help="Disable the cross-run memory loop for this run: retrieve no "
-             "past lessons and do not append this run to the log. On by default.",
-    )
-    p.add_argument(
         "--journal",
         dest="target_journal",
         help="Slug of a target journal to review against (see "
@@ -250,7 +239,7 @@ def config_from_args(args) -> dict:
     overrides = {}
     for key in ("provider", "reasoning_model", "max_debate_rounds",
                 "output_dir", "cache_dir", "target_journal", "article_type",
-                "review_strictness", "desk_screen", "use_memory",
+                "review_strictness", "desk_screen",
                 "injection_screen", "injection_screen_action",
                 "revision_of", "author_statement_path", "revision_mode",
                 "supplement_path", "temperature", "caveman"):
@@ -407,40 +396,14 @@ def run_headless(manuscript: str, config: dict) -> None:
 
     run_dir = write_reports(final)
     job_id = os.path.basename(run_dir.rstrip(os.sep))
-    try:
-        _append_pending_memory(final, job_id, config)
-    except Exception:  # noqa: BLE001
-        pass
     cost = final.get("total_cost") or 0.0
     cost_line = f"\nCost: ${cost:.4f}" if cost > 0 else ""
-    outcome_hint = (
-        f"\n\nWhen you know the venue's outcome, record it with:\n"
-        f"  peerreview outcome {job_id} {{accepted|rejected|minor|major|withdrawn}}"
-        if config.get("use_memory", True) else ""
-    )
     console.print(Panel.fit(
         f"[bold]Decision:[/bold] {final['decision']}\n"
         f"Reports: {run_dir}\n"
-        f"Job ID: {job_id}{cost_line}{outcome_hint}",
+        f"Job ID: {job_id}{cost_line}",
         border_style="green",
     ))
-
-
-def _append_pending_memory(state: dict, job_id: str, config: dict) -> None:
-    """Write a pending entry to the review memory log. Called from both
-    the headless CLI and the TUI. No-op when memory is disabled for the run."""
-    if not config.get("use_memory", True):
-        return
-    sections = state.get("sections") or {}
-    abstract = sections.get("abstract") or state.get("manuscript_md", "")[:500]
-    MemoryLog(config["memory_path"]).append_pending(
-        job_id=job_id,
-        title=state.get("manuscript_title", ""),
-        abstract=abstract,
-        decision=state.get("decision", ""),
-        draft_summary=state.get("decision_letter", ""),
-        reports=state.get("reports", []),
-    )
 
 
 def run_server(args) -> None:
@@ -474,46 +437,6 @@ def run_server(args) -> None:
         border_style="cyan",
     ))
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
-
-
-def run_outcome(args) -> None:
-    """Mark a past review's real-world outcome and (optionally) reflect on it."""
-    config = get_config(config_path=args.config_path)
-    log = MemoryLog(config["memory_path"])
-
-    llm = None
-    if not args.no_reflect:
-        try:
-            from peerreviewagents.agents.utils.llm import make_llm
-
-            llm = make_llm(config)
-        except Exception as exc:  # noqa: BLE001
-            console.print(
-                f"[yellow]Could not initialize LLM for reflection ({exc}); "
-                "recording outcome without a lesson.[/yellow]"
-            )
-            llm = None
-
-    try:
-        entry = log.mark_resolved(args.job_id, args.outcome, llm=llm, config=config)
-    except KeyError:
-        console.print(f"[red]No memory entry found for job_id '{args.job_id}'.[/red]")
-        console.print(
-            f"Check the log at: {config['memory_path']} "
-            "(use the Job ID printed at the end of a review run)."
-        )
-        sys.exit(1)
-    except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
-        sys.exit(1)
-
-    lesson = entry.lesson or "(reflection skipped)"
-    console.print(Panel.fit(
-        f"[bold]Outcome recorded:[/bold] {entry.outcome}\n"
-        f"[bold]Original decision:[/bold] {entry.decision}\n"
-        f"[bold]Lesson:[/bold] {lesson}",
-        border_style="green",
-    ))
 
 
 def run() -> None:
@@ -559,25 +482,6 @@ def run() -> None:
                         help="Report concealed prompt injection instead of "
                              "desk-rejecting the upload.")
         run_server(sp.parse_args(argv[1:]))
-        return
-
-    if argv and argv[0] == "outcome":
-        sp = argparse.ArgumentParser(
-            prog="peerreview outcome",
-            description="Mark a past review's real-world outcome and reflect.",
-        )
-        sp.add_argument("job_id", help="Job ID printed at the end of the review run.")
-        sp.add_argument(
-            "outcome",
-            choices=("accepted", "rejected", "minor", "major", "withdrawn"),
-            help="What actually happened to the manuscript at the venue.",
-        )
-        sp.add_argument("--config", dest="config_path", default=None)
-        sp.add_argument(
-            "--no-reflect", action="store_true",
-            help="Record the outcome but skip the LLM reflection step.",
-        )
-        run_outcome(sp.parse_args(argv[1:]))
         return
 
     args = build_parser().parse_args()

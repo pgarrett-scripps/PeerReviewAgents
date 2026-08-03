@@ -944,21 +944,3 @@ def _render_bucket(suggestions: list[JournalSuggestion], *, empty: str) -> list[
         lines.append(f"  - Fit: {s.fit_reasoning.strip()}")
         lines.append(f"  - Realism: {s.acceptance_realism.strip()}")
     return lines
-
-
-# --- Memory reflection ------------------------------------------------------
-
-
-class MemoryReflection(BaseModel):
-    """LLM-extracted lesson learned by comparing a past decision to its outcome."""
-
-    lesson: str = Field(
-        ...,
-        description="One to four sentences. What this run got right or wrong, and why.",
-    )
-    applies_when: list[str] = Field(
-        default_factory=list,
-        description="Short cues (manuscript topic, panel pattern, decision context) "
-                    "that mark when this lesson is relevant in future runs.",
-    )
-

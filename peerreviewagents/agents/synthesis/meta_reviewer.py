@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from ...observability import node_context
-from ...storage.memory import MemoryLog
 from ..debate.base import _debate_so_far, _reports_digest
 from ..schemas import MetaReviewOutput
 from ..utils.agent_states import ReviewState
@@ -37,14 +36,7 @@ def node(state: ReviewState) -> dict:
 def _run(state: ReviewState) -> dict:
     config = state["config"]
     llm = make_llm(config, agent="meta_reviewer", default_tag="synthesis", reasoning_effort="medium")
-    past_context = _past_context(state, config)
-    past_block = (
-        f"{past_context}\n\n"
-        "Use the prior calibration as background — diverge from it only "
-        "with specific reasoning grounded in this manuscript.\n\n"
-    ) if past_context else ""
     user = (
-        f"{past_block}"
         f"Reviewer findings:\n{_reports_digest(state)}\n\n"
         f"Debate transcript:\n{_debate_so_far(state)}\n\n"
         f"Numerical signal:\n{score_summary(state)}\n\n"
@@ -81,19 +73,3 @@ def _run(state: ReviewState) -> dict:
     }
 
 
-def _past_context(state: ReviewState, config: dict) -> str:
-    """BM25-retrieve the top-K resolved lessons most relevant to this
-    manuscript. Failures degrade silently to no prior context."""
-    if not config.get("use_memory", True):
-        return ""
-    k = int(config.get("memory_k", 3) or 0)
-    if k <= 0:
-        return ""
-    title = state.get("manuscript_title", "") or ""
-    sections = state.get("sections") or {}
-    abstract = sections.get("abstract") or (state.get("manuscript_md", "")[:500])
-    query = f"{title}\n{abstract}"
-    try:
-        return MemoryLog(config["memory_path"]).get_past_context(query, k=k)
-    except Exception:  # noqa: BLE001
-        return ""

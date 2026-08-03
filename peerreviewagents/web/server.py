@@ -271,7 +271,6 @@ def _register_routes(app: FastAPI) -> None:
             "default_strictness": default_strictness,
             "strictness_labels": LABELS,
             "default_desk_screen": bool(config.get("desk_screen")),
-            "default_use_memory": bool(config.get("use_memory", True)),
         })
 
     # --- history (disk-backed past runs) ---------------------------------
@@ -310,7 +309,6 @@ def _register_routes(app: FastAPI) -> None:
         article_type: str = Form(""),
         review_strictness: str = Form(""),
         desk_screen: str = Form(""),
-        use_memory: str = Form(""),
         supplement: UploadFile | None = File(None),
     ) -> JSONResponse:
         if jobs.has_active():
@@ -355,12 +353,6 @@ def _register_routes(app: FastAPI) -> None:
             job_overrides["desk_screen"] = True
         elif low in ("0", "false", "no", "off"):
             job_overrides["desk_screen"] = False
-
-        mem = use_memory.strip().lower()
-        if mem in ("1", "true", "yes", "on"):
-            job_overrides["use_memory"] = True
-        elif mem in ("0", "false", "no", "off"):
-            job_overrides["use_memory"] = False
 
         job = jobs.create(manuscript_path="", manuscript_filename=manuscript.filename or "manuscript")
         job_dir = Path(app.state.upload_root) / job.id

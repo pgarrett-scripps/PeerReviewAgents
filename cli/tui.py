@@ -29,7 +29,6 @@ from peerreviewagents.observability import (
     register_observer,
 )
 from peerreviewagents.reports import write_reports
-from peerreviewagents.storage.memory import MemoryLog
 
 _VERDICT = {
     "accept": "ACCEPT",
@@ -248,19 +247,6 @@ class ReviewApp(App):
             self._finish_with_error([f"failed to write reports: {exc}"])
             return
         job_id = os.path.basename(run_dir.rstrip(os.sep))
-        try:
-            sections = self.final.get("sections") or {}
-            abstract = sections.get("abstract") or self.final.get("manuscript_md", "")[:500]
-            MemoryLog(self.config["memory_path"]).append_pending(
-                job_id=job_id,
-                title=self.final.get("manuscript_title", ""),
-                abstract=abstract,
-                decision=self.final.get("decision", ""),
-                draft_summary=self.final.get("decision_letter", ""),
-                reports=self.final.get("reports", []),
-            )
-        except Exception:  # noqa: BLE001
-            pass
 
         cost = self.final.get("total_cost") or self._total_cost
         msg = (

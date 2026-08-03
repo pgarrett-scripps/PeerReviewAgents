@@ -190,18 +190,6 @@ debate_rounds = 2
 output_dir = "./reports"
 
 # ---------------------------------------------------------------------------
-# Cross-run memory
-# ---------------------------------------------------------------------------
-#
-# Each finished review is appended to a markdown log; `peerreview outcome
-# <job-id> <what-happened>` resolves an entry and records a lesson, and the
-# meta-reviewer retrieves the most topically similar resolved lessons on later
-# runs. false (same as `--no-memory`) retrieves nothing and writes nothing.
-# use_memory = true
-# memory_path = "~/.peerreviewagents/memory/review_memory.md"
-# memory_k = 3
-
-# ---------------------------------------------------------------------------
 # Manuscript ingest
 # ---------------------------------------------------------------------------
 #

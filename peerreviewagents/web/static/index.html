@@ -57,11 +57,6 @@
                 <span>Desk-screen first
                     <span class="muted">— triage that can reject before full review</span></span>
             </label>
-            <label class="desk-screen-field">
-                <input type="checkbox" id="memory-input" name="use_memory" checked>
-                <span>Long-term memory
-                    <span class="muted">— condition the area chair on lessons from past reviews</span></span>
-            </label>
             <button type="submit" class="primary" id="submit-btn" disabled>
                 Start review
             </button>
@@ -123,7 +118,6 @@
         const strictInput = document.getElementById('strictness-input');
         const strictValue = document.getElementById('strictness-value');
         const deskInput = document.getElementById('desk-screen-input');
-        const memInput = document.getElementById('memory-input');
 
         let strictnessLabels = {
             1: 'Very lenient', 2: 'Lenient', 3: 'Balanced',
@@ -165,7 +159,6 @@
                 if (data.strictness_labels) strictnessLabels = data.strictness_labels;
                 if (data.default_strictness) strictInput.value = data.default_strictness;
                 if (data.default_desk_screen) deskInput.checked = true;
-                if (typeof data.default_use_memory === 'boolean') memInput.checked = data.default_use_memory;
                 renderStrictness();
             } catch (_) { /* dropdown stays venue-agnostic only */ }
         })();
@@ -208,7 +201,6 @@
             data.append('article_type', articleTypeSelect.value);
             data.append('review_strictness', strictInput.value);
             data.append('desk_screen', deskInput.checked ? 'true' : 'false');
-            data.append('use_memory', memInput.checked ? 'true' : 'false');
             const resp = await fetch('/jobs', { method: 'POST', body: data });
             if (!resp.ok) {
                 stat.textContent = `Error: ${await resp.text()}`;
