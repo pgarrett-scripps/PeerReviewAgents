@@ -52,7 +52,7 @@ dependencies = [
     "rustypaper>=0.1",
     # Not for reading manuscripts: the integrity screen replays PDF content
     # streams with it to find text concealed from a human reader.
-    "pypdf>=4",
+    "pypdf>=6.14.2",
 ]
 
 [project.optional-dependencies]
