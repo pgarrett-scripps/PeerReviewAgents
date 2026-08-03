@@ -37,6 +37,12 @@ class AgentEvent:
     text: str = ""      # streamed text for kind=token, free-form for log/info
     input_tokens: int = 0
     output_tokens: int = 0
+    # Both are already inside input_tokens, not additional to it. Carried
+    # separately because the aggregate cost cannot show whether the shared
+    # manuscript prefix is being hit or re-sent, and that is the single
+    # biggest lever on what a review costs.
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
     cost_usd: float = 0.0
     run_id: str = ""    # which review produced this; routes it to a consumer
     timestamp: float = field(default_factory=time.time)
@@ -130,10 +136,41 @@ def _observer_for(run_id: str | None) -> Queue | None:
         return _QUEUES.get(_DEFAULT_RUN)
 
 
+# Running prompt-cache totals per run, so the summary can report whether the
+# shared manuscript prefix was actually hit. Kept here rather than in
+# ReviewState because every node would otherwise have to thread two more
+# counters through its return value to answer a question about the transport.
+_CACHE_TOTALS: dict[str, list[int]] = {}
+
+
+def note_cache_usage(run_id: str, read_tokens: int, write_tokens: int) -> None:
+    with _QUEUES_LOCK:
+        totals = _CACHE_TOTALS.setdefault(run_id or _DEFAULT_RUN, [0, 0])
+        totals[0] += max(0, read_tokens)
+        totals[1] += max(0, write_tokens)
+
+
+def cache_totals(run_id: str | None = None) -> tuple[int, int]:
+    """``(read, written)`` cached input tokens across this run so far."""
+    with _QUEUES_LOCK:
+        totals = _CACHE_TOTALS.get(run_id or _DEFAULT_RUN)
+        return (totals[0], totals[1]) if totals else (0, 0)
+
+
+def reset_cache_totals(run_id: str | None = None) -> None:
+    with _QUEUES_LOCK:
+        _CACHE_TOTALS.pop(run_id or _DEFAULT_RUN, None)
+
+
 def emit(event: AgentEvent, run_id: str | None = None) -> None:
     # Explicit argument wins, then the event's own tag, then whatever run
     # this thread is executing — so callers deep in a node need do nothing.
     target = run_id or event.run_id or current_run() or None
+    if event.kind == "usage" and (event.cache_read_tokens or event.cache_write_tokens):
+        # Recorded before the queue lookup: a run with no registered observer
+        # still spends money, and its summary still has to be able to say
+        # whether the cache was working.
+        note_cache_usage(target or _DEFAULT_RUN, event.cache_read_tokens, event.cache_write_tokens)
     q = _observer_for(target)
     if q is None:
         return
@@ -203,8 +240,42 @@ def _normalize_model_key(model: str) -> str:
     return key.replace(".", "-")             # unify 4.8 / 4-8 spellings
 
 
-def estimate_cost(model: str | None, input_tokens: int, output_tokens: int) -> float:
-    """Best-effort cost estimate from a static pricing table."""
+# Prompt-cache multipliers on the input rate (Anthropic's published pricing).
+# Writing a cache entry costs a quarter more than sending the tokens plain;
+# reading one costs a tenth. The whole point of threading the manuscript
+# through as a shared prefix is to pay the first once and the second after.
+_CACHE_WRITE_MULTIPLIER = 1.25
+_CACHE_READ_MULTIPLIER = 0.10
+
+
+def estimate_cost(
+    model: str | None,
+    input_tokens: int,
+    output_tokens: int,
+    *,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
+) -> float:
+    """Best-effort cost estimate from a static pricing table.
+
+    ``input_tokens`` is the provider's total input count, which **includes**
+    the cached tokens — that is how LangChain reports it for Anthropic, which
+    sums the plain, cache-read and cache-creation counts into one figure and
+    puts the breakdown in ``input_token_details``. The two cache arguments are
+    therefore subtracted back out here and re-priced at their own rates, not
+    added on top; adding them would count those tokens twice.
+
+    That detail is the whole reason this signature grew. Pricing every input
+    token at the full rate makes a review with a perfectly working prompt
+    cache cost exactly what one with no cache at all costs — the reported
+    figure could not tell them apart, so a cache that was working looked
+    identical to a cache that wasn't, and there was no way to see which you
+    had.
+
+    The multipliers are Anthropic's. OpenAI reports no cache-creation tokens
+    (so the write term falls out) and discounts reads less steeply, which
+    makes this an approximation on that route rather than a quote.
+    """
     if not model:
         return 0.0
     rates = _PRICING_USD_PER_M.get(_normalize_model_key(model))
@@ -214,7 +285,19 @@ def estimate_cost(model: str | None, input_tokens: int, output_tokens: int) -> f
     if rates is None:
         return 0.0
     in_rate, out_rate = rates
-    return (input_tokens / 1_000_000) * in_rate + (output_tokens / 1_000_000) * out_rate
+
+    cache_read = max(0, cache_read_tokens)
+    cache_write = max(0, cache_write_tokens)
+    # Clamped: a provider that reports cached tokens *outside* its input total
+    # would otherwise drive this negative and credit the run.
+    plain = max(0, input_tokens - cache_read - cache_write)
+
+    billed = (
+        plain
+        + cache_write * _CACHE_WRITE_MULTIPLIER
+        + cache_read * _CACHE_READ_MULTIPLIER
+    )
+    return (billed / 1_000_000) * in_rate + (output_tokens / 1_000_000) * out_rate
 
 
 def _family_rate(model: str) -> tuple[float, float] | None:
@@ -270,14 +353,19 @@ class StreamingCallback(BaseCallbackHandler):
         usage = _extract_usage(response)
         if not usage:
             return
-        in_tok, out_tok, cost, model = usage
+        in_tok, out_tok, cost, model, cache_read, cache_write = usage
         if cost == 0.0:
-            cost = estimate_cost(model or self._default_model, in_tok, out_tok)
+            cost = estimate_cost(
+                model or self._default_model, in_tok, out_tok,
+                cache_read_tokens=cache_read, cache_write_tokens=cache_write,
+            )
         emit(AgentEvent(
             kind="usage",
             node=current_node(),
             input_tokens=in_tok,
             output_tokens=out_tok,
+            cache_read_tokens=cache_read,
+            cache_write_tokens=cache_write,
             cost_usd=cost,
             run_id=current_run(),
         ))
@@ -286,13 +374,18 @@ class StreamingCallback(BaseCallbackHandler):
         emit(AgentEvent(kind="log", node=current_node(), text=f"LLM error: {error}", run_id=current_run()))
 
 
-def _extract_usage(response: Any) -> tuple[int, int, float, str | None] | None:
-    """Pull (input, output, cost, model) out of a LangChain LLMResult.
+def _extract_usage(
+    response: Any,
+) -> tuple[int, int, float, str | None, int, int] | None:
+    """Pull (input, output, cost, model, cache_read, cache_write) out of an LLMResult.
 
     Tries usage_metadata on the message first (always present when
     stream_usage=True), then falls back to response_metadata's
     ``token_usage`` block; cost comes from OpenRouter's optional
     ``usage.cost`` field when ``extra_body={"usage":{"include":true}}``.
+
+    The two cache counts are components of ``input_tokens``, not additions to
+    it — see :func:`estimate_cost`.
     """
     generations = getattr(response, "generations", None) or []
     for gen_list in generations:
@@ -325,7 +418,19 @@ def _extract_usage(response: Any) -> tuple[int, int, float, str | None] | None:
                     cost = float(cur)
                     break
 
+            # LangChain normalizes these into input_token_details; a message
+            # that came off the SDK without that adapter carries Anthropic's
+            # raw spelling instead, and would otherwise read as uncached.
+            details = um.get("input_token_details") or {}
+            tu = rm.get("usage") or {}
+            cache_read = int(
+                details.get("cache_read") or tu.get("cache_read_input_tokens") or 0
+            )
+            cache_write = int(
+                details.get("cache_creation") or tu.get("cache_creation_input_tokens") or 0
+            )
+
             model = rm.get("model_name") or rm.get("model")
             if in_tok or out_tok or cost:
-                return in_tok, out_tok, cost, model
+                return in_tok, out_tok, cost, model, cache_read, cache_write
     return None

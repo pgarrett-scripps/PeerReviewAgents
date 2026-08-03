@@ -77,3 +77,107 @@ def test_table_keys_are_already_normalized():
     """A key that doesn't survive normalization is unreachable."""
     for key in _PRICING_USD_PER_M:
         assert _normalize_model_key(key) == key, f"{key} is unreachable"
+
+
+# --- prompt cache -----------------------------------------------------------
+#
+# The manuscript is threaded to every agent as a shared cached prefix, so
+# whether it is being hit is the single biggest lever on what a review costs.
+# Before these, the cost figure could not express the difference.
+
+
+def test_a_cache_hit_is_cheaper_than_sending_the_tokens_plain():
+    plain = estimate_cost("claude-opus-5", MTOK, 0)
+    hit = estimate_cost("claude-opus-5", MTOK, 0, cache_read_tokens=MTOK)
+    assert hit == pytest.approx(plain * 0.10)
+
+
+def test_writing_the_cache_costs_a_quarter_more():
+    plain = estimate_cost("claude-opus-5", MTOK, 0)
+    write = estimate_cost("claude-opus-5", MTOK, 0, cache_write_tokens=MTOK)
+    assert write == pytest.approx(plain * 1.25)
+
+
+def test_cached_tokens_are_a_component_of_input_not_an_addition():
+    """The bug this signature exists to prevent.
+
+    LangChain folds cache reads into ``input_tokens`` for Anthropic. If
+    ``estimate_cost`` added the cache argument on top instead of carving it
+    out, every cached call would be billed for its manuscript twice.
+    """
+    half = MTOK // 2
+    both = estimate_cost("claude-opus-5", MTOK, 0, cache_read_tokens=half)
+    # 500k plain + 500k at a tenth = 550k billable, not 1.5M.
+    assert both == pytest.approx(estimate_cost("claude-opus-5", 550_000, 0))
+
+
+def test_the_cache_actually_changes_the_reported_number():
+    """The regression that hid the question for months.
+
+    Pricing every input token at the full rate made a review with a working
+    prompt cache cost exactly what one with no cache cost, so 'nothing is
+    getting cached' and 'everything is getting cached' produced the same
+    figure and neither could be told from the other.
+    """
+    uncached = estimate_cost("claude-opus-5", MTOK, 0)
+    cached = estimate_cost("claude-opus-5", MTOK, 0, cache_read_tokens=MTOK)
+    assert cached != uncached
+
+
+def test_cache_counts_larger_than_the_input_total_do_not_credit_the_run():
+    """A provider reporting cached tokens outside its input total must not
+    drive the estimate negative."""
+    cost = estimate_cost("claude-opus-5", 1000, 0, cache_read_tokens=MTOK)
+    assert cost >= 0.0
+
+
+# --- reading the counts off a real response shape ---------------------------
+
+
+def _msg(usage_metadata=None, response_metadata=None):
+    from langchain_core.messages import AIMessage
+
+    m = AIMessage(content="x")
+    if usage_metadata is not None:
+        m.usage_metadata = usage_metadata
+    m.response_metadata = response_metadata or {}
+    return m
+
+
+def test_cache_tokens_read_langchains_normalized_details():
+    from peerreviewagents.agents.utils.agent_utils import cache_tokens
+
+    msg = _msg(usage_metadata={
+        "input_tokens": 50_000,
+        "output_tokens": 500,
+        "total_tokens": 50_500,
+        "input_token_details": {"cache_read": 48_000, "cache_creation": 0},
+    })
+    assert cache_tokens(msg) == (48_000, 0)
+
+
+def test_cache_tokens_fall_back_to_anthropics_raw_field_names():
+    """A response that skipped LangChain's usage adapter carries the raw
+    spelling; without the fallback it reads as an uncached call."""
+    from peerreviewagents.agents.utils.agent_utils import cache_tokens
+
+    msg = _msg(response_metadata={"usage": {
+        "cache_read_input_tokens": 48_000,
+        "cache_creation_input_tokens": 1_200,
+    }})
+    assert cache_tokens(msg) == (48_000, 1_200)
+
+
+def test_a_cached_reviewer_call_is_priced_below_an_uncached_one():
+    """End to end through the call-cost path the agents actually use."""
+    from peerreviewagents.agents.utils.agent_utils import _call_cost
+
+    common = {"input_tokens": 50_000, "output_tokens": 500, "total_tokens": 50_500}
+    meta = {"model_name": "claude-opus-5"}
+
+    cold = _call_cost(_msg(usage_metadata=dict(common), response_metadata=meta))
+    warm = _call_cost(_msg(
+        usage_metadata=dict(common, input_token_details={"cache_read": 48_000}),
+        response_metadata=meta,
+    ))
+    assert warm < cold

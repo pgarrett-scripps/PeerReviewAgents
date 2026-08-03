@@ -7,6 +7,7 @@ import os
 import re
 
 from .agents.utils.agent_states import ReviewState
+from .observability import cache_totals
 
 _VERDICT_LABEL = {
     "accept": "Accept",
@@ -157,10 +158,35 @@ def _summary(state: ReviewState) -> str:
     cost = state.get("total_cost")
     if cost is not None and cost > 0:
         lines.append("")
-        lines.append(f"**OpenRouter cost:** ${cost:.4f}")
+        # Not "OpenRouter cost": the default provider is Anthropic direct, and
+        # on that route this is an estimate from the pricing table rather than
+        # a figure the vendor reported.
+        lines.append(f"**Estimated cost:** ${cost:.4f}")
+    cache_line = _cache_line(state)
+    if cache_line:
+        lines.append(cache_line)
     if state.get("errors"):
         lines += ["", "## Run Warnings"] + [f"- {e}" for e in state["errors"]]
     return "\n".join(lines)
+
+
+def _cache_line(state: ReviewState) -> str:
+    """One line on how the prompt cache behaved, or '' when it did not engage.
+
+    The manuscript is sent to every agent as a shared cached prefix, so this
+    is the ratio that decides what a review costs — and it is not visible in
+    the cost figure above, where a cache read and a full-price token look the
+    same. Reported as tokens rather than dollars because the panel spans model
+    tiers and a token count is the thing you can compare across runs.
+    """
+    read, written = cache_totals(state["config"].get("run_id", ""))
+    if not read and not written:
+        return ""
+    total = read + written
+    return (
+        f"**Prompt cache:** {read:,} tokens read, {written:,} written "
+        f"({read / total:.0%} served from cache)"
+    )
 
 
 def _integrity_line(state: ReviewState) -> str:

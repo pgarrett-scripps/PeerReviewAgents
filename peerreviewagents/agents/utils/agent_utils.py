@@ -183,7 +183,31 @@ def _call_cost(resp: AIMessage) -> float:
         return 0.0
 
     model = meta.get("model_name") or meta.get("model") or ""
-    return estimate_cost(model, int(in_tok or 0), int(out_tok or 0))
+    read, written = cache_tokens(resp)
+    return estimate_cost(
+        model,
+        int(in_tok or 0),
+        int(out_tok or 0),
+        cache_read_tokens=read,
+        cache_write_tokens=written,
+    )
+
+
+def cache_tokens(resp: AIMessage) -> tuple[int, int]:
+    """``(cache_read, cache_write)`` input tokens for one call, or ``(0, 0)``.
+
+    Both are already counted inside ``usage_metadata["input_tokens"]`` — see
+    :func:`peerreviewagents.observability.estimate_cost`, which subtracts them
+    back out. This reads LangChain's normalized ``input_token_details`` and
+    falls back to Anthropic's raw field names, because a response that came
+    straight off the SDK rather than through the LangChain usage adapter
+    carries the raw spelling and would otherwise report a cache-free call.
+    """
+    details = (getattr(resp, "usage_metadata", None) or {}).get("input_token_details") or {}
+    raw = (getattr(resp, "response_metadata", None) or {}).get("usage") or {}
+    read = details.get("cache_read") or raw.get("cache_read_input_tokens") or 0
+    written = details.get("cache_creation") or raw.get("cache_creation_input_tokens") or 0
+    return int(read or 0), int(written or 0)
 
 
 def _text(content) -> str:
