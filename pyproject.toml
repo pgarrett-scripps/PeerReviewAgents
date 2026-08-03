@@ -69,6 +69,8 @@ dev = ["pytest>=8", "ruff>=0.6", "pyyaml>=6"]
 
 [project.urls]
 Homepage = "https://github.com/pgarrett-scripps/PeerReviewAgents"
+# The Zenodo concept DOI, which always resolves to the newest release.
+DOI = "https://doi.org/10.5281/zenodo.21781895"
 Repository = "https://github.com/pgarrett-scripps/PeerReviewAgents"
 Issues = "https://github.com/pgarrett-scripps/PeerReviewAgents/issues"
 
