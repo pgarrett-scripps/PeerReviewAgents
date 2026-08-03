@@ -154,8 +154,8 @@ def emit(event: AgentEvent, run_id: str | None = None) -> None:
 #
 # Keyed by *normalized* model name — see :func:`_normalize_model_key`. One
 # model reaches this table under several spellings depending on the route:
-# "anthropic/claude-opus-4.8" via OpenRouter, "claude-opus-4-8" direct,
-# "claude-opus-4-1-20250805" as a dated snapshot. Maintaining a separate
+# "anthropic/claude-opus-5" via OpenRouter, "claude-opus-5" direct,
+# "claude-haiku-4-5-20251001" as a dated snapshot. Maintaining a separate
 # entry per spelling meant a route with no entry silently fell through to
 # the family heuristic; normalizing collapses them onto one key.
 _PRICING_USD_PER_M: dict[str, tuple[float, float]] = {
@@ -172,7 +172,6 @@ _PRICING_USD_PER_M: dict[str, tuple[float, float]] = {
     "claude-sonnet-4-5": (3.0, 15.0),
     "claude-haiku-4-5": (1.0, 5.0),
     # Anthropic — legacy, priced at the old Opus/Sonnet tiers
-    "claude-opus-4-1": (15.0, 75.0),
     "claude-opus-4": (15.0, 75.0),
     "claude-sonnet-4": (3.0, 15.0),
     "claude-haiku-4": (1.0, 5.0),
@@ -196,8 +195,8 @@ _PRICING_USD_PER_M: dict[str, tuple[float, float]] = {
 def _normalize_model_key(model: str) -> str:
     """Collapse the provider-specific spellings of a model id into one key.
 
-    ``anthropic/claude-opus-4.8`` and ``claude-opus-4-8`` are the same model;
-    so are ``claude-opus-4-1`` and ``claude-opus-4-1-20250805``.
+    ``anthropic/claude-opus-5`` and ``claude-opus-5`` are the same model;
+    so are ``claude-haiku-4-5`` and ``claude-haiku-4-5-20251001``.
     """
     key = model.lower().rsplit("/", 1)[-1]   # drop any vendor prefix
     key = re.sub(r"-\d{8}$", "", key)        # drop a dated snapshot suffix

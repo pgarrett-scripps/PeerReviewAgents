@@ -34,7 +34,7 @@ def test_unknown_provider_raises():
 
 def test_openrouter_factory(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "stub-key")
-    llm = make_chat_model(_cfg("openrouter", "anthropic/claude-opus-4.1"))
+    llm = make_chat_model(_cfg("openrouter", "anthropic/claude-opus-5"))
     assert type(llm).__name__ == "ChatOpenAI"
     # Base URL is what makes this OpenRouter rather than OpenAI direct.
     base = (
@@ -48,7 +48,7 @@ def test_openrouter_factory(monkeypatch):
 def test_openrouter_passes_reasoning_effort(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "stub-key")
     llm = make_chat_model(
-        _cfg("openrouter", "anthropic/claude-opus-4.1"),
+        _cfg("openrouter", "anthropic/claude-opus-5"),
         reasoning_effort="high",
     )
     extra = getattr(llm, "extra_body", None) or {}
@@ -74,16 +74,16 @@ def test_openai_direct_factory(monkeypatch):
 
 def test_anthropic_direct_factory(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "stub-key")
-    llm = make_chat_model(_cfg("anthropic", "claude-opus-4-7"))
+    llm = make_chat_model(_cfg("anthropic", "claude-opus-5"))
     assert type(llm).__name__ == "ChatAnthropic"
 
 
 def test_anthropic_adaptive_thinking(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "stub-key")
-    # Current models (Opus 4.7+/Sonnet 5/Fable): adaptive thinking + the effort
+    # Current models (Opus 5/Sonnet 5/Fable 5): adaptive thinking + the effort
     # knob, and NO sampling temperature (the API 400s on it).
     llm = make_chat_model(
-        _cfg("anthropic", "claude-opus-4-7"),
+        _cfg("anthropic", "claude-opus-5"),
         reasoning_effort="high",
     )
     assert llm.temperature is None
@@ -93,7 +93,7 @@ def test_anthropic_adaptive_thinking(monkeypatch):
 
 def test_anthropic_legacy_thinking(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "stub-key")
-    # Older models (Haiku 4.5, Sonnet 4.5, Opus 4.1) keep the fixed-budget
+    # Older models (Haiku 4.5, Sonnet 4.5, and earlier) keep the fixed-budget
     # extended-thinking path, which requires temperature=1.
     llm = make_chat_model(
         _cfg("anthropic", "claude-haiku-4-5"),
@@ -146,8 +146,7 @@ def test_spec_table_consistency():
         ("claude-opus-4-6", True, False),         # adaptive, but sampling still ok
         ("claude-sonnet-4-6", True, False),
         ("claude-haiku-4-5", False, False),
-        ("claude-opus-4-1", False, False),
-        ("claude-opus-4-1-20250805", False, False),
+        ("claude-haiku-4-5-20251001", False, False),  # dated snapshot
         ("claude-3-5-sonnet-20241022", False, False),   # legacy version-first id
     ],
 )
@@ -177,3 +176,22 @@ def test_opus_5_payload_omits_rejected_params(monkeypatch):
     payload = llm._get_request_payload([HumanMessage("hi")])
     assert "temperature" not in payload
     assert payload["thinking"] == {"type": "adaptive"}
+
+
+def test_openrouter_omits_temperature_for_current_anthropic(monkeypatch):
+    """The default route: OpenRouter + Opus 5, which 400s on `temperature`.
+
+    The rejecting party is the model, not the provider — so the OpenRouter
+    factory has to make the same call the direct-Anthropic one does.
+    """
+    monkeypatch.setenv("OPENROUTER_API_KEY", "stub-key")
+    llm = make_chat_model(_cfg("openrouter", "anthropic/claude-opus-5"))
+    assert llm.temperature is None
+
+    # A model that still accepts sampling must keep it.
+    legacy = make_chat_model(_cfg("openrouter", "anthropic/claude-haiku-4.5"))
+    assert legacy.temperature is not None
+
+    # Non-Anthropic slugs are unaffected.
+    other = make_chat_model(_cfg("openrouter", "openai/gpt-4o"))
+    assert other.temperature is not None

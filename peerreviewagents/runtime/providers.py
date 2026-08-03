@@ -71,7 +71,6 @@ def _make_openrouter(model: str, *, reasoning_effort: str | None = None,
 
     kwargs: dict[str, Any] = {
         "model": model,
-        "temperature": temperature,
         "base_url": _OPENROUTER_BASE_URL,
         "default_headers": _OPENROUTER_HEADERS,
         "extra_body": extra_body,
@@ -79,6 +78,14 @@ def _make_openrouter(model: str, *, reasoning_effort: str | None = None,
         "stream_usage": True,
         "callbacks": [StreamingCallback(default_model=model)],
     }
+    # Current Anthropic models (Opus 5/4.7/4.8, Sonnet 5, Fable/Mythos 5)
+    # reject `temperature` outright. The direct-Anthropic factory already
+    # omits it for them; routing the same model through OpenRouter has to
+    # make the same decision, because the model is what rejects the field,
+    # not the route. Whether OpenRouter would strip it for us is not
+    # something to rely on — the default model is one of these.
+    if not _anthropic_matches(model, _ANTHROPIC_NO_SAMPLING):
+        kwargs["temperature"] = temperature
     if api_key:
         kwargs["api_key"] = api_key
     return ChatOpenAI(**kwargs)
@@ -143,7 +150,7 @@ def _make_anthropic(model: str, *, reasoning_effort: str | None = None,
             kwargs["effort"] = reasoning_effort  # low | medium | high
             kwargs["max_tokens"] = 16000  # room for thinking + the answer
     elif reasoning_effort:
-        # Legacy models (Haiku 4.5, Sonnet 4.5, Opus 4.1): fixed thinking
+        # Legacy models (Haiku 4.5, Sonnet 4.5, and older): fixed thinking
         # budget. Extended thinking requires temperature=1 and a max_tokens
         # cap above the budget.
         budget = _ANTHROPIC_THINKING_BUDGET.get(reasoning_effort, 4096)

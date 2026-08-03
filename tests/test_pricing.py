@@ -1,8 +1,8 @@
 """Cost estimation across the spellings a model id arrives in.
 
 The same model reaches `estimate_cost` differently depending on the provider
-(`anthropic/claude-opus-4.8` via OpenRouter, `claude-opus-4-8` direct,
-`claude-opus-4-1-20250805` as a dated snapshot). These have to agree — the
+(`anthropic/claude-opus-5` via OpenRouter, `claude-opus-5` direct,
+`claude-haiku-4-5-20251001` as a dated snapshot). These have to agree — the
 number ends up in published provenance.
 """
 
@@ -39,7 +39,7 @@ def test_spellings_agree(openrouter_slug, direct_id):
 
 
 def test_dated_snapshot_matches_alias():
-    assert rate("claude-opus-4-1-20250805") == rate("claude-opus-4-1")
+    assert rate("claude-haiku-4-5-20251001") == rate("claude-haiku-4-5")
 
 
 @pytest.mark.parametrize(
@@ -49,8 +49,8 @@ def test_dated_snapshot_matches_alias():
         ("claude-sonnet-5", (3.0, 15.0)),
         ("claude-fable-5", (10.0, 50.0)),
         ("claude-haiku-4-5", (1.0, 5.0)),
-        # Legacy Opus really is the expensive tier — not a stale default.
-        ("claude-opus-4-1", (15.0, 75.0)),
+        # Retired-era Opus really is the expensive tier — not a stale default.
+        ("claude-3-opus", (15.0, 75.0)),
     ],
 )
 def test_known_rates(model, expected):
@@ -58,7 +58,7 @@ def test_known_rates(model, expected):
 
 
 def test_current_opus_is_not_priced_at_the_legacy_tier():
-    """The regression: direct ids missed the table and got Opus 4.1's rate."""
+    """The regression: direct ids missed the table and got the legacy rate."""
     assert estimate_cost("claude-opus-5", MTOK, 0) == 5.0
     assert estimate_cost("claude-opus-5", MTOK, 0) != 15.0
 

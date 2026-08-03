@@ -38,16 +38,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # Single text model used by every reviewer, debater, synthesizer,
     # author rebuttal, editor, and journal recommender. The model string
     # is interpreted by the active provider:
-    #   openrouter -> a slug like "anthropic/claude-opus-4.1"
-    #   anthropic  -> a model id like "claude-opus-4-7" or "claude-sonnet-4-6"
+    #   openrouter -> a slug like "anthropic/claude-opus-5"
+    #   anthropic  -> a model id like "claude-opus-5" or "claude-sonnet-5"
     #   openai     -> a model id like "gpt-4.1" or "o3"
-    "reasoning_model": "anthropic/claude-opus-4.1",
+    "reasoning_model": "anthropic/claude-opus-5",
 
     # Sampling temperature for every text agent. None = the provider default
     # (0.3). Set 0.0 for the most reproducible/defensible single run. NOTE:
-    # the newest Anthropic models (Sonnet 5, Opus 4.7/4.8, Fable 5) reject the
-    # `temperature` parameter outright, so this only takes effect on models
-    # that accept sampling (e.g. the Haiku reading panel).
+    # the current Anthropic models (Opus 5, Sonnet 5, Opus 4.7/4.8, Fable 5)
+    # reject the `temperature` parameter outright, so this has no effect on
+    # the default model — it only takes effect on models that still accept
+    # sampling (e.g. the Haiku reading panel).
     "temperature": None,
 
     # --- Per-agent models (optional) ---
@@ -56,7 +57,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # above. Example (TOML):
     #     [models.synthesis]           # editor, meta-reviewer, rebuttal, recommender
     #     provider = "anthropic"
-    #     model = "claude-opus-4-8"
+    #     model = "claude-opus-5"
     #     effort = "high"
     #     [models.reviewer]            # the specialist panel
     #     provider = "anthropic"
@@ -76,7 +77,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # author_rebuttal, journal_recommender. Example (TOML):
     #     [agent_models]
     #     reviewer_novelty = "synthesis"          # give one reviewer the big model
-    #     editor = { model = "claude-opus-4-8", effort = "max" }
+    #     editor = { model = "claude-opus-5", effort = "max" }
     "agent_models": {},
 
     # --- Workflow ---

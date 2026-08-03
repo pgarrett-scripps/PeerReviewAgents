@@ -69,8 +69,8 @@ def build_parser() -> argparse.ArgumentParser:
             "Non-secret settings live in ./peerreview.toml.\n\n"
             "Examples:\n"
             "  peerreview paper.pdf --no-tui\n"
-            "  peerreview paper.pdf --reasoning-model anthropic/claude-opus-4.1\n"
-            "  peerreview paper.pdf --provider anthropic --reasoning-model claude-opus-4-7\n\n"
+            "  peerreview paper.pdf --reasoning-model anthropic/claude-opus-5\n"
+            "  peerreview paper.pdf --provider anthropic --reasoning-model claude-opus-5\n\n"
             "Run `just cache-clear` to wipe the manuscript parsing cache.\n\n"
             "Required env vars (one of, per --provider):\n"
             "  OPENROUTER_API_KEY  — provider=openrouter  (default)\n"
@@ -95,8 +95,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--reasoning-model",
         dest="reasoning_model",
-        help="Model id for the active provider (e.g. anthropic/claude-opus-4.1 "
-             "on OpenRouter, claude-opus-4-7 on Anthropic direct, gpt-4.1 on OpenAI).",
+        help="Model id for the active provider (e.g. anthropic/claude-opus-5 "
+             "on OpenRouter, claude-opus-5 on Anthropic direct, gpt-4.1 on OpenAI).",
     )
     p.add_argument("--debate-rounds", type=int, dest="max_debate_rounds")
     p.add_argument(
@@ -241,7 +241,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--temperature", dest="temperature", type=float, default=None,
         help="Sampling temperature for models that accept it (e.g. 0 for the "
              "most reproducible run). Ignored by models that reject sampling "
-             "(Sonnet 5, Opus 4.7/4.8, Fable 5).",
+             "(Opus 5, Sonnet 5, Opus 4.7/4.8, Fable 5).",
     )
     return p
 
