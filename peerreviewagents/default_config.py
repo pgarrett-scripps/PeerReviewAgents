@@ -169,7 +169,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # None (default) = an ordinary first-round review. See
     # peerreviewagents.rounds for the record format.
     "revision_of": None,
-    # Optional path to the REAL authors' response letter (pdf/md/tex/docx) —
+    # Optional path to the REAL authors' response letter (pdf/md/tex/txt) —
     # the human scientists' reply, not the simulated author-rebuttal agent.
     # Treated as untrusted, interested-party input: it is screened for
     # injection like the manuscript, never shown to the panel as prose, and
@@ -213,7 +213,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # Requires `revision_of` for that reason.
     "only_reviewers": [],
 
-    # Optional path to a supplementary-information file (pdf/md/tex/docx).
+    # Optional path to a supplementary-information file (pdf/md/tex/txt).
     # When set, the SI is parsed and passed IN FULL to the
     # methods_completeness auditor only (reagent/key-resources tables and
     # full protocols often live here). None = no SI; the run is unchanged.

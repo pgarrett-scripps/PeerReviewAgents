@@ -197,7 +197,7 @@ conversion of it.
 **Convert here, not before.** Handing the pipeline a `.md` you converted
 yourself looks equivalent and is not: the integrity screen dispatches on file
 type, and only the PDF path can see text hidden in a content stream. Give it
-the PDF. Manuscripts that are natively `.md`, `.tex`, `.txt` or `.docx` are
+the PDF. Manuscripts that are natively `.md`, `.tex` or `.txt` are
 read directly and screened by the path for their own format: the rule is
 about not pre-converting a PDF, not about refusing other formats.
 
@@ -384,7 +384,7 @@ the revised draft as a revision instead of a fresh submission:
 
 ```bash
 peerreview revised.pdf --revision-of 20260801-143022-widget-throughput
-peerreview revised.pdf --revision-of <job-id> --author-statement response.docx
+peerreview revised.pdf --revision-of <job-id> --author-statement response.md
 ```
 
 The whole panel runs again: all 8 reviewers, debate, meta-review, editor,

@@ -196,9 +196,8 @@ def test_lone_surrogates_do_not_abort_the_run(tmp_path, monkeypatch, cache_dir):
     UnicodeEncodeError naming a codec rather than a manuscript. A DOCX can
     still carry them.
     """
-    monkeypatch.setattr(loader, "_read_docx", lambda path: "Broken \ud835 glyph.")
-    path = tmp_path / "paper.docx"
-    path.write_bytes(b"PK\x03\x04")
+    path = tmp_path / "paper.md"
+    path.write_text("Broken \ud835 glyph.", encoding="utf-8", errors="surrogatepass")
     parsed = loader.load_manuscript_record(str(path), cache_dir)
     parsed.text.encode("utf-8")  # must not raise
     assert "Broken" in parsed.text

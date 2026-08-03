@@ -24,8 +24,8 @@ still reports as having run, having looked for nothing it can find. So
 conversion happens *here*, behind the loader, where the screen has already
 seen the real bytes.
 
-Other supported inputs: Markdown / LaTeX / TXT (read directly), DOCX
-(via python-docx). All paths converge on ``(title, text, sections)``.
+Other supported inputs: Markdown / LaTeX / TXT, read directly. All paths
+converge on ``(title, text, sections)``.
 """
 
 from __future__ import annotations
@@ -219,9 +219,6 @@ def _load_uncached(path: str, config: dict | None = None) -> Manuscript:
         # and section boundaries can be trusted.
         if ext in (".md", ".markdown"):
             record["format"] = "markdown"
-    elif ext == ".docx":
-        text = _read_docx(path)
-        record = _plain_ingest("python-docx", text)
     else:
         raise ValueError(f"Unsupported manuscript type: {ext}")
 
@@ -288,15 +285,6 @@ def _read_pdf(path: str, ingest: dict) -> tuple[str, str, str, dict]:
         "caveman": None if caveman == "off" else caveman,
         "chars": len(converted.markdown),
     }
-
-
-def _read_docx(path: str) -> str:
-    try:
-        import docx  # python-docx
-    except ImportError as exc:  # pragma: no cover
-        raise RuntimeError("Install python-docx to read .docx files") from exc
-    doc = docx.Document(path)
-    return "\n".join(p.text for p in doc.paragraphs)
 
 
 def _normalize(text: str) -> str:

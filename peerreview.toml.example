@@ -89,7 +89,7 @@ debate_rounds = 2
 # "note" records it and proceeds.
 # visible_injection_action = "judge"
 
-# Optional supplementary-information file (pdf/md/tex/docx), read in full and
+# Optional supplementary-information file (pdf/md/tex/txt), read in full and
 # passed to the methods-completeness auditor only. Usually per-run as
 # `--si PATH`.
 # supplement_path = ""
@@ -112,7 +112,7 @@ debate_rounds = 2
 # draft, and the editor decides on the round-over-round delta.
 # revision_of = ""
 #
-# The REAL authors' response letter (pdf/md/tex/docx) — not the simulated
+# The REAL authors' response letter (pdf/md/tex/txt) — not the simulated
 # author-rebuttal agent, which is skipped when this is supplied. Untrusted,
 # interested-party input: screened for injection at the desk, never shown to
 # the panel as prose, and reaching reviewers only as verified pointers to

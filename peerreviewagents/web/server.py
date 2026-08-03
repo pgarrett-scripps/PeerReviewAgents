@@ -51,7 +51,7 @@ class _NoCacheStaticFiles(StaticFiles):
 
 
 _STATIC_DIR = Path(__file__).parent / "static"
-_ALLOWED_SUFFIXES = {".pdf", ".md", ".markdown", ".tex", ".docx", ".txt"}
+_ALLOWED_SUFFIXES = {".pdf", ".md", ".markdown", ".tex", ".txt"}
 
 # What the upload form submits for "no target venue". A reserved token rather
 # than "": an optional form field that is empty and one that was never sent

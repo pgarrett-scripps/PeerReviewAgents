@@ -77,7 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("manuscript", nargs="?", help="Path to manuscript (pdf/md/tex/docx)")
+    p.add_argument("manuscript", nargs="?", help="Path to manuscript (pdf/md/tex/txt)")
     p.add_argument(
         "--config",
         dest="config_path",
@@ -152,7 +152,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--author-statement",
         dest="author_statement_path",
         metavar="PATH",
-        help="The real authors' response letter (pdf/md/tex/docx). Verified "
+        help="The real authors' response letter (pdf/md/tex/txt). Verified "
              "against the manuscript before the panel runs; reviewers see only "
              "corroborated pointers to passages they must re-read, never the "
              "letter itself. Requires --revision-of.",
@@ -206,7 +206,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--si",
         dest="supplement_path",
-        help="Optional supplementary-information file (pdf/md/tex/docx). Passed "
+        help="Optional supplementary-information file (pdf/md/tex/txt). Passed "
              "in full to the methods-completeness auditor only. Ignored if omitted.",
     )
     p.add_argument("--no-tui", action="store_true", help="run headless")

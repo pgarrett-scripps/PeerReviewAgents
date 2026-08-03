@@ -834,44 +834,6 @@ def _collect_matches(runs: list[HiddenRun], visible_text: str) -> tuple[Injectio
     return tuple(matches)
 
 
-# --- DOCX -------------------------------------------------------------------
-
-_DOCX_HIDDEN_COLORS = {"FFFFFF", "FEFEFE", "FDFDFD"}
-
-
-def _scan_docx(path: str) -> IntegrityScan:
-    import docx  # python-docx
-
-    doc = docx.Document(path)
-    runs: list[HiddenRun] = []
-    visible: list[str] = []
-    for para in doc.paragraphs:
-        for run in para.runs:
-            text = run.text
-            if not text.strip():
-                continue
-            reasons: list[str] = []
-            color = getattr(getattr(run.font, "color", None), "rgb", None)
-            if color is not None and str(color).upper() in _DOCX_HIDDEN_COLORS:
-                reasons.append(WHITE_TEXT)
-            if getattr(run.font, "hidden", False):
-                reasons.append(HIDDEN_FORMATTING)
-            size = getattr(run.font, "size", None)
-            if size is not None and size.pt < MIN_FONT_PT:
-                reasons.append(MICROSCOPIC)
-            if reasons and len(text) >= MIN_RUN_CHARS:
-                runs.append(HiddenRun(page=0, reasons=tuple(reasons),
-                                      text=text, chars=len(text)))
-            else:
-                visible.append(text)
-    return IntegrityScan(
-        path=path,
-        scanned=True,
-        hidden_runs=tuple(runs),
-        matches=_collect_matches(runs, "\n".join(visible)),
-    )
-
-
 # --- markup (Markdown / HTML / LaTeX / plain text) ---------------------------
 
 # Constructs that hide text from a rendered document but leave it in the
@@ -939,8 +901,6 @@ def scan_manuscript(path: str) -> IntegrityScan:
     try:
         if ext == ".pdf":
             return _scan_pdf(path)
-        if ext == ".docx":
-            return _scan_docx(path)
         if ext in _MARKUP_EXTS:
             return _scan_markup(path, latex=ext == ".tex")
     except Exception as exc:  # noqa: BLE001 — fail open, always
