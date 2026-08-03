@@ -59,6 +59,9 @@ def write_reports(state: ReviewState) -> str:
     usage = _usage_table(state)
     if usage:
         _write(run_dir, "usage.md", usage)
+    stats = _prose_report(state)
+    if stats:
+        _write(run_dir, "manuscript_stats.md", stats)
     _write_round_record(state, run_dir)
 
     return run_dir
@@ -169,6 +172,12 @@ def _summary(state: ReviewState) -> str:
     integrity = _integrity_line(state)
     if integrity:
         lines.append(f"**Submission integrity:** {integrity}")
+    # Placed with the other provenance, above the scores: a reader weighing a
+    # verdict should learn that the panel read a damaged conversion before
+    # they read the verdict, not after.
+    conversion = _ingest_health_line(state)
+    if conversion:
+        lines.append(conversion)
     if state.get("desk_rejected"):
         lines.append("**Outcome:** Desk reject (screened before full review)")
         return "\n".join(lines)
@@ -217,6 +226,122 @@ def _summary(state: ReviewState) -> str:
     if state.get("errors"):
         lines += ["", "## Run Warnings"] + [f"- {e}" for e in state["errors"]]
     return "\n".join(lines)
+
+
+def _prose_report(state: ReviewState) -> str:
+    """``manuscript_stats.md`` — deterministic counts over the parsed text.
+
+    Facts only, and no adjective anywhere in it. These numbers exist so a
+    reader can check the panel against the manuscript, and the moment one of
+    them reads as a judgment ("dense prose", "poor readability") it starts
+    competing with the reviewers instead of grounding them.
+    """
+    ingest = state.get("ingest") or {}
+    stats = ingest.get("prose") or {}
+    health, counts = stats.get("health") or {}, stats.get("counts") or {}
+    if not counts:
+        return ""
+
+    lines = [
+        f"# Manuscript Statistics — {state.get('manuscript_title', 'Untitled')}",
+        "",
+        "Measured deterministically at ingest, with no model involved. Every "
+        "figure describes the *converted* text the panel read, not the PDF.",
+        "",
+        "## How the file converted",
+        "",
+        f"- Format: {ingest.get('format', 'unknown')} via {ingest.get('tool', 'unknown')}",
+        f"- Conversion health: **{health.get('verdict', 'unknown')}**",
+        f"- Fused tokens: {health.get('fused_per_1k', 0)} per 1000 words",
+        f"- Hyphenated line breaks: {health.get('hyphen_breaks_per_1k', 0)} per 1000 words",
+        f"- Lost sentence spaces: {health.get('missing_space_per_1k', 0)} per 1000 words",
+        f"- Markdown headings emitted by the converter: {health.get('markdown_headings', 0)}",
+        # Named as blocks, not paragraphs, because that is what survives:
+        # across a 16-paper corpus this ranged from 2.8 to 656 words per
+        # block on comparable manuscripts.
+        f"- Blank-line-separated blocks: {counts.get('blocks', 0)}",
+    ]
+    share = health.get("preamble_share")
+    if share is not None:
+        lines.append(f"- Text matching no known section: {share:.0%}")
+    for note in health.get("notes") or []:
+        lines.append(f"- ⚠ {note}")
+
+    main = counts.get("main_text_words")
+    lines += [
+        "",
+        "## Size",
+        "",
+        f"- Words: {counts.get('words', 0):,}",
+        (
+            f"- Main text (excluding references): {main:,}"
+            if main is not None
+            else "- Main text: unavailable — the reference list could not be "
+            "located, and it is typically a fifth of a paper's words"
+        ),
+        f"- Reference list: {counts.get('reference_words', 0):,} words",
+        f"- Sentences: {counts.get('sentences', 0):,}",
+        f"- Display equations: {counts.get('display_math', 0)}",
+        f"- Table rows: {counts.get('table_rows', 0)}",
+    ]
+
+    density = stats.get("density")
+    if not density:
+        lines += [
+            "",
+            "## Prose",
+            "",
+            f"Not measured: this run compressed the manuscript "
+            f"(caveman = {stats.get('caveman')}), so sentence length, hedging "
+            "and lexical diversity would describe the compressor rather than "
+            "the authors.",
+        ]
+        return "\n".join(lines) + "\n"
+
+    style = density.get("citation_style")
+    citation_line = (
+        f"- Citations: {density.get('citations', 0)} ({density.get('citations_per_1k', 0)} "
+        f"per 1000 words), style {style}"
+        if style != "undetected"
+        else "- Citations: too few detected to count reliably — this venue most "
+        "likely sets them as superscript numerals, which convert to bare digits"
+    )
+    lines += [
+        "",
+        "## Prose",
+        "",
+        f"- Sentence length: mean {density.get('sentence_len_mean', 0)}, "
+        f"median {density.get('sentence_len_median', 0)}, "
+        f"90th percentile {density.get('sentence_len_p90', 0)} words",
+        f"- Sentences over 40 words: {density.get('long_sentence_share', 0):.0%}",
+        f"- Lexical diversity (MATTR): {density.get('mattr', 0)}",
+        f"- Passive constructions: {density.get('passive_per_sentence_approx', 0)} "
+        "per sentence (regex approximation)",
+        "",
+        "## Claims and evidence",
+        "",
+        citation_line,
+        f"- Numbers: {density.get('numbers_per_1k', 0)} per 1000 words",
+        f"- Hedging language: {density.get('hedges_per_1k', 0)} per 1000 words",
+        f"- Amplifying language: {density.get('boosters_per_1k', 0)} per 1000 words",
+        f"- p-values: {density.get('p_values_exact', 0)} exact, "
+        f"{density.get('p_values_threshold', 0)} reported only as a threshold",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _ingest_health_line(state: ReviewState) -> str:
+    """One summary line, only when the conversion was not clean.
+
+    Silent on a clean read: a line saying nothing went wrong on every run
+    teaches the reader to skip the place the warning would appear.
+    """
+    health = ((state.get("ingest") or {}).get("prose") or {}).get("health") or {}
+    verdict = health.get("verdict")
+    if not verdict or verdict == "clean":
+        return ""
+    notes = "; ".join(health.get("notes") or []) or "see manuscript_stats.md"
+    return f"**Manuscript conversion:** {verdict} — {notes}"
 
 
 def _cache_line(state: ReviewState) -> str:

@@ -29,7 +29,12 @@ from typing import Any
 # the text, and keying on bytes alone would serve a compressed manuscript to a
 # run that asked for an uncompressed one. Entries from earlier versions are
 # invalidated automatically.
-_SCHEMA_VERSION = 5
+# v6: the ingest record carries deterministic text statistics (see
+# :mod:`.prose`). A v5 entry has none, and serving one would report a
+# manuscript as having no measurable conversion damage when it was simply
+# never measured — so those entries re-parse rather than answer the question
+# wrongly.
+_SCHEMA_VERSION = 6
 
 
 def cache_root(config: dict | None = None) -> Path:

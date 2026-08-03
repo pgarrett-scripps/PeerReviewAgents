@@ -35,7 +35,7 @@ import re
 from dataclasses import dataclass, field
 
 from ..observability import AgentEvent, emit
-from . import structured
+from . import prose, structured
 
 # Common manuscript section headings we try to bucket text into.
 _SECTION_KEYS = [
@@ -89,6 +89,7 @@ class Manuscript:
     #   tool    what produced it, with version, e.g. "rustypaper 0.1.0"
     #   caveman compression level applied, or None
     #   chars   length of the parsed text
+    #   prose   deterministic text statistics, see :mod:`.prose`
     ingest: dict = field(default_factory=dict)
 
     def as_triple(self) -> tuple[str, str, dict[str, str]]:
@@ -163,10 +164,18 @@ def _load_uncached(path: str, config: dict | None = None) -> Manuscript:
     record["chars"] = len(text)
     if not title:
         title = _guess_title(text, fallback=os.path.basename(path))
+    sections = _split_sections(text, references_anchor=anchor)
+    # Measured here rather than by a caller so that every path into a review —
+    # graph, cache hit, web job — reports the same numbers, and so that a
+    # conversion bad enough to be worth stopping over is known before any
+    # agent has been paid to read it.
+    record["prose"] = prose.analyze(
+        text, sections=sections, caveman=record.get("caveman")
+    ).to_dict()
     return Manuscript(
         title=title,
         text=text,
-        sections=_split_sections(text, references_anchor=anchor),
+        sections=sections,
         ingest=record,
     )
 
