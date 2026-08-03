@@ -24,6 +24,7 @@ Two entry points:
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -33,6 +34,7 @@ from pydantic import BaseModel
 from ...observability import AgentEvent, current_node, emit
 from ...runtime.providers import spec_for_llm
 from .agent_utils import (
+    DEFAULT_CACHE_TTL,
     _build_messages,
     _cache_control_supported,
     _call_cost,
@@ -63,7 +65,7 @@ def invoke_structured(
     system_prompt: str,
     user_prompt: str,
     *,
-    cached_prefix: str | None = None,
+    cached_prefix: str | Sequence[str] | None = None,
 ) -> StructuredResult:
     """One-shot structured call. No tool loop.
 
@@ -74,6 +76,7 @@ def invoke_structured(
     messages = _build_messages(
         system_prompt, user_prompt, cached_prefix,
         cache_supported=_cache_control_supported(llm),
+        cache_ttl=config.get("cache_ttl") or DEFAULT_CACHE_TTL,
     )
     return _try_structured(llm, schema, messages, config=config)
 
@@ -86,7 +89,7 @@ def invoke_structured_after_tools(
     user_prompt: str,
     tools: list,
     *,
-    cached_prefix: str | None = None,
+    cached_prefix: str | Sequence[str] | None = None,
 ) -> StructuredResult:
     """Tool-loop reviewers: run :func:`run_agent` for free text, then a
     second call extracts the schema from that text.
@@ -103,7 +106,11 @@ def invoke_structured_after_tools(
     grounding is visible.
     """
     try:
-        free = run_agent(llm, system_prompt, user_prompt, tools, cached_prefix=cached_prefix)
+        free = run_agent(
+            llm, system_prompt, user_prompt, tools,
+            cached_prefix=cached_prefix,
+            cache_ttl=config.get("cache_ttl") or DEFAULT_CACHE_TTL,
+        )
     except Exception as exc:  # noqa: BLE001
         emit(AgentEvent(
             kind="log",

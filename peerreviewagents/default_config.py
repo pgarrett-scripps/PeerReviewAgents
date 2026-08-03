@@ -282,6 +282,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # paths that never publish a referee's words.
     "caveman": "off",
 
+    # How long a provider-side prompt-cache entry should live: "1h" (default)
+    # or "5m" (the provider's own default). The manuscript is sent to every
+    # agent as a shared cached prefix and read ~20 times per review, but a
+    # review takes 10-20 minutes and the stages after the panel run
+    # sequentially — so under "5m" the entry expires mid-run and the next
+    # agent rewrites the whole manuscript. A 1h write costs 2x base where a
+    # 5m write costs 1.25x, which is the trade: 0.75 of one manuscript when
+    # nothing would have expired, against a rewrite per stage when it does.
+    "cache_ttl": "1h",
+
     # --- Manuscript cache ---
     # Parsed manuscripts are always cached on disk, keyed by file content +
     # the caveman level above. Default location is

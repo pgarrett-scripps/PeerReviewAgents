@@ -94,3 +94,35 @@ def test_empty_blocks_are_dropped_rather_than_cached():
     """An empty marked block is a wasted breakpoint, and Anthropic allows
     only four."""
     assert cached_texts(_build_messages("sys", "user", ["a", "", "   ", "b"])) == ["a", "b"]
+
+
+# --- entry lifetime ---------------------------------------------------------
+
+
+def test_entries_outlive_the_run_by_default():
+    """A review takes 10-20 minutes; the provider's default entry lives 5.
+
+    On C-01 that meant 479,205 tokens of cache writes against 32,795 of
+    reads — roughly fifteen manuscripts written and one read, because the
+    entry kept expiring between stages.
+    """
+    msgs = _build_messages("sys", "user", context_block(STATE))
+    marked = [b for b in msgs[0].content if isinstance(b, dict) and b.get("cache_control")]
+    assert all(b["cache_control"].get("ttl") == "1h" for b in marked)
+
+
+def test_the_provider_default_is_sent_without_a_ttl_field():
+    """'5m' is the API's own default and is expressed by omitting the key,
+    not by naming it — sending an explicit ttl the API doesn't expect is a
+    needless way to break on an older endpoint."""
+    msgs = _build_messages("sys", "user", context_block(STATE), cache_ttl="5m")
+    marked = [b for b in msgs[0].content if isinstance(b, dict) and b.get("cache_control")]
+    assert marked and all("ttl" not in b["cache_control"] for b in marked)
+
+
+def test_each_block_carries_its_own_control_object():
+    """Sharing one dict across blocks would let a later mutation reach back
+    into earlier ones."""
+    msgs = _build_messages("sys", "user", context_block(STATE))
+    marked = [b for b in msgs[0].content if isinstance(b, dict) and b.get("cache_control")]
+    assert len({id(b["cache_control"]) for b in marked}) == len(marked)

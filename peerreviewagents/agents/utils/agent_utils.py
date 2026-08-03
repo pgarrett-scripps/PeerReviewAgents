@@ -17,6 +17,23 @@ if TYPE_CHECKING:
 
 _MAX_TOOL_STEPS = 4
 
+# How long a prompt-cache entry should live. The provider's default is 5
+# minutes; a full review takes ten to twenty, and every stage after the panel
+# runs sequentially, so the gap between one agent's request and the next
+# routinely exceeds five minutes on a long paper.
+#
+# When that happens the entry is gone and the next agent rewrites the whole
+# manuscript. Measured on C-01: 479,205 tokens of cache writes against 32,795
+# of reads — about fifteen manuscripts written and one read, on a run whose
+# generations had just got substantially longer.
+#
+# A 1h write is billed at 2x base against the 5m write's 1.25x, so this is a
+# real trade and not free. It is still overwhelmingly right here: the downside
+# is 0.75 of one manuscript when nothing would have expired, and the upside is
+# the fourteen rewrites above. A workload with ~20 reads per write wants the
+# entry to outlive the run.
+DEFAULT_CACHE_TTL = "1h"
+
 
 # ---------------------------------------------------------------------------
 # Run result
@@ -48,7 +65,8 @@ def run_agent(
     user_prompt: str,
     tools: list | None = None,
     *,
-    cached_prefix: str | None = None,
+    cached_prefix: str | Sequence[str] | None = None,
+    cache_ttl: str = DEFAULT_CACHE_TTL,
 ) -> RunResult:
     """Run a chat turn, executing any tool calls (bounded), return final text.
 
@@ -79,6 +97,7 @@ def run_agent(
     messages = _build_messages(
         system_prompt, user_prompt, cached_prefix,
         cache_supported=_cache_control_supported(llm),
+        cache_ttl=cache_ttl,
     )
     cost_total = 0.0
     final_resp: AIMessage | None = None
@@ -129,6 +148,7 @@ def _build_messages(
     cached_prefix: str | Sequence[str] | None,
     *,
     cache_supported: bool = True,
+    cache_ttl: str = DEFAULT_CACHE_TTL,
 ) -> list:
     """Assemble ``[system, user]`` with the cached prefix as leading blocks.
 
@@ -149,6 +169,9 @@ def _build_messages(
     directives read the manuscript entry and write only the directives on top,
     rather than writing a second copy of the whole manuscript.
 
+    ``cache_ttl`` sets how long an entry survives — see
+    :data:`DEFAULT_CACHE_TTL` for why the default is not the provider's.
+
     On providers that don't honor ``cache_control`` (OpenAI direct) the blocks
     are folded into the system prompt as plain text — same ordering, no marker.
     """
@@ -157,8 +180,11 @@ def _build_messages(
     if not blocks:
         return [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
     if cache_supported:
+        control: dict[str, Any] = {"type": "ephemeral"}
+        if cache_ttl and cache_ttl != "5m":
+            control["ttl"] = cache_ttl
         system_content: Any = [
-            {"type": "text", "text": b, "cache_control": {"type": "ephemeral"}}
+            {"type": "text", "text": b, "cache_control": dict(control)}
             for b in blocks
         ]
         system_content.append({"type": "text", "text": system_prompt})
