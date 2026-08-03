@@ -128,7 +128,16 @@ def _make_anthropic(model: str, *, reasoning_effort: str | None = None,
         "streaming": True,
         "stream_usage": True,
         "callbacks": [StreamingCallback(default_model=model)],
-        "max_tokens": 8192,
+        # Output is billed per token generated, not per token allowed, so a
+        # generous cap costs nothing until it is used — but hitting it costs
+        # the whole call. A reviewer truncated mid-schema produces an
+        # unparseable tool call, fails its retry, and drops off the panel
+        # entirely: measured on C-09, where the rigor reviewer vanished and
+        # the editor decided on seven verdicts instead of eight. 8192 was too
+        # close for a structured review carrying a claim ledger, and the
+        # reviewer prompt now asks for the load-bearing critique at length,
+        # which makes the answers longer still.
+        "max_tokens": 16000,
     }
 
     adaptive = _anthropic_matches(model, _ANTHROPIC_ADAPTIVE_EFFORT)

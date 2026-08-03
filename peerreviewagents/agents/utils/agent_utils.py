@@ -440,6 +440,37 @@ def score_summary(state: ReviewState) -> str:
               + ")\n"
         f"Verdict distribution: {distrib}\n"
         f"Per-reviewer: {per_reviewer}"
+        + _missing_reviewers_line(state, all_reports)
+    )
+
+
+def _missing_reviewers_line(state: ReviewState, reports: list) -> str:
+    """Name any reviewer that was assigned and never reported, or ''.
+
+    A reviewer whose call fails is not in ``reports`` at all — unlike one that
+    returned "nothing in my dimension to judge", which is present with a null
+    score and already named above. So the aggregate silently narrowed: on C-09
+    the rigor reviewer was truncated at max_tokens, dropped out, and the panel
+    line read n=7 with nothing to say the eighth had ever been assigned. The
+    editor then issued a verdict on seven specialists believing it had the
+    whole panel.
+
+    An aggregate over a panel that lost a member is still usable — dropping
+    the round would be worse — but the stage weighing it has to know, which is
+    the difference between a smaller sample and a misrepresented one.
+    """
+    from ...agents.reviewers import REVIEWER_NAMES
+
+    expected = list(state["config"].get("only_reviewers") or REVIEWER_NAMES)
+    got = {r["reviewer"] for r in reports}
+    missing = [name for name in expected if name not in got]
+    if not missing:
+        return ""
+    return (
+        f"\nINCOMPLETE PANEL: {', '.join(missing)} was assigned but returned no "
+        "review (the run log records why). The figures above are over the "
+        "reviewers that did report; weigh them knowing the panel is short, and "
+        "do not read a missing specialty as no concern in it."
     )
 
 

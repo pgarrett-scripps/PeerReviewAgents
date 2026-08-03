@@ -209,6 +209,21 @@ def _unpack(result: Any) -> tuple[BaseModel | None, float]:
 
 
 def _parsing_error(result: Any) -> Any:
-    if isinstance(result, dict):
-        return result.get("parsing_error") or "unknown"
-    return repr(result)
+    if not isinstance(result, dict):
+        return repr(result)
+    # A response cut off at max_tokens arrives here as an empty or half-written
+    # tool call, and the parser reports it as "Invalid json output:" with
+    # nothing after the colon — which reads like the model ignored the schema
+    # when in fact it ran out of room mid-answer. Naming it costs nothing and
+    # is the difference between a fixable finding and a mystery.
+    if _stop_reason(result.get("raw")) == "max_tokens":
+        return (
+            "response hit the max_tokens cap before the schema was complete "
+            "(raise max_tokens for this agent, or ask it for less)"
+        )
+    return result.get("parsing_error") or "unknown"
+
+
+def _stop_reason(raw: Any) -> str:
+    meta = getattr(raw, "response_metadata", None) or {}
+    return str(meta.get("stop_reason") or meta.get("finish_reason") or "")
