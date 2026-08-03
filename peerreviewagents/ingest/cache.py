@@ -34,7 +34,10 @@ from typing import Any
 # manuscript as having no measurable conversion damage when it was simply
 # never measured — so those entries re-parse rather than answer the question
 # wrongly.
-_SCHEMA_VERSION = 6
+# v7: the record carries `text_sha256`, the fingerprint of the converted text.
+# A v6 entry has none, and a caller asking "same draft?" would silently fall
+# back to the file hash, which bioRxiv changes on every download.
+_SCHEMA_VERSION = 7
 
 
 def cache_root(config: dict | None = None) -> Path:

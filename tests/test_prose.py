@@ -548,3 +548,49 @@ def test_the_note_rides_in_the_mandate_not_the_cached_prefix():
     src = inspect.getsource(base.make_reviewer_node)
     assert "mandate=mandate + extra" in src
     assert "cached_prefix = context_block(state)" in src
+
+
+# --- the text fingerprint ---------------------------------------------------
+
+
+def test_the_ingest_record_fingerprints_the_text_not_the_file():
+    """Measured, and the reason the field exists: three downloads of one
+    bioRxiv PDF over ten hours gave three different file checksums at an
+    identical 1,689,095 bytes, while the converted text came back
+    byte-identical every time. A caller asking "same draft?" off the file hash
+    gets "no" for every bioRxiv paper.
+    """
+    import hashlib
+    import tempfile
+    from pathlib import Path
+
+    from peerreviewagents.ingest.loader import load_manuscript_record
+
+    body = "# A Paper\n\n" + "We measured the thing and reported it. " * 40
+    with tempfile.TemporaryDirectory() as tmp:
+        a, b = Path(tmp) / "a.md", Path(tmp) / "b.md"
+        a.write_text(body)
+        b.write_text(body)
+        ra = load_manuscript_record(str(a), {})
+        rb = load_manuscript_record(str(b), {})
+
+    assert ra.ingest["text_sha256"] == rb.ingest["text_sha256"], \
+        "same text in two files must fingerprint the same"
+    assert ra.ingest["text_sha256"] == hashlib.sha256(
+        ra.text.encode("utf-8")
+    ).hexdigest(), "the fingerprint must be of the text that was returned"
+
+
+def test_different_text_fingerprints_differently():
+    import tempfile
+    from pathlib import Path
+
+    from peerreviewagents.ingest.loader import load_manuscript_record
+
+    with tempfile.TemporaryDirectory() as tmp:
+        a, b = Path(tmp) / "a.md", Path(tmp) / "b.md"
+        a.write_text("# A\n\n" + "One sentence here. " * 40)
+        b.write_text("# A\n\n" + "One sentence here. " * 40 + "And one more.")
+        ra = load_manuscript_record(str(a), {})
+        rb = load_manuscript_record(str(b), {})
+    assert ra.ingest["text_sha256"] != rb.ingest["text_sha256"]

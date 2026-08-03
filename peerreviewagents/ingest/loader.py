@@ -30,6 +30,7 @@ Other supported inputs: Markdown / LaTeX / TXT (read directly), DOCX
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from dataclasses import dataclass, field
@@ -89,6 +90,8 @@ class Manuscript:
     #   tool    what produced it, with version, e.g. "rustypaper 0.1.0"
     #   caveman compression level applied, or None
     #   chars   length of the parsed text
+    #   text_sha256  fingerprint of the converted text — NOT of the file; see
+    #           _load_uncached for why the two are different questions
     #   prose   deterministic text statistics, see :mod:`.prose`
     ingest: dict = field(default_factory=dict)
 
@@ -224,6 +227,17 @@ def _load_uncached(path: str, config: dict | None = None) -> Manuscript:
 
     text = _normalize(text)
     record["chars"] = len(text)
+    # Fingerprint of the text the panel reads, which is not the same question
+    # as a fingerprint of the file. Measured: three downloads of one bioRxiv
+    # PDF over ten hours gave three different file checksums at an identical
+    # 1,689,095 bytes — the server stamps something fixed-width into the
+    # container — while the converted text came back byte-identical all three
+    # times at 86,988 characters.
+    #
+    # So a caller asking "is this the draft we reviewed before?" cannot use
+    # the file hash: it answers no for every bioRxiv paper. This is the hash
+    # of what was actually reviewed.
+    record["text_sha256"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
     if not title:
         title = _guess_title(text, fallback=os.path.basename(path))
     sections = _split_sections(text, references_anchor=anchor)
