@@ -222,6 +222,15 @@ benchmark-build *args:
 benchmark-status:
     uv run python benchmark/status.py
 
+# Check each paper's preprint is the draft the human reviewers actually saw:
+# compare every bioRxiv version's posting date against the journal's recorded
+# "Received" date. Run BEFORE spending a review run on a paper — a preprint
+# posted after submission may already answer the reviews it is scored against,
+# and the version number alone does not reveal that. Exits non-zero on any
+# such paper.
+benchmark-versions *args:
+    uv run python benchmark/check_versions.py {{args}}
+
 # Contamination probe (run BEFORE the main run): ask the review model, OFFLINE
 # and with no manuscript, whether it already recalls each paper's abstract and
 # its human reviews. Writes benchmark/contamination/REPORT.md + per-paper
