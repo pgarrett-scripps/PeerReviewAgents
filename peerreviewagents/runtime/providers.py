@@ -354,7 +354,26 @@ def resolve_model(
     model = raw.get("model") or config.get("reasoning_model")
     if not model:
         raise ValueError("no model resolved: set reasoning_model or a model tag")
-    return ModelSpec(provider=provider, model=model, effort=raw.get("effort"))
+    return ModelSpec(provider=provider, model=model, effort=_effort(raw.get("effort")))
+
+
+# Config spellings for "no thinking at all". Without one of these there is no
+# way to turn thinking OFF from a config file: an absent `effort` key means
+# "unset", which falls through to the agent's call-site default, so the only
+# expressible choices were which level to think at. Thinking is billed at
+# output rates, so "none" has to be sayable.
+_EFFORT_OFF = {"off", "none", "no", "false", "0"}
+
+
+def _effort(value: object) -> str | None:
+    """Normalize a configured effort. ``""``/absent -> None (use the call-site
+    default); an off-spelling -> ``"off"``, which suppresses thinking."""
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    return "off" if text in _EFFORT_OFF else text
 
 
 # --- Public API -------------------------------------------------------------
@@ -389,6 +408,8 @@ def make_chat_model(
     # editor thinks meant editing Python. Thinking tokens are billed at output
     # rates, so that is a cost knob that has to be reachable from config.
     effort = spec.effort if spec.effort is not None else reasoning_effort
+    if effort == "off":
+        effort = None  # configured to think at all
     temp = config.get("temperature")
     temp = _TEMPERATURE if temp is None else float(temp)
     # The agent name rides along so usage events can be attributed even

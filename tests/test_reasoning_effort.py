@@ -23,11 +23,16 @@ def calls_with_effort(module) -> bool:
     return 'reasoning_effort="' in inspect.getsource(module)
 
 
-def test_the_agents_that_decide_the_verdict_still_think():
-    """The area chair weighs ten reports into one assessment and the editor
-    issues the verdict. These are the calls worth deliberation."""
-    assert calls_with_effort(meta_reviewer)
+def test_only_the_editor_thinks_by_default():
+    """One agent issues the verdict, and it is the one that sees everything —
+    the panel, the debate, the meta-review, the audits and the rebuttal. That
+    is the call worth deliberating over.
+
+    The area chair used to think too. It synthesises rather than decides, and
+    the editor re-reads its output downstream, so the deliberation was being
+    paid for twice at the most expensive rate in the run."""
     assert calls_with_effort(editor_in_chief)
+    assert not calls_with_effort(meta_reviewer)
 
 
 def test_the_agents_that_decide_nothing_do_not():
@@ -37,6 +42,33 @@ def test_the_agents_that_decide_nothing_do_not():
     tokens at the synthesis tier's output rate."""
     assert not calls_with_effort(rebuttal)
     assert not calls_with_effort(recommender)
+
+
+def test_config_can_switch_thinking_off_entirely():
+    """An absent `effort` means "unset" and falls through to the call-site
+    default, so without an explicit off-spelling there was no way to say "do
+    not think" from a config file — only which level to think at."""
+    cfg = {
+        "provider": "anthropic",
+        "reasoning_model": "claude-opus-5",
+        "agent_models": {"editor": {"model": "claude-opus-5", "effort": "off"}},
+    }
+    llm = make_chat_model(cfg, agent="editor", default_tag="synthesis",
+                          reasoning_effort="medium")
+    assert not getattr(llm, "thinking", None)
+
+
+def test_an_empty_effort_string_is_unset_not_off():
+    """`effort = ""` is a key someone left blank, not a decision to disable
+    deliberation on the agent that issues the verdict."""
+    cfg = {
+        "provider": "anthropic",
+        "reasoning_model": "claude-opus-5",
+        "agent_models": {"editor": {"model": "claude-opus-5", "effort": ""}},
+    }
+    llm = make_chat_model(cfg, agent="editor", default_tag="synthesis",
+                          reasoning_effort="medium")
+    assert llm.effort == "medium"
 
 
 def test_config_can_override_the_call_sites_effort():
