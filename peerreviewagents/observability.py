@@ -142,12 +142,30 @@ def _observer_for(run_id: str | None) -> Queue | None:
 # counters through its return value to answer a question about the transport.
 _CACHE_TOTALS: dict[str, list[int]] = {}
 
+# Per-node spend within a run: node -> [in, out, cache_read, cache_write, usd].
+# The run total says what a review cost; this says which agent to look at, and
+# the two answer different questions. Diagnosing C-09's bill without it meant
+# estimating each stage's share by hand from prompt sizes, which is guessing
+# with extra steps.
+_NODE_USAGE: dict[str, dict[str, list[float]]] = {}
+
 
 def note_cache_usage(run_id: str, read_tokens: int, write_tokens: int) -> None:
     with _QUEUES_LOCK:
         totals = _CACHE_TOTALS.setdefault(run_id or _DEFAULT_RUN, [0, 0])
         totals[0] += max(0, read_tokens)
         totals[1] += max(0, write_tokens)
+
+
+def _note_node_usage(run_id: str, event: AgentEvent) -> None:
+    with _QUEUES_LOCK:
+        by_node = _NODE_USAGE.setdefault(run_id or _DEFAULT_RUN, {})
+        row = by_node.setdefault(event.node or "(unattributed)", [0, 0, 0, 0, 0.0])
+    row[0] += event.input_tokens
+    row[1] += event.output_tokens
+    row[2] += max(0, event.cache_read_tokens)
+    row[3] += max(0, event.cache_write_tokens)
+    row[4] += event.cost_usd
 
 
 def cache_totals(run_id: str | None = None) -> tuple[int, int]:
@@ -157,20 +175,29 @@ def cache_totals(run_id: str | None = None) -> tuple[int, int]:
         return (totals[0], totals[1]) if totals else (0, 0)
 
 
+def node_usage(run_id: str | None = None) -> dict[str, tuple[int, int, int, int, float]]:
+    """Per-node ``(in, out, cache_read, cache_write, usd)`` for this run."""
+    with _QUEUES_LOCK:
+        by_node = _NODE_USAGE.get(run_id or _DEFAULT_RUN) or {}
+        return {k: (int(v[0]), int(v[1]), int(v[2]), int(v[3]), v[4]) for k, v in by_node.items()}
+
+
 def reset_cache_totals(run_id: str | None = None) -> None:
     with _QUEUES_LOCK:
         _CACHE_TOTALS.pop(run_id or _DEFAULT_RUN, None)
+        _NODE_USAGE.pop(run_id or _DEFAULT_RUN, None)
 
 
 def emit(event: AgentEvent, run_id: str | None = None) -> None:
     # Explicit argument wins, then the event's own tag, then whatever run
     # this thread is executing — so callers deep in a node need do nothing.
     target = run_id or event.run_id or current_run() or None
-    if event.kind == "usage" and (event.cache_read_tokens or event.cache_write_tokens):
+    if event.kind == "usage":
         # Recorded before the queue lookup: a run with no registered observer
         # still spends money, and its summary still has to be able to say
         # whether the cache was working.
         note_cache_usage(target or _DEFAULT_RUN, event.cache_read_tokens, event.cache_write_tokens)
+        _note_node_usage(target or _DEFAULT_RUN, event)
     q = _observer_for(target)
     if q is None:
         return

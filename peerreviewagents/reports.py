@@ -7,7 +7,7 @@ import os
 import re
 
 from .agents.utils.agent_states import ReviewState
-from .observability import cache_totals
+from .observability import cache_totals, node_usage
 
 _VERDICT_LABEL = {
     "accept": "Accept",
@@ -56,9 +56,58 @@ def write_reports(state: ReviewState) -> str:
         _write(run_dir, "journal_recommendations.md", state["journal_recommendations"])
 
     _write(run_dir, "summary.md", _summary(state))
+    usage = _usage_table(state)
+    if usage:
+        _write(run_dir, "usage.md", usage)
     _write_round_record(state, run_dir)
 
     return run_dir
+
+
+def _usage_table(state: ReviewState) -> str:
+    """Per-agent tokens, cache split and spend — or '' when nothing was billed.
+
+    The run total in summary.md answers "what did this cost"; this answers
+    "which agent should I look at", and only the second one tells you what to
+    change. Working out where C-09's bill went without this meant estimating
+    each stage's share from prompt sizes by hand, which is guessing dressed up
+    as arithmetic.
+
+    `cached` is the share of that agent's input served from cache. A low
+    figure on an agent that sends the manuscript means it is not sharing the
+    common prefix — the thing most worth catching here, since a cache write
+    costs 12.5x a read.
+    """
+    rows = node_usage(state["config"].get("run_id", ""))
+    if not rows:
+        return ""
+    lines = [
+        "# Per-agent usage",
+        "",
+        "`cached` is the fraction of that agent's input tokens served from the",
+        "prompt cache. An agent that sends the manuscript and shows a low",
+        "figure is writing its own cache entry instead of sharing the common",
+        "one — a write costs 12.5x what a read costs, so that is where a",
+        "review's cost goes when it goes somewhere surprising.",
+        "",
+        "| agent | in | out | cache read | cache write | cached | $ |",
+        "|---|---:|---:|---:|---:|---:|---:|",
+    ]
+    for node, (tin, tout, cread, cwrite, usd) in sorted(
+        rows.items(), key=lambda kv: -kv[1][4]
+    ):
+        share = f"{cread / tin:.0%}" if tin else "—"
+        lines.append(
+            f"| {node} | {tin:,} | {tout:,} | {cread:,} | {cwrite:,} | {share} | "
+            f"{usd:.4f} |"
+        )
+    tot = [sum(r[i] for r in rows.values()) for i in range(5)]
+    share = f"{tot[2] / tot[0]:.0%}" if tot[0] else "—"
+    lines.append(
+        f"| **total** | {int(tot[0]):,} | {int(tot[1]):,} | {int(tot[2]):,} | "
+        f"{int(tot[3]):,} | {share} | {tot[4]:.4f} |"
+    )
+    return "\n".join(lines) + "\n"
 
 
 def _write_round_record(state: ReviewState, run_dir: str) -> None:
