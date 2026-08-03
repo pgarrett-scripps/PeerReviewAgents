@@ -53,6 +53,11 @@ class _NoCacheStaticFiles(StaticFiles):
 _STATIC_DIR = Path(__file__).parent / "static"
 _ALLOWED_SUFFIXES = {".pdf", ".md", ".markdown", ".tex", ".docx", ".txt"}
 
+# What the upload form submits for "no target venue". A reserved token rather
+# than "": an optional form field that is empty and one that was never sent
+# both arrive as None, so an empty value cannot express a choice.
+NO_JOURNAL = "__none__"
+
 # Maps the human decision label written into summary.md back to the machine
 # key the UI colours badges with.
 _DECISION_KEY = {
@@ -320,9 +325,16 @@ def _register_routes(app: FastAPI) -> None:
             )
 
         # Per-upload journal / strictness selection overrides any server-level
-        # default; an empty value falls through to the server default (if any).
+        # default; a field the form did not send falls through to that default.
         job_overrides = dict(app.state.config_overrides)
-        if target_journal:
+        # Venue-agnostic is a choice and has to be spelled. The form used to
+        # submit "" for it, which is what an unsent field also looks like — an
+        # optional form value arrives as None either way — so the one selection
+        # asking for no venue framing fell through to the config default,
+        # `general`, and produced a venue-framed review saying nothing about it.
+        if target_journal == NO_JOURNAL:
+            job_overrides["target_journal"] = ""
+        elif target_journal:
             try:
                 load_journal(target_journal, get_config(**app.state.config_overrides))
             except FileNotFoundError as exc:

@@ -13,6 +13,7 @@ import os
 import socket
 import threading
 import time
+from pathlib import Path
 
 import httpx
 import pytest
@@ -293,3 +294,65 @@ def test_static_pages_served(tmp_path):
         for path in ("/", "/job.html", "/agents"):
             resp = httpx.get(f"http://127.0.0.1:{port}{path}")
             assert resp.status_code == 200, path
+
+
+def _config_for_upload(tmp_path, monkeypatch, data):
+    """POST an upload and return the config the job would have run with.
+
+    JobRunner is stubbed so nothing starts: the question is only what the
+    upload form resolved to, and starting a real review to find out would need
+    a provider key.
+    """
+    captured = {}
+
+    class _Stub:
+        def __init__(self, job, config, bus):
+            captured["config"] = config
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr("peerreviewagents.web.server.JobRunner", _Stub)
+    app = create_app(upload_dir=str(tmp_path / "uploads"))
+    port = _free_port()
+    with _running_server(app, port):
+        resp = httpx.post(
+            f"http://127.0.0.1:{port}/jobs",
+            files={"manuscript": ("paper.md", b"# Title\n\nBody.", "text/markdown")},
+            data=data,
+        )
+    assert resp.status_code == 200, resp.text
+    return captured["config"]
+
+
+def test_venue_agnostic_selection_is_honoured(tmp_path, monkeypatch):
+    """Venue-agnostic is a choice, and has to survive as one.
+
+    The form used to submit "" for it, which is also what an unsent field
+    looks like — an optional form value arrives as None either way. So the one
+    selection asking for no venue framing fell through to the config default,
+    `general`, and produced a venue-framed review saying nothing about it.
+    """
+    from peerreviewagents.web.server import NO_JOURNAL
+
+    config = _config_for_upload(tmp_path, monkeypatch, {"target_journal": NO_JOURNAL})
+    assert config["target_journal"] == ""
+
+
+def test_absent_journal_field_falls_through_to_the_default(tmp_path, monkeypatch):
+    """A client that sends no journal at all still gets the server default."""
+    config = _config_for_upload(tmp_path, monkeypatch, {})
+    assert config["target_journal"] == "general"
+
+
+def test_the_form_offers_the_sentinel_the_server_expects(tmp_path):
+    """The two halves have to agree, and nothing else checks that they do."""
+    from peerreviewagents.web.server import NO_JOURNAL
+
+    page = (Path(__file__).parent.parent / "peerreviewagents/web/static/index.html").read_text()
+    assert f'value="{NO_JOURNAL}"' in page
+
+
+def test_named_journal_still_wins(tmp_path, monkeypatch):
+    config = _config_for_upload(tmp_path, monkeypatch, {"target_journal": "plos-one"})
+    assert config["target_journal"] == "plos-one"
