@@ -39,7 +39,7 @@ def node(state: ReviewState) -> dict:
 
 def _run(state: ReviewState) -> dict:
     config = state["config"]
-    llm = make_llm(config, agent="journal_recommender", default_tag="synthesis", reasoning_effort="medium")
+    llm = make_llm(config, agent="journal_recommender", default_tag="synthesis")
 
     reviewer_names = ", ".join(r.get("reviewer", "?") for r in state.get("reports") or [])
     decision = state.get("decision") or "(no decision)"

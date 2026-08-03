@@ -44,7 +44,7 @@ def node(state: ReviewState) -> dict:
 
 def _run(state: ReviewState) -> dict:
     config = state["config"]
-    llm = make_llm(config, agent="author_rebuttal", default_tag="synthesis", reasoning_effort="medium")
+    llm = make_llm(config, agent="author_rebuttal", default_tag="synthesis")
     user = (
         f"Reviewer findings:\n{_reports_digest(state)}\n\n"
         f"Debate transcript:\n{_debate_so_far(state)}\n\n"

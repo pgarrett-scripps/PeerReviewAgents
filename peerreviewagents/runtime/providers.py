@@ -381,7 +381,14 @@ def make_chat_model(
     """
     spec = resolve_model(config, agent=agent, default_tag=default_tag)
     prov = spec_for_provider(spec.provider)
-    effort = reasoning_effort if reasoning_effort is not None else spec.effort
+    # `reasoning_effort` from the call site is the agent's *default*, and an
+    # explicit `effort` on the resolved tag or agent override wins over it.
+    # The precedence used to run the other way, which made the call-site value
+    # unreachable from configuration: an `effort` key in peerreview.toml was
+    # silently inert for every synthesis agent, and changing how hard the
+    # editor thinks meant editing Python. Thinking tokens are billed at output
+    # rates, so that is a cost knob that has to be reachable from config.
+    effort = spec.effort if spec.effort is not None else reasoning_effort
     temp = config.get("temperature")
     temp = _TEMPERATURE if temp is None else float(temp)
     # The agent name rides along so usage events can be attributed even
