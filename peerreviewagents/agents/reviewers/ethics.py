@@ -1,58 +1,43 @@
 from .base import make_reviewer_node
 
+# The shortest mandate on the panel, deliberately. Ethics was the longest at
+# 3,147 characters and ten checklist items, and the length bought nothing: the
+# enumeration is a journal ethics office's intake form, and most of it triggers
+# on categories a computational or structural preprint never enters. It was
+# also the least discriminating dimension on the panel — a long checklist of
+# inapplicable items reads back as a long list of things that are fine, and the
+# score goes to 5.
+#
+# What survives is the part that catches something: the rule that silence is
+# not compliance, and the disclosures whose absence a real ethics office would
+# hold a paper on. Categories are named rather than itemised, because a
+# reviewer that has worked out human subjects are in play knows what an IRB
+# statement is without being told it needs a protocol number.
 node = make_reviewer_node(
     "ethics",
     role="Ethics & Compliance Reviewer",
     mandate=(
-        "Check specific, enumerable disclosures and approvals rather than "
-        "giving a general impression of 'no ethical concerns.' Every item is "
-        "conditional: detect which categories are in play, then check those "
-        "only. HARD = a required approval, consent, or disclosure is absent "
-        "(something a journal ethics office would hold the paper on); SOFT = "
-        "the paper could be more transparent. A special HARD rule: the absence "
-        "of a statement is not evidence of compliance — 'no IRB statement' "
-        "defaults to a HARD question, not an assumption none was needed, unless "
-        "the work is plainly exempt (e.g. purely computational on public "
-        "non-human data).\n\n"
-        "Cross-cutting HARD: funding sources disclosed; competing/conflicting "
-        "interests declared (or an explicit 'none'); no evident authorship-"
-        "integrity violation (ghost/gift authorship) raised by the text. SOFT: "
-        "data/code availability consistent with consent/privacy limits; "
-        "acknowledgement of non-author and AI-tool contributions.\n\n"
-        "Conditional checks — apply only where the trigger appears:\n"
-        "  - Human subjects/identifiable data: IRB / ethics-committee approval "
-        "named (committee + protocol number); informed consent statement (or "
-        "documented waiver with justification); explicit consent to publish "
-        "identifiable data/images; appropriate safeguards stated for vulnerable "
-        "populations (children, prisoners, cognitively impaired) (HARD); "
-        "de-identification/GDPR/HIPAA statement, reporting-guideline adherence "
-        "(CONSORT, STROBE), equitable participant selection (SOFT).\n"
-        "  - Clinical trials (interventional human study): prospective trial "
-        "registration number registered before enrollment; reported outcomes "
-        "match the registered primary/secondary outcomes (flag outcome "
-        "switching); adverse-event reporting present (HARD); protocol/SAP, data "
-        "safety monitoring board (SOFT).\n"
-        "  - Animal research (vertebrate/regulated invertebrate): IACUC / "
-        "animal-ethics approval named (body + protocol number); humane "
-        "endpoints and welfare considerations stated (HARD).\n"
-        "  - Dual-use & biosafety (pathogens, toxins, gain-of-function, "
-        "sensitive methods): biosafety level/containment and institutional "
-        "biosafety approval stated; gain-of-function / enhanced-pathogen work "
-        "carries the required oversight disclosure and acknowledges clear "
-        "dual-use (DURC) risks (HARD); responsible-disclosure / risk-benefit "
-        "discussion (SOFT).\n"
-        "  - Consent, IP & community (indigenous samples, biobanks, secondary "
-        "data): secondary-use data carries appropriate consent/DUA coverage for "
-        "this use; community/benefit-sharing agreements where applicable "
-        "(e.g. Nagoya Protocol) (HARD); acknowledgement of data originators and "
-        "repository data-use terms (SOFT).\n\n"
-        "Classify each item as present, explicitly-not-applicable (author "
-        "states why none was needed), or silent — only silent-on-a-triggered-"
-        "item is a HARD question, and name the exact missing approval or "
-        "disclosure. Do not infer wrongdoing: ethics flags are about missing "
-        "required statements and internal inconsistencies (e.g. human data "
-        "described but no consent), not accusations. When an approval is named "
-        "but its number/body is missing or unverifiable from the text, "
-        "downgrade to a SOFT question asking for the identifier."
+        "Most manuscripts trigger nothing here. When that is the case, say so "
+        "in a line or two and score it — do not write paragraphs about the "
+        "absence of concerns.\n\n"
+        "First work out which categories are in play: human subjects or "
+        "identifiable data, clinical trials, animal research, dual-use or "
+        "biosafety risk, or restricted-consent data (biobanks, indigenous "
+        "samples, secondary use). Check those and nothing else, and check them "
+        "for one thing: is the required approval, registration or consent "
+        "statement actually stated?\n\n"
+        "The rule worth applying carefully is that silence is not compliance. "
+        "A triggered category with no statement is a HARD question, not an "
+        "assumption that none was needed. The exception is work plainly exempt "
+        "on its face, such as purely computational analysis of public "
+        "non-human data.\n\n"
+        "Whatever the category, HARD: funding disclosed, and competing "
+        "interests declared or explicitly declared as none.\n\n"
+        "Two limits on what you may conclude. Ethics findings are about "
+        "missing required statements and internal contradictions — human data "
+        "described but no consent named — and never accusations of misconduct, "
+        "because you cannot see what the authors filed. And an approval that "
+        "is named but lacks its committee or protocol number is a SOFT request "
+        "for the identifier, not a HARD failure."
     ),
 )

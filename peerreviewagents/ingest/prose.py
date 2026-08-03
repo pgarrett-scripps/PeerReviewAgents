@@ -49,24 +49,35 @@ Health does, twice, and both times as a fact about the file:
   (``agent_utils._conversion_notice``), so nobody writes up the authors for
   the converter's lost spaces.
 
-**Counts and Density never do.** They are published, and a reader can weigh
-them, but no agent is handed a number and asked what it thinks. Two reasons,
-and the second is the load-bearing one:
+Counts and Density reach exactly one prompt: the clarity reviewer's, via
+``agents.reviewers.clarity._stats_note``, and only four of the numbers do.
+Everything about how that is done is defensive, because the failure mode is
+specific and reliable — give an agent a number with a prompt attached and it
+produces prose about the number. "Mean sentence length is 28.4 words" is true,
+says nothing about whether the paper is right, and would otherwise arrive in a
+review with the same weight as a finding that does.
 
-* They measure style, and style is not what the panel is for. A referee who
-  catches "the authors claim X, but Y would produce the same result" is not
-  counting adverbs, and the reviewers already carry more checklist than they
-  can attend to.
-* A model handed ``boosters_per_1k = 8.4`` will write a finding about it. That
-  is the mechanism, not a risk: give an agent a number with a prompt attached
-  and it produces prose about the number. "Mean sentence length is 28.4 words"
-  is true and says nothing about whether the paper is right, and it would
-  arrive with the same weight as a finding that does.
+So the note names the numbers as rough, explains which conversion artifacts
+corrupt these particular measures, forbids reporting a statistic as a finding,
+states outright that a long sentence is not a defect, and ends by saying the
+page wins where the two disagree. It is withheld whole under compression.
 
-The word-count-against-a-venue-limit check is the near miss, and it is left
-out for a third reason: preprints are not formatted to any venue's limit, so
-the check would fire on almost every submission and report a fact about
-formatting as a finding about the work.
+Every other consumer is a reader, not an agent. The rest of Density is not
+offered to anyone:
+
+* Hedges and boosters measure overclaiming, which is rigor's and novelty's
+  verdict, and handing them to a reviewer invites a finding about adverbs from
+  a panel that already carries more checklist than it can attend to.
+* MATTR is a ratio with no reference distribution attached, so a reviewer given
+  0.47 has nothing to compare it against and will invent a comparison.
+* Citations, p-values and numbers-per-1000 are evidence density rather than
+  presentation, and the citation count in particular is often ``undetected``
+  for reasons that are about the converter.
+
+The word-count-against-a-venue-limit check is the near miss, and it stays out:
+preprints are not formatted to any venue's limit, so it would fire on almost
+every submission and report a fact about formatting as a finding about the
+work.
 """
 
 from __future__ import annotations

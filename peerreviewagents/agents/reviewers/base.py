@@ -28,6 +28,8 @@ declining to move the score anyway.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from ...ingest.diff import render_diff_block
 from ...observability import AgentEvent, current_node, emit, node_context
 from ..schemas import ReviewerOutput, RevisionReviewerOutput
@@ -277,12 +279,20 @@ def make_reviewer_node(
     mandate: str,
     *,
     tool_names: list[str] | None = None,
+    mandate_extra: Callable[[ReviewState], str] | None = None,
 ):
     """Build a LangGraph node for one specialist reviewer.
 
     ``tool_names`` is a list of logical research-tool names this reviewer
     should call (see :mod:`peerreviewagents.research.tools` for the
     registry). Pass ``None`` (default) for a tool-free reviewer.
+
+    ``mandate_extra`` appends manuscript-specific material to the mandate at
+    run time — currently only the clarity reviewer uses it, to receive the
+    deterministic text statistics. It is appended to the *mandate*, which
+    lives in the user turn, never in ``cached_prefix``: the prefix is the
+    shared manuscript block that all eight reviewers hit, and varying it per
+    reviewer would split one cache entry into eight.
 
     The returned node handles both a first review and a revision round;
     ``state["prior_round"]`` decides which, so the graph wires the same eight
@@ -301,13 +311,14 @@ def make_reviewer_node(
             run_pass = (
                 _revision_pass if state.get("prior_round") is not None else _first_pass
             )
+            extra = mandate_extra(state) if mandate_extra else ""
             return run_pass(
                 state,
                 llm,
                 cached_prefix,
                 name=name,
                 role=role,
-                mandate=mandate,
+                mandate=mandate + extra if extra else mandate,
                 tool_names=bound_tool_names,
             )
 
