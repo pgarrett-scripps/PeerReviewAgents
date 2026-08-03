@@ -104,7 +104,39 @@ def invoke_structured_after_tools(
     reviewer still contributes a verdict from the manuscript alone rather than
     dropping out of the panel. The fallback is logged so the lost web-search
     grounding is visible.
+
+    **An empty first call takes the same route, and must.** The extraction
+    prompt asks a model to convert "the assistant text below"; hand it nothing
+    and a well-behaved model answers the prompt it was actually given. Observed
+    on nvidia/nemotron-3-ultra, which is a reasoning model and returned its
+    whole response as reasoning tokens with empty content:
+
+        # Novelty & Contribution Reviewer
+        ## Summary
+        The user requested conversion of assistant text to JSON per a schema,
+        but neither the source text nor the schema were included.
+        ## Weaknesses
+        - Missing required inputs: assistant text and schema
+
+    That validated against ReviewerOutput, scored the paper 1/5, and flowed
+    into the panel mean and the editor's verdict. Nothing caught it: no
+    exception, no schema error, ``scored_count`` 8 of 8. Two of the three
+    tool-using agents failed this way in one run and the review published a
+    fabricated score about real authors' work.
+
+    So a blank response is a failed call, not a response. It is the same
+    failure as the tool loop raising, and it takes the same fallback.
     """
+    def _without_tools(reason: str) -> StructuredResult:
+        emit(AgentEvent(
+            kind="log",
+            node=current_node(),
+            text=f"{reason}; reviewing without research tools",
+        ))
+        return invoke_structured(
+            llm, schema, config, system_prompt, user_prompt, cached_prefix=cached_prefix
+        )
+
     try:
         free = run_agent(
             llm, system_prompt, user_prompt, tools,
@@ -112,14 +144,11 @@ def invoke_structured_after_tools(
             cache_ttl=config.get("cache_ttl") or DEFAULT_CACHE_TTL,
         )
     except Exception as exc:  # noqa: BLE001
-        emit(AgentEvent(
-            kind="log",
-            node=current_node(),
-            text=f"tool loop failed ({type(exc).__name__}); reviewing without research tools",
-        ))
-        return invoke_structured(
-            llm, schema, config, system_prompt, user_prompt, cached_prefix=cached_prefix
-        )
+        return _without_tools(f"tool loop failed ({type(exc).__name__})")
+
+    if not (free.text or "").strip():
+        return _without_tools("tool loop returned no text")
+
     extraction_sys = (
         "Convert the assistant text below into a structured JSON object "
         "matching the given schema. Preserve every concrete claim verbatim; "

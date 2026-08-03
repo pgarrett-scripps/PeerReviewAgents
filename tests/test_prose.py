@@ -594,3 +594,86 @@ def test_different_text_fingerprints_differently():
         ra = load_manuscript_record(str(a), {})
         rb = load_manuscript_record(str(b), {})
     assert ra.ingest["text_sha256"] != rb.ingest["text_sha256"]
+
+
+# --- an empty response is a failed call, not a review -----------------------
+
+
+def test_an_empty_tool_loop_falls_back_instead_of_extracting_nothing():
+    """The failure that published a fabricated 1/5.
+
+    invoke_structured_after_tools converts free text to JSON in a second call.
+    Given empty free text, the extraction prompt ("convert the assistant text
+    below") is answered on its own terms — nvidia/nemotron-3-ultra returned a
+    review whose summary read "The user requested conversion of assistant text
+    to JSON... neither the source text nor the schema were included", scored
+    the paper 1/5, and passed schema validation. No exception, no error, panel
+    reported 8 of 8 scored.
+
+    A blank response must take the same route as a raised one.
+    """
+    from peerreviewagents.agents.utils import structured
+    from peerreviewagents.agents.utils.agent_utils import RunResult
+
+    calls = {"run_agent": 0, "fallback": 0, "extract": 0}
+
+    def fake_run_agent(*a, **k):
+        calls["run_agent"] += 1
+        return RunResult(text="   \n  ", cost=0.0)   # reasoning-only response
+
+    def fake_invoke_structured(*a, **k):
+        calls["fallback"] += 1
+        return structured.StructuredResult(instance=object(), cost=0.0)
+
+    def fake_try(*a, **k):
+        calls["extract"] += 1
+        raise AssertionError("must not extract from an empty response")
+
+    real = (structured.run_agent, structured.invoke_structured, structured._try_structured)
+    structured.run_agent = fake_run_agent
+    structured.invoke_structured = fake_invoke_structured
+    structured._try_structured = fake_try
+    try:
+        structured.invoke_structured_after_tools(
+            llm=None, schema=object, config={}, system_prompt="s",
+            user_prompt="u", tools=[],
+        )
+    finally:
+        (structured.run_agent, structured.invoke_structured,
+         structured._try_structured) = real
+
+    assert calls["fallback"] == 1, "an empty response must fall back"
+    assert calls["extract"] == 0, "nothing may be extracted from nothing"
+
+
+def test_a_real_response_still_takes_the_extraction_path():
+    from peerreviewagents.agents.utils import structured
+    from peerreviewagents.agents.utils.agent_utils import RunResult
+
+    seen = {}
+
+    def fake_run_agent(*a, **k):
+        return RunResult(text="The manuscript claims X, and Fig. 2 shows Y.", cost=0.5)
+
+    def fake_try(llm, schema, messages, config=None):
+        seen["text"] = messages[-1].content
+        return structured.StructuredResult(instance=object(), cost=0.25)
+
+    def fake_invoke_structured(*a, **k):
+        raise AssertionError("must not fall back on a good response")
+
+    real = (structured.run_agent, structured.invoke_structured, structured._try_structured)
+    structured.run_agent = fake_run_agent
+    structured.invoke_structured = fake_invoke_structured
+    structured._try_structured = fake_try
+    try:
+        out = structured.invoke_structured_after_tools(
+            llm=None, schema=object, config={}, system_prompt="s",
+            user_prompt="u", tools=[],
+        )
+    finally:
+        (structured.run_agent, structured.invoke_structured,
+         structured._try_structured) = real
+
+    assert "Fig. 2" in seen["text"], "the review text must reach the extractor"
+    assert out.cost == 0.75, "both calls must be billed"
