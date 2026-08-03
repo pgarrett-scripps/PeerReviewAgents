@@ -3,14 +3,14 @@ message: "If you use this software, please cite it as below."
 title: "PeerReviewAgents"
 abstract: >-
   A multi-agent LLM peer-review framework that simulates a journal editorial
-  board — eight specialist reviewers, an advocate/skeptic debate, an area-chair
-  synthesis, an author rebuttal, and an editor-in-chief verdict — to produce an
+  board (eight specialist reviewers, an advocate/skeptic debate, an area-chair
+  synthesis, an author rebuttal, and an editor-in-chief verdict) to produce an
   accept / minor / major / reject recommendation on a manuscript, with full
   reports at every stage.
 type: software
 # Garrett, Navarro Garrido, and Garcia Carbonell contributed equally.
 # CFF 1.2.0 has no field for shared first authorship, so state it in the
-# README and in any paper — a citation generated from this file will render
+# README and in any paper: a citation generated from this file will render
 # them as an ordinary author list.
 authors:
   - family-names: Garrett
@@ -25,12 +25,7 @@ authors:
   - family-names: Garcia-Carbonell
     given-names: Ricard
     affiliation: Scripps Research
-    # ORCID unconfirmed — deliberately omitted rather than guessed.
-    # The only candidate in the registry is 0000-0002-9936-6699, which
-    # matches the name exactly (including its unusual all-lowercase styling,
-    # which also appears on his Google Scholar profile) but is an empty
-    # record: no employment, no works, no links. Ask him and uncomment:
-    # orcid: "https://orcid.org/0000-0002-9936-6699"
+    orcid: "https://orcid.org/0000-0002-9936-6699"
   - family-names: Yates
     given-names: John R.
     name-suffix: III
