@@ -366,15 +366,25 @@ class StreamingCallback(BaseCallbackHandler):
     we belong to.
     """
 
-    def __init__(self, default_model: str | None = None):
+    def __init__(self, default_model: str | None = None, default_node: str | None = None):
         super().__init__()
         self._default_model = default_model
+        # Which agent this model belongs to, captured when it was built.
+        # `current_node()` is a thread-local set by the node, and LangChain
+        # does not guarantee callbacks run on the node's thread — when they
+        # don't, it reads empty and every usage event in the run collapses
+        # into one unattributed bucket. The factory knows the agent, so it is
+        # recorded here rather than inferred later.
+        self._default_node = default_node or ""
+
+    def _node(self) -> str:
+        return current_node() or self._default_node
 
     # langchain calls this for every streamed chunk.
     def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
         if not token:
             return
-        emit(AgentEvent(kind="token", node=current_node(), text=token, run_id=current_run()))
+        emit(AgentEvent(kind="token", node=self._node(), text=token, run_id=current_run()))
 
     def on_llm_end(self, response: Any, **kwargs: Any) -> None:
         usage = _extract_usage(response)
@@ -388,7 +398,7 @@ class StreamingCallback(BaseCallbackHandler):
             )
         emit(AgentEvent(
             kind="usage",
-            node=current_node(),
+            node=self._node(),
             input_tokens=in_tok,
             output_tokens=out_tok,
             cache_read_tokens=cache_read,
@@ -398,7 +408,7 @@ class StreamingCallback(BaseCallbackHandler):
         ))
 
     def on_llm_error(self, error: BaseException, **kwargs: Any) -> None:
-        emit(AgentEvent(kind="log", node=current_node(), text=f"LLM error: {error}", run_id=current_run()))
+        emit(AgentEvent(kind="log", node=self._node(), text=f"LLM error: {error}", run_id=current_run()))
 
 
 def _extract_usage(

@@ -87,3 +87,46 @@ def test_totals_sum_the_rows():
     )
     assert "| 40 |" in total and "| 4 |" in total and "0.3000" in total
     assert "| 50% |" in total
+
+
+# --- attribution ------------------------------------------------------------
+
+
+def test_the_callback_falls_back_to_the_agent_it_was_built_for():
+    """The bug that made the first usage.md useless.
+
+    `current_node()` is a thread-local set by the node. LangChain does not
+    guarantee a callback runs on the node's thread, and when it doesn't the
+    node reads empty — so every event in the run collapsed into one
+    "(unattributed)" row and the table answered nothing. The factory knows
+    which agent it is building for, so the name is captured there.
+    """
+    from peerreviewagents.observability import StreamingCallback
+
+    cb = StreamingCallback(default_model="claude-sonnet-5", default_node="reviewer_rigor")
+    assert cb._node() == "reviewer_rigor"
+
+
+def test_an_explicit_node_context_still_wins():
+    """The thread-local is the more specific answer when it is set — a shared
+    model reused across agents must not report the name it was built with."""
+    from peerreviewagents.observability import StreamingCallback, node_context
+
+    cb = StreamingCallback(default_model="m", default_node="reviewer_rigor")
+    with node_context("editor", run_id=RUN):
+        assert cb._node() == "editor"
+    assert cb._node() == "reviewer_rigor"
+
+
+def test_the_factory_passes_the_agent_name_to_the_callback():
+    """End to end: build a model the way an agent does and check the callback
+    it carries knows which agent it belongs to."""
+    from peerreviewagents.runtime.providers import make_chat_model
+
+    llm = make_chat_model(
+        {"provider": "anthropic", "reasoning_model": "claude-haiku-4-5"},
+        agent="reviewer_methodology",
+        default_tag="reviewer",
+    )
+    cbs = [c for c in (llm.callbacks or []) if hasattr(c, "_default_node")]
+    assert cbs and cbs[0]._default_node == "reviewer_methodology"
