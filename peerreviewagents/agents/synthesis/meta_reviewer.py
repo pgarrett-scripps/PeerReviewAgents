@@ -42,7 +42,16 @@ def _run(state: ReviewState) -> dict:
         f"Numerical signal:\n{score_summary(state)}\n\n"
         "Produce a meta-review. Engage with the numerical signal above: if "
         "your draft_recommendation diverges from the confidence-weighted "
-        "average verdict, name the specific reasoning in decisive_factors."
+        "average verdict, name the specific reasoning in decisive_factors.\n\n"
+        "Recommending a verdict harsher than every reviewer gave needs a "
+        "reason from the manuscript. The panel already judged this paper "
+        "against the target venue's standards — they were given the same "
+        "venue description you were — so the venue's selectivity is not a "
+        "fresh argument for lowering the verdict, and its headline acceptance "
+        "rate is a base rate over all submissions rather than a quota to hold "
+        "this one to. If no reviewer thought the work should be rejected, "
+        "recommending rejection means the panel collectively missed something "
+        "you can point to. Point to it, or do not."
     )
     try:
         # The Area Chair synthesizes the distilled signal (reviews + debate +

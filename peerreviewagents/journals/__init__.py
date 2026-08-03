@@ -131,7 +131,26 @@ class JournalProfile(BaseModel):
             year = f" ({self.impact_factor_year})" if self.impact_factor_year else ""
             lines.append(f"Approx. impact factor: {self.impact_factor}{year}")
         if self.acceptance_rate:
-            lines.append(f"Approx. acceptance rate: {self.acceptance_rate}")
+            # The caveat is not padding. Rendered bare, this number gets used
+            # as a post-review threshold: on a Nature submission the
+            # meta-reviewer read "~8%", wrote that the panel's 3.52/5 "would
+            # nominally suggest a major revision verdict, but for a target
+            # venue with Nature's selectivity", and returned reject — over a
+            # panel where four reviewers said minor, four said major, and none
+            # said reject. The editor then followed it.
+            #
+            # The figure is a base rate over ALL submissions, most of which
+            # never reach a referee. A manuscript being reviewed has already
+            # passed the desk, so applying the headline rate again charges it
+            # twice for a selection it already survived.
+            lines.append(
+                f"Approx. acceptance rate: {self.acceptance_rate} of all "
+                "submissions — a base rate dominated by desk rejections, NOT a "
+                "quota for manuscripts under review. This one has already "
+                "cleared the desk. Judge it on the panel's findings and this "
+                "venue's stated standards; do not lower a verdict to match "
+                "this number."
+            )
         if self.audience:
             lines.append(f"Audience: {self.audience}")
         if self.description:
