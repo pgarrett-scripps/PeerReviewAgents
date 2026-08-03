@@ -59,6 +59,7 @@ class ProviderSpec:
 
 def _make_openrouter(model: str, *, reasoning_effort: str | None = None,
                      node: str | None = None,
+                     run_id: str | None = None,
                      temperature: float = _TEMPERATURE) -> Any:
     from langchain_openai import ChatOpenAI
 
@@ -77,7 +78,7 @@ def _make_openrouter(model: str, *, reasoning_effort: str | None = None,
         "extra_body": extra_body,
         "streaming": True,
         "stream_usage": True,
-        "callbacks": [StreamingCallback(default_model=model, default_node=node)],
+        "callbacks": [StreamingCallback(default_model=model, default_node=node, default_run=run_id)],
     }
     # Current Anthropic models (Opus 5/4.7/4.8, Sonnet 5, Fable/Mythos 5)
     # reject `temperature` outright. The direct-Anthropic factory already
@@ -94,6 +95,7 @@ def _make_openrouter(model: str, *, reasoning_effort: str | None = None,
 
 def _make_openai(model: str, *, reasoning_effort: str | None = None,
                  node: str | None = None,
+                 run_id: str | None = None,
                  temperature: float = _TEMPERATURE) -> Any:
     from langchain_openai import ChatOpenAI
 
@@ -103,7 +105,7 @@ def _make_openai(model: str, *, reasoning_effort: str | None = None,
         "temperature": temperature,
         "streaming": True,
         "stream_usage": True,
-        "callbacks": [StreamingCallback(default_model=model, default_node=node)],
+        "callbacks": [StreamingCallback(default_model=model, default_node=node, default_run=run_id)],
     }
     if reasoning_effort:
         # o-series + GPT-5-class reasoning models accept this top-level.
@@ -116,6 +118,7 @@ def _make_openai(model: str, *, reasoning_effort: str | None = None,
 
 def _make_anthropic(model: str, *, reasoning_effort: str | None = None,
                     node: str | None = None,
+                    run_id: str | None = None,
                     temperature: float = _TEMPERATURE) -> Any:
     try:
         from langchain_anthropic import ChatAnthropic
@@ -130,7 +133,7 @@ def _make_anthropic(model: str, *, reasoning_effort: str | None = None,
         "model": model,
         "streaming": True,
         "stream_usage": True,
-        "callbacks": [StreamingCallback(default_model=model, default_node=node)],
+        "callbacks": [StreamingCallback(default_model=model, default_node=node, default_run=run_id)],
         # Output is billed per token generated, not per token allowed, so a
         # generous cap costs nothing until it is used — but hitting it costs
         # the whole call. A reviewer truncated mid-schema produces an
@@ -412,9 +415,17 @@ def make_chat_model(
         effort = None  # configured to think at all
     temp = config.get("temperature")
     temp = _TEMPERATURE if temp is None else float(temp)
-    # The agent name rides along so usage events can be attributed even
-    # when LangChain dispatches the callback off the node's own thread,
-    # where the thread-local `current_node()` reads empty.
+    # The agent name and the run id both ride along so usage events can be
+    # attributed even when LangChain dispatches the callback off the node's
+    # own thread, where the thread-locals `current_node()` and `current_run()`
+    # read empty. The run id matters as much as the name: an event with the
+    # right name and no run is filed under the un-keyed mailbox, and
+    # `_usage_table` asks for one run's rows — so that agent is missing from
+    # the report rather than mislabelled in it.
     return prov.factory(
-        spec.model, reasoning_effort=effort, temperature=temp, node=agent
+        spec.model,
+        reasoning_effort=effort,
+        temperature=temp,
+        node=agent,
+        run_id=config.get("run_id"),
     )

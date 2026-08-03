@@ -366,7 +366,12 @@ class StreamingCallback(BaseCallbackHandler):
     we belong to.
     """
 
-    def __init__(self, default_model: str | None = None, default_node: str | None = None):
+    def __init__(
+        self,
+        default_model: str | None = None,
+        default_node: str | None = None,
+        default_run: str | None = None,
+    ):
         super().__init__()
         self._default_model = default_model
         # Which agent this model belongs to, captured when it was built.
@@ -376,15 +381,26 @@ class StreamingCallback(BaseCallbackHandler):
         # into one unattributed bucket. The factory knows the agent, so it is
         # recorded here rather than inferred later.
         self._default_node = default_node or ""
+        # And which run, for exactly the same reason. Capturing the node but
+        # not the run left usage correctly *named* and filed under the
+        # un-keyed mailbox instead of this review: `_usage_table` asks for one
+        # run's rows, so an agent whose callback landed off-thread was absent
+        # from the table entirely rather than merely mislabelled. The live TUI
+        # registers without a run id and so kept showing those agents, which
+        # is why the written report was the only place the loss was visible.
+        self._default_run = default_run or ""
 
     def _node(self) -> str:
         return current_node() or self._default_node
+
+    def _run(self) -> str:
+        return current_run() or self._default_run
 
     # langchain calls this for every streamed chunk.
     def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
         if not token:
             return
-        emit(AgentEvent(kind="token", node=self._node(), text=token, run_id=current_run()))
+        emit(AgentEvent(kind="token", node=self._node(), text=token, run_id=self._run()))
 
     def on_llm_end(self, response: Any, **kwargs: Any) -> None:
         usage = _extract_usage(response)
@@ -404,11 +420,11 @@ class StreamingCallback(BaseCallbackHandler):
             cache_read_tokens=cache_read,
             cache_write_tokens=cache_write,
             cost_usd=cost,
-            run_id=current_run(),
+            run_id=self._run(),
         ))
 
     def on_llm_error(self, error: BaseException, **kwargs: Any) -> None:
-        emit(AgentEvent(kind="log", node=self._node(), text=f"LLM error: {error}", run_id=current_run()))
+        emit(AgentEvent(kind="log", node=self._node(), text=f"LLM error: {error}", run_id=self._run()))
 
 
 def _extract_usage(

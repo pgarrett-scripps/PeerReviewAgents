@@ -130,3 +130,86 @@ def test_the_factory_passes_the_agent_name_to_the_callback():
     )
     cbs = [c for c in (llm.callbacks or []) if hasattr(c, "_default_node")]
     assert cbs and cbs[0]._default_node == "reviewer_methodology"
+
+
+# --- attribution when the callback runs off the node's thread ---------------
+#
+# LangChain does not guarantee that on_llm_end runs on the thread that made
+# the call. The node *name* was already protected against that by capturing
+# it at model-construction time; the run id was not, so an off-thread callback
+# produced a correctly named event filed under the un-keyed mailbox. Since
+# `_usage_table` asks for one run's rows, those agents were missing from the
+# report entirely — and the TUI, which registers without a run id, kept
+# showing them, so the live view and the written report disagreed.
+
+from concurrent.futures import ThreadPoolExecutor  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+from peerreviewagents.observability import StreamingCallback  # noqa: E402
+
+
+def _llm_result(input_tokens=1000, output_tokens=100, cache_read=500):
+    msg = SimpleNamespace(
+        usage_metadata={
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "input_token_details": {"cache_read": cache_read},
+        },
+        response_metadata={"model_name": "anthropic/claude-opus-5"},
+    )
+    return SimpleNamespace(generations=[[SimpleNamespace(message=msg)]])
+
+
+def _callback(node):
+    """Built the way the provider factory builds it."""
+    return StreamingCallback(
+        default_model="anthropic/claude-opus-5", default_node=node, default_run=RUN
+    )
+
+
+def test_usage_lands_in_the_run_when_the_callback_runs_off_thread():
+    cb = _callback("reviewer_rigor")
+    with ThreadPoolExecutor(max_workers=1) as ex:
+        ex.submit(cb.on_llm_end, _llm_result()).result()
+    rows = node_usage(RUN)
+    assert "reviewer_rigor" in rows, "agent vanished from its own run's usage table"
+    assert rows["reviewer_rigor"][0] == 1000
+
+
+def test_every_parallel_agent_appears_not_just_a_few():
+    """The reported symptom: only some agents showed a cost."""
+    names = [f"reviewer_{n}" for n in
+             ("methodology", "data_analysis", "novelty", "clarity",
+              "literature", "rigor", "reproducibility", "ethics")]
+
+    def run_agent(name):
+        cb = _callback(name)
+        # Node context on this thread, callback dispatched off it.
+        with ThreadPoolExecutor(max_workers=1) as ex:
+            ex.submit(cb.on_llm_end, _llm_result()).result()
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(run_agent, names))
+
+    rows = node_usage(RUN)
+    assert set(rows) == set(names), f"missing: {set(names) - set(rows)}"
+
+
+def test_cache_totals_survive_an_off_thread_callback():
+    """The summary's prompt-cache line reads from the same bucket."""
+    from peerreviewagents.observability import cache_totals
+
+    cb = _callback("editor")
+    with ThreadPoolExecutor(max_workers=1) as ex:
+        ex.submit(cb.on_llm_end, _llm_result(cache_read=900)).result()
+    assert cache_totals(RUN)[0] == 900
+
+
+def test_a_callback_with_no_captured_run_still_records_somewhere():
+    """Belt and braces: unattributed spend is not silently dropped."""
+    from peerreviewagents.observability import _DEFAULT_RUN
+
+    cb = StreamingCallback(default_model="anthropic/claude-opus-5", default_node="stray")
+    with ThreadPoolExecutor(max_workers=1) as ex:
+        ex.submit(cb.on_llm_end, _llm_result()).result()
+    assert "stray" in node_usage(_DEFAULT_RUN)
