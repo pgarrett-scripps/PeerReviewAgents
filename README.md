@@ -1,5 +1,8 @@
 # PeerReviewAgents
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21781895.svg)](https://doi.org/10.5281/zenodo.21781895)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A multi-agent LLM **peer-review** framework: an editorial board for manuscripts,
 modeled structurally on [TradingAgents](https://github.com/TauricResearch/TradingAgents).
 Where TradingAgents simulates a trading firm to produce a buy/sell/hold decision on a
@@ -630,7 +633,10 @@ MIT. See [`LICENSE`](LICENSE). Contributions are accepted under the same terms.
 
 ## Citation
 
-See [`CITATION.cff`](CITATION.cff). Patrick Garrett, Aleix Navarro Garrido and
+Cite the concept DOI, [10.5281/zenodo.21781895](https://doi.org/10.5281/zenodo.21781895), which always
+resolves to the newest version. Machine-readable metadata is in
+[`CITATION.cff`](CITATION.cff), and GitHub's "Cite this repository" button
+reads it. Patrick Garrett, Aleix Navarro Garrido and
 Ricard Garcia-Carbonell contributed equally; the CFF format has no field for
 shared first authorship, so a citation generated from that file renders them as
 an ordinary author list.
