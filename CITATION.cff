@@ -37,7 +37,7 @@ authors:
     affiliation: Scripps Research
     orcid: "https://orcid.org/0000-0001-5267-1672"
 repository-code: "https://github.com/pgarrett-scripps/PeerReviewAgents"
-license: GPL-3.0-or-later
+license: MIT
 version: 0.1.0
 date-released: "2026-08-01"
 keywords:

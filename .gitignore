@@ -19,16 +19,5 @@ reports/*
 # Evaluation corpus + runs (PDFs, jsonl, reports)
 data/
 
-# Human-vs-AI benchmark: keep the scaffolding (scripts, README), ignore
-# everything derived. Copyrighted PDFs/reviews and AI outputs never belonged
-# here; the filled worksheets and their audits are manuscript material and
-# live in the private companion repo (a private companion repo).
-benchmark/corpus/
-benchmark/ai_reviews/
-benchmark/manifest.csv
-benchmark/comparison/
-benchmark/verification/
-benchmark/contamination/
-
-# Agent worktrees (transient, created by Claude Code)
-.claude/worktrees/
+# Local agent/editor settings
+.claude/
