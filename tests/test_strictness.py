@@ -74,10 +74,10 @@ def test_review_strictness_env_and_kwarg_precedence(monkeypatch):
 # --- context-block injection ----------------------------------------------
 
 
-def test_context_block_without_strictness_equals_manuscript():
+def test_context_block_without_strictness_is_just_the_manuscript():
     # No strictness block + no journal => exactly the manuscript block.
     state = {"manuscript_md": "Hello world.", "config": {}}
-    assert context_block(state) == manuscript_block(state)
+    assert context_block(state) == [manuscript_block(state)]
 
 
 def test_context_block_includes_strictness_when_set():
@@ -86,19 +86,19 @@ def test_context_block_includes_strictness_when_set():
         "config": {},
         "strictness_block": strictness_block(5),
     }
-    combined = context_block(state)
-    assert "=== REVIEW STRICTNESS ===" in combined
-    assert manuscript_block(state) in combined
+    blocks = context_block(state)
+    assert blocks[0] == manuscript_block(state)
+    assert "=== REVIEW STRICTNESS ===" in blocks[1]
 
 
-def test_context_block_orders_journal_before_strictness():
+def test_directives_follow_the_manuscript_and_order_journal_before_strictness():
     state = {
         "manuscript_md": "Hello world.",
         "config": {},
         "journal_block": "=== TARGET JOURNAL ===\nName: Test\n=== END TARGET JOURNAL ===",
         "strictness_block": strictness_block(4),
     }
-    combined = context_block(state)
-    # Journal context leads, strictness follows, manuscript last.
-    assert combined.index("TARGET JOURNAL") < combined.index("REVIEW STRICTNESS")
-    assert combined.index("REVIEW STRICTNESS") < combined.index("=== MANUSCRIPT ===")
+    blocks = context_block(state)
+    assert blocks[0] == manuscript_block(state)
+    directives = blocks[1]
+    assert directives.index("TARGET JOURNAL") < directives.index("REVIEW STRICTNESS")

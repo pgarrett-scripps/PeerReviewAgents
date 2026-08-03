@@ -182,12 +182,12 @@ def test_context_block_includes_article_type_when_set():
         "config": {},
         "article_type_block": article_type_block("review"),
     }
-    combined = context_block(state)
-    assert "=== MANUSCRIPT TYPE ===" in combined
-    assert manuscript_block(state) in combined
+    blocks = context_block(state)
+    assert blocks[0] == manuscript_block(state)
+    assert "=== MANUSCRIPT TYPE ===" in blocks[1]
 
 
-def test_context_block_orders_journal_type_strictness_manuscript():
+def test_manuscript_leads_and_directives_funnel_journal_type_strictness():
     state = {
         "manuscript_md": "Hello world.",
         "config": {},
@@ -195,10 +195,11 @@ def test_context_block_orders_journal_type_strictness_manuscript():
         "article_type_block": article_type_block("letter"),
         "strictness_block": strictness_block(4),
     }
-    combined = context_block(state)
+    blocks = context_block(state)
+    assert blocks[0] == manuscript_block(state)
+    directives = blocks[1]
     assert (
-        combined.index("TARGET JOURNAL")
-        < combined.index("MANUSCRIPT TYPE")
-        < combined.index("REVIEW STRICTNESS")
-        < combined.index("=== MANUSCRIPT ===")
+        directives.index("TARGET JOURNAL")
+        < directives.index("MANUSCRIPT TYPE")
+        < directives.index("REVIEW STRICTNESS")
     )

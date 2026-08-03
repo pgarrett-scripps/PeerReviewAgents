@@ -101,12 +101,16 @@ def make_auditor_node(
                 mandate=mandate,
             )
             cached_prefix = context_block(state)
-            # Opt-in agents get the full SI appended after the manuscript.
+            # Opt-in agents get the full SI as a further cached block. It goes
+            # last so the blocks before it stay byte-identical to what every
+            # other agent sends: this agent then reads the shared manuscript
+            # entry and writes only the SI on top, instead of writing a second
+            # copy of the manuscript because its prefix differed.
             # No-op when no SI was provided, so the prefix is unchanged.
             if needs_supplement:
                 supplement = supplement_block(state)
                 if supplement:
-                    cached_prefix = f"{cached_prefix}\n\n{supplement}"
+                    cached_prefix = [*cached_prefix, supplement]
                     instructions = instructions + _SUPPLEMENT_NOTE
 
             try:

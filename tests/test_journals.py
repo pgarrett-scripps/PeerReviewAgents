@@ -135,17 +135,24 @@ def test_target_journal_env_and_kwarg_precedence(monkeypatch):
 # --- context-block injection ----------------------------------------------
 
 
-def test_context_block_without_journal_equals_manuscript():
+def test_context_block_without_journal_is_just_the_manuscript():
     state = {"manuscript_md": "Hello world.", "config": {}}
-    assert context_block(state) == manuscript_block(state)
+    assert context_block(state) == [manuscript_block(state)]
 
 
-def test_context_block_prepends_journal(journals_dir):
+def test_context_block_leads_with_the_manuscript_then_the_journal(journals_dir):
+    """The manuscript is block 0, byte-identical to what every other agent
+    sends.
+
+    This ordering is the cache contract. The directives used to come first,
+    which made a stable prefix for the agents that read them and shared
+    nothing with the bare manuscript_block the debate, rebuttal and scout
+    send — so the same manuscript was cached once per group. Manuscript
+    first means both groups match on it and only the directives are written
+    on top.
+    """
     block = load_journal("test-journal", _cfg(journals_dir)).to_prompt_block()
     state = {"manuscript_md": "Hello world.", "config": {}, "journal_block": block}
-    combined = context_block(state)
-    assert combined.startswith("=== TARGET JOURNAL ===")
-    assert manuscript_block(state) in combined
-    # Journal context must come before the manuscript so the cached prefix
-    # is a stable journal+manuscript concatenation across agents.
-    assert combined.index("TARGET JOURNAL") < combined.index("MANUSCRIPT")
+    blocks = context_block(state)
+    assert blocks[0] == manuscript_block(state)
+    assert "=== TARGET JOURNAL ===" in blocks[1]

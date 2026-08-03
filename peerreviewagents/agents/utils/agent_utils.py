@@ -4,6 +4,7 @@ manuscript truncation, score aggregation, cost capture.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -125,33 +126,44 @@ def _cache_control_supported(llm) -> bool:
 def _build_messages(
     system_prompt: str,
     user_prompt: str,
-    cached_prefix: str | None,
+    cached_prefix: str | Sequence[str] | None,
     *,
     cache_supported: bool = True,
 ) -> list:
-    """Assemble ``[system, user]`` with any ``cached_prefix`` (the manuscript)
-    placed as a *leading* system block.
+    """Assemble ``[system, user]`` with the cached prefix as leading blocks.
 
     Putting the manuscript first — ahead of each agent's own system prompt —
     makes the cached region byte-identical across every agent that sends the
     same manuscript, so a single provider-side cache entry is shared instead
     of one being written per agent-specific prefix. The agent's system_prompt
-    and the user_prompt sit *after* the cache breakpoint, so they don't
+    and the user_prompt sit *after* the last cache breakpoint, so they don't
     fragment the key. This is what lets the desk-screen warmer prime a cache
     the parallel reviewer fan-out then reads.
 
-    On providers that don't honor ``cache_control`` (OpenAI direct) the prefix
-    is folded into the system prompt as plain text — same ordering, no marker.
+    ``cached_prefix`` may be several blocks, each of which gets its own
+    breakpoint. Anthropic caches incrementally — a request matches the longest
+    cached prefix and writes only the increment beyond it — so blocks ordered
+    general-to-specific let agents that share a *prefix* of the blocks share
+    that part of the cache even when their later blocks differ. The manuscript
+    goes first for exactly this reason: agents that also send the venue
+    directives read the manuscript entry and write only the directives on top,
+    rather than writing a second copy of the whole manuscript.
+
+    On providers that don't honor ``cache_control`` (OpenAI direct) the blocks
+    are folded into the system prompt as plain text — same ordering, no marker.
     """
-    if not cached_prefix:
+    blocks = [cached_prefix] if isinstance(cached_prefix, str) else list(cached_prefix or [])
+    blocks = [b for b in blocks if b and b.strip()]
+    if not blocks:
         return [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
     if cache_supported:
         system_content: Any = [
-            {"type": "text", "text": cached_prefix, "cache_control": {"type": "ephemeral"}},
-            {"type": "text", "text": system_prompt},
+            {"type": "text", "text": b, "cache_control": {"type": "ephemeral"}}
+            for b in blocks
         ]
+        system_content.append({"type": "text", "text": system_prompt})
     else:
-        system_content = f"{cached_prefix}\n\n{system_prompt}"
+        system_content = "\n\n".join([*blocks, system_prompt])
     return [SystemMessage(content=system_content), HumanMessage(content=user_prompt)]
 
 
@@ -345,23 +357,25 @@ def directives_block(state: ReviewState) -> str | None:
     return "\n\n".join(parts) if parts else None
 
 
-def context_block(state: ReviewState) -> str:
-    """Shared cached prefix: journal + article-type + strictness + manuscript.
+def context_block(state: ReviewState) -> list[str]:
+    """Cached blocks for an agent that reads the primary text: manuscript,
+    then the run's journal / article-type / strictness directives.
 
-    Each context block is constant for a whole run, so prepending them to the
-    manuscript block keeps a single, byte-identical prefix across every agent
-    that takes ``cached_prefix`` — they still share one provider-side cache
-    entry. The order reads as a funnel: journal ("what venue"), then article
-    type ("what kind of submission"), then the strictness directive ("how
-    harshly to judge"). When none are set this is exactly the manuscript
-    block alone.
+    Returned as separate blocks, and in this order, because the order is worth
+    real money. Both are constant for a whole run, so either arrangement
+    caches — but putting the directives first, as this did, gave the agents
+    that read them a prefix sharing nothing with the bare
+    :func:`manuscript_block` the debate, rebuttal and scout send. The same
+    manuscript was then cached twice, once per group.
+
+    Manuscript first, with a breakpoint after it, makes the two groups share
+    one entry: the debaters read it, and the reviewers read it and write only
+    the few hundred tokens of directives on top. Measured on a 61,700-token
+    paper, the split was writing about 3.6 manuscripts' worth of cache per
+    run, and a cache write costs 12.5x what reading one does.
     """
-    parts = [
-        p
-        for p in (directives_block(state), manuscript_block(state))
-        if p
-    ]
-    return "\n\n".join(parts)
+    directives = directives_block(state)
+    return [manuscript_block(state), directives] if directives else [manuscript_block(state)]
 
 
 # ---------------------------------------------------------------------------
