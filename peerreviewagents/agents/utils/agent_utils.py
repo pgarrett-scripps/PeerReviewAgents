@@ -103,7 +103,7 @@ def run_agent(
     final_resp: AIMessage | None = None
     for _ in range(_MAX_TOOL_STEPS):
         resp: AIMessage = model.invoke(messages)
-        cost_total += _call_cost(resp)
+        cost_total += _call_cost(resp, cache_ttl)
         messages.append(resp)
         calls = getattr(resp, "tool_calls", None) or []
         if not calls:
@@ -117,7 +117,7 @@ def run_agent(
         # Tool budget exhausted: ask for a final answer; keep tools bound
         # so the API accepts the tool-call / tool-result history.
         final_resp = model.invoke(messages + [HumanMessage(content="Now produce your final answer.")])
-        cost_total += _call_cost(final_resp)
+        cost_total += _call_cost(final_resp, cache_ttl)
 
     return RunResult(text=_text(final_resp.content), cost=cost_total)
 
@@ -193,7 +193,7 @@ def _build_messages(
     return [SystemMessage(content=system_content), HumanMessage(content=user_prompt)]
 
 
-def _call_cost(resp: AIMessage) -> float:
+def _call_cost(resp: AIMessage, cache_ttl: str | None = None) -> float:
     """Best-effort USD cost for a single model call.
 
     OpenRouter reports actual spend on the response; Anthropic and OpenAI
@@ -228,6 +228,10 @@ def _call_cost(resp: AIMessage) -> float:
         int(out_tok or 0),
         cache_read_tokens=read,
         cache_write_tokens=written,
+        # A 1h write bills at 2x and a 5m one at 1.25x, so the TTL this call
+        # actually used is what prices it. Omitted, estimate_cost assumes 1h,
+        # which is what this pipeline configures.
+        cache_ttl=cache_ttl,
     )
 
 

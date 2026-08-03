@@ -26,13 +26,13 @@ WORKDIR /app
 #    README.md is referenced by pyproject's `readme` field.
 COPY pyproject.toml uv.lock README.md ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-project --extra research
+    uv sync --locked --no-install-project --extra research
 
 # 2) Project layer — source code + the editable install of the package.
 COPY peerreviewagents ./peerreviewagents
 COPY cli ./cli
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --extra research
+    uv sync --locked --extra research
 
 # Non-root runtime user. HOME=/app so the manuscript cache lands in
 # /app/.cache/peerreviewagents (a declared volume), not a throwaway layer.

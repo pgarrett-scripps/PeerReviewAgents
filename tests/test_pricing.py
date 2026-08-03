@@ -92,10 +92,39 @@ def test_a_cache_hit_is_cheaper_than_sending_the_tokens_plain():
     assert hit == pytest.approx(plain * 0.10)
 
 
-def test_writing_the_cache_costs_a_quarter_more():
+def test_a_five_minute_cache_write_costs_a_quarter_more():
     plain = estimate_cost("claude-opus-5", MTOK, 0)
-    write = estimate_cost("claude-opus-5", MTOK, 0, cache_write_tokens=MTOK)
+    write = estimate_cost("claude-opus-5", MTOK, 0, cache_write_tokens=MTOK, cache_ttl="5m")
     assert write == pytest.approx(plain * 1.25)
+
+
+def test_an_hour_long_cache_write_costs_double():
+    """The TTL the pipeline actually configures, and the bug this pins.
+
+    DEFAULT_CACHE_TTL is "1h", which Anthropic bills at 2x base against the
+    5m write's 1.25x. This priced every write at 1.25 regardless, and cache
+    writes are the largest component of input cost under a parallel fan-out
+    where ten agents all write and none can read what the others have not
+    finished writing. Every cost this pipeline reported was low, on the one
+    number a user consults to decide whether to run it again.
+    """
+    plain = estimate_cost("claude-opus-5", MTOK, 0)
+    write = estimate_cost("claude-opus-5", MTOK, 0, cache_write_tokens=MTOK, cache_ttl="1h")
+    assert write == pytest.approx(plain * 2.0)
+
+
+def test_an_unspecified_ttl_bills_at_the_rate_the_pipeline_uses():
+    """Fail expensive, not cheap. An omitted TTL is priced at 1h because that
+    is what the pipeline configures, and over-quoting is the survivable error.
+    """
+    from peerreviewagents.agents.utils.agent_utils import DEFAULT_CACHE_TTL
+
+    assert DEFAULT_CACHE_TTL == "1h"
+    silent = estimate_cost("claude-opus-5", MTOK, 0, cache_write_tokens=MTOK)
+    explicit = estimate_cost(
+        "claude-opus-5", MTOK, 0, cache_write_tokens=MTOK, cache_ttl=DEFAULT_CACHE_TTL
+    )
+    assert silent == pytest.approx(explicit)
 
 
 def test_cached_tokens_are_a_component_of_input_not_an_addition():

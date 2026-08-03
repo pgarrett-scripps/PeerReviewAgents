@@ -122,13 +122,47 @@ statistical claims to evaluate and then scored the paper 5/5. The schema
 rejects a null with no reason, so "nothing to judge" cannot stand in for a hard
 call on work that is thin or missing something it should have.
 
+## What a run costs
+
+Reviewing one manuscript runs 16 agents, 14 of which read the whole paper. On
+the shipped default (Claude Opus for every agent) that is **roughly $2 to $4
+per manuscript**, and a revision round pays it again. There is no free tier
+here: you bring an API key and your provider bills you directly.
+
+Two levers, both real:
+
+- **Split the panel by tier.** Put the eight-way reviewer fan-out and the
+  audits on a cheap model and keep the expensive one for the agents that
+  actually decide the verdict. See [Configuration](#configuration). This is the
+  largest saving available, and it ships off only because no single split is
+  right for everyone.
+- **Run it on a free model.** `--provider openrouter --reasoning-model
+  <vendor/model:free>` puts every agent on one free-tier model. Slower, and the
+  panel is only as good as that model, but the bill is zero.
+
+Every run writes its own per-agent spend to `usage.md`, so the second run can
+be costed from a breakdown instead of a guess.
+
 ## Install
 
+You need a virtual environment. Current Linux distributions and Homebrew Python
+refuse a bare `pip install` into the system interpreter (PEP 668), so the first
+line is not optional.
+
 ```bash
+python -m venv .venv && source .venv/bin/activate
 pip install -e .
 
 # Optional extra (live arXiv lookups for the Novelty / Literature reviewers):
 pip install -e '.[research]'
+```
+
+Or with [uv](https://docs.astral.sh/uv/), which is what CI and the Dockerfile
+use:
+
+```bash
+uv venv && source .venv/bin/activate
+uv pip install -e '.[research]'
 ```
 
 Base deps include `rustypaper` (PDF → Markdown), `pypdf` (the integrity screen
@@ -589,6 +623,10 @@ six months.
 A manuscript describing the system is in preparation, in a private companion
 repository alongside the evaluation analysis. It will be linked here on
 submission.
+
+## License
+
+MIT. See [`LICENSE`](LICENSE). Contributions are accepted under the same terms.
 
 ## Citation
 

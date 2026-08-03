@@ -374,6 +374,53 @@ def _validate_article_type(config: dict) -> None:
         sys.exit(1)
 
 
+def _validate_api_key(config: dict) -> None:
+    """Fail fast, and in the user's own terms, when no key is configured.
+
+    Without this the run ingests the manuscript, screens it, fans out eight
+    reviewers, and then each one dies inside langchain with:
+
+        openai.OpenAIError: Missing credentials. Please pass an `api_key`,
+        or set the `OPENAI_API_KEY` environment variable.
+
+    That message is wrong twice over for the default configuration. The
+    default provider is OpenRouter, which reads OPENROUTER_API_KEY; and the
+    error arrives eight times, after the work, buried in a traceback. A
+    newcomer reasonably concludes the install is broken.
+
+    Every other precondition here is already checked before any spending
+    starts. This is the one every single run needs.
+    """
+    from peerreviewagents.runtime.providers import PROVIDERS
+
+    checked: set[str] = set()
+    for agent_spec in (config.get("models") or {}).values():
+        if isinstance(agent_spec, dict) and agent_spec.get("provider"):
+            checked.add(str(agent_spec["provider"]).lower())
+    checked.add(str(config.get("provider") or "openrouter").lower())
+
+    for name in sorted(checked):
+        spec = PROVIDERS.get(name)
+        if spec is None:
+            continue
+        if any(os.environ.get(var) for var in spec.api_key_env):
+            continue
+        primary = spec.api_key_env[0]
+        alts = spec.api_key_env[1:]
+        console.print(
+            f"[red]No API key for the '{name}' provider.[/red] "
+            f"Set [bold]{primary}[/bold]"
+            + (f" (or {', '.join(alts)})" if alts else "")
+            + " and run again."
+        )
+        console.print(
+            "Put it in a [bold].env[/bold] file next to the project, export it "
+            "in your shell, or pass a different provider with "
+            "[cyan]--provider[/cyan]. See .env.example."
+        )
+        sys.exit(1)
+
+
 def run_headless(manuscript: str, config: dict) -> None:
     from peerreviewagents.ingest.loader import ManuscriptUnreadable
 
@@ -517,6 +564,7 @@ def run() -> None:
     _validate_article_type(config)
     _validate_strictness(config)
     _validate_revision_inputs(config)
+    _validate_api_key(config)
 
     if args.no_tui:
         run_headless(args.manuscript, config)

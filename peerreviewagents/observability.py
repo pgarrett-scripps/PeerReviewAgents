@@ -268,11 +268,33 @@ def _normalize_model_key(model: str) -> str:
 
 
 # Prompt-cache multipliers on the input rate (Anthropic's published pricing).
-# Writing a cache entry costs a quarter more than sending the tokens plain;
-# reading one costs a tenth. The whole point of threading the manuscript
-# through as a shared prefix is to pay the first once and the second after.
-_CACHE_WRITE_MULTIPLIER = 1.25
+# Reading a cache entry costs a tenth. Writing one costs a quarter more than
+# sending the tokens plain at the 5-minute TTL, and DOUBLE at the 1-hour TTL.
+#
+# The two write rates are why this is a table rather than a constant. The
+# pipeline defaults to a 1h TTL (agent_utils.DEFAULT_CACHE_TTL) because a
+# review outlives five minutes, and this priced every write at 1.25 anyway.
+# Cache writes dominate input cost under a parallel fan-out where ten agents
+# all write and none can read what the others have not finished writing, so
+# every reported figure was low by up to 60% on the largest component of the
+# bill — on the one number a user consults to decide whether they can afford
+# another run.
+_CACHE_WRITE_MULTIPLIERS = {"5m": 1.25, "1h": 2.00}
 _CACHE_READ_MULTIPLIER = 0.10
+
+
+def _write_multiplier(cache_ttl: str | None) -> float:
+    """Write multiplier for a TTL, defaulting to the more expensive one.
+
+    An unrecognised or absent TTL bills at the 1h rate on purpose: that is
+    what the pipeline actually configures, and of the two available errors,
+    quoting someone more than they will pay is the survivable one.
+    """
+    if cache_ttl is None:
+        return _CACHE_WRITE_MULTIPLIERS["1h"]
+    return _CACHE_WRITE_MULTIPLIERS.get(
+        str(cache_ttl).strip().lower(), _CACHE_WRITE_MULTIPLIERS["1h"]
+    )
 
 
 def estimate_cost(
@@ -282,6 +304,7 @@ def estimate_cost(
     *,
     cache_read_tokens: int = 0,
     cache_write_tokens: int = 0,
+    cache_ttl: str | None = None,
 ) -> float:
     """Best-effort cost estimate from a static pricing table.
 
@@ -298,6 +321,10 @@ def estimate_cost(
     figure could not tell them apart, so a cache that was working looked
     identical to a cache that wasn't, and there was no way to see which you
     had.
+
+    ``cache_ttl`` selects the write multiplier, because Anthropic charges 2x
+    for a 1-hour entry against 1.25x for a 5-minute one. Omitting it bills at
+    the 1h rate, which is what the pipeline configures by default.
 
     The multipliers are Anthropic's. OpenAI reports no cache-creation tokens
     (so the write term falls out) and discounts reads less steeply, which
@@ -321,7 +348,7 @@ def estimate_cost(
 
     billed = (
         plain
-        + cache_write * _CACHE_WRITE_MULTIPLIER
+        + cache_write * _write_multiplier(cache_ttl)
         + cache_read * _CACHE_READ_MULTIPLIER
     )
     return (billed / 1_000_000) * in_rate + (output_tokens / 1_000_000) * out_rate
