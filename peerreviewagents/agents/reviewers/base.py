@@ -98,6 +98,18 @@ _INSTRUCTIONS = (
     "authors did not raise it themselves: that they did not is the point.\n\n"
     "Questions are for what you genuinely cannot determine from the text, not "
     "for objections you are reluctant to make.\n\n"
+    # A property of this pipeline, not of any venue. It lived in one journal
+    # profile for a while, which meant every other profile produced referees
+    # that assessed figures they had never seen.
+    "## What you cannot inspect\n\n"
+    "You read this manuscript as text. You cannot run its code, execute its "
+    "experiments, check a derivation line by line, or see its figures — a "
+    "figure reaches you only through whatever the surrounding text says about "
+    "it. Where a claim rests on something you cannot inspect, say so "
+    "explicitly and lower your confidence. Do not score it as a flaw and do "
+    "not wave it through: 'I could not verify this' and 'this is unsupported' "
+    "are different findings, and a report that blurs them tells the authors "
+    "something false about their own paper.\n\n"
     "## The rest\n\n"
     "A HARD issue — a claim, method, or figure genuinely unsupported, "
     "ambiguous, or non-compliant as worded — belongs in BOTH your weaknesses "
