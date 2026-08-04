@@ -20,6 +20,7 @@ This mirrors the shape of TradingAgents'
 
 from __future__ import annotations
 
+import threading
 from typing import Any, Callable
 
 from . import RateLimitError, arxiv, biorxiv, pubmed, semantic_scholar
@@ -101,6 +102,26 @@ def resolve_vendors(method: str, config: dict | None = None) -> list[str]:
     return chain
 
 
+# Which vendor actually answered the most recent lookup on this thread.
+#
+# The router falls through on rate limits, so the vendor that serves a query is
+# often not the one configured first — and the answer changes what the result
+# is worth. `find_related_work` prefers Semantic Scholar and falls back to
+# arXiv; for a biology manuscript that fallback is the wrong corpus, and it
+# returns confidently irrelevant papers rather than nothing. Read by the tool
+# tracing so a published search says who answered it, not just how many hits
+# came back.
+#
+# Thread-local for the same reason the current node is: reviewers fan out in
+# parallel, and each executes its own tools on its own thread.
+_LAST: threading.local = threading.local()
+
+
+def last_vendor() -> str:
+    """Vendor that served the last :func:`route` call on this thread."""
+    return getattr(_LAST, "vendor", "")
+
+
 def route(method: str, config: dict | None = None, **kwargs: Any) -> str:
     """Dispatch ``method`` to the first non-rate-limited vendor.
 
@@ -111,6 +132,7 @@ def route(method: str, config: dict | None = None, **kwargs: Any) -> str:
     # Defense-in-depth: in offline mode the reviewer/auditor nodes never bind
     # research tools, so this is normally unreachable — but if anything does
     # call route() while research is disabled, refuse before touching a vendor.
+    _LAST.vendor = ""
     if config is not None and not config.get("research_enabled", True):
         return f"[research disabled: offline mode — no vendor called for {method!r}]"
 
@@ -125,10 +147,12 @@ def route(method: str, config: dict | None = None, **kwargs: Any) -> str:
         if fn is None:
             continue
         try:
-            return fn(**kwargs)
+            result = fn(**kwargs)
         except RateLimitError as exc:
             last_rate_limit = exc
             continue
+        _LAST.vendor = vendor
+        return result
     # Every vendor in the chain rate-limited.
     return (
         f"[{method}: all configured vendors rate-limited "

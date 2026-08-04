@@ -47,6 +47,12 @@ class AgentEvent:
     tool_query: str = ""
     tool_hits: int = 0
     tool_error: str = ""
+    # Which vendor answered. The router falls through on rate limits, so this
+    # is often not the configured first choice — and it changes what the hits
+    # are worth: find_related_work falling back from Semantic Scholar to arXiv
+    # searches the wrong corpus for a biology paper and returns confidently
+    # irrelevant work rather than nothing.
+    tool_vendor: str = ""
     # Both are already inside input_tokens, not additional to it. Carried
     # separately because the aggregate cost cannot show whether the shared
     # manuscript prefix is being hit or re-sent, and that is the single
@@ -189,6 +195,7 @@ def _note_node_tool(run_id: str, event: AgentEvent) -> None:
             "tool": event.tool_name,
             "query": event.tool_query,
             "hits": event.tool_hits,
+            **({"vendor": event.tool_vendor} if event.tool_vendor else {}),
             **({"error": event.tool_error} if event.tool_error else {}),
         })
 

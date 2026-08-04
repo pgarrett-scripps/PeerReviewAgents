@@ -149,12 +149,20 @@ def _record_tool_call(call: dict, result: str, failure: str) -> None:
     hits = 0 if failure else sum(
         1 for line in result.splitlines() if line.lstrip().startswith("- ")
     )
+    try:
+        from ...research.interface import last_vendor
+        vendor = last_vendor()
+    except Exception:  # noqa: BLE001
+        # Research extras not installed, or a non-research tool. Not knowing
+        # the vendor must not cost us the rest of the record.
+        vendor = ""
     emit(AgentEvent(
         kind="tool",
         node=current_node(),
         tool_name=str(call.get("name") or ""),
         tool_query=str(query)[:200],
         tool_hits=hits,
+        tool_vendor=vendor,
         tool_error=failure,
     ))
 
