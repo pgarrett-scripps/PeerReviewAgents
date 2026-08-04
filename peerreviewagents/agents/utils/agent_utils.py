@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
-from ...observability import estimate_cost
+from ...observability import AgentEvent, current_node, emit, estimate_cost
 
 if TYPE_CHECKING:
     from .agent_states import ReviewState
@@ -111,7 +111,16 @@ def run_agent(
             break
         for call in calls:
             fn = tool_map.get(call["name"])
-            result = fn.invoke(call["args"]) if fn else f"[unknown tool {call['name']}]"
+            try:
+                result = fn.invoke(call["args"]) if fn else f"[unknown tool {call['name']}]"
+                failure = "" if fn else "unknown tool"
+            except Exception as exc:  # noqa: BLE001
+                # A vendor being down must not take the reviewer down with it.
+                # Hand the model the failure as a tool result and let it carry
+                # on without that lookup, as it would an empty search.
+                result = f"[tool error: {type(exc).__name__}]"
+                failure = f"{type(exc).__name__}: {exc}"
+            _record_tool_call(call, str(result), failure)
             messages.append(ToolMessage(content=str(result), tool_call_id=call["id"]))
     if final_resp is None:
         # Tool budget exhausted: ask for a final answer; keep tools bound
@@ -120,6 +129,34 @@ def run_agent(
         cost_total += _call_cost(final_resp, cache_ttl)
 
     return RunResult(text=_text(final_resp.content), cost=cost_total)
+
+
+def _record_tool_call(call: dict, result: str, failure: str) -> None:
+    """Put one research lookup on the observability bus.
+
+    Published, not just logged. A reviewer that cites prior work is making a
+    different claim depending on whether it searched for that work or recalled
+    it, and nothing else in the record distinguishes the two — the tool path
+    costs more whether or not a tool is ever called, so cost cannot answer it.
+
+    ``hits`` counts the entries in the rendered list the research router
+    returns, which is a heuristic over its output format rather than a count
+    the vendor supplied. Zero means the search ran and found nothing, which is
+    itself a finding: it is the evidence behind "no prior art located".
+    """
+    args = call.get("args") or {}
+    query = args.get("query") or next((str(v) for v in args.values() if v), "")
+    hits = 0 if failure else sum(
+        1 for line in result.splitlines() if line.lstrip().startswith("- ")
+    )
+    emit(AgentEvent(
+        kind="tool",
+        node=current_node(),
+        tool_name=str(call.get("name") or ""),
+        tool_query=str(query)[:200],
+        tool_hits=hits,
+        tool_error=failure,
+    ))
 
 
 def _cache_control_supported(llm) -> bool:

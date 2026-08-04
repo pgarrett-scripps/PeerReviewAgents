@@ -32,11 +32,21 @@ from langchain_core.callbacks.base import BaseCallbackHandler
 class AgentEvent:
     """One observable thing that happened in the pipeline."""
 
-    kind: str           # node_start | node_end | token | usage | log | info
+    kind: str           # node_start | node_end | token | usage | tool | log | info
     node: str = ""      # logical node name (e.g. "reviewer_methodology")
     text: str = ""      # streamed text for kind=token, free-form for log/info
     input_tokens: int = 0
     output_tokens: int = 0
+    # kind="tool" only. A reviewer that cites prior work is making a different
+    # claim depending on whether it searched for it or recalled it, and the
+    # cost line cannot tell those apart: the tool path costs more whether or
+    # not a tool was ever called. `tool_error` set with no name is the loop
+    # failing over to a tools-free pass — a review that lost its grounding and
+    # would otherwise be indistinguishable from one that kept it.
+    tool_name: str = ""
+    tool_query: str = ""
+    tool_hits: int = 0
+    tool_error: str = ""
     # Both are already inside input_tokens, not additional to it. Carried
     # separately because the aggregate cost cannot show whether the shared
     # manuscript prefix is being hit or re-sent, and that is the single
@@ -149,6 +159,10 @@ _CACHE_TOTALS: dict[str, list[int]] = {}
 # with extra steps.
 _NODE_USAGE: dict[str, dict[str, list[float]]] = {}
 
+# Per-node research-tool calls within a run: node -> [{tool, query, hits}].
+# What a referee looked up, rather than what it spent looking.
+_NODE_TOOLS: dict[str, dict[str, list[dict]]] = {}
+
 
 def note_cache_usage(run_id: str, read_tokens: int, write_tokens: int) -> None:
     with _QUEUES_LOCK:
@@ -166,6 +180,24 @@ def _note_node_usage(run_id: str, event: AgentEvent) -> None:
     row[2] += max(0, event.cache_read_tokens)
     row[3] += max(0, event.cache_write_tokens)
     row[4] += event.cost_usd
+
+
+def _note_node_tool(run_id: str, event: AgentEvent) -> None:
+    with _QUEUES_LOCK:
+        by_node = _NODE_TOOLS.setdefault(run_id or _DEFAULT_RUN, {})
+        by_node.setdefault(event.node or "(unattributed)", []).append({
+            "tool": event.tool_name,
+            "query": event.tool_query,
+            "hits": event.tool_hits,
+            **({"error": event.tool_error} if event.tool_error else {}),
+        })
+
+
+def node_tools(run_id: str | None = None) -> dict[str, list[dict]]:
+    """Per-node research-tool calls for this run, in the order they happened."""
+    with _QUEUES_LOCK:
+        by_node = _NODE_TOOLS.get(run_id or _DEFAULT_RUN) or {}
+        return {k: [dict(c) for c in v] for k, v in by_node.items()}
 
 
 def cache_totals(run_id: str | None = None) -> tuple[int, int]:
@@ -186,6 +218,7 @@ def reset_cache_totals(run_id: str | None = None) -> None:
     with _QUEUES_LOCK:
         _CACHE_TOTALS.pop(run_id or _DEFAULT_RUN, None)
         _NODE_USAGE.pop(run_id or _DEFAULT_RUN, None)
+        _NODE_TOOLS.pop(run_id or _DEFAULT_RUN, None)
 
 
 def emit(event: AgentEvent, run_id: str | None = None) -> None:
@@ -198,6 +231,10 @@ def emit(event: AgentEvent, run_id: str | None = None) -> None:
         # whether the cache was working.
         note_cache_usage(target or _DEFAULT_RUN, event.cache_read_tokens, event.cache_write_tokens)
         _note_node_usage(target or _DEFAULT_RUN, event)
+    elif event.kind == "tool":
+        # Same reasoning as usage: recorded whether or not anyone is listening,
+        # so a headless run can still report what its referees looked up.
+        _note_node_tool(target or _DEFAULT_RUN, event)
     q = _observer_for(target)
     if q is None:
         return

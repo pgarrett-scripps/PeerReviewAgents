@@ -133,6 +133,11 @@ def invoke_structured_after_tools(
             node=current_node(),
             text=f"{reason}; reviewing without research tools",
         ))
+        # Also on the tool channel, so the published bundle records it. A
+        # review that lost its literature grounding is otherwise
+        # indistinguishable from one that kept it: same verdict shape, same
+        # cost band, no missing file, nothing for a reader to notice.
+        emit(AgentEvent(kind="tool", node=current_node(), tool_error=reason))
         return invoke_structured(
             llm, schema, config, system_prompt, user_prompt, cached_prefix=cached_prefix
         )
