@@ -1,0 +1,126 @@
+name: Release
+
+# Publishes the package to PyPI, from a tag.
+#
+# The tag is the trigger and the version is read from pyproject.toml, so the
+# two can disagree — and a release published under the wrong number cannot be
+# unpublished, only yanked. The first job compares them and stops.
+#
+# Pure Python, so there is one wheel and no build matrix. The extension work
+# lives in rustypaper, which ships its own wheels from its own repo; here it
+# is an ordinary dependency resolved from PyPI.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and verify everything, publish nothing"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify the tag
+    runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - id: version
+        run: |
+          version=$(python -c "
+          import tomllib, pathlib
+          print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])
+          ")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ github.event_name }}" = "push" ]; then
+            tag="${GITHUB_REF#refs/tags/v}"
+            if [ "$tag" != "$version" ]; then
+              echo "::error::tag v$tag does not match pyproject.toml version $version."\
+                   "A release cannot be unpublished, so this stops here."
+              exit 1
+            fi
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=${{ inputs.dry_run == false }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install
+        run: pip install --quiet -e '.[research,web-test,dev]'
+
+      # CI already runs this on every push to main, but a tag can point at a
+      # commit CI never saw — and this is the run that becomes permanent.
+      - name: Test
+        run: pytest tests/ -q
+
+  build:
+    name: build
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install --quiet build twine
+
+      - run: python -m build
+
+      # Catches the failures PyPI rejects on upload — an unrenderable README
+      # or missing metadata — while there is still something to do about it.
+      - run: twine check --strict dist/*
+
+      # A wheel that builds is not a wheel that imports: setuptools' package
+      # discovery is configured by hand in pyproject.toml, so a new top-level
+      # directory can be left out of the distribution without any error here.
+      - name: Import what was built, from the wheel alone
+        run: |
+          python -m venv /tmp/fresh
+          /tmp/fresh/bin/pip install --quiet dist/*.whl
+          /tmp/fresh/bin/python -c "
+          import peerreviewagents, peerreviewagents.cli.main
+          print('import ok:', peerreviewagents.__name__)
+          "
+          /tmp/fresh/bin/peerreview --help >/dev/null
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+
+  pypi:
+    name: PyPI
+    needs: [verify, build]
+    if: needs.verify.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      # Trusted publishing: PyPI accepts a short-lived OIDC token from this
+      # workflow instead of an API token stored here. The publisher is
+      # configured at pypi.org/manage/account/publishing/ and its four claims
+      # must match exactly — owner, repository, workflow filename, and the
+      # environment named above. A mismatch on any one of them fails as
+      # `invalid-publisher`, which reads like a missing publisher rather than
+      # a disagreeing one.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1

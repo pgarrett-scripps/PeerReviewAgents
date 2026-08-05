@@ -30,7 +30,6 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 # 2) Project layer — source code + the editable install of the package.
 COPY peerreviewagents ./peerreviewagents
-COPY cli ./cli
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --extra research
 

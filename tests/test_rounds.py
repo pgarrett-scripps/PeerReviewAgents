@@ -273,7 +273,7 @@ def test_revision_defaults_are_off():
 
 
 def test_author_statement_requires_a_prior_round():
-    from cli.main import build_parser, config_from_args
+    from peerreviewagents.cli.main import build_parser, config_from_args
 
     args = build_parser().parse_args(["m.pdf", "--author-statement", "letter.md"])
     with pytest.raises(SystemExit, match="requires --revision-of"):

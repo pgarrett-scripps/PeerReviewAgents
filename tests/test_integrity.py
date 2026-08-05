@@ -543,7 +543,7 @@ def test_advisory_is_absent_for_a_clean_file():
 def test_graph_short_circuits_on_an_injected_manuscript(monkeypatch, tmp_path):
     from test_pipeline import _patch_llms
 
-    from cli.main import _run_failed
+    from peerreviewagents.cli.main import _run_failed
     from peerreviewagents.graph.review_graph import PeerReviewGraph
     from peerreviewagents.reports import write_reports
 

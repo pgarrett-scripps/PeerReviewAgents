@@ -75,7 +75,7 @@ Repository = "https://github.com/pgarrett-scripps/PeerReviewAgents"
 Issues = "https://github.com/pgarrett-scripps/PeerReviewAgents/issues"
 
 [project.scripts]
-peerreview = "cli.main:run"
+peerreview = "peerreviewagents.cli.main:run"
 
 [tool.ruff]
 # Pinned explicitly: ruff's default rule selection widens between releases, so
@@ -87,7 +87,7 @@ target-version = "py310"
 select = ["E4", "E7", "E9", "F", "I"]
 
 [tool.setuptools.packages.find]
-include = ["peerreviewagents*", "cli*"]
+include = ["peerreviewagents*"]
 
 [tool.setuptools.package-data]
 "peerreviewagents.journals" = ["*.toml", "README.md"]
