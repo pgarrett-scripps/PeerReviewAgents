@@ -244,7 +244,7 @@ def test_verifier_precedes_the_panel():
 
 
 def test_verifier_still_gated_behind_the_desk_screen():
-    """An injected letter must hit the integrity screen before verification."""
+    """The letter must clear the desk before anything verifies it."""
     graph = build_graph(get_config(revision_of="j1", author_statement_path="l.md"))
     edges = graph.get_graph().edges
     sources = {e.source for e in edges if e.target == "response_verifier"}
@@ -253,7 +253,7 @@ def test_verifier_still_gated_behind_the_desk_screen():
 
 def test_verifier_reachable_from_start_without_the_desk_screen():
     graph = build_graph(get_config(
-        revision_of="j1", author_statement_path="l.md", injection_screen=False,
+        revision_of="j1", author_statement_path="l.md",
         # The conversion gate would otherwise keep the desk node wired in.
         conversion_gate="off",
     ))

@@ -158,25 +158,6 @@ def build_parser() -> argparse.ArgumentParser:
              "letter itself. Requires --revision-of.",
     )
     p.add_argument(
-        "--no-injection-screen",
-        dest="injection_screen",
-        action="store_const",
-        const=False,
-        default=None,
-        help="Disable the submission-integrity screen. On by default, it "
-             "desk-rejects files that hide instructions to an automated "
-             "reviewer (white/invisible text) before any model reads them.",
-    )
-    p.add_argument(
-        "--flag-injection",
-        dest="injection_screen_action",
-        action="store_const",
-        const="flag",
-        default=None,
-        help="Report concealed prompt injection in the run's integrity.md "
-             "but review the manuscript anyway, instead of desk-rejecting it.",
-    )
-    p.add_argument(
         "--journal",
         dest="target_journal",
         help="Slug of a target journal to review against (see "
@@ -239,9 +220,7 @@ def config_from_args(args) -> dict:
     overrides = {}
     for key in ("provider", "reasoning_model", "max_debate_rounds",
                 "output_dir", "cache_dir", "target_journal", "article_type",
-                "review_strictness", "desk_screen",
-                "injection_screen", "injection_screen_action",
-                "revision_of", "author_statement_path", "revision_mode",
+                "review_strictness", "desk_screen", "revision_of", "author_statement_path", "revision_mode",
                 "supplement_path", "temperature", "caveman"):
         val = getattr(args, key, None)
         if val is not None:
@@ -482,8 +461,7 @@ def run_server(args) -> None:
     overrides: dict = {}
     for key in ("provider", "reasoning_model", "max_debate_rounds",
                 "output_dir", "cache_dir", "target_journal", "article_type",
-                "review_strictness", "desk_screen",
-                "injection_screen", "injection_screen_action"):
+                "review_strictness", "desk_screen"):
         val = getattr(args, key, None)
         if val is not None:
             overrides[key] = val
@@ -535,14 +513,6 @@ def run() -> None:
                         action="store_const", const=True, default=None,
                         help="Enable the desk-screen gate by default for jobs "
                              "(the web form can override per-upload).")
-        sp.add_argument("--no-injection-screen", dest="injection_screen",
-                        action="store_const", const=False, default=None,
-                        help="Disable the submission-integrity screen for all "
-                             "jobs. On by default.")
-        sp.add_argument("--flag-injection", dest="injection_screen_action",
-                        action="store_const", const="flag", default=None,
-                        help="Report concealed prompt injection instead of "
-                             "desk-rejecting the upload.")
         run_server(sp.parse_args(argv[1:]))
         return
 

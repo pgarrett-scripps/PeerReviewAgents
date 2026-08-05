@@ -12,17 +12,12 @@ about a sixth of the content, and flattened every heading and table into
 prose. A panel reading that produces a review of a document the authors did
 not write, and a fallback makes it happen on exactly the runs nobody is
 watching. A missing converter is now an error with an install line in it.
-(pypdf is still a dependency — the integrity screen replays PDF content
-streams with it — but it no longer produces anything an agent reads.)
 
 **The file handed in is always the original.** Converting a PDF to Markdown
-before calling the pipeline looks equivalent and is not: the submission
-integrity screen (:mod:`.integrity`) dispatches on file type and can only
-find concealed text — white fill, zero opacity, off-page placement — by
-reading the PDF's content streams. Hand it a converted ``.md`` and the screen
-still reports as having run, having looked for nothing it can find. So
-conversion happens *here*, behind the loader, where the screen has already
-seen the real bytes.
+before calling the pipeline looks equivalent and is not: every run records
+which converter read the manuscript, and a conversion done upstream is
+recorded as though this one did it. So conversion happens *here*, behind the
+loader, where what the panel read and what the record claims cannot diverge.
 
 Other supported inputs: Markdown / LaTeX / TXT, read directly. All paths
 converge on ``(title, text, sections)``.

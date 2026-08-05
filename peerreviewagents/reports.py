@@ -40,8 +40,6 @@ def write_reports(state: ReviewState) -> str:
         )
         _write(run_dir, "debate_transcript.md", f"# Debate Transcript\n\n{transcript}")
 
-    if state.get("integrity"):
-        _write(run_dir, "integrity.md", state["integrity"])
     if state.get("response_verification"):
         _write(run_dir, "author_response_verification.md", state["response_verification"])
     if state.get("desk_screen"):
@@ -169,9 +167,6 @@ def _summary(state: ReviewState) -> str:
         lines.append(f"**Round:** {prior.round + 1} (revision of {prior.job_id})")
         if prior.weighted_score is not None:
             lines.append(f"**Previous decision:** {_VERDICT_LABEL.get(prior.decision, prior.decision)}")
-    integrity = _integrity_line(state)
-    if integrity:
-        lines.append(f"**Submission integrity:** {integrity}")
     # Placed with the other provenance, above the scores: a reader weighing a
     # verdict should learn that the panel read a damaged conversion before
     # they read the verdict, not after.
@@ -362,18 +357,6 @@ def _cache_line(state: ReviewState) -> str:
         f"({read / total:.0%} served from cache)"
     )
 
-
-def _integrity_line(state: ReviewState) -> str:
-    """One-line integrity verdict for the summary, or '' when nothing was found.
-
-    Read off the rendered report's Outcome line rather than re-scanning, so
-    the summary can never disagree with ``integrity.md``.
-    """
-    body = state.get("integrity") or ""
-    for line in body.splitlines():
-        if line.startswith("**Outcome:**"):
-            return f"{line[len('**Outcome:**'):].strip()} — see integrity.md"
-    return ""
 
 
 def _target_venue(state: ReviewState) -> str:

@@ -110,13 +110,6 @@ class ReviewState(TypedDict, total=False):
     # rendered screening note (written to desk_screen.md).
     desk_rejected: bool
     desk_screen: str
-    # --- submission-integrity screen (deterministic, runs at the desk) ---
-    # Rendered evidence report from ingest.integrity.IntegrityScan when the
-    # scan found concealed text or reviewer-directed instructions; empty
-    # string on a clean file. Written to integrity.md. When the file conceals
-    # instructions aimed at an automated reviewer, the desk node also sets
-    # desk_rejected/decision from this same report.
-    integrity: str
 
     # --- revision round (set only when config["revision_of"] is given) ---
     # The previous round's structured record (peerreviewagents.rounds.RoundRecord).

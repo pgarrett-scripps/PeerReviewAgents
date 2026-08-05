@@ -438,28 +438,11 @@ def test_the_shared_manuscript_block_carries_no_statistics():
 # --- where the gate sits, and why ------------------------------------------
 
 
-def test_the_gate_runs_at_the_desk_after_the_integrity_scan():
-    """Ordering, asserted rather than only commented.
-
-    A scanned PDF is both the usual cause of a broken conversion and the usual
-    innocent cause of a hidden-text finding. Screening integrity first means an
-    injected payload is still recorded on a file nobody can read; reversing
-    them would let a bad conversion swallow a fraud finding.
-    """
-    import inspect
-
-    from peerreviewagents.agents.editor import desk_screen
-
-    body = inspect.getsource(desk_screen._run)
-    assert body.index("_screen_integrity") < body.index("require_readable")
-    assert body.index("_integrity_reject") < body.index("require_readable")
-
-
 def test_the_desk_node_is_wired_in_for_the_gate_alone():
-    """With both other screens off, the gate still has somewhere to run."""
+    """With triage off, the gate still has somewhere to run."""
     from peerreviewagents.agents.editor import desk_screen
 
-    bare = {"injection_screen": False, "desk_screen_mode": "off"}
+    bare = {"desk_screen_mode": "off"}
     assert desk_screen.node_enabled(bare) is True
     assert desk_screen.node_enabled({**bare, "conversion_gate": "off"}) is False
 

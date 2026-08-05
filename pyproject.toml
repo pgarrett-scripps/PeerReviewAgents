@@ -50,9 +50,6 @@ dependencies = [
     # fallback, because the one it used to have fused words across column
     # boundaries and flattened every heading — see peerreviewagents.ingest.
     "rustypaper>=0.1",
-    # Not for reading manuscripts: the integrity screen replays PDF content
-    # streams with it to find text concealed from a human reader.
-    "pypdf>=4",
 ]
 
 [project.optional-dependencies]

@@ -281,8 +281,14 @@ def test_letter_prose_never_reaches_a_reviewer(tmp_path, monkeypatch):
         assert tell not in report["body"]
 
 
-def test_injected_letter_is_rejected_before_the_panel_runs(tmp_path, monkeypatch):
-    """A response letter is a submitted file and gets the same integrity gate."""
+def test_an_injected_letter_still_never_reaches_the_panel(tmp_path, monkeypatch):
+    """No detector runs on the letter any more. The structure is what holds.
+
+    Nothing here notices the payload; the point is that noticing was never
+    what kept it out. The letter reaches reviewers only as verified pointers
+    to manuscript passages, so its prose has no route to them whatever it
+    says. That guarantee is structural and survives the screen's removal.
+    """
     job_id = _first_round(tmp_path, monkeypatch)
     letter = tmp_path / "response.md"
     letter.write_text(
@@ -293,9 +299,9 @@ def test_injected_letter_is_rejected_before_the_panel_runs(tmp_path, monkeypatch
         tmp_path, monkeypatch, job_id, author_statement_path=str(letter),
     )
 
-    assert state["desk_rejected"] is True
-    assert state["decision"] == "reject"
-    assert not state.get("reports"), "the panel ran despite an injected letter"
+    assert PAYLOAD not in (state.get("verified_claims_block") or "")
+    for report in state["reports"]:
+        assert PAYLOAD not in report["body"]
 
 
 # --- lineage ----------------------------------------------------------------

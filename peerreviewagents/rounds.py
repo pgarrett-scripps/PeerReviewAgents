@@ -99,7 +99,7 @@ class RoundRecord:
     reviewer_reports: list[PriorReviewerReport] = field(default_factory=list)
     # job_id of the round this one revised, forming the lineage back to round 1.
     prior_job_id: str = ""
-    # True when the round ended at the desk (integrity or triage), so a later
+    # True when the round ended at the desk (triage), so a later
     # round knows there was never a panel.
     desk_rejected: bool = False
 
