@@ -15,7 +15,38 @@ from ...observability import AgentEvent, current_node, emit, estimate_cost
 if TYPE_CHECKING:
     from .agent_states import ReviewState
 
-_MAX_TOOL_STEPS = 4
+# Rounds of tool calling, not tool calls: one round is one model turn, and a
+# model may ask for several lookups in it. At four rounds every tool-using
+# agent hit the ceiling — a citation audit that wanted sixteen lookups spent
+# them in four turns of four — which meant the forced-final path below was not
+# an exception, it was how every researched review in the corpus got written.
+_MAX_TOOL_STEPS = 8
+# Rounds alone do not bound the work: a model batching six lookups a round
+# would run 48. This caps the lookups themselves.
+_MAX_TOOL_CALLS = 24
+
+# What to say when the budget runs out.
+#
+# It used to say "Now produce your final answer." Asked that, DeepSeek replied
+# "Let me verify a few more key citations before finalizing my audit." — 68
+# characters, non-empty, and so accepted as the finished audit. The extraction
+# step turned it into "no findings could be extracted" and the bundle published
+# HARD gaps (blocking): 0 for a manuscript nothing had audited.
+#
+# The model was not confused. It was interrupted, told something that reads
+# like an aside, and answered it like one. So this says the three things that
+# settle it: no further tools will run, this turn is the whole output, and
+# here is the task again.
+_FORCED_FINAL = (
+    "The research budget for this task is now spent. No further tool calls "
+    "will be executed — ask for one and it is discarded, with nothing put in "
+    "its place.\n\n"
+    "Write your complete final answer now, from the manuscript and the "
+    "results already gathered above. This turn is the entirety of your "
+    "output: there is no later turn to finish in, and a reply saying you "
+    "intend to continue will be published as though it were your findings.\n\n"
+    "The task, restated:\n\n{task}"
+)
 
 # How long a prompt-cache entry should live. The provider's default is 5
 # minutes; a full review takes ten to twenty, and every stage after the panel
@@ -101,6 +132,7 @@ def run_agent(
     )
     cost_total = 0.0
     final_resp: AIMessage | None = None
+    calls_made = 0
     for _ in range(_MAX_TOOL_STEPS):
         resp: AIMessage = model.invoke(messages)
         cost_total += _call_cost(resp, cache_ttl)
@@ -109,6 +141,9 @@ def run_agent(
         if not calls:
             final_resp = resp
             break
+        if calls_made >= _MAX_TOOL_CALLS:
+            break
+        calls_made += len(calls)
         for call in calls:
             fn = tool_map.get(call["name"])
             try:
@@ -125,7 +160,14 @@ def run_agent(
     if final_resp is None:
         # Tool budget exhausted: ask for a final answer; keep tools bound
         # so the API accepts the tool-call / tool-result history.
-        final_resp = model.invoke(messages + [HumanMessage(content="Now produce your final answer.")])
+        emit(AgentEvent(
+            kind="log",
+            node=current_node(),
+            text=f"tool budget spent after {calls_made} lookups; forcing a final answer",
+        ))
+        final_resp = model.invoke(
+            messages + [HumanMessage(content=_FORCED_FINAL.format(task=user_prompt))]
+        )
         cost_total += _call_cost(final_resp, cache_ttl)
 
     return RunResult(text=_text(final_resp.content), cost=cost_total)

@@ -81,6 +81,15 @@ def invoke_structured(
     return _try_structured(llm, schema, messages, config=config)
 
 
+# Shortest plausible agent answer. A real review runs to thousands of
+# characters; the shortest legitimate one in the corpus — an ethics review of
+# a computational reanalysis with no human subjects — is over a thousand. The
+# floor is set well below that, because the cost of being wrong is one
+# tools-free retry and the cost of being right is not publishing a fabricated
+# verdict.
+MIN_AGENT_TEXT_CHARS = 400
+
+
 def invoke_structured_after_tools(
     llm,
     schema: type[BaseModel],
@@ -151,8 +160,17 @@ def invoke_structured_after_tools(
     except Exception as exc:  # noqa: BLE001
         return _without_tools(f"tool loop failed ({type(exc).__name__})")
 
-    if not (free.text or "").strip():
-        return _without_tools("tool loop returned no text")
+    text = (free.text or "").strip()
+    if len(text) < MIN_AGENT_TEXT_CHARS:
+        # Not just empty. "Let me verify a few more key citations before
+        # finalizing my audit." is 68 characters, and the emptiness test
+        # accepted it as a completed audit — see the forced-final note in
+        # agent_utils. Anything this short is a model that was interrupted or
+        # refused, not a review, and it takes the same fallback as a blank.
+        return _without_tools(
+            "tool loop returned no text" if not text
+            else f"tool loop returned only {len(text)} characters"
+        )
 
     extraction_sys = (
         "Convert the assistant text below into a structured JSON object "

@@ -636,7 +636,12 @@ def test_a_real_response_still_takes_the_extraction_path():
     seen = {}
 
     def fake_run_agent(*a, **k):
-        return RunResult(text="The manuscript claims X, and Fig. 2 shows Y.", cost=0.5)
+        # Long enough to be a review. The fixture used to be one sentence,
+        # which the length floor now (correctly) treats as a truncated agent.
+        body = (
+            "The manuscript claims X, and Fig. 2 shows Y. " * 12
+        )
+        return RunResult(text=body, cost=0.5)
 
     def fake_try(llm, schema, messages, config=None):
         seen["text"] = messages[-1].content
@@ -660,3 +665,53 @@ def test_a_real_response_still_takes_the_extraction_path():
 
     assert "Fig. 2" in seen["text"], "the review text must reach the extractor"
     assert out.cost == 0.75, "both calls must be billed"
+
+
+def test_an_interrupted_agent_is_not_mistaken_for_a_review():
+    """A model that says it is not finished must not be published as finished.
+
+    Asked for a final answer after its tool budget ran out, DeepSeek replied
+    "Let me verify a few more key citations before finalizing my audit." That
+    is 68 characters and non-empty, so the emptiness check passed it through;
+    the extraction step reported it had nothing to work with, and the bundle
+    published HARD gaps (blocking): 0 for a manuscript nothing had audited.
+
+    Short is not empty, but it is not a review either, and it takes the same
+    tools-free fallback a blank response does.
+    """
+    from peerreviewagents.agents.utils import structured
+    from peerreviewagents.agents.utils.agent_utils import RunResult
+
+    reasons = []
+
+    def fake_run_agent(*a, **k):
+        return RunResult(
+            text="Let me verify a few more key citations before finalizing my audit.",
+            cost=0.5,
+        )
+
+    def fake_invoke_structured(*a, **k):
+        return structured.StructuredResult(instance=object(), cost=0.25)
+
+    def fake_try(*a, **k):
+        raise AssertionError("a truncated agent must not reach the extractor")
+
+    real = (structured.run_agent, structured.invoke_structured,
+            structured._try_structured, structured.emit)
+    structured.run_agent = fake_run_agent
+    structured.invoke_structured = fake_invoke_structured
+    structured._try_structured = fake_try
+    structured.emit = lambda ev, *a, **k: reasons.append(
+        getattr(ev, "text", "") or getattr(ev, "tool_error", "")
+    )
+    try:
+        structured.invoke_structured_after_tools(
+            llm=None, schema=object, config={}, system_prompt="s",
+            user_prompt="u", tools=[],
+        )
+    finally:
+        (structured.run_agent, structured.invoke_structured,
+         structured._try_structured, structured.emit) = real
+
+    assert any("66 characters" in r or "characters" in r for r in reasons), \
+        f"the fallback must say what it saw, got {reasons}"
