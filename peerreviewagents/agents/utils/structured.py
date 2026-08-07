@@ -204,9 +204,19 @@ def _try_structured(
 
     # Retry once with a sharper prompt; some models miss the schema on
     # the first try when the user prompt is long.
+    #
+    # The retry quotes the validator's own complaint. Saying only "that was
+    # not valid" asks the model to guess which of a dozen fields was wrong,
+    # and on a semantic constraint it cannot guess: a reviewer that returns a
+    # null score with no reason reads "strictly matching the schema" as a
+    # formatting note, returns the same null, and its entire review — summary,
+    # strengths, weaknesses, questions, already written and paid for — is
+    # thrown away. Observed live on three of eight reviewers in one run.
     retry_msg = HumanMessage(content=(
         f"Your previous response did not produce a valid {schema.__name__}. "
-        "Respond again, strictly matching the schema. No prose, no extra fields."
+        f"The validation error was:\n\n{_parsing_error(result)}\n\n"
+        "Respond again with the whole object, fixing exactly that. Keep the "
+        "rest of your answer as it was. No prose, no extra fields."
     ))
     result2 = _invoke_with_retries(structured, messages + [retry_msg])
     parsed2, cost2 = _unpack(result2)
