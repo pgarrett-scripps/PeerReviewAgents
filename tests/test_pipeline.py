@@ -10,8 +10,8 @@ from peerreviewagents.agents.schemas import (
     AuditOutput,
     AuthorRebuttalOutput,
     ComplianceFinding,
-    CrossExamOutput,
-    CrossFinding,
+    GapFinding,
+    PanelGapOutput,
     DebateOutput,
     DeskScreenOutput,
     EditorDecisionOutput,
@@ -78,22 +78,19 @@ _CANNED: dict[type, object] = {
         argument="The contribution is incremental but the empirical signal is clean.",
         key_points=["Methodology is reproducible", "Comparisons are fair"],
     ),
-    CrossExamOutput: CrossExamOutput(
+    PanelGapOutput: PanelGapOutput(
         findings=[
-            CrossFinding(
+            GapFinding(
                 finding=(
-                    "The generalization claim rests on both the narrow "
-                    "evaluation scope and the unstated preprocessing, and "
-                    "neither reviewer weighed the two together."
+                    "No reviewer examined whether the held-out split was "
+                    "drawn before or after feature selection."
                 ),
-                drawn_from=["methodology", "data_analysis"],
-                evidence=[
-                    "one dataset stands in for the general case",
-                    "the preprocessing is not specified",
-                ],
-                adds=(
-                    "Either limitation alone is survivable; the claim needs "
-                    "both to hold at once."
+                belongs_to="data_analysis",
+                manuscript_evidence="Section 3.2, 'we select the top 200 features and then split 80/20'",
+                kind="gap",
+                why_it_matters=(
+                    "Selection before splitting leaks the test set into the "
+                    "model, so the reported accuracy is not held out."
                 ),
                 severity="HARD",
             )
@@ -231,7 +228,7 @@ def _patch_llms(monkeypatch):
         "peerreviewagents.agents.reviewers.base",
         "peerreviewagents.agents.auditors.base",
         "peerreviewagents.agents.debate.base",
-        "peerreviewagents.agents.synthesis.cross_examiner",
+        "peerreviewagents.agents.synthesis.gap_finder",
         "peerreviewagents.agents.synthesis.meta_reviewer",
         "peerreviewagents.agents.author.rebuttal",
         "peerreviewagents.agents.editor.desk_screen",

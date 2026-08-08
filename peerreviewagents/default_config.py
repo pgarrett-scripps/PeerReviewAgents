@@ -87,13 +87,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # (reviewers feed the meta-reviewer directly) — used to measure the
     # debate's contribution in the eval harness.
     "enable_debate": True,
-    # Cross-examination. True (default) runs one node between the panel and
-    # the debate that reads the specialists' reports against each other and
-    # reports only findings that need more than one of them to see; False
-    # ablates it, which is how the eval harness measures what it contributes.
-    # The specialists never read each other, so without this nothing in the
-    # run ever joins two of them.
-    "enable_cross_exam": True,
+    # Gap finder. True (default) runs one node between the panel and the
+    # debate that audits the three technical reports against the manuscript
+    # for what they missed; False ablates it, which is how the eval harness
+    # measures what it contributes. The reviewers never read each other, so
+    # without this nothing checks whether a weakness fell between them.
+    "enable_gap_finder": True,
     # Optional editorial desk-screen gate. When True, a triage node runs once
     # before the reviewer fan-out and may desk-reject the manuscript (scope /
     # completeness / fatal-flaw / below-venue-bar), short-circuiting the run

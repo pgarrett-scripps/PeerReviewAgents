@@ -44,8 +44,8 @@ def write_reports(state: ReviewState) -> str:
         _write(run_dir, "author_response_verification.md", state["response_verification"])
     if state.get("desk_screen"):
         _write(run_dir, "desk_screen.md", state["desk_screen"])
-    if state.get("cross_exam"):
-        _write(run_dir, "cross_exam.md", state["cross_exam"])
+    if state.get("panel_gaps"):
+        _write(run_dir, "panel_gaps.md", state["panel_gaps"])
     if state.get("meta_review"):
         _write(run_dir, "meta_review.md", state["meta_review"])
     if state.get("author_rebuttal"):

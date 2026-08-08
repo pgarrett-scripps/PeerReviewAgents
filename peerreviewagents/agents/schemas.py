@@ -719,108 +719,135 @@ class MetaReviewOutput(BaseModel):
         ])
 
 
-# --- Cross-examination ------------------------------------------------------
+# --- Panel gaps -------------------------------------------------------------
 #
-# The specialists never read each other. That is deliberate — it buys eight
-# independent reads instead of one read and seven echoes — but it has a cost,
-# and benchmarking this pipeline against a journal's published referee reports
-# showed it plainly: the pieces of the referees' central objection were spread
-# across three reviewers, one holding the artefact, one the detection bias, one
-# the coverage limit, and nobody joined them. A single strong model held the
-# whole chain in one report. Weaker ones produced the fragments and stopped.
+# The three technical reviewers — data_analysis, methodology, rigor — read the
+# manuscript independently and never see each other. This stage reads their
+# reports together, with the manuscript, and looks for what they missed.
 #
-# So this stage reads what the panel has already written and asks only what
-# none of them could see alone. It is not a ninth reviewer, and the schema is
-# what stops it becoming one: every finding must name the two or more reports
-# it is built from, and quote them. A conclusion resting on one report is that
-# reviewer's finding, already made; one resting on none is invention.
+# The hard part is that an agent told "find what the reviewers missed" has
+# every incentive to manufacture something. The grounding rule is therefore not
+# "cite another report" — that would only ever surface points already made, and
+# a gap by definition appears in no report — but "cite the manuscript". Every
+# finding names the passage, figure or value it concerns, and names the lane
+# that should have caught it, so a gap is routed to its specialist rather than
+# floating free as a ninth opinion.
 
 
-class CrossFinding(BaseModel):
+GapLane = Literal["data_analysis", "methodology", "rigor"]
+
+
+class GapFinding(BaseModel):
     finding: str = Field(
         ...,
         description="The finding, stated as a referee would state it, in one "
                     "to three sentences.",
     )
+    belongs_to: GapLane = Field(
+        ...,
+        description="Which reviewer's remit this falls in — the one that "
+                    "should have caught it.",
+    )
+    manuscript_evidence: str = Field(
+        ...,
+        min_length=20,
+        description="The specific sentence, figure, table or value in the "
+                    "manuscript this concerns, quoted or named precisely "
+                    "enough to look up. Not a paraphrase of a review.",
+    )
+    kind: Literal["gap", "joined"] = Field(
+        ...,
+        description="'gap' when no report raised this at all; 'joined' when "
+                    "it follows from combining reports without any of them "
+                    "stating it.",
+    )
     drawn_from: list[str] = Field(
-        ...,
-        min_length=2,
-        description="Names of the two or more reviewers whose reports this is "
-                    "built from, e.g. ['data_analysis', 'rigor'].",
+        default_factory=list,
+        description="For kind='joined' only: the two or more reports it is "
+                    "built from. Leave empty for a gap.",
     )
-    evidence: list[str] = Field(
+    why_it_matters: str = Field(
         ...,
-        min_length=2,
-        description="The specific statement taken from each report named "
-                    "above, quoted, one per reviewer.",
-    )
-    adds: str = Field(
-        ...,
-        description="What this says that no single one of those reports "
-                    "already said. If the answer is 'nothing', omit the "
-                    "finding entirely.",
+        description="What this changes about the manuscript's claims, and "
+                    "why the reports as filed are incomplete without it.",
     )
     severity: Literal["HARD", "SOFT"] = Field(
         ...,
-        description="HARD if joining the reports undermines a claim the paper "
-                    "makes; SOFT if it qualifies or strengthens one.",
+        description="HARD if it undermines a claim the paper makes; SOFT if "
+                    "it qualifies one.",
     )
 
+    @model_validator(mode="after")
+    def _joined_findings_name_their_sources(self) -> GapFinding:
+        """A joined finding has to say what it joined.
 
-class CrossExamOutput(BaseModel):
-    """Findings visible only across reports, or an explicit finding of none."""
+        Without this the 'joined' label is free — anything can claim to follow
+        from the panel — and the distinction between "the reviewers between
+        them implied this" and "I thought of this" stops meaning anything to
+        the editor reading it.
+        """
+        if self.kind == "joined" and len(self.drawn_from) < 2:
+            raise ValueError(
+                "kind is 'joined' but drawn_from names fewer than two "
+                "reports. Name the reports it is built from, or set kind to "
+                "'gap' if no report raised it."
+            )
+        return self
 
-    findings: list[CrossFinding] = Field(
+
+class PanelGapOutput(BaseModel):
+    """What the technical reviewers missed, or an explicit finding of none."""
+
+    findings: list[GapFinding] = Field(
         default_factory=list,
-        description="Only findings that need more than one report to see. An "
-                    "empty list is a valid and useful answer.",
+        description="Findings the panel did not make. An empty list is a "
+                    "valid and useful answer.",
     )
     nothing_found_reason: str = Field(
         default="",
         description="Required when findings is empty: one sentence on what "
-                    "you looked for across the reports and did not find.",
+                    "you checked the reports for and did not find missing.",
     )
 
     @model_validator(mode="after")
-    def _silence_must_be_explained(self) -> CrossExamOutput:
-        """An empty answer has to say what was looked for.
-
-        Finding nothing is a legitimate result and will often be the right
-        one. But an unexplained empty list is indistinguishable from a stage
-        that silently failed, and the editor reading it downstream cannot tell
-        those two apart.
-        """
+    def _silence_must_be_explained(self) -> PanelGapOutput:
+        """Finding nothing is legitimate and will often be right. An
+        unexplained empty list is indistinguishable from a stage that failed,
+        and the editor downstream cannot tell those apart."""
         if not self.findings and not self.nothing_found_reason.strip():
             raise ValueError(
-                "findings is empty but nothing_found_reason is not set. Say in "
-                "one sentence what you looked for across the reports and did "
-                "not find."
+                "findings is empty but nothing_found_reason is not set. Say "
+                "in one sentence what you checked for and found no gap in."
             )
         return self
 
     def to_markdown(self) -> str:
-        parts = ["# Cross-Examination", ""]
+        parts = ["# Panel Gaps", ""]
         if not self.findings:
             parts += [
-                "**No finding required more than one report to see.**",
+                "**The technical reviewers left no gap worth reporting.**",
                 "",
                 self.nothing_found_reason.strip(),
             ]
             return "\n".join(parts)
         parts += [
-            "Each finding below is built from the reports named under it, and "
-            "was not stated by any of them alone.",
+            "Findings below were not made by the data-analysis, methodology "
+            "or rigor reviewer. Each names the manuscript evidence it rests "
+            "on and the reviewer whose remit it falls in.",
             "",
         ]
         for i, f in enumerate(self.findings, 1):
+            label = "GAP" if f.kind == "gap" else f"JOINED from {', '.join(f.drawn_from)}"
             parts += [
-                f"## {i}. [{f.severity}] {f.finding.strip()}",
+                f"## {i}. [{f.severity}] [{label}] {f.finding.strip()}",
                 "",
-                f"**Drawn from:** {', '.join(f.drawn_from)}",
+                f"**Belongs to:** {f.belongs_to}",
+                "",
+                f"**In the manuscript:** {f.manuscript_evidence.strip()}",
+                "",
+                f"**Why it matters:** {f.why_it_matters.strip()}",
                 "",
             ]
-            parts += [f"> {e.strip()}" for e in f.evidence]
-            parts += ["", f"**What this adds:** {f.adds.strip()}", ""]
         return "\n".join(parts).rstrip()
 
 

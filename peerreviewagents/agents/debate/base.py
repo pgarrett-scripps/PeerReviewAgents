@@ -35,16 +35,16 @@ def _reports_digest(state: ReviewState) -> str:
     return "\n\n".join(out)
 
 
-def cross_exam_block(state: ReviewState) -> str:
-    """The cross-examiner's findings, or a line saying there were none.
+def panel_gaps_block(state: ReviewState) -> str:
+    """The gap finder's findings, or a line saying it did not run.
 
-    Every stage that weighs the panel gets this. A joined finding that only
-    the cross-examiner can see is worthless if the editor never reads it, and
-    an absent block reads as "the stage found nothing" rather than "the stage
-    did not run" — so say which.
+    Every stage that weighs the panel gets this. A gap nobody on the panel
+    caught is worthless if the editor never reads it, and an absent block
+    reads as "there were no gaps" rather than "nothing looked" — so say
+    which.
     """
-    text = (state.get("cross_exam") or "").strip()
-    return text or "(no cross-examination was run for this manuscript)"
+    text = (state.get("panel_gaps") or "").strip()
+    return text or "(no gap audit was run for this manuscript)"
 
 
 def _debate_so_far(state: ReviewState) -> str:

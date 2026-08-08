@@ -25,8 +25,8 @@ from peerreviewagents.agents.schemas import (
     AuditFinding,
     AuditOutput,
     AuthorRebuttalOutput,
-    CrossExamOutput,
-    CrossFinding,
+    GapFinding,
+    PanelGapOutput,
     DebateOutput,
     EditorDecisionOutput,
     JournalRecommendationsOutput,
@@ -65,22 +65,19 @@ _CANNED: dict[type, object] = {
         argument="Contribution is incremental but cleanly evaluated.",
         key_points=["Fair comparisons"],
     ),
-    CrossExamOutput: CrossExamOutput(
+    PanelGapOutput: PanelGapOutput(
         findings=[
-            CrossFinding(
+            GapFinding(
                 finding=(
-                    "The generalization claim rests on both the narrow "
-                    "evaluation scope and the unstated preprocessing, and "
-                    "neither reviewer weighed the two together."
+                    "No reviewer examined whether the held-out split was "
+                    "drawn before or after feature selection."
                 ),
-                drawn_from=["methodology", "data_analysis"],
-                evidence=[
-                    "one dataset stands in for the general case",
-                    "the preprocessing is not specified",
-                ],
-                adds=(
-                    "Either limitation alone is survivable; the claim needs "
-                    "both to hold at once."
+                belongs_to="data_analysis",
+                manuscript_evidence="Section 3.2, 'we select the top 200 features and then split 80/20'",
+                kind="gap",
+                why_it_matters=(
+                    "Selection before splitting leaks the test set into the "
+                    "model, so the reported accuracy is not held out."
                 ),
                 severity="HARD",
             )
