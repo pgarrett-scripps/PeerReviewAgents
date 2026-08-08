@@ -719,6 +719,111 @@ class MetaReviewOutput(BaseModel):
         ])
 
 
+# --- Cross-examination ------------------------------------------------------
+#
+# The specialists never read each other. That is deliberate — it buys eight
+# independent reads instead of one read and seven echoes — but it has a cost,
+# and benchmarking this pipeline against a journal's published referee reports
+# showed it plainly: the pieces of the referees' central objection were spread
+# across three reviewers, one holding the artefact, one the detection bias, one
+# the coverage limit, and nobody joined them. A single strong model held the
+# whole chain in one report. Weaker ones produced the fragments and stopped.
+#
+# So this stage reads what the panel has already written and asks only what
+# none of them could see alone. It is not a ninth reviewer, and the schema is
+# what stops it becoming one: every finding must name the two or more reports
+# it is built from, and quote them. A conclusion resting on one report is that
+# reviewer's finding, already made; one resting on none is invention.
+
+
+class CrossFinding(BaseModel):
+    finding: str = Field(
+        ...,
+        description="The finding, stated as a referee would state it, in one "
+                    "to three sentences.",
+    )
+    drawn_from: list[str] = Field(
+        ...,
+        min_length=2,
+        description="Names of the two or more reviewers whose reports this is "
+                    "built from, e.g. ['data_analysis', 'rigor'].",
+    )
+    evidence: list[str] = Field(
+        ...,
+        min_length=2,
+        description="The specific statement taken from each report named "
+                    "above, quoted, one per reviewer.",
+    )
+    adds: str = Field(
+        ...,
+        description="What this says that no single one of those reports "
+                    "already said. If the answer is 'nothing', omit the "
+                    "finding entirely.",
+    )
+    severity: Literal["HARD", "SOFT"] = Field(
+        ...,
+        description="HARD if joining the reports undermines a claim the paper "
+                    "makes; SOFT if it qualifies or strengthens one.",
+    )
+
+
+class CrossExamOutput(BaseModel):
+    """Findings visible only across reports, or an explicit finding of none."""
+
+    findings: list[CrossFinding] = Field(
+        default_factory=list,
+        description="Only findings that need more than one report to see. An "
+                    "empty list is a valid and useful answer.",
+    )
+    nothing_found_reason: str = Field(
+        default="",
+        description="Required when findings is empty: one sentence on what "
+                    "you looked for across the reports and did not find.",
+    )
+
+    @model_validator(mode="after")
+    def _silence_must_be_explained(self) -> CrossExamOutput:
+        """An empty answer has to say what was looked for.
+
+        Finding nothing is a legitimate result and will often be the right
+        one. But an unexplained empty list is indistinguishable from a stage
+        that silently failed, and the editor reading it downstream cannot tell
+        those two apart.
+        """
+        if not self.findings and not self.nothing_found_reason.strip():
+            raise ValueError(
+                "findings is empty but nothing_found_reason is not set. Say in "
+                "one sentence what you looked for across the reports and did "
+                "not find."
+            )
+        return self
+
+    def to_markdown(self) -> str:
+        parts = ["# Cross-Examination", ""]
+        if not self.findings:
+            parts += [
+                "**No finding required more than one report to see.**",
+                "",
+                self.nothing_found_reason.strip(),
+            ]
+            return "\n".join(parts)
+        parts += [
+            "Each finding below is built from the reports named under it, and "
+            "was not stated by any of them alone.",
+            "",
+        ]
+        for i, f in enumerate(self.findings, 1):
+            parts += [
+                f"## {i}. [{f.severity}] {f.finding.strip()}",
+                "",
+                f"**Drawn from:** {', '.join(f.drawn_from)}",
+                "",
+            ]
+            parts += [f"> {e.strip()}" for e in f.evidence]
+            parts += ["", f"**What this adds:** {f.adds.strip()}", ""]
+        return "\n".join(parts).rstrip()
+
+
 # --- Author rebuttal --------------------------------------------------------
 
 

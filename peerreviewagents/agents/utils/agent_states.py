@@ -148,6 +148,12 @@ class ReviewState(TypedDict, total=False):
     debate: Annotated[list[DebateTurn], operator.add]
     debate_round: int
 
+    # --- cross-examination ---
+    # Findings that needed more than one reviewer's report to see. Written
+    # between the panel and the debate; empty when the stage is off, when it
+    # failed, or when fewer than two reviewers reported.
+    cross_exam: str
+
     # --- synthesis ---
     meta_review: str
     draft_recommendation: str

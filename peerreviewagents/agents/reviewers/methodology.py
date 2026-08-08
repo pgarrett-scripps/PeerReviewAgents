@@ -49,6 +49,9 @@ node = make_reviewer_node(
         "data_analysis's call, whether every reagent is traceable is "
         "methods_completeness's, and 'the design supports a narrower claim "
         "than stated' is overclaiming, which rigor owns. Name any of those in "
-        "one line and attribute it rather than re-arguing it here."
+        "one line and attribute it rather than re-arguing it here. An "
+        "alternative explanation arising from the instrument or the sample "
+        "preparation rather than from the design — an artefact of how the "
+        "quantity was measured — is data_analysis's too."
     ),
 )

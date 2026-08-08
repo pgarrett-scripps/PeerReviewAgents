@@ -17,7 +17,7 @@ from ..agents.debate import advocate, skeptic
 from ..agents.editor import desk_screen, editor_in_chief
 from ..agents.journal_recommender import recommender as journal_recommender
 from ..agents.reviewers import get_reviewer_nodes
-from ..agents.synthesis import meta_reviewer
+from ..agents.synthesis import cross_examiner, meta_reviewer
 from ..agents.utils.agent_states import ReviewState
 from ..article_types import article_type_block, normalize_article_type
 from ..default_config import get_config
@@ -112,6 +112,15 @@ def build_graph(config: dict):
     if debate_enabled:
         g.add_node("advocate", advocate.node)
         g.add_node("skeptic", skeptic.node)
+    # Cross-examination sits between the panel and whatever consumes it. The
+    # specialists never read each other, which is what keeps eight reads
+    # independent — and also what leaves an argument split across three
+    # reports unassembled. This stage is the only one that reads the reports
+    # against each other looking for what none of them said. On by default;
+    # `enable_cross_exam=False` ablates it.
+    cross_exam_enabled = bool(config.get("enable_cross_exam", True))
+    if cross_exam_enabled:
+        g.add_node("cross_examiner", cross_examiner.node)
     g.add_node("meta_reviewer", meta_reviewer.node)
     # Author rebuttal sits between meta-reviewer and editor so the editor sees
     # both the panel's verdict and the author's defense. It is SKIPPED when
@@ -177,7 +186,11 @@ def build_graph(config: dict):
 
     # With debate on, reviewers feed the advocate; with debate ablated, they
     # fan straight into the meta-reviewer.
-    reviewer_sink = "advocate" if debate_enabled else "meta_reviewer"
+    consumer = "advocate" if debate_enabled else "meta_reviewer"
+    # Reviewers converge on the cross-examiner, which then feeds the consumer,
+    # so everything downstream sees the joined findings alongside the reports
+    # they were drawn from.
+    reviewer_sink = "cross_examiner" if cross_exam_enabled else consumer
     # True when nothing precedes the fan-out, so START feeds it directly.
     fan_out_from_start = not desk_screen_enabled and not verify_response
     for name, _ in reviewer_nodes:
@@ -192,6 +205,9 @@ def build_graph(config: dict):
         if fan_out_from_start:
             g.add_edge(START, f"audit_{name}")
         g.add_edge(f"audit_{name}", "editor")
+
+    if cross_exam_enabled:
+        g.add_edge("cross_examiner", consumer)
 
     # Debate loop: advocate -> skeptic -> (loop | meta_reviewer). Skipped
     # entirely when debate is ablated.

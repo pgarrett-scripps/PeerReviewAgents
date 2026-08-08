@@ -25,6 +25,8 @@ from peerreviewagents.agents.schemas import (
     AuditFinding,
     AuditOutput,
     AuthorRebuttalOutput,
+    CrossExamOutput,
+    CrossFinding,
     DebateOutput,
     EditorDecisionOutput,
     JournalRecommendationsOutput,
@@ -62,6 +64,27 @@ _CANNED: dict[type, object] = {
     DebateOutput: DebateOutput(
         argument="Contribution is incremental but cleanly evaluated.",
         key_points=["Fair comparisons"],
+    ),
+    CrossExamOutput: CrossExamOutput(
+        findings=[
+            CrossFinding(
+                finding=(
+                    "The generalization claim rests on both the narrow "
+                    "evaluation scope and the unstated preprocessing, and "
+                    "neither reviewer weighed the two together."
+                ),
+                drawn_from=["methodology", "data_analysis"],
+                evidence=[
+                    "one dataset stands in for the general case",
+                    "the preprocessing is not specified",
+                ],
+                adds=(
+                    "Either limitation alone is survivable; the claim needs "
+                    "both to hold at once."
+                ),
+                severity="HARD",
+            )
+        ],
     ),
     MetaReviewOutput: MetaReviewOutput(
         draft_recommendation="major",

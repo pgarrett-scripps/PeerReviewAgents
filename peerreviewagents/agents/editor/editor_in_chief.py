@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ...observability import node_context
+from ..debate.base import cross_exam_block
 from ..schemas import EditorDecisionOutput, Verdict
 from ..utils.agent_states import ReviewState
 from ..utils.agent_utils import audit_digest, directives_block, score_summary
@@ -114,6 +115,8 @@ def _first_round_user(state: ReviewState) -> str:
         f"Numerical signal:\n{score_summary(state)}\n\n"
         f"Draft recommendation: {state.get('draft_recommendation')}\n\n"
         f"Meta-review:\n{state.get('meta_review', '')}\n\n"
+        f"Cross-examination (findings no single reviewer made, each built "
+        f"from two or more reports):\n{cross_exam_block(state)}\n\n"
         f"Author rebuttal:\n{rebuttal}\n\n"
         f"Editorial compliance audits (factual checklists — convert HARD gaps "
         f"to required revisions, SOFT/unverifiable to minor suggestions or "
@@ -151,6 +154,8 @@ def _revision_user(state: ReviewState) -> str:
         f"Numerical signal for THIS round:\n{score_summary(state)}\n\n"
         f"Draft recommendation: {state.get('draft_recommendation')}\n\n"
         f"Meta-review:\n{state.get('meta_review', '')}\n\n"
+        f"Cross-examination (findings no single reviewer made, each built "
+        f"from two or more reports):\n{cross_exam_block(state)}\n\n"
         f"{_author_voice(state)}\n\n"
         f"Editorial compliance audits (factual checklists — the "
         f"revision-compliance audit is the record of what was actually done; "

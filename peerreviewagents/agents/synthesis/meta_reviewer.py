@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ...observability import node_context
-from ..debate.base import _debate_so_far, _reports_digest
+from ..debate.base import _debate_so_far, _reports_digest, cross_exam_block
 from ..schemas import MetaReviewOutput
 from ..utils.agent_states import ReviewState
 from ..utils.agent_utils import directives_block, score_summary
@@ -38,6 +38,8 @@ def _run(state: ReviewState) -> dict:
     llm = make_llm(config, agent="meta_reviewer", default_tag="synthesis")
     user = (
         f"Reviewer findings:\n{_reports_digest(state)}\n\n"
+        f"Cross-examination — findings drawn from more than one report, "
+        f"which no single reviewer made:\n{cross_exam_block(state)}\n\n"
         f"Debate transcript:\n{_debate_so_far(state)}\n\n"
         f"Numerical signal:\n{score_summary(state)}\n\n"
         "Produce a meta-review. Engage with the numerical signal above: if "
