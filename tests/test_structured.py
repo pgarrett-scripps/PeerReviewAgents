@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from langchain_core.messages import AIMessage
 from pydantic import ValidationError
@@ -169,6 +171,78 @@ def test_invoke_structured_retry_then_success():
 
 def test_invoke_structured_double_failure_raises():
     llm = _StubLLM([_fail("bad json"), _fail("still bad")])
+    with pytest.raises(ValueError, match="validation failed after retry"):
+        invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
+
+
+# ---------- salvaging an unscored review ------------------------------------
+#
+# A reviewer that leaves `score` out and gives no not_applicable_reason is
+# rejected by the abstention validator. Rejecting the *object* used to discard
+# the *review* with it — summary, strengths, weaknesses and questions, already
+# written and already paid for. Three of eight reviewers went that way on one
+# run, and the editor was told the panel had returned nothing on those
+# dimensions.
+
+
+_ABSTAINED = {
+    "confidence": 4,
+    "summary": "A full review that happens to carry no score.",
+    "strengths": ["deposited data"],
+    "weaknesses": ["non-standard FDR"],
+    "questions": ["which decoy set?"],
+}
+
+
+def _fail_with(raw: AIMessage):
+    return {"raw": raw, "parsed": None, "parsing_error": "abstention rejected"}
+
+
+def _tool_call(args: dict) -> AIMessage:
+    return AIMessage(
+        content="",
+        tool_calls=[
+            {"name": "ReviewerOutput", "args": args, "id": "1", "type": "tool_call"}
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        _tool_call(_ABSTAINED),
+        # The same object written into content instead of a tool call. Models
+        # pick either and the choice is not ours; looking only at tool calls is
+        # what let a literature reviewer be discarded after the salvage path
+        # already existed.
+        AIMessage(content=json.dumps(_ABSTAINED)),
+        AIMessage(content="Here you go:\n" + json.dumps(_ABSTAINED) + "\nDone."),
+    ],
+    ids=["tool_call", "content_json", "content_json_with_prose"],
+)
+def test_unscored_review_is_kept_not_discarded(raw):
+    llm = _StubLLM([_fail_with(raw), _fail_with(raw)])
+    result = invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
+    assert result.instance.summary == _ABSTAINED["summary"]
+    assert result.instance.weaknesses == ["non-standard FDR"]
+    # The abstention is published as unexplained rather than dressed up as a
+    # considered "nothing here to judge".
+    assert result.instance.score is None
+    assert "did not say why" in result.instance.not_applicable_reason
+
+
+def test_truncated_response_still_raises():
+    """Half a review is not a review — the fix for that one is the token cap."""
+    cut = AIMessage(content='{"confidence": 4, "summary": "The manuscri')
+    llm = _StubLLM([_fail_with(cut), _fail_with(cut)])
+    with pytest.raises(ValueError, match="validation failed after retry"):
+        invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
+
+
+def test_salvage_does_not_touch_a_scored_review():
+    """Rejected for some other reason; not ours to second-guess."""
+    scored = dict(_ABSTAINED, score=9)
+    llm = _StubLLM([_fail_with(_tool_call(scored)), _fail_with(_tool_call(scored))])
     with pytest.raises(ValueError, match="validation failed after retry"):
         invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
 

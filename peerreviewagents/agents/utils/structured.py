@@ -23,6 +23,7 @@ Two entry points:
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -266,13 +267,43 @@ def _salvage(schema: type[BaseModel], result: Any) -> BaseModel | None:
 
 
 def _tool_args(result: Any) -> Any:
-    """The arguments the model sent, when they parsed as JSON but not as the
-    schema. Absent for a response cut off mid-object — there is nothing to
-    recover there."""
+    """The object the model sent, when it parsed as JSON but not as the schema.
+
+    Two places to look, because a model answers a schema in whichever of the
+    two ways it likes and the choice is not ours: as a tool call, or as a JSON
+    object written into ordinary content. The first version of this looked
+    only at tool calls, which is why a literature reviewer that wrote its JSON
+    into content was still discarded after the salvage path existed.
+
+    Returns None for a response cut off mid-object — there is nothing whole to
+    recover there.
+    """
     if not isinstance(result, dict):
         return None
-    calls = getattr(result.get("raw"), "tool_calls", None) or []
-    return calls[0].get("args") if calls else None
+    raw = result.get("raw")
+    calls = getattr(raw, "tool_calls", None) or []
+    if calls:
+        return calls[0].get("args")
+    return _json_object(getattr(raw, "content", None))
+
+
+def _json_object(content: Any) -> dict | None:
+    """The outermost JSON object in a content payload, or None."""
+    if isinstance(content, list):
+        # Anthropic-style content blocks.
+        content = "".join(
+            b.get("text", "") for b in content if isinstance(b, dict)
+        )
+    if not isinstance(content, str):
+        return None
+    start, end = content.find("{"), content.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    try:
+        parsed = json.loads(content[start : end + 1])
+    except (ValueError, TypeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _invoke_with_retries(structured, messages: list) -> Any:
