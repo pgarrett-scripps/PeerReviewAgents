@@ -223,8 +223,56 @@ def _try_structured(
     if parsed2 is not None:
         return StructuredResult(instance=parsed2, cost=cost + cost2)
 
+    salvaged = _salvage(schema, result2)
+    if salvaged is not None:
+        return StructuredResult(instance=salvaged, cost=cost + cost2)
+
     err = _parsing_error(result2)
     raise ValueError(f"structured-output validation failed after retry: {err}")
+
+
+# What the model filled in, when the object it filled in was rejected.
+#
+# A schema failure is not the same event as an agent failing. The reviewer
+# below wrote a summary, three strengths, seven weaknesses and five questions,
+# then left one field blank — and the whole review was discarded, unread,
+# after the model had been paid to write it. Twice, on two different runs. The
+# editor was then told the panel had returned no review on that dimension.
+#
+# So: rescue the answer when the only thing wrong with it is a rule about
+# abstaining. A reviewer that gives no score and no reason gets the marker
+# below written into the field it left empty, which is what the report then
+# prints — the abstention is published as unexplained rather than dressed up
+# as a considered "nothing here to judge".
+#
+# Deliberately narrow. A response truncated mid-JSON is not salvaged: half a
+# review is not a review, and the fix for that one is the token cap.
+_NO_REASON_GIVEN = "The reviewer gave no score and did not say why."
+
+
+def _salvage(schema: type[BaseModel], result: Any) -> BaseModel | None:
+    payload = _tool_args(result)
+    if not isinstance(payload, dict) or not payload:
+        return None
+    if "not_applicable_reason" not in schema.model_fields:
+        return None
+    if payload.get("score") is not None or str(payload.get("not_applicable_reason") or "").strip():
+        # Rejected for some other reason; not ours to second-guess.
+        return None
+    try:
+        return schema.model_validate({**payload, "not_applicable_reason": _NO_REASON_GIVEN})
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _tool_args(result: Any) -> Any:
+    """The arguments the model sent, when they parsed as JSON but not as the
+    schema. Absent for a response cut off mid-object — there is nothing to
+    recover there."""
+    if not isinstance(result, dict):
+        return None
+    calls = getattr(result.get("raw"), "tool_calls", None) or []
+    return calls[0].get("args") if calls else None
 
 
 def _invoke_with_retries(structured, messages: list) -> Any:

@@ -79,6 +79,15 @@ def _make_openrouter(model: str, *, reasoning_effort: str | None = None,
         "streaming": True,
         "stream_usage": True,
         "callbacks": [StreamingCallback(default_model=model, default_node=node, default_run=run_id)],
+        # Named, rather than left to whatever ceiling the routed model
+        # defaults to. OpenRouter authorizes the request against the *cap*,
+        # not against what the answer will actually cost, so an unstated
+        # 65,536-token default asks a small balance to cover sixty-five
+        # thousand tokens of a review that will run to three. That refuses
+        # the whole run with 402 — observed mid-benchmark on a run whose
+        # real price was ten cents. Matching the Anthropic path also means
+        # the two routes truncate at the same length.
+        "max_tokens": 32000,
     }
     # Current Anthropic models (Opus 5/4.7/4.8, Sonnet 5, Fable/Mythos 5)
     # reject `temperature` outright. The direct-Anthropic factory already
@@ -143,7 +152,13 @@ def _make_anthropic(model: str, *, reasoning_effort: str | None = None,
         # close for a structured review carrying a claim ledger, and the
         # reviewer prompt now asks for the load-bearing critique at length,
         # which makes the answers longer still.
-        "max_tokens": 16000,
+        #
+        # 16000 was not enough either: the rigor reviewer hit it again on a
+        # 17,700-word proteomics manuscript and vanished the same way. Raised
+        # rather than left to be rediscovered a third time — the ceiling is
+        # free until a call reaches it, and a call that reaches it loses
+        # everything it wrote.
+        "max_tokens": 32000,
     }
 
     adaptive = _anthropic_matches(model, _ANTHROPIC_ADAPTIVE_EFFORT)
