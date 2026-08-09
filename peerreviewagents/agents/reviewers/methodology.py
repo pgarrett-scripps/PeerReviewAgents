@@ -50,8 +50,8 @@ node = make_reviewer_node(
         "methods_completeness's, and 'the design supports a narrower claim "
         "than stated' is overclaiming, which rigor owns. Name any of those in "
         "one line and attribute it rather than re-arguing it here. An "
-        "alternative explanation arising from the instrument or the sample "
-        "preparation rather than from the design — an artefact of how the "
-        "quantity was measured — is data_analysis's too."
+        "alternative explanation arising from however the data were generated, "
+        "recorded or filtered rather than from the design — an artefact of the "
+        "process that produced the number — is data_analysis's too."
     ),
 )
