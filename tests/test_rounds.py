@@ -207,6 +207,118 @@ def test_unavailable_diff_tells_the_agent_not_to_assume():
     assert "do not assume" in block
 
 
+def _prior_record_with_key(key: str) -> rounds.RoundRecord:
+    return rounds.RoundRecord(
+        schema_version=rounds.SCHEMA_VERSION,
+        round=1,
+        job_id="round-1",
+        manuscript_title="A paper",
+        manuscript_cache_key=key,
+        decision="major",
+        weighted_score=3.0,
+    )
+
+
+def _cached_prior_draft(tmp_path, cfg, *, caveman):
+    """Plant a prior-round draft in the ingest cache, as a revision finds it."""
+    from peerreviewagents.ingest import cache as ingest_cache
+    from peerreviewagents.ingest.loader import Manuscript
+
+    src = tmp_path / "prior.pdf"
+    src.write_bytes(b"%PDF-1.7\n")
+    ingest_cache.put(
+        "priorkey",
+        Manuscript(
+            title="A paper",
+            text="Methods text here.",
+            sections={"methods": "Methods text here."},
+            ingest={
+                "format": "markdown",
+                "tool": "rustypaper 9.9.9",
+                "caveman": None if caveman == "off" else caveman,
+                "chars": 18,
+            },
+        ),
+        source_path=str(src),
+        config=cfg,
+    )
+
+
+def test_a_caveman_flip_between_rounds_degrades_the_diff(tmp_path):
+    """Compressed vs uncompressed text differs everywhere even when the
+    authors changed nothing; diffing across the flip told the panel the
+    paper was rewritten wholesale."""
+    from peerreviewagents.graph.review_graph import PeerReviewGraph
+
+    cfg = get_config(
+        caveman="off", cache_dir=str(tmp_path / "cache"), output_dir=str(tmp_path)
+    )
+    _cached_prior_draft(tmp_path, cfg, caveman="hard")
+
+    diff = PeerReviewGraph(cfg)._manuscript_diff(
+        _prior_record_with_key("priorkey"), {"methods": "Methods text here."}
+    )
+    assert not diff.available
+    assert "compression setting changed" in diff.note
+
+
+def test_a_stable_caveman_level_still_diffs(tmp_path):
+    from peerreviewagents.graph.review_graph import PeerReviewGraph
+
+    cfg = get_config(
+        caveman="off", cache_dir=str(tmp_path / "cache"), output_dir=str(tmp_path)
+    )
+    _cached_prior_draft(tmp_path, cfg, caveman="off")
+
+    diff = PeerReviewGraph(cfg)._manuscript_diff(
+        _prior_record_with_key("priorkey"), {"methods": "Methods text here."}
+    )
+    assert diff.available
+    assert all(d.status == "unchanged" for d in diff.deltas)
+
+
+# --- the optional documents around the manuscript ----------------------------
+
+
+def test_an_unreadable_supplement_is_surfaced_not_silently_dropped(tmp_path):
+    """`except Exception: return "", {}` swallowed everything — including
+    "rustypaper not installed" — and the methods-completeness auditor then
+    reported the SI missing when the operator had supplied it."""
+    from peerreviewagents.agents.utils.agent_utils import supplement_block
+    from peerreviewagents.graph.review_graph import PeerReviewGraph
+
+    cfg = get_config(
+        supplement_path=str(tmp_path / "missing_si.pdf"), output_dir=str(tmp_path)
+    )
+    sup_md, sup_sections = PeerReviewGraph(cfg)._load_supplement()
+    assert sup_sections == {}
+    assert "missing_si.pdf" in sup_md
+    assert "could not be read" in sup_md
+    assert "do not report it as missing" in sup_md
+    # The placeholder rides where the SI text would have, so the auditor's
+    # context block carries the explanation instead of nothing.
+    assert "could not be read" in supplement_block({"supplement_md": sup_md})
+
+
+def test_no_supplement_path_still_means_no_supplement(tmp_path):
+    from peerreviewagents.graph.review_graph import PeerReviewGraph
+
+    cfg = get_config(output_dir=str(tmp_path))
+    assert PeerReviewGraph(cfg)._load_supplement() == ("", {})
+
+
+def test_author_letter_failure_names_the_letter_not_the_manuscript(tmp_path):
+    from peerreviewagents.graph.review_graph import PeerReviewGraph
+
+    cfg = get_config(
+        revision_of="j1",
+        author_statement_path=str(tmp_path / "gone.md"),
+        output_dir=str(tmp_path),
+    )
+    with pytest.raises(ValueError, match="author response letter"):
+        PeerReviewGraph(cfg)._load_author_statement()
+
+
 # --- graph shape ------------------------------------------------------------
 
 

@@ -54,11 +54,28 @@ _TITLE_BOILERPLATE = (
     "running title",
 )
 
+# Synonym families collapsed to one bucket name at split time. The revision
+# diff matches sections by exact name, so before this map a "Conclusion"
+# heading renamed "Conclusions" between rounds reported the identical text as
+# a removed section plus an added one — a substantive change the authors
+# never made. Every canonical name here is also in agent_utils'
+# _PRIORITY_SECTIONS, so fit_manuscript keeps finding the priority sections.
+_SECTION_ALIASES = {
+    "bibliography": "references",
+    "conclusions": "conclusion",
+    "materials and methods": "methods",
+    "materials & methods": "methods",
+    "methodology": "methods",
+    "supplementary materials": "supplementary",
+    "supplementary information": "supplementary",
+}
+
 # Regex to strip leading numeric / roman-numeral section prefixes, e.g.
-# "1.", "1.1", "2.1.", "II.", "A." before comparing to _SECTION_KEYS.
-_NUMERIC_PREFIX_RE = re.compile(
-    r"^(?:[ivxlcdm]+\.|\d+(?:\.\d+)*\.?)\s*", re.IGNORECASE
-)
+# "1.", "1.1", "2.1.", "II." before comparing to _SECTION_KEYS. Roman
+# numerals match uppercase only: with IGNORECASE, any word spelled from
+# [ivxlcdm] read as one — a body line opening "Mild. …" counted as numbered
+# and was waved past the heading length guard.
+_NUMERIC_PREFIX_RE = re.compile(r"^(?:[IVXLCDM]+\.|\d+(?:\.\d+)*\.?)\s*")
 
 
 def ingest_config(config: dict | None = None) -> dict:
@@ -161,23 +178,31 @@ def _plain_ingest(tool: str, text: str) -> dict:
 
 
 def load_manuscript(
-    path: str, config: dict | None = None
+    path: str, config: dict | None = None, *, kind: str = "manuscript"
 ) -> tuple[str, str, dict[str, str]]:
     """Return ``(title, text, sections)`` for the given manuscript file.
 
     The convenience form. Callers that publish how the manuscript was read —
     the graph, and anything writing provenance — want
     :func:`load_manuscript_record` instead.
+
+    ``kind`` names what the document is expected to be ("manuscript",
+    "letter", "supplement"). It does not change the parse; it sets the
+    too-short-to-be-real floor and how a refusal is worded — a one-page
+    response letter is a normal document, not a failed manuscript scan.
     """
-    return load_manuscript_record(path, config).as_triple()
+    return load_manuscript_record(path, config, kind=kind).as_triple()
 
 
-def load_manuscript_record(path: str, config: dict | None = None) -> Manuscript:
+def load_manuscript_record(
+    path: str, config: dict | None = None, *, kind: str = "manuscript"
+) -> Manuscript:
     """Parse ``path``, or serve it from the on-disk cache.
 
     The result is cached keyed by file content *and* the ingest config (see
     :mod:`.cache`). Wipe the cache with ``just cache-clear`` if you need to
-    force a re-parse.
+    force a re-parse. ``kind`` is threaded to the converter's plausibility
+    floor only — it never changes the text, so it is not part of the key.
     """
     config = config or {}
     from . import cache as _cache
@@ -187,7 +212,7 @@ def load_manuscript_record(path: str, config: dict | None = None) -> Manuscript:
     if cached is not None:
         return cached
 
-    parsed = _load_uncached(path, config)
+    parsed = _load_uncached(path, config, kind=kind)
     try:
         _cache.put(key, parsed, source_path=path, config=config)
     except (OSError, ValueError):
@@ -199,12 +224,14 @@ def load_manuscript_record(path: str, config: dict | None = None) -> Manuscript:
     return parsed
 
 
-def _load_uncached(path: str, config: dict | None = None) -> Manuscript:
+def _load_uncached(
+    path: str, config: dict | None = None, *, kind: str = "manuscript"
+) -> Manuscript:
     ext = os.path.splitext(path)[1].lower()
     title = ""
     anchor = ""
     if ext == ".pdf":
-        text, title, anchor, record = _read_pdf(path, ingest_config(config))
+        text, title, anchor, record = _read_pdf(path, ingest_config(config), kind)
     elif ext in (".md", ".markdown", ".txt", ".tex"):
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
             text = fh.read()
@@ -248,7 +275,7 @@ def _load_uncached(path: str, config: dict | None = None) -> Manuscript:
     )
 
 
-def _read_pdf(path: str, ingest: dict) -> tuple[str, str, str, dict]:
+def _read_pdf(path: str, ingest: dict, kind: str = "manuscript") -> tuple[str, str, str, dict]:
     """Convert a PDF to Markdown.
 
     Returns ``(text, title, references_anchor, record)``. The title is the
@@ -260,13 +287,23 @@ def _read_pdf(path: str, ingest: dict) -> tuple[str, str, str, dict]:
     """
     caveman = ingest["caveman"]
     try:
-        converted = structured.convert(path, caveman)
-    except structured.Unavailable as exc:
+        converted = structured.convert(path, caveman, kind=kind)
+    except structured.ConverterMissing as exc:
+        # Only a missing converter earns the install line. It used to close
+        # every Unavailable — including "produced only N characters… scanned
+        # or image-only" — so a user who had rustypaper and submitted a scan
+        # was told to install a package already present instead of being told
+        # their file has no text layer. The two ask for completely different
+        # things next (see structured.Unavailable).
         raise RuntimeError(
             f"Could not read {os.path.basename(path)}: {exc}\n"
             "PDF ingest requires rustypaper:\n"
             "    pip install rustypaper\n"
             "or, from a checkout, pip install -e /path/to/rustypaper/python"
+        ) from exc
+    except structured.Unavailable as exc:
+        raise RuntimeError(
+            f"Could not read {os.path.basename(path)}: {exc}"
         ) from exc
 
     emit(AgentEvent(
@@ -367,7 +404,18 @@ def _split_sections(text: str, references_anchor: str = "") -> dict[str, str]:
 
     sections: dict[str, list[str]] = {"_preamble": []}
     current = "_preamble"
+    in_fence = False
     for line in text.splitlines():
+        # Fenced code is opaque to the heading match. A `# results` line
+        # inside a fence is code, and treating it as a heading both invented
+        # a section that was never there and deleted the line from the text.
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            sections.setdefault(current, []).append(line)
+            continue
+        if in_fence:
+            sections.setdefault(current, []).append(line)
+            continue
         # Checked before the heading match: the anchor's whole purpose is to
         # work on a line no heading rule will fire on. The line is kept —
         # unlike a heading, it is a reference in its own right.
@@ -375,11 +423,19 @@ def _split_sections(text: str, references_anchor: str = "") -> dict[str, str]:
             current = "references"
             sections.setdefault(current, []).append(line)
             continue
-        candidate = line.strip().lower().lstrip("#").strip().rstrip(":").strip()
-        # Strip leading numeric / roman-numeral prefixes ("1.", "2.1", "II.").
-        numbered = bool(_NUMERIC_PREFIX_RE.match(candidate))
-        candidate = _NUMERIC_PREFIX_RE.sub("", candidate).strip()
+        raw = line.strip().lstrip("#").strip().rstrip(":").strip()
+        # Strip leading numeric / roman-numeral prefixes ("1.", "2.1", "II."),
+        # matched against the original case — see _NUMERIC_PREFIX_RE.
+        prefix = _NUMERIC_PREFIX_RE.match(raw)
+        numbered = bool(prefix)
+        candidate = (raw[prefix.end():] if prefix else raw).strip().lower()
         matched = next((k for k in _SECTION_KEYS if candidate == k or candidate.startswith(k + " ")), None)
+        # A numbered line that ends the way a sentence does is a Markdown
+        # list item, not a heading: "2. Results were consistent with prior
+        # work." used to open a phantom results section and then vanish from
+        # the text entirely, because a short heading line is dropped.
+        if matched and numbered and raw.endswith((".", "!", "?")):
+            matched = None
         # The length guard keeps a body sentence opening "Discussion of these
         # results…" from starting a section. A *numbered* line needs no such
         # protection — prose does not begin "IV. " — and waiving it for those
@@ -388,8 +444,11 @@ def _split_sections(text: str, references_anchor: str = "") -> dict[str, str]:
         # arrives. That line is a heading with its section's first sentence
         # stuck to it, and treating it as one puts the section back.
         if matched and (numbered or len(line.strip()) < 80):
-            # "bibliography" is an alias; normalize so the literature reviewer finds it.
-            bucket = "references" if matched == "bibliography" else matched
+            # Aliases ("bibliography", "conclusions", "materials and
+            # methods", …) collapse to one bucket name, so the literature
+            # reviewer and the revision diff find the section whatever the
+            # authors called it this round.
+            bucket = _SECTION_ALIASES.get(matched, matched)
             current = bucket
             sections.setdefault(current, [])
             # A short line is a heading and nothing else, so it is dropped. A

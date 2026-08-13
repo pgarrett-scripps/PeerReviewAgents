@@ -79,6 +79,34 @@ def test_fused_words_break_the_verdict():
     assert any("fused" in n for n in health.notes)
 
 
+def test_sequences_in_fences_and_tables_do_not_condemn_a_readable_paper():
+    """A sequence-heavy genomics paper must not be refused as scanned.
+
+    The fused-token count used to run over the raw Markdown while the per-1k
+    denominator came from prose-only text: DNA sequences and accession runs
+    in tables and code fences counted as fused words, and the fences carrying
+    them were excluded from the word count. Numerator and denominator
+    described two different documents, and a readable paper crossed
+    FUSED_BROKEN.
+    """
+    seq = "ACGTTGCAACGTTGCAACGTTGCAACGTTGCA"  # 32 letters: fused by length alone
+    body = "We sequenced the samples and report the observed variants. " * 40
+    fenced = "```\n" + "\n".join([seq] * 8) + "\n```"
+    table = "\n".join([f"| locus | {seq} |"] * 8)
+    stats = prose.analyze(f"{body}\n\n{fenced}\n\n{table}\n")
+    assert stats.health.fused_per_1k == 0.0
+    assert stats.health.verdict == prose.CLEAN
+
+
+def test_fused_words_in_the_prose_itself_still_break_the_verdict():
+    """The basis change must lose nothing on genuine damage: real fusion
+    lives in the running text, which is exactly what prose-only keeps."""
+    fused = "whicharemosteffectivewhenasmallwelldefinedsitecanbeengaged"
+    text = " ".join([f"Some ordinary words here {fused}"] * 12)
+    text += "\n\n```\npayload = 'not counted either way'\n```\n"
+    assert prose.analyze(text).health.verdict == prose.BROKEN
+
+
 def test_hyphenated_line_breaks_degrade_but_never_break():
     # BERT reads perfectly and scores 33.7 per 1000 words on this signal, so
     # it must not be able to condemn a manuscript on its own.

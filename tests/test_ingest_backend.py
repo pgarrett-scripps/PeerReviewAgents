@@ -32,7 +32,7 @@ def _fake_pdf(tmp_path):
 
 
 def _stub_convert(monkeypatch, markdown="# Real Title\n\n## Methods\n\nWe did it.\n"):
-    def convert(path, caveman="off"):
+    def convert(path, caveman="off", kind="manuscript"):
         return structured.Converted(
             markdown=markdown, title="Real Title", tool="rustypaper 9.9.9"
         )
@@ -40,9 +40,9 @@ def _stub_convert(monkeypatch, markdown="# Real Title\n\n## Methods\n\nWe did it
     monkeypatch.setattr(structured, "convert", convert)
 
 
-def _stub_unavailable(monkeypatch, reason="rustypaper unavailable (ImportError: no)"):
-    def convert(path, caveman="off"):
-        raise structured.Unavailable(reason)
+def _stub_unavailable(monkeypatch, reason, exc_type=structured.Unavailable):
+    def convert(path, caveman="off", kind="manuscript"):
+        raise exc_type(reason)
 
     monkeypatch.setattr(structured, "convert", convert)
 
@@ -67,7 +67,11 @@ def test_a_missing_converter_stops_the_run(tmp_path, monkeypatch, cache_dir):
     not write. Degrading silently would do that on exactly the runs nobody
     is watching, so this raises — with the install line in the message.
     """
-    _stub_unavailable(monkeypatch, "rustypaper unavailable (ImportError: nope)")
+    _stub_unavailable(
+        monkeypatch,
+        "rustypaper unavailable (ImportError: nope)",
+        exc_type=structured.ConverterMissing,
+    )
     with pytest.raises(RuntimeError) as excinfo:
         loader.load_manuscript_record(_fake_pdf(tmp_path), cache_dir)
     assert "ImportError" in str(excinfo.value)
@@ -79,6 +83,71 @@ def test_an_unreadable_pdf_stops_the_run(tmp_path, monkeypatch, cache_dir):
     _stub_unavailable(monkeypatch, "rustypaper produced only 12 characters")
     with pytest.raises(RuntimeError, match="only 12 characters"):
         loader.load_manuscript_record(_fake_pdf(tmp_path), cache_dir)
+
+
+def test_a_scanned_pdf_is_not_told_to_install_the_converter(tmp_path, monkeypatch, cache_dir):
+    """A user WITH rustypaper who submits a scan must not be told to install it.
+
+    The install line and the scan diagnosis ask for completely different
+    things next, and closing every failure with "pip install rustypaper"
+    sent submitters to reinstall a package they already had.
+    """
+    _stub_unavailable(
+        monkeypatch,
+        "rustypaper produced only 12 characters, which is not a readable "
+        "manuscript — the PDF is most likely scanned or image-only",
+    )
+    with pytest.raises(RuntimeError) as excinfo:
+        loader.load_manuscript_record(_fake_pdf(tmp_path), cache_dir)
+    assert "scanned or image-only" in str(excinfo.value)
+    assert "pip install" not in str(excinfo.value)
+
+
+def test_a_one_page_letter_is_not_a_failed_manuscript_scan(monkeypatch):
+    """The manuscript floor (4000 chars) applied to every document the loader
+    read, so a normal one-page author response letter (~2,500 chars) was
+    refused as scanned and the revision run died."""
+    import sys
+    import types
+
+    fake = types.ModuleType("rustypaper")
+    fake.__version__ = "9.9.9"
+    fake.to_markdown = lambda path, caveman: "Dear editor, thank you. " * 100
+    fake.to_document = lambda path, caveman: {"title": "", "blocks": []}
+    monkeypatch.setitem(sys.modules, "rustypaper", fake)
+
+    with pytest.raises(structured.Unavailable, match="readable manuscript"):
+        structured.convert("letter.pdf", kind="manuscript")
+    out = structured.convert("letter.pdf", kind="letter")
+    assert "Dear editor" in out.markdown
+
+
+def test_the_refusal_names_the_document_kind(monkeypatch):
+    import sys
+    import types
+
+    fake = types.ModuleType("rustypaper")
+    fake.__version__ = "9.9.9"
+    fake.to_markdown = lambda path, caveman: "x" * 10
+    fake.to_document = lambda path, caveman: {"title": "", "blocks": []}
+    monkeypatch.setitem(sys.modules, "rustypaper", fake)
+
+    with pytest.raises(structured.Unavailable, match="readable letter"):
+        structured.convert("letter.pdf", kind="letter")
+
+
+def test_the_loader_threads_the_document_kind_to_the_converter(tmp_path, monkeypatch, cache_dir):
+    seen = {}
+
+    def convert(path, caveman="off", kind="manuscript"):
+        seen["kind"] = kind
+        return structured.Converted(
+            markdown="Dear editor, thanks.", title="", tool="rustypaper 9.9.9"
+        )
+
+    monkeypatch.setattr(structured, "convert", convert)
+    loader.load_manuscript_record(_fake_pdf(tmp_path), cache_dir, kind="letter")
+    assert seen["kind"] == "letter"
 
 
 def test_unknown_caveman_level_is_rejected(tmp_path):
@@ -109,6 +178,47 @@ def test_cache_key_ignores_unrelated_config(tmp_path):
     assert cache.cache_key(path, {"reasoning_model": "a"}) == cache.cache_key(
         path, {"reasoning_model": "b"}
     )
+
+
+def test_a_converter_upgrade_moves_the_pdf_cache_key(tmp_path, monkeypatch):
+    """The version lived only inside the ingest record, so upgrading
+    rustypaper never invalidated anything: a paper first seen under an old
+    converter was served its old conversion forever."""
+    path = _fake_pdf(tmp_path)
+    monkeypatch.setattr(structured, "converter_version", lambda: "0.1.0")
+    old = cache.cache_key(path, {})
+    monkeypatch.setattr(structured, "converter_version", lambda: "0.2.0")
+    assert cache.cache_key(path, {}) != old
+
+
+def test_a_converter_upgrade_does_not_move_a_markdown_key(tmp_path, monkeypatch):
+    """Markdown never passes through the converter, so bumping rustypaper
+    must not orphan those entries."""
+    md = tmp_path / "paper.md"
+    md.write_text("# T\n\nBody.\n", encoding="utf-8")
+    monkeypatch.setattr(structured, "converter_version", lambda: "0.1.0")
+    old = cache.cache_key(str(md), {})
+    monkeypatch.setattr(structured, "converter_version", lambda: "0.2.0")
+    assert cache.cache_key(str(md), {}) == old
+
+
+def test_a_torn_manuscript_file_is_a_miss_not_a_manuscript(tmp_path, monkeypatch, cache_dir):
+    """metadata.json was written atomically but manuscript.md was not, so a
+    write interrupted midway read back cleanly as a shorter manuscript and
+    was served on every later run."""
+    _stub_convert(monkeypatch, markdown="# T\n\n" + "Words in the body here. " * 40)
+    path = _fake_pdf(tmp_path)
+    first = loader.load_manuscript_record(path, cache_dir)
+
+    key = cache.cache_key(path, cache_dir)
+    md_file = cache._entry_dir(key, cache_dir) / "manuscript.md"
+    torn = md_file.read_text(encoding="utf-8")
+    md_file.write_text(torn[: len(torn) // 2], encoding="utf-8")
+
+    assert cache.get(key, cache_dir) is None
+    # The loader recovers by re-parsing rather than serving the torn text.
+    second = loader.load_manuscript_record(path, cache_dir)
+    assert second.text == first.text
 
 
 def test_cached_entry_reports_the_original_ingest(tmp_path, monkeypatch, cache_dir):
@@ -144,6 +254,79 @@ def test_numbered_heading_fused_into_its_paragraph_still_opens_a_section():
     assert "introduction" in sections
     # The paragraph fused onto the heading is kept, not discarded with it.
     assert "attracted significant attention" in sections["introduction"]
+
+
+def test_a_numbered_list_item_is_prose_not_a_heading():
+    """"2. Results were consistent with prior work." is a list item.
+
+    The numbered waiver used to read it as a heading: it opened a phantom
+    `results` section and, being short enough to be "a heading and nothing
+    else", the line was dropped from the section map entirely — silent text
+    loss in the middle of a manuscript.
+    """
+    text = (
+        "# Paper\n\nOur main findings were threefold.\n\n"
+        "1. Methods were pre-registered.\n"
+        "2. Results were consistent with prior work.\n"
+        "3. Limitations remain in the follow-up cohort.\n"
+    )
+    sections = loader._split_sections(text)
+    assert "results" not in sections
+    assert "methods" not in sections
+    joined = "\n".join(sections.values())
+    assert "Results were consistent with prior work." in joined
+    assert "Methods were pre-registered." in joined
+
+
+def test_a_heading_inside_a_code_fence_is_code_not_a_section():
+    text = (
+        "# Paper\n\nBody text before the listing.\n\n"
+        "```python\n# results\nprint(compute_results())\n```\n\n"
+        "Body text after the listing.\n"
+    )
+    sections = loader._split_sections(text)
+    assert "results" not in sections
+    assert "# results" in sections["_preamble"]
+    assert "print(compute_results())" in sections["_preamble"]
+    assert "Body text after the listing." in sections["_preamble"]
+
+
+def test_a_word_spelled_from_roman_letters_is_not_a_numbered_heading():
+    # "Mild." is made entirely of [ivxlcdm]; with a case-insensitive roman
+    # match it counted as numbered and waived the length guard.
+    text = "Title\n\nMild. Discussion of the side effects follows below here.\n"
+    assert "discussion" not in loader._split_sections(text)
+
+
+def test_section_synonyms_collapse_to_one_bucket():
+    """The diff matches sections by name, so `conclusion` vs `conclusions`
+    must not be two different sections."""
+    v1 = loader._split_sections("T\n\nConclusion\n\nWe conclude things.\n")
+    v2 = loader._split_sections("T\n\nConclusions\n\nWe conclude things.\n")
+    assert v1["conclusion"] == v2["conclusion"]
+
+    mm = loader._split_sections("T\n\nMaterials and Methods\n\nWe pipetted.\n")
+    meth = loader._split_sections("T\n\nMethodology\n\nWe pipetted.\n")
+    assert mm["methods"] == meth["methods"] == "We pipetted."
+
+
+def test_alias_targets_are_priority_sections():
+    """fit_manuscript keeps a manuscript's core by _PRIORITY_SECTIONS name;
+    an alias collapsing to a name outside that list would silently drop the
+    section from every truncated prompt."""
+    from peerreviewagents.agents.utils.agent_utils import _PRIORITY_SECTIONS
+
+    for target in ("methods", "conclusion"):
+        assert target in _PRIORITY_SECTIONS
+
+
+def test_renaming_conclusion_between_rounds_is_not_a_change():
+    from peerreviewagents.ingest import diff as ingest_diff
+
+    old = loader._split_sections("T\n\nConclusion\n\nSame ending text.\n")
+    new = loader._split_sections("T\n\nConclusions\n\nSame ending text.\n")
+    d = ingest_diff.diff_sections(old, new)
+    assert all(x.status == "unchanged" for x in d.deltas)
 
 
 def test_long_unnumbered_line_does_not_open_a_section():

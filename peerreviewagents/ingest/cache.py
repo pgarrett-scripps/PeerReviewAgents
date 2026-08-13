@@ -37,7 +37,14 @@ from typing import Any
 # v7: the record carries `text_sha256`, the fingerprint of the converted text.
 # A v6 entry has none, and a caller asking "same draft?" would silently fall
 # back to the file hash, which bioRxiv changes on every download.
-_SCHEMA_VERSION = 7
+# v8: the key hashes the converter version for PDFs, and the stored text is
+# verified against `text_sha256` on read. The version lived only inside the
+# ingest record, so upgrading rustypaper never invalidated anything: a paper
+# first seen under an old converter was served its old — possibly worse —
+# conversion forever. And manuscript.md was not written atomically, so a torn
+# write read back cleanly as a shorter manuscript and could be served on
+# every later run.
+_SCHEMA_VERSION = 8
 
 
 def cache_root(config: dict | None = None) -> Path:
@@ -67,6 +74,15 @@ def cache_key(path: str | os.PathLike, config: dict | None = None) -> str:
     p = Path(path)
     h.update(json.dumps(ingest_config(config), sort_keys=True).encode())
     h.update(p.suffix.lower().encode())
+    if p.suffix.lower() == ".pdf":
+        # An upgraded converter reads the same bytes into different text, so
+        # its version is part of what the entry *is* — left out of the key,
+        # a paper first seen under an old rustypaper kept its old conversion
+        # forever. Only PDFs pass through the converter, so only their keys
+        # carry it: upgrading rustypaper must not orphan a Markdown entry.
+        from . import structured
+
+        h.update(structured.converter_version().encode())
     with p.open("rb") as fh:
         for chunk in iter(lambda: fh.read(1024 * 1024), b""):
             h.update(chunk)
@@ -97,6 +113,13 @@ def get(key: str, config: dict | None = None):
         with md_path.open("r", encoding="utf-8") as fh:
             text = fh.read()
     except OSError:
+        return None
+    # A stored text that no longer matches its own fingerprint is a miss, not
+    # a manuscript: metadata.json is written via temp-file-and-rename but a
+    # damaged manuscript.md still reads back cleanly as a shorter document,
+    # and serving it would hand the panel text nobody ever ingested.
+    expected = (meta.get("ingest") or {}).get("text_sha256")
+    if expected and hashlib.sha256(text.encode("utf-8")).hexdigest() != expected:
         return None
     return Manuscript(
         title=meta.get("title", ""),
@@ -131,7 +154,12 @@ def put(
         },
     }
 
-    (entry / "manuscript.md").write_text(manuscript.text, encoding="utf-8")
+    # manuscript.md gets the same temp-file-and-rename treatment as
+    # metadata.json below: a plain write interrupted midway leaves a torn
+    # file that reads back cleanly as a shorter manuscript.
+    tmp_md = entry / "manuscript.md.tmp"
+    tmp_md.write_text(manuscript.text, encoding="utf-8")
+    tmp_md.replace(entry / "manuscript.md")
 
     # metadata.json (atomic-ish write)
     tmp_meta = entry / "metadata.json.tmp"

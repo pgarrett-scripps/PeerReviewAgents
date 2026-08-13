@@ -354,6 +354,26 @@ class PeerReviewGraph:
             return ingest_diff.unavailable(
                 "the previous draft is no longer in the manuscript cache"
             )
+        # `caveman` rewrites the text itself, so a prior draft parsed at one
+        # compression level and a current draft parsed at another differ in
+        # every section even when the authors changed nothing — the panel
+        # would be told the paper was rewritten wholesale. The level is only
+        # ever applied by the PDF converter (a plain-text read records none
+        # whatever the config says), so the check is scoped to converted
+        # priors.
+        from ..ingest.loader import ingest_config
+
+        prior_tool = str((cached.ingest or {}).get("tool") or "")
+        if prior_tool.startswith("rustypaper"):
+            prior_level = (cached.ingest or {}).get("caveman") or "off"
+            current_level = ingest_config(self.config)["caveman"]
+            if prior_level != current_level:
+                return ingest_diff.unavailable(
+                    "the compression setting changed between rounds (caveman "
+                    f"{prior_level} → {current_level}): the two drafts are "
+                    "not comparable as text, and the differences would read "
+                    "as a rewrite the authors never made"
+                )
         return ingest_diff.diff_sections(cached.sections, sections)
 
     def _load_author_statement(self) -> str:
@@ -368,10 +388,16 @@ class PeerReviewGraph:
         if not path:
             return ""
         try:
-            _title, text, _sections = load_manuscript(str(path), self.config)
+            # kind="letter": the converter's plausibility floor is calibrated
+            # for manuscripts, and a normal one-page response letter is a
+            # quarter of it — loaded as a manuscript, a readable letter was
+            # refused as "scanned or image-only" and killed the revision run.
+            _title, text, _sections = load_manuscript(
+                str(path), self.config, kind="letter"
+            )
         except Exception as exc:  # noqa: BLE001
             raise ValueError(
-                f"Could not read the author statement at {path}: {exc}"
+                f"Could not read the author response letter at {path}: {exc}"
             ) from exc
         return text
 
@@ -380,15 +406,38 @@ class PeerReviewGraph:
 
         The SI is optional: no ``supplement_path`` means an unchanged run. A
         provided-but-unparseable SI must never crash the review, so any parse
-        failure degrades to no-SI rather than propagating.
+        failure degrades rather than propagating — but not to silence. The
+        failure used to be swallowed whole, and the methods-completeness
+        auditor then reported the SI missing when the operator had supplied
+        it. The placeholder returned below rides where the SI text would
+        have, so the auditor (and the report built on its output) is told the
+        SI exists and why it could not be read.
         """
         path = self.config.get("supplement_path")
         if not path:
             return "", {}
         try:
-            _title, md, sections = load_manuscript(path, self.config)
-        except Exception:  # noqa: BLE001 — optional input, never fail the run
-            return "", {}
+            _title, md, sections = load_manuscript(
+                path, self.config, kind="supplement"
+            )
+        except Exception as exc:  # noqa: BLE001 — optional input, never fail the run
+            from ..observability import AgentEvent, emit
+
+            reason = f"{exc.__class__.__name__}: {exc}"
+            emit(AgentEvent(
+                kind="log", node="ingest",
+                text=f"supplement at {os.path.basename(str(path))} could not "
+                     f"be read ({reason}); the review proceeds without it",
+            ))
+            note = (
+                "A supplementary-information file was provided by the "
+                f"operator ({os.path.basename(str(path))}) but could not be "
+                f"read: {reason}. Its contents are unavailable to this "
+                "review. Treat the SI as supplied but unreadable — do not "
+                "report it as missing, and do not count anything as verified "
+                "by it."
+            )
+            return note, {}
         return md, sections
 
     def _journal_block(self) -> str:

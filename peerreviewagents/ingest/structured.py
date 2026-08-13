@@ -37,6 +37,18 @@ from dataclasses import dataclass
 # of stray glyphs. OCR is out of scope, so the run stops here.
 MIN_PLAUSIBLE_CHARS = 4000
 
+# The 4000 above is calibrated for manuscripts, and the loader reads more
+# than manuscripts: applied to everything, it refused a normal one-page
+# author response letter (~2,500 characters) as "scanned or image-only" and
+# killed the revision run. A scanned page still yields only stray glyphs, so
+# a floor far below one page keeps the scan check for documents that are
+# legitimately short — a letter, or a single-table supplement.
+MIN_PLAUSIBLE_BY_KIND = {
+    "manuscript": MIN_PLAUSIBLE_CHARS,
+    "letter": 200,
+    "supplement": 200,
+}
+
 # What the converter will accept. `off` is the default everywhere; see
 # `caveman` in default_config.py for why.
 CAVEMAN_LEVELS = ("off", "light", "hard")
@@ -57,6 +69,30 @@ class Unavailable(Exception):
     """
 
 
+class ConverterMissing(Unavailable):
+    """rustypaper itself could not be imported.
+
+    A distinct type because only this case is fixed by installing the
+    package. The loader used to append the install line to every
+    :class:`Unavailable`, which told a user who already had rustypaper to
+    install it when what they actually had was a scanned PDF.
+    """
+
+
+def converter_version() -> str:
+    """Version string of the installed converter, or a stable placeholder.
+
+    Hashed into the manuscript cache key (see :mod:`.cache`): an upgraded
+    converter reads the same bytes into different text, so the version is
+    part of what a cached entry *is*, not just provenance inside it.
+    """
+    try:
+        import rustypaper  # noqa: PLC0415 - optional, imported at point of use
+    except Exception:  # noqa: BLE001 - a broken wheel and a missing one hash the same
+        return "unavailable"
+    return str(getattr(rustypaper, "__version__", "unknown"))
+
+
 @dataclass(frozen=True)
 class Converted:
     """A converted manuscript, and what the converter knew about it."""
@@ -75,11 +111,16 @@ class Converted:
     references_anchor: str = ""
 
 
-def convert(path: str, caveman: str = "off") -> Converted:
+def convert(path: str, caveman: str = "off", kind: str = "manuscript") -> Converted:
     """Convert ``path`` to Markdown.
 
+    ``kind`` names what the caller believes the document is — a key of
+    :data:`MIN_PLAUSIBLE_BY_KIND` — and sets the too-short-to-be-real floor
+    accordingly; an unknown kind gets the manuscript floor.
+
     Raises :class:`Unavailable` for every failure mode: no extension, an
-    unreadable or image-only PDF, or output too short to be a manuscript.
+    unreadable or image-only PDF, or output too short to be a ``kind`` —
+    and :class:`ConverterMissing` specifically when rustypaper is absent.
     """
     if caveman not in CAVEMAN_LEVELS:
         # Not an Unavailable: a bad config value is the operator's mistake and
@@ -92,7 +133,7 @@ def convert(path: str, caveman: str = "off") -> Converted:
     try:
         import rustypaper  # noqa: PLC0415 - optional, imported at point of use
     except Exception as exc:  # noqa: BLE001 - a broken wheel and a missing one are the same outcome
-        raise Unavailable(
+        raise ConverterMissing(
             f"rustypaper unavailable ({exc.__class__.__name__}: {exc})"
         ) from exc
 
@@ -104,10 +145,10 @@ def convert(path: str, caveman: str = "off") -> Converted:
             f"rustypaper could not convert the file ({exc.__class__.__name__}: {exc})"
         ) from exc
 
-    if len(markdown) < MIN_PLAUSIBLE_CHARS:
+    if len(markdown) < MIN_PLAUSIBLE_BY_KIND.get(kind, MIN_PLAUSIBLE_CHARS):
         raise Unavailable(
             f"rustypaper produced only {len(markdown)} characters, which is not a "
-            "readable manuscript — the PDF is most likely scanned or image-only"
+            f"readable {kind} — the PDF is most likely scanned or image-only"
         )
 
     # A second conversion, for what only the typed block model knows: the
