@@ -3,8 +3,8 @@
 Wraps ``llm.with_structured_output(schema)`` to:
 
   * pick the provider's preferred extraction method
-    (``ProviderSpec.structured_method`` — ``json_schema`` for OpenAI
-    direct, ``function_calling`` everywhere else);
+    (``ProviderSpec.structured_method`` — ``json_schema`` for the direct
+    OpenAI and Anthropic APIs, ``function_calling`` for OpenRouter);
   * capture cost via ``include_raw=True`` so the per-call cost line in
     the TUI / summary still works;
   * retry once with a sharpened prompt on schema-validation failure
@@ -29,7 +29,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from pydantic import BaseModel
 
 from ...observability import AgentEvent, current_node, emit
@@ -137,7 +137,7 @@ def invoke_structured_after_tools(
     So a blank response is a failed call, not a response. It is the same
     failure as the tool loop raising, and it takes the same fallback.
     """
-    def _without_tools(reason: str) -> StructuredResult:
+    def _without_tools(reason: str, sunk_cost: float = 0.0) -> StructuredResult:
         emit(AgentEvent(
             kind="log",
             node=current_node(),
@@ -148,8 +148,15 @@ def invoke_structured_after_tools(
         # indistinguishable from one that kept it: same verdict shape, same
         # cost band, no missing file, nothing for a reader to notice.
         emit(AgentEvent(kind="tool", node=current_node(), tool_error=reason))
-        return invoke_structured(
+        fallback = invoke_structured(
             llm, schema, config, system_prompt, user_prompt, cached_prefix=cached_prefix
+        )
+        # ``sunk_cost`` is what the discarded tool loop was billed. A too-short
+        # answer still ran the whole research phase — every lookup invoiced —
+        # and reporting only the fallback's cost undercounted the agent by
+        # exactly the most expensive calls it made.
+        return StructuredResult(
+            instance=fallback.instance, cost=fallback.cost + sunk_cost
         )
 
     try:
@@ -170,7 +177,8 @@ def invoke_structured_after_tools(
         # refused, not a review, and it takes the same fallback as a blank.
         return _without_tools(
             "tool loop returned no text" if not text
-            else f"tool loop returned only {len(text)} characters"
+            else f"tool loop returned only {len(text)} characters",
+            sunk_cost=free.cost,
         )
 
     extraction_sys = (
@@ -219,7 +227,14 @@ def _try_structured(
         "Respond again with the whole object, fixing exactly that. Keep the "
         "rest of your answer as it was. No prose, no extra fields."
     ))
-    result2 = _invoke_with_retries(structured, messages + [retry_msg])
+    # "Keep the rest of your answer as it was" is only satisfiable if the
+    # model can see what it was. The retry used to send the original
+    # conversation with the correction alone appended — no rejected turn in
+    # it — so "your previous response" pointed at nothing and every retry was
+    # a blind full regeneration of an answer already written and paid for.
+    result2 = _invoke_with_retries(
+        structured, messages + _rejected_turn(result) + [retry_msg]
+    )
     parsed2, cost2 = _unpack(result2)
     if parsed2 is not None:
         return StructuredResult(instance=parsed2, cost=cost + cost2)
@@ -230,6 +245,34 @@ def _try_structured(
 
     err = _parsing_error(result2)
     raise ValueError(f"structured-output validation failed after retry: {err}")
+
+
+def _rejected_turn(result: Any) -> list:
+    """The invalid response, replayed as history the retry can refer back to.
+
+    A structured answer usually arrives as a tool call, and a replayed tool
+    call left unanswered is itself an invalid transcript — both Anthropic and
+    OpenAI 400 on a tool_use with no tool_result — so each call the rejected
+    turn made is answered with a stub before the human correction follows.
+
+    An empty raw (no content, no tool calls) is not replayed: there is
+    nothing in it to keep, and Anthropic rejects an assistant turn with
+    empty content.
+    """
+    raw = result.get("raw") if isinstance(result, dict) else None
+    if raw is None:
+        return []
+    calls = getattr(raw, "tool_calls", None) or []
+    content = getattr(raw, "content", None)
+    if not calls and not content:
+        return []
+    turn: list = [raw]
+    for call in calls:
+        turn.append(ToolMessage(
+            content="[this response failed schema validation — see the next message]",
+            tool_call_id=call["id"],
+        ))
+    return turn
 
 
 # What the model filled in, when the object it filled in was rejected.
@@ -334,8 +377,20 @@ def _bind(llm, schema: type[BaseModel], method: str):
     (older LangChain versions / non-standard providers)."""
     try:
         return llm.with_structured_output(schema, method=method, include_raw=True)
-    except (TypeError, ValueError):
-        pass
+    except (TypeError, ValueError) as exc:
+        # Logged, because falling back silently is how a dead flag hides:
+        # the registry shipped ``method="tool_call"`` — not a LangChain
+        # method name at all — and every bind raised here and quietly
+        # rebound with the library default, so the ProviderSpec's declared
+        # preference read as honored while never once being used.
+        emit(AgentEvent(
+            kind="log",
+            node=current_node(),
+            text=(
+                f"structured method {method!r} rejected by "
+                f"{type(llm).__name__} ({exc}); falling back to the library default"
+            ),
+        ))
     try:
         return llm.with_structured_output(schema, include_raw=True)
     except (TypeError, ValueError):

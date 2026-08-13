@@ -13,6 +13,7 @@ from __future__ import annotations
 from peerreviewagents.agents.utils.agent_utils import (
     _build_messages,
     context_block,
+    fit_manuscript,
     manuscript_block,
 )
 
@@ -126,3 +127,69 @@ def test_each_block_carries_its_own_control_object():
     msgs = _build_messages("sys", "user", context_block(STATE))
     marked = [b for b in msgs[0].content if isinstance(b, dict) and b.get("cache_control")]
     assert len({id(b["cache_control"]) for b in marked}) == len(marked)
+
+
+# --- section fitting ----------------------------------------------------------
+#
+# fit_manuscript feeds the manuscript block above, so what it returns is both
+# what every reviewer reads and the text the shared cache entry is keyed on.
+# Two properties matter: dropped sections are disclosed (a reviewer must not
+# fault the authors for a limitations section that exists in the PDF), and the
+# result is deterministic for a given manuscript + budget (or the notice would
+# fragment the one cached prefix into one entry per agent).
+
+
+def _fitted_state() -> dict:
+    sections = {
+        "abstract": "A" * 100,
+        "introduction": "B" * 100,
+        "methods": "C" * 5000,      # alone bigger than the budget below
+        "results": "D" * 100,
+        "discussion": "E" * 100,
+        "conclusion": "F" * 100,
+        "related work": "G" * 100,  # not a priority section
+    }
+    return {
+        "manuscript_md": "x" * 9000,
+        "config": {},
+        "sections": sections,
+    }
+
+
+def test_dropped_sections_are_named_in_the_fitted_text():
+    fitted = fit_manuscript(_fitted_state(), budget=700)
+    assert "[sections omitted to fit the length budget:" in fitted
+    assert "methods" in fitted.rsplit("[", 1)[1]
+    assert "related work" in fitted.rsplit("[", 1)[1]
+
+
+def test_an_oversized_section_does_not_take_the_rest_down_with_it():
+    """The packer used to `break` on the first section over budget, so one
+    long methods section dropped results, discussion and conclusion that
+    would each have fit on their own."""
+    fitted = fit_manuscript(_fitted_state(), budget=700)
+    for kept in ("## Results", "## Discussion", "## Conclusion"):
+        assert kept in fitted
+    assert "C" * 5000 not in fitted
+
+
+def test_the_fitted_text_is_byte_identical_across_agents():
+    """The omission notice must not fragment the shared cache prefix: same
+    manuscript, same budget, same bytes — every time, for every agent."""
+    state = _fitted_state()
+    assert fit_manuscript(state, budget=700) == fit_manuscript(state, budget=700)
+    assert manuscript_block({**state, "config": {"manuscript_char_budget": 700}}) == \
+        manuscript_block({**state, "config": {"manuscript_char_budget": 700}})
+
+
+def test_a_manuscript_that_fits_carries_no_notice():
+    state = {**_fitted_state(), "manuscript_md": "short and sweet"}
+    assert fit_manuscript(state, budget=700) == "short and sweet"
+
+
+def test_tail_truncation_fallback_keeps_its_marker():
+    """Too little section structure to pack: the old tail cut, still flagged."""
+    state = {**_fitted_state(), "sections": {}}
+    fitted = fit_manuscript(state, budget=700)
+    assert fitted.startswith("x" * 700)
+    assert fitted.endswith("[...manuscript truncated...]")

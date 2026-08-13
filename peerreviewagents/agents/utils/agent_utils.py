@@ -142,6 +142,24 @@ def run_agent(
             final_resp = resp
             break
         if calls_made >= _MAX_TOOL_CALLS:
+            # The assistant turn asking for these calls is already in the
+            # history. Breaking with its tool_calls unanswered left a
+            # transcript ending [tool_use, human], which both Anthropic and
+            # OpenAI reject outright ("tool_use without tool_result", 400) —
+            # so the forced-final request below always failed, the caller
+            # fell back to a tools-free rerun, and every lookup this loop had
+            # gathered was discarded at the exact moment the budget declared
+            # the research finished. Answer each pending call with a stub so
+            # the transcript stays valid and the results already in it are
+            # what the final answer is written from.
+            for call in calls:
+                messages.append(ToolMessage(
+                    content=(
+                        "[not executed: the research call budget for this "
+                        "task was exhausted before this call ran]"
+                    ),
+                    tool_call_id=call["id"],
+                ))
             break
         calls_made += len(calls)
         for call in calls:
@@ -382,6 +400,7 @@ def fit_manuscript(state: ReviewState, budget: int | None = None) -> str:
     sections: dict[str, str] = state.get("sections") or {}
     if sections:
         parts: list[str] = []
+        kept: set[str] = set()
         total = 0
         for name in _PRIORITY_SECTIONS:
             content = sections.get(name, "")
@@ -389,10 +408,30 @@ def fit_manuscript(state: ReviewState, budget: int | None = None) -> str:
                 continue
             chunk = f"## {name.title()}\n\n{content}"
             if total + len(chunk) > budget:
-                break
+                # Skip, don't stop: this used to `break`, so one oversized
+                # methods section ended the packing and took results,
+                # discussion and conclusion down with it — sections that
+                # would each have fit on their own.
+                continue
             parts.append(chunk)
+            kept.add(name)
             total += len(chunk)
         if len(parts) >= 4:
+            # Every notice in this file names its own damage — compression,
+            # PDF conversion — but the fitted manuscript said nothing, so a
+            # reviewer faulted the authors for having no limitations section
+            # when one exists in the PDF and was dropped here. Named in the
+            # section dict's own (document) order, which is fixed for a given
+            # manuscript + budget, so the manuscript block built on this text
+            # stays byte-identical across every agent in a run and the shared
+            # prompt-cache entry is not fragmented.
+            dropped = [n for n, c in sections.items() if c and n not in kept]
+            if dropped:
+                parts.append(
+                    "[sections omitted to fit the length budget: "
+                    + ", ".join(dropped)
+                    + "]"
+                )
             return "\n\n".join(parts)
 
     return text[:budget] + "\n\n[...manuscript truncated...]"

@@ -114,11 +114,37 @@ def test_missing_model_raises(monkeypatch):
 
 def test_spec_table_consistency():
     # Every spec must declare an api_key_env tuple and a structured method
-    # — the structured-output layer in Phase C will rely on these.
+    # — the structured-output layer in Phase C will rely on these. Only the
+    # two names LangChain's with_structured_output accepts count: the
+    # openrouter spec said "tool_call" for months, every bind raised
+    # ValueError, and the declared preference was silently dead code.
     for name, spec in PROVIDERS.items():
         assert spec.name == name
         assert isinstance(spec.api_key_env, tuple) and spec.api_key_env
-        assert spec.structured_method in ("json_schema", "tool_call", "function_calling")
+        assert spec.structured_method in ("json_schema", "function_calling")
+
+
+def test_declared_structured_methods_actually_bind(monkeypatch):
+    """The regression the spec table alone can't catch: the declared method
+    has to be one the built model's with_structured_output accepts, or the
+    silent fallback in structured._bind swallows the ValueError and the
+    preference never applies."""
+    from peerreviewagents.agents.schemas import ReviewerOutput
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "stub-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "stub-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "stub-key")
+    models = {
+        "openrouter": "anthropic/claude-opus-5",
+        "openai": "gpt-4.1",
+        "anthropic": "claude-opus-5",
+    }
+    for name, spec in PROVIDERS.items():
+        llm = make_chat_model(_cfg(name, models[name]))
+        # Raises ValueError on an unrecognized method name.
+        llm.with_structured_output(
+            ReviewerOutput, method=spec.structured_method, include_raw=True
+        )
 
 
 # --- generation matching ----------------------------------------------------
@@ -192,6 +218,45 @@ def test_openrouter_omits_temperature_for_current_anthropic(monkeypatch):
     legacy = make_chat_model(_cfg("openrouter", "anthropic/claude-haiku-4.5"))
     assert legacy.temperature is not None
 
-    # Non-Anthropic slugs are unaffected.
+    # Non-Anthropic slugs that accept sampling are unaffected.
     other = make_chat_model(_cfg("openrouter", "openai/gpt-4o"))
     assert other.temperature is not None
+
+
+# The same field, rejected by a different vendor's models. OpenAI's o-series
+# and GPT-5 reasoning line 400 on `temperature` rather than ignoring it, and
+# the direct-OpenAI factory used to set it unconditionally — the one route
+# that had not learned what the other two already gated per model.
+
+
+@pytest.mark.parametrize(
+    "model,rejects",
+    [
+        ("o1", True),
+        ("o3", True),
+        ("o3-mini", True),
+        ("o4-mini", True),
+        ("gpt-5", True),
+        ("gpt-5-mini", True),
+        ("gpt-4.1", False),
+        ("gpt-4o", False),
+    ],
+)
+def test_openai_direct_temperature_gating(monkeypatch, model, rejects):
+    monkeypatch.setenv("OPENAI_API_KEY", "stub-key")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    llm = make_chat_model(_cfg("openai", model))
+    if rejects:
+        # LangChain pins o1 to 1.0 (the one value the API tolerates) on its
+        # own; what must never arrive is the run's configured sampling value.
+        assert llm.temperature in (None, 1.0), f"{model} must not send temperature"
+    else:
+        assert llm.temperature == 0.3, f"{model} still accepts temperature"
+
+
+def test_openrouter_omits_temperature_for_openai_reasoning_models(monkeypatch):
+    """The model rejects the field whichever route carries it, so an
+    OpenRouter slug has to reach the same verdict as the direct route."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "stub-key")
+    llm = make_chat_model(_cfg("openrouter", "openai/o3-mini"))
+    assert llm.temperature is None

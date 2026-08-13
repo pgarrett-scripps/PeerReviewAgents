@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import ValidationError
 
 from peerreviewagents.agents.schemas import (
@@ -17,6 +17,7 @@ from peerreviewagents.agents.schemas import (
     RebuttalDisagreement,
     ReviewerOutput,
 )
+from peerreviewagents.agents.utils.agent_utils import RunResult, run_agent
 from peerreviewagents.agents.utils.structured import (
     StructuredResult,
     invoke_structured,
@@ -129,16 +130,20 @@ class _StubLLM:
 
     def __init__(self, scripted: list):
         self._scripted = list(scripted)
+        self.chain: _Chain | None = None
 
     def with_structured_output(self, _schema, **_kwargs):
-        return _Chain(self._scripted)
+        self.chain = _Chain(self._scripted)
+        return self.chain
 
 
 class _Chain:
     def __init__(self, scripted):
         self._scripted = scripted
+        self.invocations: list[list] = []
 
-    def invoke(self, _messages, **_kwargs):
+    def invoke(self, messages, **_kwargs):
+        self.invocations.append(list(messages))
         return self._scripted.pop(0)
 
 
@@ -291,3 +296,137 @@ def test_invoke_structured_provider_error_exhausts_attempts(monkeypatch):
     with pytest.raises(RuntimeError, match="Provider returned error"):
         invoke_structured(_FlakyLLM(chain), ReviewerOutput, _cfg(), "sys", "user")
     assert chain.calls == s._MAX_PROVIDER_ATTEMPTS  # capped at 3 tries
+
+
+# ---------- the retry sees what it is retrying -------------------------------
+#
+# The correction says "keep the rest of your answer as it was" — satisfiable
+# only when the rejected turn is in the retry conversation. It was not: the
+# retry used to get the original messages plus the correction alone, so "your
+# previous response" pointed at nothing and every retry was a blind full
+# regeneration of an answer already written and paid for.
+
+
+def test_validation_retry_replays_the_rejected_answer():
+    inst = ReviewerOutput(score=3, confidence=3, summary="ok")
+    bad = AIMessage(content="a bulleted list where the JSON should be")
+    llm = _StubLLM([_fail_with(bad), _ok(inst)])
+    result = invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
+    assert result.instance is inst
+    retry_conversation = llm.chain.invocations[1]
+    # The rejected turn sits right before the correction that points at it.
+    assert retry_conversation[-2] is bad
+    assert "did not produce a valid" in retry_conversation[-1].content
+
+
+def test_a_rejected_tool_call_is_answered_before_the_correction():
+    """Replaying a tool call unanswered is itself an invalid transcript —
+    both APIs 400 on a tool_use with no tool_result — so a stub result has to
+    sit between the rejected turn and the human correction."""
+    inst = ReviewerOutput(score=3, confidence=3, summary="ok")
+    bad = _tool_call({"summary": "no score"})
+    llm = _StubLLM([_fail_with(bad), _ok(inst)])
+    invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
+    retry_conversation = llm.chain.invocations[1]
+    answer = retry_conversation[retry_conversation.index(bad) + 1]
+    assert isinstance(answer, ToolMessage)
+    assert answer.tool_call_id == "1"
+    assert isinstance(retry_conversation[-1], HumanMessage)
+
+
+def test_an_empty_rejected_response_is_not_replayed():
+    """Nothing in it for the model to keep, and Anthropic rejects an
+    assistant turn with empty content."""
+    inst = ReviewerOutput(score=3, confidence=3, summary="ok")
+    llm = _StubLLM([_fail_with(AIMessage(content="")), _ok(inst)])
+    invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
+    first, retry = llm.chain.invocations
+    assert len(retry) == len(first) + 1  # the correction alone was added
+
+
+# ---------- the discarded tool loop is still billed ---------------------------
+
+
+def test_short_text_fallback_still_counts_the_tool_loop_cost(monkeypatch):
+    """A tool loop whose answer is too short to keep was still run — every
+    lookup invoiced — and the fallback used to report only its own cost,
+    undercounting the agent by exactly its most expensive calls."""
+    import peerreviewagents.agents.utils.structured as s
+    monkeypatch.setattr(
+        s, "run_agent",
+        lambda *a, **k: RunResult(text="Let me verify a few more citations.", cost=0.42),
+    )
+    inst = ReviewerOutput(score=3, confidence=3, summary="ok")
+    llm = _StubLLM([_ok(inst)])
+    result = s.invoke_structured_after_tools(
+        llm, ReviewerOutput, _cfg(), "sys", "user", [],
+    )
+    assert result.instance is inst
+    assert result.cost == pytest.approx(0.42)
+
+
+# ---------- the tool loop's call budget ---------------------------------------
+
+
+class _Lookup:
+    name = "lookup"
+
+    def invoke(self, args):
+        return f"- one result for {args.get('query', '')}"
+
+
+class _ToolHungryModel:
+    """Asks for another batch of lookups every turn until the loop refuses."""
+
+    def __init__(self, per_round: int):
+        self.per_round = per_round
+        self.invocations: list[list] = []
+        self._round = 0
+
+    def bind_tools(self, _tools):
+        return self
+
+    def invoke(self, messages, **_kwargs):
+        self.invocations.append(list(messages))
+        last = messages[-1]
+        if isinstance(last, HumanMessage) and "research budget" in str(last.content):
+            return AIMessage(content="the final audit, from what was gathered")
+        self._round += 1
+        return AIMessage(content="", tool_calls=[
+            {
+                "name": "lookup",
+                "args": {"query": f"q{self._round}-{j}"},
+                "id": f"call-{self._round}-{j}",
+                "type": "tool_call",
+            }
+            for j in range(self.per_round)
+        ])
+
+
+def test_call_budget_cap_answers_every_pending_tool_call():
+    """When the cap trips mid-round, the assistant turn asking for that round
+    is already in the history. Leaving its calls unanswered made the
+    forced-final request a guaranteed 400 ("tool_use without tool_result"),
+    and the caller's fallback then reran the agent with no tools — every
+    lookup already gathered thrown away. Each id must have a matching
+    ToolMessage."""
+    model = _ToolHungryModel(per_round=9)
+    result = run_agent(model, "sys", "user", [_Lookup()])
+    assert result.text == "the final audit, from what was gathered"
+
+    final_history = model.invocations[-1]
+    asked = {
+        c["id"]
+        for m in final_history if isinstance(m, AIMessage)
+        for c in (getattr(m, "tool_calls", None) or [])
+    }
+    answered = {m.tool_call_id for m in final_history if isinstance(m, ToolMessage)}
+    assert asked and asked == answered
+
+    # The capped round's calls were answered with the not-executed stub —
+    # the budget refuses them, it does not quietly run them.
+    stubs = [
+        m for m in final_history
+        if isinstance(m, ToolMessage) and "not executed" in str(m.content)
+    ]
+    assert len(stubs) == model.per_round

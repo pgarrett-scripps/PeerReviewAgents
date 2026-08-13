@@ -32,7 +32,12 @@ _OPENROUTER_HEADERS = {
     "X-Title": "PeerReviewAgents",
 }
 
-StructuredMethod = Literal["json_schema", "tool_call", "function_calling"]
+# Only names LangChain's ``with_structured_output`` actually accepts. The
+# type once also allowed "tool_call", which is not a method name at all:
+# every bind raised ValueError, the fallback in structured._bind silently
+# rebound with the library default, and the registry's declared preference
+# was dead code for as long as the spelling survived.
+StructuredMethod = Literal["json_schema", "function_calling"]
 
 
 @dataclass(frozen=True)
@@ -90,12 +95,13 @@ def _make_openrouter(model: str, *, reasoning_effort: str | None = None,
         "max_tokens": 32000,
     }
     # Current Anthropic models (Opus 5/4.7/4.8, Sonnet 5, Fable/Mythos 5)
-    # reject `temperature` outright. The direct-Anthropic factory already
-    # omits it for them; routing the same model through OpenRouter has to
-    # make the same decision, because the model is what rejects the field,
-    # not the route. Whether OpenRouter would strip it for us is not
-    # something to rely on — the default model is one of these.
-    if not _anthropic_matches(model, _ANTHROPIC_NO_SAMPLING):
+    # and OpenAI's reasoning line (o-series, GPT-5 family) reject
+    # `temperature` outright. The direct factories already omit it for them;
+    # routing the same model through OpenRouter has to make the same
+    # decision, because the model is what rejects the field, not the route.
+    # Whether OpenRouter would strip it for us is not something to rely on —
+    # the default model is one of these.
+    if not _rejects_sampling(model):
         kwargs["temperature"] = temperature
     if api_key:
         kwargs["api_key"] = api_key
@@ -111,11 +117,17 @@ def _make_openai(model: str, *, reasoning_effort: str | None = None,
     api_key = os.environ.get("OPENAI_API_KEY")
     kwargs: dict[str, Any] = {
         "model": model,
-        "temperature": temperature,
         "streaming": True,
         "stream_usage": True,
         "callbacks": [StreamingCallback(default_model=model, default_node=node, default_run=run_id)],
     }
+    # The o-series and GPT-5 reasoning models 400 on `temperature` — the
+    # field is rejected, not ignored — and every reviewer configured onto
+    # one of them failed deterministically on its first call. The other two
+    # factories already gate sampling per model; this route consults the
+    # same predicate they do.
+    if not _rejects_sampling(model):
+        kwargs["temperature"] = temperature
     if reasoning_effort:
         # o-series + GPT-5-class reasoning models accept this top-level.
         # Older models ignore the field on the wire.
@@ -162,7 +174,7 @@ def _make_anthropic(model: str, *, reasoning_effort: str | None = None,
     }
 
     adaptive = _anthropic_matches(model, _ANTHROPIC_ADAPTIVE_EFFORT)
-    rejects_sampling = _anthropic_matches(model, _ANTHROPIC_NO_SAMPLING)
+    rejects_sampling = _rejects_sampling(model)
 
     # The newest reasoning models (Opus 4.7/4.8, Sonnet 5, Fable/Mythos 5)
     # 400 on any `temperature`; older models still accept it. Omit it there.
@@ -178,7 +190,12 @@ def _make_anthropic(model: str, *, reasoning_effort: str | None = None,
         if reasoning_effort:
             kwargs["thinking"] = {"type": "adaptive"}
             kwargs["effort"] = reasoning_effort  # low | medium | high
-            kwargs["max_tokens"] = 16000  # room for thinking + the answer
+            # No max_tokens override here: this path used to re-set 16000,
+            # quietly lowering the cap back to the ceiling the block above
+            # records truncating an agent mid-schema — and the agents that
+            # think (meta-reviewer, editor) write the longest answers and
+            # pay for their thinking inside the same cap. Never below the
+            # documented-safe 32000 set with the base kwargs.
     elif reasoning_effort:
         # Legacy models (Haiku 4.5, Sonnet 4.5, and older): fixed thinking
         # budget. Extended thinking requires temperature=1 and a max_tokens
@@ -250,6 +267,27 @@ def _anthropic_matches(model: str, needles: tuple[str, ...]) -> bool:
     return version is not None and version >= _ANTHROPIC_ADAPTIVE_FROM
 
 
+# OpenAI's reasoning line: the o-series (o1/o3/o4-mini, ...) and the GPT-5
+# family that succeeded it 400 on `temperature` rather than ignoring it.
+# Matched on the bare id after any vendor prefix, so an OpenRouter slug
+# ("openai/o3-mini") reaches the same verdict as the direct route.
+_OPENAI_NO_SAMPLING_RE = re.compile(r"^(?:o\d|gpt-5)")
+
+
+def _rejects_sampling(model: str) -> bool:
+    """Whether ``model`` 400s on `temperature`, whichever provider carries it.
+
+    One predicate for all three factories. The model is what rejects the
+    field, not the route — and the OpenAI direct factory keeping its own
+    unconditional `temperature` while the other two gated per model is
+    exactly how every o-series call came to fail deterministically on that
+    one route.
+    """
+    if _anthropic_matches(model, _ANTHROPIC_NO_SAMPLING):
+        return True
+    return bool(_OPENAI_NO_SAMPLING_RE.match(model.lower().rsplit("/", 1)[-1]))
+
+
 # --- Registry ---------------------------------------------------------------
 
 
@@ -257,7 +295,11 @@ PROVIDERS: dict[str, ProviderSpec] = {
     "openrouter": ProviderSpec(
         name="openrouter",
         factory=_make_openrouter,
-        structured_method="tool_call",
+        # `function_calling`, spelled the way LangChain spells it. This read
+        # "tool_call" for months — a name with_structured_output rejects —
+        # so every OpenRouter bind fell back to the library default and the
+        # preference declared here was never once applied.
+        structured_method="function_calling",
         supports_cache_control=True,
         api_key_env=("OPENROUTER_API_KEY", "OPENAI_API_KEY"),
     ),
