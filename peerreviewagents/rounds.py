@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields as dataclass_fields
 from typing import Any
 
 SCHEMA_VERSION = 1
@@ -45,6 +45,24 @@ def revision_id(round_no: int, index: int) -> str:
 def weakness_id(reviewer: str, index: int) -> str:
     """Stable id for one reviewer's ``index``-th weakness."""
     return f"{reviewer}-{index + 1}"
+
+
+def _known_fields(cls, raw: dict) -> dict:
+    """Keep only the keys ``cls`` declares, so newer records load under older code.
+
+    A round.json written by a future schema version may carry fields this
+    version has never heard of; passing them straight to the dataclass
+    constructor turns a forward-compatible record into a TypeError, and a
+    manuscript's whole revision lineage becomes unreadable over one added
+    field.
+    """
+    names = {f.name for f in dataclass_fields(cls)}
+    return {k: v for k, v in raw.items() if k in names}
+
+
+def _score_or_none(value: Any) -> float | None:
+    """A reviewer score from a raw record: a number, or None for an abstention."""
+    return float(value) if isinstance(value, (int, float)) else None
 
 
 @dataclass
@@ -72,10 +90,17 @@ class PriorWeakness:
 
 @dataclass
 class PriorReviewerReport:
-    """What a later round needs to know about one reviewer's prior pass."""
+    """What a later round needs to know about one reviewer's prior pass.
+
+    ``score`` is None when the reviewer found nothing in its dimension to
+    judge — the same nullable contract as
+    :class:`~.agents.schemas.ReviewerOutput`. Coercing it to a number here
+    would hand round N a score round N-1 never gave, and the revision prompt
+    would then ask the reviewer to justify moving it.
+    """
 
     reviewer: str
-    score: float
+    score: float | None
     confidence: float
     weaknesses: list[PriorWeakness] = field(default_factory=list)
     questions: list[str] = field(default_factory=list)
@@ -119,15 +144,22 @@ class RoundRecord:
             decision=str(raw.get("decision", "")),
             weighted_score=raw.get("weighted_score"),
             required_revisions=[
-                RequiredRevision(**r) for r in raw.get("required_revisions", [])
+                RequiredRevision(**_known_fields(RequiredRevision, r))
+                for r in raw.get("required_revisions", [])
             ],
             minor_suggestions=list(raw.get("minor_suggestions", [])),
             reviewer_reports=[
                 PriorReviewerReport(
                     reviewer=r.get("reviewer", ""),
-                    score=float(r.get("score", 0)),
-                    confidence=float(r.get("confidence", 0)),
-                    weaknesses=[PriorWeakness(**w) for w in r.get("weaknesses", [])],
+                    # A null score is a recorded abstention, not a zero — see
+                    # PriorReviewerReport. float(None) here used to crash the
+                    # load of any round whose panel had one.
+                    score=_score_or_none(r.get("score")),
+                    confidence=float(r.get("confidence") or 0),
+                    weaknesses=[
+                        PriorWeakness(**_known_fields(PriorWeakness, w))
+                        for w in r.get("weaknesses", [])
+                    ],
                     questions=list(r.get("questions", [])),
                 )
                 for r in raw.get("reviewer_reports", [])
@@ -264,8 +296,13 @@ def build_from_state(state: dict, job_id: str, cache_key: str = "") -> RoundReco
     reports = [
         PriorReviewerReport(
             reviewer=r["reviewer"],
-            score=float(r.get("score", 0)),
-            confidence=float(r.get("confidence", 0)),
+            # None survives as None: a reviewer that abstained must reach the
+            # next round as an abstention, not as a zero that reads like the
+            # panel's harshest verdict. float(None) here used to crash the
+            # record build instead — and the bare `except` around the writer
+            # meant no round.json and no trace of why.
+            score=_score_or_none(r.get("score")),
+            confidence=float(r.get("confidence") or 0),
             weaknesses=[
                 PriorWeakness(id=weakness_id(r["reviewer"], i), text=w)
                 for i, w in enumerate(r.get("weaknesses") or [])

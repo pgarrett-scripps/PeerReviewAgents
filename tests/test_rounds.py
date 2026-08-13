@@ -90,6 +90,82 @@ def test_attribution_left_empty_when_nothing_matches():
     assert rec.required_revisions[0].source_reviewer == ""
 
 
+# --- null scores ------------------------------------------------------------
+
+
+def _null_score_state():
+    """A finished round whose panel includes one abstaining reviewer."""
+    state = _state()
+    state["reports"] = state["reports"] + [
+        {
+            "reviewer": "data_analysis",
+            "score": None,
+            "not_applicable_reason": "No quantitative analysis in this paper.",
+            "confidence": 5,
+            "weaknesses": [],
+            "questions": [],
+            "body": "",
+        },
+    ]
+    return state
+
+
+def test_null_score_survives_build_and_reload(tmp_path):
+    rec = rounds.build_from_state(_null_score_state(), job_id="j")
+    assert rec.report_for("data_analysis").score is None
+    # The abstention leaves the weighted mean entirely — numerator and
+    # denominator both.
+    assert rec.weighted_score == pytest.approx(18 / 7, abs=1e-3)
+
+    rounds.save(rec, str(tmp_path))
+    loaded = rounds.load(str(tmp_path))
+    assert loaded.report_for("data_analysis").score is None
+    assert loaded.report_for("methodology").score == 3.0
+
+
+def test_prior_report_block_handles_an_abstention():
+    """The null-prior branch must be reachable, not decorative."""
+    rec = rounds.build_from_state(_null_score_state(), job_id="j")
+    block = rec.prior_report_block("data_analysis")
+    assert "return null again" in block
+    assert "You scored the manuscript" not in block
+    # A scored reviewer still gets the numeric framing.
+    assert "You scored the manuscript 3/5" in rec.prior_report_block("methodology")
+
+
+def test_write_reports_survives_a_null_score_panel(tmp_path):
+    """One abstaining reviewer must still leave a loadable round.json behind."""
+    from peerreviewagents.reports import write_reports
+
+    state = _null_score_state()
+    state["config"] = {"output_dir": str(tmp_path), "run_id": ""}
+    state["errors"] = []
+    run_dir = write_reports(state)
+
+    loaded = rounds.load(run_dir)
+    assert loaded.report_for("data_analysis").score is None
+    assert not state["errors"]
+
+
+def test_round_record_failure_is_surfaced_not_swallowed(tmp_path, monkeypatch, capsys):
+    """A run that cannot be revised must say so, not look healthy on disk."""
+    from peerreviewagents.reports import write_reports
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("record build exploded")
+
+    monkeypatch.setattr("peerreviewagents.rounds.build_from_state", boom)
+    state = _state()
+    state["config"] = {"output_dir": str(tmp_path), "run_id": ""}
+    state["errors"] = []
+    run_dir = write_reports(state)  # the run itself must survive
+
+    assert not os.path.isfile(os.path.join(run_dir, rounds.ROUND_FILENAME))
+    assert state["errors"] and "round.json" in state["errors"][0]
+    assert "cannot be revised" in state["errors"][0]
+    assert "round.json" in capsys.readouterr().out
+
+
 # --- persistence ------------------------------------------------------------
 
 
@@ -101,6 +177,41 @@ def test_round_trips_through_disk(tmp_path):
     assert loaded.manuscript_cache_key == "abc123"
     assert [r.id for r in loaded.required_revisions] == ["R1-01", "R1-02"]
     assert loaded.reviewer_reports[0].weaknesses[0].text.startswith("Only a single")
+
+
+def test_future_record_fields_do_not_break_the_load(tmp_path):
+    """A round.json from a newer schema must load under this code.
+
+    A manuscript's revision lineage spans months; the version that reads a
+    record is routinely older than the one that wrote it, and one added field
+    must not make the whole lineage unreadable.
+    """
+    rec = rounds.build_from_state(_state(), job_id="j")
+    raw = json.loads(rec.to_json())
+    raw["required_revisions"][0]["deadline"] = "2027-01-01"
+    raw["reviewer_reports"][0]["weaknesses"][0]["severity"] = "HARD"
+    raw["a_future_top_level_field"] = {"x": 1}
+
+    loaded = rounds.RoundRecord.from_dict(raw)
+    assert loaded.required_revisions[0].id == "R1-01"
+    assert loaded.reviewer_reports[0].weaknesses[0].id == "methodology-1"
+
+
+def test_carried_reports_compare_membership_not_size():
+    """A prior round short one reviewer (it errored) can match a subset by count.
+
+    Seven chosen names against seven prior reports used to read as "the whole
+    panel is re-running" whenever the sizes coincided, dropping exactly the
+    report that needed carrying.
+    """
+    from peerreviewagents.graph.review_graph import PeerReviewGraph
+
+    prior = rounds.build_from_state(_state(), job_id="j1")  # methodology + rigor
+    graph = PeerReviewGraph(get_config(
+        revision_of="j1", only_reviewers=["methodology", "clarity"],
+    ))
+    carried = graph._carried_reports(prior)
+    assert [r["reviewer"] for r in carried] == ["rigor"]
 
 
 def test_missing_record_names_the_problem(tmp_path):

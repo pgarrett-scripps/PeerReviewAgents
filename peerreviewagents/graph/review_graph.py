@@ -276,7 +276,14 @@ class PeerReviewGraph:
         that reviewer, so a missing file costs detail rather than the report.
         """
         chosen = set(selected_reviewers(self.config))
-        if prior is None or len(chosen) == len(getattr(prior, "reviewer_reports", [])):
+        if prior is None:
+            return []
+        # Membership, not size: a 7-name only_reviewers list and a 7-report
+        # prior round (one reviewer errored out of it) match by count while
+        # naming different panels, and the count comparison dropped the one
+        # report that needed carrying.
+        prior_names = {r.reviewer for r in prior.reviewer_reports}
+        if prior_names <= chosen:
             return []
 
         carried = []
@@ -360,9 +367,12 @@ class PeerReviewGraph:
         """Parse the real authors' response letter, or '' when none was given.
 
         Parsed with the same loader as the manuscript, which means it also
-        passes through the ingest cache. It is NOT screened here — the desk
-        node screens it, so an injected letter is caught at the same gate as
-        an injected manuscript.
+        passes through the ingest cache. It is NOT screened here, and no
+        node screens it later either: the defenses are structural. The
+        letter reaches the panel only as the response verifier's
+        corroborated pointers, and both the verifier and the compliance
+        auditor read it fenced between neutralized quote markers — its
+        prose has no route to a reviewer whatever it says.
         """
         path = self.config.get("author_statement_path")
         if not path:

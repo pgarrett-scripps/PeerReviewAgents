@@ -142,6 +142,59 @@ def test_final_round_says_no_further_round_is_available():
     assert "last one this review can make" in block
 
 
+# --- the manuscript delta line ----------------------------------------------
+
+
+def test_unchanged_manuscript_is_named_to_the_editor():
+    """Points marked resolved against an untouched draft must meet their contradiction."""
+    from peerreviewagents.ingest import diff as ingest_diff
+
+    sections = {"methods": "We train on one cluster."}
+    state = _state(prior=_prior())
+    state["manuscript_diff"] = ingest_diff.diff_sections(sections, dict(sections))
+    block = round_delta(state)
+    assert "did not substantively change" in block
+    assert "resolved against an unchanged text" in block
+
+
+def test_reference_only_churn_still_counts_as_unchanged():
+    """Padding the bibliography must not read as a substantive revision."""
+    from peerreviewagents.ingest import diff as ingest_diff
+
+    state = _state(prior=_prior())
+    state["manuscript_diff"] = ingest_diff.diff_sections(
+        {"methods": "Same.", "references": "[1] Smith 2019."},
+        {"methods": "Same.", "references": "[1] Smith 2019. [2] Jones 2020."},
+    )
+    assert "did not substantively change" in round_delta(state)
+
+
+def test_changed_sections_are_counted_and_named():
+    from peerreviewagents.ingest import diff as ingest_diff
+
+    state = _state(prior=_prior())
+    state["manuscript_diff"] = ingest_diff.diff_sections(
+        {"methods": "We train on one cluster."},
+        {
+            "methods": "We train on three clusters with seed 42.",
+            "limitations": "Single-domain evaluation.",
+        },
+    )
+    block = round_delta(state)
+    assert "2 sections substantively changed" in block
+    assert "methods" in block and "limitations" in block
+
+
+def test_missing_or_unavailable_diff_yields_no_delta_line():
+    """Asserting 'unchanged' from a diff that does not exist would be a guess."""
+    from peerreviewagents.ingest import diff as ingest_diff
+
+    assert "Manuscript delta" not in round_delta(_state(prior=_prior()))
+    state = _state(prior=_prior())
+    state["manuscript_diff"] = ingest_diff.unavailable("cache cleared")
+    assert "Manuscript delta" not in round_delta(state)
+
+
 # --- compliance -------------------------------------------------------------
 
 
@@ -262,6 +315,23 @@ def test_missing_current_reports_does_not_crash():
     # A panel that vanished entirely is itself the finding, so every prior
     # reviewer is still named rather than the line being dropped.
     assert "methodology (no report this round); rigor (no report this round)" in block
+
+
+def test_null_score_reviewer_is_reported_as_na_not_dropped():
+    """An abstention this round is a fact about the panel, not a row to omit."""
+    reports = _reports()
+    reports[0]["score"] = None
+    block = round_delta(_state(prior=_prior(), reports=reports))
+    assert "methodology 3 -> N/A (no score this round)" in block
+    assert "rigor 2 -> 2" in block
+
+
+def test_new_reviewer_with_null_score_is_still_named():
+    reports = _reports() + [{
+        "reviewer": "ethics", "score": None, "confidence": 5, "weaknesses": [], "body": "",
+    }]
+    block = round_delta(_state(prior=_prior(), reports=reports))
+    assert "ethics N/A (no score this round)" in block
 
 
 def test_new_and_departed_reviewers_are_both_named():
