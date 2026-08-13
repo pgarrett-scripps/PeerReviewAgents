@@ -194,13 +194,6 @@ def test_correction_omits_the_compliance_auditor(tmp_path):
     )
 
 
-def test_correction_does_not_diff_the_manuscript(tmp_path):
-    cfg = _cfg(tmp_path, revision_mode="correction")
-    diff = PeerReviewGraph(cfg)._manuscript_diff(_prior_record(), {"Methods": "text"})
-    assert not diff.available
-    assert "unchanged" in diff.note, diff.note
-
-
 def test_correction_still_builds_a_graph_with_the_chosen_reviewer(tmp_path):
     from peerreviewagents.graph.review_graph import build_graph
 

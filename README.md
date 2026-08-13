@@ -92,8 +92,8 @@ rather than branching on the provider name directly.
 Three more are conditional: the desk screen (`--desk-screen`,
 `DeskScreenOutput`), and on a revision round the revision-compliance auditor
 (`RevisionComplianceOutput`) and the author-response verifier
-(`ResponseVerificationOutput`). On a revision round the eight reviewers emit
-`RevisionReviewerOutput` instead.
+(`ResponseVerificationOutput`). The eight reviewers emit `ReviewerOutput` in
+every round — they are not told which round it is.
 
 The **audit lane** runs beside the reviewers but bypasses the debate: its two
 agents ([`agents/auditors/`](peerreviewagents/agents/auditors/)) produce factual
@@ -402,39 +402,70 @@ peerreview revised.pdf --revision-of 20260801-143022-widget-throughput
 peerreview revised.pdf --revision-of <job-id> --author-statement response.md
 ```
 
-The whole panel runs again: all 8 reviewers, debate, meta-review, editor,
-but each stage now asks a different question:
+The whole panel runs again: all 8 reviewers, debate, meta-review, editor. But
+only two agents are told this is a revision, and the reviewers are not among
+them.
 
-- **Each reviewer sees its OWN prior report** and must rule on every weakness
-  it raised, by id, as `resolved` / `partial` / `outstanding`. It never sees
-  another reviewer's report: independence is why eight verdicts are worth
-  more than one, and it doesn't lapse because this is a second look.
-- **A section-aware diff** of the previous draft against this one is computed
-  locally (`difflib`, no tokens) and injected as a "what changed" block. The
-  previous text is recovered from the ingest cache by key, so no second copy
-  is kept.
+**The panel is blind to the round.** Each reviewer reads the manuscript in
+front of it and returns an ordinary `ReviewerOutput` — no prior report, no
+"what changed" block, no knowledge that a previous round exists. Round 3
+renders the same prompt as round 1.
+
+That is a correction, not an economy. Reviewers used to be shown their own
+prior critique and a section diff and asked to rule on a revision, and
+telling a panel it is looking at a revision creates the incentive to find
+progress. On a byte-identical resubmission it produced a novelty reviewer
+raising 3 → 5 "because the revision successfully addresses the concerns",
+against a manuscript in which nothing had been revised. Every guard that path
+carried — a stuck-score challenge, goalpost-drift counting, a diff veto —
+existed to police a psychology the framing itself created. Deleting the
+framing deleted the need for all three.
+
+Round-over-round continuity lives entirely on the editor's numbered
+required-revisions list, which is the actual contract with the authors:
+
 - **A compliance auditor** joins the audit lane and checks the previous
   decision letter's numbered required revisions (`R1-01`, …) against the new
-  draft: one finding per item, editor-only, no score.
-- **The editor decides on the delta**: score then vs now, how many asks were
-  verified addressed, which still-open items are blocking, and unresolved
-  items carried forward under their original ids.
+  draft: one finding per item, editor-only, no score. It is the only agent
+  that reads the previous round against this one, so everything the editor
+  knows about what happened to its asks comes from here.
+- **Claims of progress are verified in code.** A finding marked `addressed`
+  or `partial` must quote manuscript text, and the quote is searched for in
+  the same converted text the auditor was shown (whitespace- and
+  case-normalized). One that cannot be found is demoted to
+  `unsubstantiated`, with a note naming what was missing, and counts as an
+  open item rather than as progress. This is what an unchanged resubmission
+  ran into: an audit describing an "expanded methods section" and "added
+  references 42-44" that were not in the paper. Because the check compares
+  the auditor's own words against the text it read, conversion quality
+  cannot make it wrong.
+- **Ids are the lineage.** An item still open keeps the id it was born with:
+  `R1-03` stays `R1-03` in round 2 and round 3. The editor restates it as
+  `[R1-03] <what's still missing>`, and `round.json` stores it under that id
+  rather than renumbering it.
+- **The editor decides on the delta**: the previous decision and score as the
+  reference point, this round's blind panel as an independent assessment of
+  the paper, per-item compliance, and rounds remaining.
+
+**An unchanged draft is not defiance.** If this round's manuscript file is
+byte-identical to the previous round's (a sha256 comparison — no re-parse, no
+converter to disagree with), the editor is told so, and told plainly that it
+is a fact about a file: this pipeline reviews whatever draft an archive
+serves it, and often nobody has seen the decision letter at all. The editor
+is forbidden from escalating a verdict over it. An unchanged or
+barely-changed draft lands at the prior decision unless the panel's own
+assessment of the paper justifies moving it.
 
 Every run writes `round.json` with stable ids, which is what makes round 3
 possible: the lineage chains back through `prior_job_id`.
 
-**Scores are allowed to improve, but only when earned.** A reviewer that
-marks all its points resolved and then declines to raise its score is a
-contradiction, so a deterministic check re-asks that reviewer once, with its
-own rulings quoted back, demanding either a higher score or a named blocker.
-It never fabricates a number the reviewer didn't endorse. The counterweight
-is `caused_by_the_revision` on every new issue: a reviewer raising an
-objection it admits was visible last round is goalpost drift, it's counted,
-and the editor is shown the count.
-
-The adversarial test suite is the real specification here: an identical
-manuscript resubmitted unchanged must resolve nothing and improve nothing
-(`tests/test_revision_adversarial.py`).
+The adversarial test suite is the real specification here
+(`tests/test_revision_adversarial.py`): no reviewer prompt in a revision
+round may contain the previous round in any form, an unchanged resubmission
+addresses nothing, and a progress claim that quotes text the manuscript does
+not contain is demoted. Panel scores are deliberately *not* asserted stable
+between rounds — a blind panel resamples, and pretending otherwise would
+encode a determinism the pipeline does not have.
 
 #### Author response letters
 
@@ -450,8 +481,11 @@ stake in the verdict, so it is treated as untrusted:
   checked claims: `corroborated` / `overstated` / `contradicted` /
   `unlocatable`.
 - The panel never sees the letter as prose: only corroborated *pointers*
-  ("the authors ask you to re-read §3.2"), with no conclusions attached. The
-  reviewer re-reads and decides for itself.
+  ("the authors ask you to read §3.2"), with no conclusions attached. The
+  reviewer reads and decides for itself.
+- The pointer block is round-free. It is the one channel from the letter to a
+  blind panel, so it names passages of the current manuscript and nothing
+  else — the prior-round id each claim targets stays in the editor's copy.
 - A claim pointing nowhere checkable moves nothing. An author claim can never
   mark a required revision `addressed`: only manuscript text can.
 - Passages that try to direct the review rather than argue about the science

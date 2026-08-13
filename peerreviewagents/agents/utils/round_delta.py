@@ -12,6 +12,15 @@ Everything in it comes from state the pipeline already carries: the previous
 :class:`~peerreviewagents.rounds.RoundRecord`, this round's reports, and the
 revision-compliance audit. Nothing is inferred.
 
+One thing changed shape when the panel was blinded. The per-reviewer scores
+here are now a *fresh independent sample* — eight specialists who were not
+told there was a previous round — compared against what the same eight said
+last time. Movement between them is real information about the manuscript
+plus ordinary sampling noise, and the editor's prompt says so. What it is
+not, any more, is a reviewer's own account of whether it got what it asked
+for; that account lives on the compliance line, which is the pipeline's
+whole round-over-round memory.
+
 The block is deliberately tolerant of missing pieces. Its inputs are written
 by three sibling tracks (reviewers, compliance auditor, response verifier),
 each of which can legitimately produce less than the full picture — a
@@ -26,16 +35,18 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
+from ..schemas import OPEN_COMPLIANCE_STATUSES
+
 if TYPE_CHECKING:
     from .agent_states import ReviewState
 
 # Compliance statuses in the order a reader wants them: best outcome first,
-# "we could not tell" last. Matches RevisionComplianceOutput.ComplianceStatus.
-_STATUS_ORDER = ("addressed", "partial", "not_addressed", "rebutted", "unverifiable")
-
-# Statuses that leave an item open. Mirrors RevisionComplianceOutput.blocking_open():
-# a rebutted item is a *response*, not a failure, so it is not open.
-_OPEN_STATUSES = ("not_addressed", "partial", "unverifiable")
+# "we could not tell" last, and the code-assigned demotion after it. Matches
+# RevisionComplianceOutput.ComplianceStatus.
+_STATUS_ORDER = (
+    "addressed", "partial", "not_addressed", "rebutted", "unverifiable",
+    "unsubstantiated",
+)
 
 # `RevisionComplianceOutput.to_markdown()` renders each finding as
 # `- **[R1-03] partial** **[blocking]**`. Reading it back is the fallback path,
@@ -45,12 +56,6 @@ _FINDING_LINE = re.compile(
     r"^\s*-\s+\*\*\[(?P<id>[^\]]+)\]\s+(?P<status>[a-z_]+)\*\*(?P<rest>.*)$"
 )
 _BLOCKING_FLAG = "[blocking]"
-
-# `RevisionReviewerOutput.to_markdown()` tags each new issue with its origin.
-# This phrase marks the ones the reviewer itself admits were visible last
-# round — the goalpost-moving signal the editor needs and cannot otherwise see,
-# since only the rendered body reaches `reports`.
-_DRIFT_MARKER = "was visible in the previous draft"
 
 # The audit-lane entry this module reads; the other auditors are the editor's
 # business, not the delta's.
@@ -72,10 +77,9 @@ def round_delta(state: ReviewState) -> str:
         _score_line(prior, state),
     ]
     for optional in (
-        _diff_line(state),
+        _resubmission_line(prior, state),
         _per_reviewer_line(prior, state),
         _compliance_line(prior, state),
-        _drift_line(state),
     ):
         if optional:
             lines.append(optional)
@@ -135,48 +139,39 @@ def _score_line(prior: Any, state: ReviewState) -> str:
     )
 
 
-def _diff_line(state: ReviewState) -> str:
-    """What the text itself did between rounds — the fact every 'resolved' answers to.
+def _resubmission_line(prior: Any, state: ReviewState) -> str:
+    """Says so when this round's file is byte-for-byte the previous round's.
 
-    The adversarial invariant of a revision round is that an unchanged
-    resubmission resolves nothing. The reviewers and the compliance auditor
-    are shown the diff, but the editor weighing their output was not — so a
-    round where points came back "resolved" against an untouched draft put no
-    contradiction in front of the one agent deciding the verdict.
+    The one fact about "what changed" that needs no conversion, no second
+    parse and no model: two sha256s of two files. It replaced a section-aware
+    diff, which was informative only in a narrow band — a trivial revision
+    reads as "nothing changed", which the hash says for free, and a real
+    revision reads as "everything changed", which says nothing at all.
 
-    A diff that exists but could not be computed is DISCLOSED rather than
-    omitted. Silence here is not neutral: on a live unchanged resubmission
-    whose baseline failed verification, the missing line let a reviewer's
-    hallucinated "the authors have addressed both concerns" and a compliance
-    audit's invented "expanded methods section" stand unchallenged in front
-    of the editor. Saying "there is no comparison" asserts nothing about the
-    draft — it tells the editor what the change claims in this round are
-    worth, which is exactly this block's job.
+    Emitted only on a match. A file that differs proves very little: a
+    re-export of an unedited document differs in every byte, so announcing
+    "the file changed" would put a change claim in front of the editor that
+    nothing checked. Equality is the only direction that carries a fact.
+
+    The wording is careful about what the fact means. An identical
+    resubmission means no ask can have been met by a change to the text; it
+    does NOT mean the authors defied anybody. This pipeline reviews whatever
+    draft an archive serves it, and an editor told "nothing changed" without
+    that caveat has previously rejected a paper for "disregard for the review
+    process" that no human had ever resubmitted.
     """
-    diff = state.get("manuscript_diff")
-    if diff is None:
+    now = str((state.get("ingest") or {}).get("file_sha256") or "")
+    then = str(_get(prior, "manuscript_file_sha256", "") or "")
+    if not now or not then or now != then:
         return ""
-    if not getattr(diff, "available", False):
-        note = str(getattr(diff, "note", "") or "").strip()
-        return (
-            "Manuscript delta: NO verified draft comparison is available"
-            + (f" ({note})" if note else "")
-            + ". Any change to the manuscript described by a reviewer or by "
-            "the compliance audit this round is unverified — an unchanged "
-            "resubmission would have produced the same reports."
-        )
-    substantive = tuple(getattr(diff, "substantive", ()) or ())
-    if not substantive:
-        return (
-            "Manuscript delta: the manuscript did not substantively change "
-            "between rounds — any prior point reported resolved this round "
-            "was resolved against an unchanged text."
-        )
-    names = ", ".join(d.name for d in substantive)
-    count = len(substantive)
     return (
-        f"Manuscript delta: {count} section{'s' if count != 1 else ''} "
-        f"substantively changed ({names})."
+        "Manuscript file: byte-identical to the draft the previous round "
+        "reviewed (same sha256). No required revision can have been met by a "
+        "change to the text, because the text is the same text. This is a "
+        "fact about the file and NOT evidence of bad faith — the pipeline "
+        "reviews the draft it is given, and an unchanged resubmission is not "
+        "defiance of an editor. Judge the paper, and do not escalate the "
+        "verdict over it."
     )
 
 
@@ -185,8 +180,15 @@ def _per_reviewer_line(prior: Any, state: ReviewState) -> str:
 
     Reviewers are matched by name across rounds. A name on only one side is
     reported as such rather than dropped: a reviewer who joined this round
-    never saw the old draft, and one who is missing this round left a point
-    of comparison unfilled — both change how much the average means.
+    has no earlier verdict to compare, and one that is missing this round
+    left a point of comparison unfilled — both change how much the average
+    means.
+
+    Both sides are independent blind assessments of a manuscript, not a
+    reviewer's own before-and-after. The numbers are reported without
+    interpretation for that reason; the editor's prompt is where the panel's
+    blindness, and therefore the sampling noise in any single row, is
+    explained.
     """
     then = {
         str(_get(r, "reviewer", "")): r
@@ -242,7 +244,10 @@ def _compliance_line(prior: Any, state: ReviewState) -> str:
         f"({asked} item{'s' if asked != 1 else ''}): {breakdown}."
     )
 
-    blocking = sum(1 for status, is_blocking in findings if is_blocking and status in _OPEN_STATUSES)
+    blocking = sum(
+        1 for status, is_blocking in findings
+        if is_blocking and status in OPEN_COMPLIANCE_STATUSES
+    )
     if blocking:
         line += (
             f" {blocking} still-open item{'s are' if blocking != 1 else ' is'} "
@@ -251,46 +256,19 @@ def _compliance_line(prior: Any, state: ReviewState) -> str:
     else:
         line += " No still-open item is marked blocking."
 
-    # The audit's verdicts answer to the text. A compliance auditor shown an
-    # unchanged draft still described "added references" and an "expanded
-    # methods section" in enough detail to read as findings — so when the
-    # deterministic diff says nothing substantively changed, any claim of
-    # progress is contradicted here, next to the count it inflates.
-    diff = state.get("manuscript_diff")
-    progressed = sum(counts.get(s, 0) for s in ("addressed", "partial"))
-    if (
-        progressed
-        and diff is not None
-        and getattr(diff, "available", False)
-        and not tuple(getattr(diff, "substantive", ()) or ())
-    ):
+    # `unsubstantiated` is a demotion the pipeline applied, not a verdict the
+    # auditor reached, so the editor is told what it means rather than left to
+    # read it as one more shade of "we could not tell".
+    demoted = sum(1 for status, _blocking in findings if status == "unsubstantiated")
+    if demoted:
         line += (
-            f" CONTRADICTION: {progressed} item{'s' if progressed != 1 else ''} "
-            "reported addressed or partially addressed, but the draft "
-            "comparison shows no substantive change between rounds — treat "
-            "those statuses as unverified."
+            f" {demoted} item{'s were' if demoted != 1 else ' was'} reported "
+            "addressed or partially addressed on manuscript text that could "
+            "not be found in the manuscript, and "
+            f"{'are' if demoted != 1 else 'is'} recorded as unsubstantiated. "
+            "That is not progress; treat those items as open."
         )
     return line
-
-
-def _drift_line(state: ReviewState) -> str:
-    """New issues the reviewers themselves place in the *previous* draft.
-
-    Only emitted when the count is non-zero. Silence here is not a claim that
-    no reviewer drifted — the signal may simply not have survived into state —
-    and telling the editor "no drift" on the strength of a missing field would
-    be asserting something we did not check.
-    """
-    drifted = 0
-    for report in state.get("reports") or []:
-        drifted += _drift_count(report)
-    if not drifted:
-        return ""
-    return (
-        f"Reviewer drift: {drifted} new issue{'s' if drifted != 1 else ''} raised this "
-        f"round {'were' if drifted != 1 else 'was'} equally visible in the previous "
-        "draft by the reviewer's own account — weigh whether that moves the goalposts."
-    )
 
 
 # --- reading the sibling tracks' output --------------------------------------
@@ -327,27 +305,6 @@ def _parse_findings(body: str) -> list[tuple[str, bool]]:
         if match:
             out.append((match.group("status"), _BLOCKING_FLAG in match.group("rest")))
     return out
-
-
-def _drift_count(report: Any) -> int:
-    """Drifted new-issue count for one reviewer, from whatever state carries.
-
-    ``ReviewReport.new_issues`` is the source of truth — the reviewer promotes
-    each new issue with its ``caused_by_the_revision`` flag for exactly this
-    count. The body scan is a backstop, not the normal path. Returns 0 when
-    nothing is present, which the caller treats as "nothing to report" rather
-    than "nothing happened" — the distinction matters, since reporting "no
-    drift" on a signal that was never captured asserts something unchecked.
-    """
-    promoted = _get(report, "drifted_issues", None)
-    if isinstance(promoted, list):
-        return len(promoted)
-
-    issues = _get(report, "new_issues", None)
-    if isinstance(issues, list) and issues:
-        return sum(1 for i in issues if not _get(i, "caused_by_the_revision", False))
-
-    return str(_get(report, "body", "") or "").count(_DRIFT_MARKER)
 
 
 # --- scalar helpers ----------------------------------------------------------

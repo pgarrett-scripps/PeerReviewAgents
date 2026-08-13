@@ -157,7 +157,6 @@ def test_get_config_accepts_every_override_the_consumer_passes(tmp_path):
         max_debate_rounds=1,
         output_dir=str(tmp_path / "reports"),
         revision_of=str(tmp_path),
-        revision_baseline_path=str(tmp_path / "prior.pdf"),
     )
     assert cfg["provider"] == "anthropic"
     assert cfg["reasoning_model"] == "claude-opus-5"
@@ -165,7 +164,41 @@ def test_get_config_accepts_every_override_the_consumer_passes(tmp_path):
     assert cfg["max_debate_rounds"] == 1
     assert cfg["output_dir"] == str(tmp_path / "reports")
     assert cfg["revision_of"] == str(tmp_path)
-    assert cfg["revision_baseline_path"] == str(tmp_path / "prior.pdf")
+
+
+def test_the_retired_revision_baseline_key_is_inert_not_fatal(tmp_path):
+    """`revision_baseline_path` is gone; the consumer still sets it.
+
+    run_review.py restores the prior draft from a versioned preprint URL and
+    assigns `config["revision_baseline_path"] = path` after get_config has
+    returned. It fed the section diff between drafts, and that diff is gone —
+    it was informative only in a narrow band (a trivial revision read as
+    "nothing changed", which the file hash now says for free; a real one read
+    as "everything changed", which says nothing), and with the panel blinded
+    it had no consumers left.
+
+    What matters for the journal is that setting the key costs nothing. It is
+    a plain dict assignment onto a resolved config, so it neither raises nor
+    warns — nothing validates the final dict against DEFAULT_CONFIG — and no
+    code reads it. Passing it through get_config is equally inert. The
+    consumer can drop it whenever convenient; nothing breaks until then.
+    """
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        cfg = get_config(revision_baseline_path=str(tmp_path / "prior.pdf"))
+    cfg["revision_baseline_path"] = str(tmp_path / "prior.pdf")
+
+    assert "revision_baseline_path" not in _default_keys()
+    # And a run built from that config still resolves, unread key and all.
+    assert cfg["revision_of"] is None
+
+
+def _default_keys() -> set[str]:
+    from peerreviewagents.default_config import DEFAULT_CONFIG
+
+    return set(DEFAULT_CONFIG)
 
 
 # --- the run itself and what the bundle writer reads off it -------------------

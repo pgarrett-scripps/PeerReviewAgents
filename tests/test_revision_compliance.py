@@ -3,8 +3,14 @@
 The invariants worth guarding here are the ones a plausible-looking model
 answer would quietly break: the required-revision ids must survive intact
 (they are the join key for the whole revision feature), a rebuttal must not
-be counted as a gap, and the audit entry must keep the shape the editor
-digest and the run summary already read.
+be counted as a gap, a claim of progress must quote text that is actually in
+the manuscript, and the audit entry must keep the shape the editor digest and
+the run summary already read.
+
+This auditor carries more weight than it used to. The reviewer panel is
+blind to the round, so this is the only agent in the pipeline that reads the
+previous round's asks against the new draft — everything the editor knows
+about what happened to them comes from here.
 
 Reuses the fake-LLM harness from test_pipeline so no API key is needed.
 """
@@ -22,7 +28,17 @@ from peerreviewagents.agents.schemas import (
     UndisclosedChange,
 )
 from peerreviewagents.agents.utils.agent_utils import audit_digest, context_block
-from peerreviewagents.ingest import diff as ingest_diff
+
+# Quoted verbatim from tests/sample_manuscript.md, so a finding citing it
+# passes the code-side quote check both here and in the whole-graph test at
+# the bottom, which runs against that file.
+REAL_QUOTE = "WidgetNet achieves lower error on all three datasets (p < 0.05)."
+
+MANUSCRIPT = (
+    "# A Lightweight Method\n\n"
+    "## Methods\n\nWe train on one cluster with seed 42.\n\n"
+    f"## Results\n\n{REAL_QUOTE}\n"
+)
 
 LETTER = (
     "We thank the reviewers. We now report per-cluster results (Section 3.2) "
@@ -60,30 +76,23 @@ def _prior_round():
     )
 
 
-def _state(prior=None, statement=LETTER, diff=None):
+def _state(prior=None, statement=LETTER, **over):
     if prior is None:
         prior = _prior_round()
-    if diff is None:
-        diff = ingest_diff.diff_sections(
-            {"methods": "We train on one cluster.", "results": "Pooled mean is 0.81."},
-            {
-                "methods": "We train on one cluster with seed 42.",
-                "results": "Per-cluster means are 0.79 and 0.83.",
-            },
-        )
-    return {
+    state = {
         "manuscript_path": SAMPLE,
         "manuscript_title": "A Lightweight Method",
-        "manuscript_md": "# A Lightweight Method\n\nWe train on one cluster with seed 42.",
+        "manuscript_md": MANUSCRIPT,
         "sections": {"methods": "We train on one cluster with seed 42."},
         "config": {"run_id": "test-run"},
         "journal_block": "",
         "article_type_block": "",
         "strictness_block": "",
         "prior_round": prior,
-        "manuscript_diff": diff,
         "author_statement": statement,
     }
+    state.update(over)
+    return state
 
 
 def _output(**over):
@@ -93,7 +102,7 @@ def _output(**over):
             ComplianceFinding(
                 id="R1-01",
                 status="addressed",
-                manuscript_evidence="Results now report 0.79 and 0.83 per cluster.",
+                manuscript_evidence=f'The results now cover every dataset: "{REAL_QUOTE}"',
                 author_claim="We now report per-cluster results.",
                 claim_accuracy="corroborated",
             ),
@@ -162,12 +171,16 @@ def test_blocking_open_items_are_hard_gaps(monkeypatch):
 
 def test_non_blocking_open_items_are_soft_gaps(monkeypatch):
     output = _output(findings=[
-        ComplianceFinding(id="R1-01", status="partial"),
+        ComplianceFinding(
+            id="R1-01", status="partial", manuscript_evidence=f'"{REAL_QUOTE}"',
+        ),
         ComplianceFinding(id="R1-02", status="unverifiable"),
     ])
     audit = _audit(_run(monkeypatch, output=output))
     assert audit["hard_gaps"] == 0
     assert audit["soft_gaps"] == 2
+    # Both still open on their own merits, not because the quote check fired.
+    assert [f["status"] for f in audit["findings"]] == ["partial", "unverifiable"]
 
 
 def test_rebuttal_is_a_response_not_a_gap(monkeypatch):
@@ -180,7 +193,9 @@ def test_rebuttal_is_a_response_not_a_gap(monkeypatch):
             claim_accuracy="corroborated",
             blocking=True,
         ),
-        ComplianceFinding(id="R1-02", status="addressed"),
+        ComplianceFinding(
+            id="R1-02", status="addressed", manuscript_evidence=f'"{REAL_QUOTE}"',
+        ),
     ])
     audit = _audit(_run(monkeypatch, output=output))
     assert audit["hard_gaps"] == 0
@@ -260,14 +275,11 @@ def test_no_required_revisions_still_produces_a_report(monkeypatch):
 
 
 def test_missing_prior_record_does_not_crash_the_audit_lane(monkeypatch):
-    state = _state()
+    state = _state(prior=None)
     state["prior_round"] = None
-    state["manuscript_diff"] = None
     audit = _audit(_run(monkeypatch, state=state, output=_output(findings=[])))
     assert audit["auditor"] == "revision_compliance"
-    prompt = rc._user_prompt(state)
-    assert "no required revisions to check" in prompt
-    assert "Not available" in prompt
+    assert "no required revisions to check" in rc._user_prompt(state)
 
 
 def test_no_author_statement_is_handled(monkeypatch):
@@ -279,9 +291,130 @@ def test_no_author_statement_is_handled(monkeypatch):
     assert _audit(_run(monkeypatch, state=state))["body"]
 
 
-def test_unavailable_diff_is_reported_not_assumed():
-    state = _state(diff=ingest_diff.unavailable("the previous draft is gone"))
-    assert "Not available" in rc._user_prompt(state)
+def test_the_auditor_is_shown_one_draft_not_two():
+    """The section diff is gone. It was informative only in a narrow band — a
+    trivial revision read as "nothing changed", a real one as "everything
+    changed" — and it compared two conversions, so a converter upgrade could
+    make an unchanged manuscript look rewritten. The quote check below is
+    what replaced it, and it answers to the very text the auditor was shown."""
+    prompt = rc._user_prompt(_state())
+    assert "What changed since the previous draft" not in prompt
+    assert "you are shown one draft, not two" in prompt
+
+
+# --- the quote check --------------------------------------------------------
+#
+# The incident: on a byte-identical resubmission the audit reported an
+# "expanded methods section" and "added references 42-44". Neither existed.
+# Both read to the editor as progress. Nothing in the pipeline could tell.
+
+
+def _finding(status: str, evidence: str, **over) -> RevisionComplianceOutput:
+    return _output(findings=[
+        ComplianceFinding(id="R1-01", status=status, manuscript_evidence=evidence, **over),
+    ])
+
+
+def _sole(result) -> dict:
+    return _audit(result)["findings"][0]
+
+
+def test_an_addressed_claim_quoting_absent_text_is_demoted(monkeypatch):
+    output = _finding(
+        "addressed",
+        'The methods section was expanded: "we averaged over five random seeds."',
+    )
+    finding = _sole(_run(monkeypatch, output=output))
+    assert finding["status"] == "unsubstantiated"
+
+
+def test_the_demotion_names_what_could_not_be_found(monkeypatch):
+    output = _finding(
+        "addressed", 'They added: "we averaged over five random seeds."'
+    )
+    body = _audit(_run(monkeypatch, output=output))["body"]
+    assert "Recorded as unsubstantiated" in body
+    assert "not in the manuscript" in body
+    assert "five random seeds" in body, "the reader needs the words that failed"
+
+
+def test_a_partial_claim_is_checked_too(monkeypatch):
+    output = _finding("partial", 'Some of it landed: "a second cluster was added."')
+    assert _sole(_run(monkeypatch, output=output))["status"] == "unsubstantiated"
+
+
+def test_a_real_quotation_survives(monkeypatch):
+    output = _finding("addressed", f'Results, first line: "{REAL_QUOTE}"')
+    assert _sole(_run(monkeypatch, output=output))["status"] == "addressed"
+
+
+def test_whitespace_and_case_do_not_break_a_real_quotation(monkeypatch):
+    """The manuscript arrives as converted text; where a line wrapped is an
+    artefact of the converter, not a difference in the quote."""
+    reflowed = REAL_QUOTE.replace(" lower ", "\n   LOWER\n ")
+    output = _finding("addressed", f'Results: "{reflowed}"')
+    assert _sole(_run(monkeypatch, output=output))["status"] == "addressed"
+
+
+def test_a_description_with_no_quotation_at_all_is_demoted(monkeypatch):
+    """"The methods section was expanded" is the exact shape of the live
+    failure: it sounds like evidence and cites nothing."""
+    output = _finding("addressed", "The methods section was expanded.")
+    finding = _sole(_run(monkeypatch, output=output))
+    assert finding["status"] == "unsubstantiated"
+    assert "no verbatim quotation" in _audit(_run(monkeypatch, output=output))["body"]
+
+
+def test_evidence_that_is_itself_manuscript_text_passes_unquoted(monkeypatch):
+    """A model that copied the sentence without punctuating it as a quote has
+    still done the thing asked; the check is on the words, not the marks."""
+    output = _finding("addressed", REAL_QUOTE)
+    assert _sole(_run(monkeypatch, output=output))["status"] == "addressed"
+
+
+def test_empty_evidence_on_an_addressed_claim_is_demoted(monkeypatch):
+    output = _finding("addressed", "")
+    assert _sole(_run(monkeypatch, output=output))["status"] == "unsubstantiated"
+
+
+def test_a_trivially_short_quote_does_not_pass_the_check(monkeypatch):
+    """"the" appears in every paper; accepting it would make this theatre."""
+    output = _finding("addressed", 'They now say "the".')
+    assert _sole(_run(monkeypatch, output=output))["status"] == "unsubstantiated"
+
+
+@pytest.mark.parametrize("status", ["not_addressed", "rebutted", "unverifiable"])
+def test_an_absence_is_never_demoted_for_lack_of_a_quote(monkeypatch, status):
+    """An item nobody acted on has no passage to quote. Demanding one would
+    punish the auditor for giving the honest answer."""
+    output = _finding(status, "No seed appears anywhere in Methods.")
+    assert _sole(_run(monkeypatch, output=output))["status"] == status
+
+
+def test_a_demoted_item_counts_as_open_in_the_gap_counts(monkeypatch):
+    """The whole point: the demotion has to reach the editor as a gap, not
+    sit in the body as a footnote."""
+    output = _finding("addressed", "The methods were expanded.", blocking=True)
+    audit = _audit(_run(monkeypatch, output=output))
+    assert audit["hard_gaps"] == 1
+    assert audit["soft_gaps"] == 0
+
+
+def test_no_manuscript_text_means_no_demotion(monkeypatch):
+    """Demoting everything because the manuscript is missing would report a
+    pipeline failure as an author failure."""
+    output = _finding("addressed", "The methods were expanded.")
+    state = _state(manuscript_md="")
+    assert _sole(_run(monkeypatch, state=state, output=output))["status"] == "addressed"
+
+
+def test_the_prompt_demands_a_quotation_and_says_it_is_checked():
+    task = rc._TASK
+    assert "VERBATIM QUOTATION" in task
+    assert "searched for in the manuscript automatically" in task
+    assert "unsubstantiated" in task
+    # Named so the model recognizes the shape of the failure it must avoid.
+    assert "The methods section was expanded" in task
 
 
 # --- the letter is untrusted -------------------------------------------------
@@ -379,7 +512,10 @@ def test_registered_only_for_revision_rounds():
     assert "revision_compliance" not in [n for n, _ in auditors.get_auditor_nodes()]
 
 
-@pytest.mark.parametrize("status", ["addressed", "partial", "not_addressed", "rebutted", "unverifiable"])
+@pytest.mark.parametrize("status", [
+    "addressed", "partial", "not_addressed", "rebutted", "unverifiable",
+    "unsubstantiated",
+])
 def test_every_status_is_accepted_by_the_schema(status):
     RevisionComplianceOutput(
         summary="s", findings=[ComplianceFinding(id="R1-01", status=status)]

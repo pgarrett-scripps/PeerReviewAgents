@@ -18,11 +18,9 @@ from peerreviewagents.agents.schemas import (
     JournalSuggestion,
     MetaReviewOutput,
     PanelGapOutput,
-    PriorPointVerdict,
     ResponseVerificationOutput,
     ReviewerOutput,
     RevisionComplianceOutput,
-    RevisionReviewerOutput,
     VerifiedClaim,
 )
 from peerreviewagents.default_config import get_config
@@ -131,34 +129,25 @@ _CANNED: dict[type, object] = {
         notes="Avoid headline venues until the second cluster is added.",
     ),
     # --- revision round -----------------------------------------------------
-    # Defaults describe an honest, successful revision: the reviewer's point
-    # was fixed and the score moved because of it. Tests that need a stuck
-    # score, a stonewalling author, or an unchanged draft override these with
-    # monkeypatch.setitem rather than editing this module.
-    RevisionReviewerOutput: RevisionReviewerOutput(
-        prior_score=3,
-        score=4,
-        confidence=4,
-        prior_points=[
-            PriorPointVerdict(
-                id="methodology-1",
-                status="resolved",
-                evidence="Methods now report results for all three clusters.",
-            ),
-        ],
-        new_issues=[],
-        summary="The revision addresses the single-cluster limitation I raised.",
-        score_rationale="The one weakness I raised is resolved, so the score rises.",
-        strengths=["Clear reporting of the added clusters."],
-        questions=[],
-    ),
+    # There is no revision-specific reviewer schema: the panel is blind to the
+    # round and returns ReviewerOutput above, in round 3 exactly as in round 1.
+    #
+    # The compliance default describes an honest revision: one ask carried out,
+    # one not. Its `addressed` evidence quotes sample_manuscript.md verbatim
+    # because the auditor's quotes are verified against the manuscript in code
+    # — a plausible-sounding paraphrase here would be demoted to
+    # `unsubstantiated`, which is exactly what that check is for. Tests that
+    # want the demotion override this entry with monkeypatch.setitem.
     RevisionComplianceOutput: RevisionComplianceOutput(
         summary="One of two required revisions is carried out; the other is not.",
         findings=[
             ComplianceFinding(
                 id="R1-01",
                 status="addressed",
-                manuscript_evidence="Results now report per-cluster error.",
+                manuscript_evidence=(
+                    'The results now cover every dataset: "WidgetNet achieves '
+                    'lower error on all three datasets (p < 0.05)."'
+                ),
                 author_claim="We added per-cluster results.",
                 claim_accuracy="corroborated",
                 blocking=False,

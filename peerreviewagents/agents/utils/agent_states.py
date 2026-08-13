@@ -19,17 +19,11 @@ class ReviewReport(TypedDict):
     # 1 (reject) .. 5 (accept), per-reviewer confidence-weighted score
     score: float
     confidence: float
-    # Promoted alongside the scalars so a revision round can give this
-    # reviewer its own prior points back, addressable by id, without parsing
-    # them out of the rendered body.
+    # Promoted alongside the scalars so the round record can id each weakness
+    # without parsing it out of the rendered body — that is how the editor's
+    # numbered asks get attributed to the reviewer who raised them.
     weaknesses: list[str]
     questions: list[str]
-    # Revision rounds only: issues this reviewer raised for the first time
-    # this round, each flagged with whether the revision created it. The
-    # editor's round-delta counts the ones the reviewer admits were visible
-    # last round — goalpost drift — and that count has to come from the
-    # structured verdict, not from the rendered prose.
-    new_issues: list[dict]
     body: str
 
 
@@ -121,14 +115,13 @@ class ReviewState(TypedDict, total=False):
 
     # --- revision round (set only when config["revision_of"] is given) ---
     # The previous round's structured record (peerreviewagents.rounds.RoundRecord).
-    # Its presence is what puts every agent into revision mode: reviewers get
-    # their own prior report, the compliance auditor gets the required-revision
-    # list, and the editor gets a round-over-round delta. None on a first round.
+    # Its presence switches the two agents that are allowed to know: the
+    # compliance auditor, which gets the previous letter's required-revision
+    # list, and the editor, which gets a round-over-round delta. The reviewer
+    # panel is deliberately NOT one of them — it reviews the manuscript in
+    # front of it and is never told a previous round exists. None on a first
+    # round.
     prior_round: Any
-    # Section-aware v1 -> v2 comparison (ingest.diff.ManuscriptDiff). Always
-    # present in a revision round; `available=False` when the previous draft
-    # could not be recovered from the ingest cache.
-    manuscript_diff: Any
     # The real author's response letter, as submitted. Untrusted input, and
     # the only input written by someone with a stake in the verdict. Two
     # editor-facing agents read it as quoted data — the response verifier and

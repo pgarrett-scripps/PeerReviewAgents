@@ -493,13 +493,18 @@ def test_alias_targets_are_priority_sections():
         assert target in _PRIORITY_SECTIONS
 
 
-def test_renaming_conclusion_between_rounds_is_not_a_change():
-    from peerreviewagents.ingest import diff as ingest_diff
+def test_singular_and_plural_headings_land_on_one_section_key():
+    """"Conclusion" and "Conclusions" are the same section, so they alias.
 
+    Written when a section diff between rounds read the rename as a removal
+    plus an addition. That diff is gone, but the aliasing it exposed is not a
+    diff concern — the section map is what every prompt is budgeted over, and
+    a paper that says "Conclusions" must not lose its conclusion.
+    """
     old = loader._split_sections("T\n\nConclusion\n\nSame ending text.\n")
     new = loader._split_sections("T\n\nConclusions\n\nSame ending text.\n")
-    d = ingest_diff.diff_sections(old, new)
-    assert all(x.status == "unchanged" for x in d.deltas)
+    assert set(old) == set(new)
+    assert old == new
 
 
 def test_long_unnumbered_line_does_not_open_a_section():

@@ -21,8 +21,6 @@ from ..agents.synthesis import gap_finder, meta_reviewer
 from ..agents.utils.agent_states import ReviewState
 from ..article_types import article_type_block, normalize_article_type
 from ..default_config import get_config
-from ..ingest import cache as ingest_cache
-from ..ingest import diff as ingest_diff
 from ..ingest.loader import load_manuscript, load_manuscript_record
 from ..journals import load_journal
 from ..strictness import DEFAULT_LEVEL, normalize_strictness, strictness_block
@@ -37,10 +35,12 @@ def is_revision(config: dict) -> bool:
 def is_correction(config: dict) -> bool:
     """Whether this run challenges the review rather than the manuscript.
 
-    A correction is still anchored to a prior round — it needs the reviewers'
-    own earlier points to rule on — but the manuscript has not changed, so the
-    two things that only make sense against a changed draft (the diff and the
-    compliance auditor) are not run. See ``revision_mode`` in default_config.
+    A correction is still anchored to a prior round — it carries the panel's
+    earlier reports forward for the reviewers it is not re-running — but the
+    manuscript has not changed, so the compliance auditor does not run: over
+    an identical draft it would report every required revision as undone and
+    push the verdict down over a complaint that the *review* was wrong. See
+    ``revision_mode`` in default_config.
     """
     return is_revision(config) and str(
         config.get("revision_mode") or "revision"
@@ -100,7 +100,8 @@ def build_graph(config: dict):
     # A correction gets the standing auditors but not the compliance one:
     # the draft is identical, so it would report every required revision as
     # undone and drive the verdict down for a submission whose complaint is
-    # that the *review* was wrong.
+    # that the *review* was wrong. The reviewer panel is unaffected either
+    # way — it is blind to the round in both modes.
     auditor_nodes = get_auditor_nodes(revision=revision and not is_correction(config))
     for name, fn in auditor_nodes:
         g.add_node(f"audit_{name}", fn)
@@ -269,7 +270,6 @@ class PeerReviewGraph:
             article_type_block=self._article_type_block(),
             strictness_block=self._strictness_block(),
             prior_round=prior,
-            manuscript_diff=self._manuscript_diff(prior, sections, manuscript_path),
             author_statement=self._load_author_statement(),
             response_verification="",
             verified_claims_block="",
@@ -320,7 +320,6 @@ class PeerReviewGraph:
                     "confidence": report.confidence,
                     "weaknesses": [w.text for w in report.weaknesses],
                     "questions": list(report.questions),
-                    "new_issues": [],
                     "body": self._prior_body(report),
                 }
             )
@@ -358,140 +357,6 @@ class PeerReviewGraph:
         if not job_id:
             return None
         return rounds_mod.load_prior(str(job_id), self.config)
-
-    def _manuscript_diff(self, prior, sections: dict[str, str], manuscript_path: str = ""):
-        """Compare this draft against the one the prior round reviewed.
-
-        The previous text comes from a caller-supplied baseline file when
-        ``revision_baseline_path`` is set, and from the ingest cache by key
-        otherwise — so no second copy is kept on disk. Either source failing
-        costs the diff, not the run.
-        """
-        if prior is None:
-            return None
-        if is_correction(self.config):
-            # Nothing changed by definition — the complaint is about the
-            # review, not the draft. Reporting "no changes" as a finding would
-            # read as the authors having ignored the letter.
-            return ingest_diff.unavailable(
-                "this is a correction to the previous review, not a revised "
-                "draft: the manuscript is unchanged and was not re-compared"
-            )
-        baseline = str(self.config.get("revision_baseline_path") or "")
-        if baseline:
-            return self._baseline_diff(baseline, prior, sections, manuscript_path)
-        if not prior.manuscript_cache_key:
-            return ingest_diff.unavailable(
-                "the previous round did not record a manuscript cache key"
-            )
-        cached = ingest_cache.get(prior.manuscript_cache_key, self.config)
-        if cached is None:
-            return ingest_diff.unavailable(
-                "the previous draft is no longer in the manuscript cache"
-            )
-        # `caveman` rewrites the text itself, so a prior draft parsed at one
-        # compression level and a current draft parsed at another differ in
-        # every section even when the authors changed nothing — the panel
-        # would be told the paper was rewritten wholesale. The level is only
-        # ever applied by the PDF converter (a plain-text read records none
-        # whatever the config says), so the check is scoped to converted
-        # priors.
-        from ..ingest.loader import ingest_config
-
-        prior_tool = str((cached.ingest or {}).get("tool") or "")
-        if prior_tool.startswith("rustypaper"):
-            prior_level = (cached.ingest or {}).get("caveman") or "off"
-            current_level = ingest_config(self.config)["caveman"]
-            if prior_level != current_level:
-                return ingest_diff.unavailable(
-                    "the compression setting changed between rounds (caveman "
-                    f"{prior_level} → {current_level}): the two drafts are "
-                    "not comparable as text, and the differences would read "
-                    "as a rewrite the authors never made"
-                )
-        return ingest_diff.diff_sections(cached.sections, sections)
-
-    def _baseline_diff(self, path: str, prior, sections: dict[str, str], manuscript_path: str = ""):
-        """Diff against the prior draft handed in as a file by the caller.
-
-        Exists for ephemeral runners. The cache path assumes the machine
-        reviewing round N still holds round N-1's parse, and a CI runner
-        destroyed between rounds never does. The overlay-journal consumer
-        used to re-fetch the prior PDF and re-parse it *hoping* to land on
-        the cache key recorded in round.json — a hope the v8 cache-key
-        change (converter version hashed into PDF keys) broke for every
-        round record already published. Taking the file directly removes
-        the key derivation from the contract: the caller proves it has the
-        right draft, not the right address.
-
-        The baseline is parsed under THIS run's config — same caveman
-        level, same converter — exactly as the new draft was, so the two
-        section maps are comparable by construction. That is why the cache
-        path's compression-flip guard does not appear here: it protects
-        against a prior parse made under a *different* config, and this
-        path never reads one.
-
-        Never fatal: a baseline that cannot be read, or is not the draft
-        the prior round reviewed, costs the diff and not the round.
-        """
-        try:
-            parsed = load_manuscript_record(path, self.config)
-        except Exception as exc:  # noqa: BLE001 — optional input, never fail the run
-            return ingest_diff.unavailable(
-                f"the supplied revision baseline could not be read ({exc})"
-            )
-        # Verify the baseline is the draft the prior round reviewed. A diff
-        # over the wrong baseline is worse than no diff: it reports author
-        # edits that never happened, confidently. Three proofs are accepted,
-        # strongest first:
-        #
-        # 1. The FILE hash the prior round recorded. Bytes survive a
-        #    converter upgrade; the text hash below does not, and verifying
-        #    by text alone is how an unchanged resubmission reviewed across
-        #    the 0.1.1 → 0.2.0 boundary lost its diff — after which the
-        #    panel hallucinated an expanded methods section and a raised
-        #    novelty score onto a byte-identical manuscript.
-        # 2. The TEXT hash, for records that predate the file hash and runs
-        #    where the converter did not change.
-        # 3. The baseline being byte-identical to THIS round's manuscript.
-        #    No recorded hash is needed to conclude anything from that: the
-        #    resubmission IS the draft it is being compared against, so the
-        #    diff is empty by construction — and "nothing changed" is the
-        #    one fact the adversarial invariant most needs said out loud.
-        #
-        # A record carrying a hash that matches none of these refuses: the
-        # baseline can no longer be shown to be the reviewed draft. Records
-        # that predate both hashes proceed unverified rather than losing the
-        # diff they always had.
-        recorded_file = str(getattr(prior, "manuscript_file_sha256", "") or "")
-        recorded_text = str(getattr(prior, "manuscript_text_sha256", "") or "")
-        got_file = str((parsed.ingest or {}).get("file_sha256") or "")
-        got_text = str((parsed.ingest or {}).get("text_sha256") or "")
-
-        verified = bool(
-            (recorded_file and got_file and got_file == recorded_file)
-            or (recorded_text and got_text == recorded_text)
-        )
-        if not verified and manuscript_path:
-            try:
-                current = load_manuscript_record(manuscript_path, self.config)
-                same_file = bool(got_file) and (
-                    got_file == str((current.ingest or {}).get("file_sha256") or "")
-                )
-            except Exception:  # noqa: BLE001 — verification only, never fatal
-                same_file = False
-            verified = same_file
-        if not verified and (recorded_file or recorded_text):
-            return ingest_diff.unavailable(
-                "the supplied baseline could not be verified as the draft the "
-                f"previous round reviewed (that round recorded text "
-                f"{recorded_text[:12] or '—'}…, this file parses to "
-                f"{got_text[:12]}…). One honest cause: a converter upgrade "
-                "between rounds re-reads the same bytes into different text. "
-                "Rounds recorded from now on carry the file hash, which "
-                "survives that."
-            )
-        return ingest_diff.diff_sections(parsed.sections, sections)
 
     def _load_author_statement(self) -> str:
         """Parse the real authors' response letter, or '' when none was given.

@@ -126,9 +126,10 @@ debate_rounds = 2
 # Job ID (or report directory) of the previous round for this manuscript.
 # Normally passed per-run with `--revision-of <job-id>` rather than set here,
 # since it changes every round. Setting it turns the run into a revision
-# round: each reviewer rules on the points it raised before, a compliance
-# auditor checks the previous letter's required revisions against the new
-# draft, and the editor decides on the round-over-round delta.
+# round: a compliance auditor checks the previous letter's required revisions
+# against the new draft, and the editor decides on the round-over-round delta.
+# The reviewer panel is not told, by design — it judges the manuscript as it
+# stands, every round.
 # revision_of = ""
 #
 # The REAL authors' response letter (pdf/md/tex/txt) — not the simulated
@@ -145,8 +146,8 @@ debate_rounds = 2
 #
 # "revision" (default) = the authors changed the manuscript. "correction"
 # (`--correction`) = the manuscript is unchanged and the review itself is
-# being challenged, which skips the draft diff and the compliance auditor
-# since both only mean something against a changed draft. Needs revision_of.
+# being challenged, which skips the compliance auditor since it only means
+# something against a changed draft. Needs revision_of.
 # revision_mode = "revision"
 #
 # Re-run only these reviewers; the rest carry their previous reports forward,

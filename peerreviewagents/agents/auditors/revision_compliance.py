@@ -5,6 +5,12 @@ the same separation the other auditors keep. It is a factual checklist over
 the previous decision letter's numbered required revisions, not an opinion
 about the manuscript's merit, and it carries no score.
 
+Since the reviewer panel was blinded to the round, this is the *whole* of
+the pipeline's round-over-round memory: the editor's numbered asks are the
+contract with the authors, and this auditor is the only agent that reads
+them against the new draft. Everything the next round knows about what
+happened to the last one comes through here.
+
 It answers two questions the panel cannot:
 
 1. **Per item, was it done?** Judged against the revised manuscript, never
@@ -16,6 +22,10 @@ It answers two questions the panel cannot:
 It also reports substantive changes nobody asked for and the letter does not
 mention, which is where quietly altered results would show up.
 
+Because that first question is now load-bearing, the answer is checked in
+code: see :func:`_verify_quotes`. A claim of progress has to quote the
+manuscript, and the quote has to be in the manuscript.
+
 This auditor cannot be built with :func:`..auditors.base.make_auditor_node`:
 that builder emits ``AuditOutput`` over a category checklist, whereas the
 unit here is the prior round's numbered ask, keyed by *its* id. Everything
@@ -25,9 +35,14 @@ channel, the node-level error handling — is deliberately identical.
 
 from __future__ import annotations
 
-from ...ingest import diff as ingest_diff
-from ...observability import node_context
-from ..schemas import RevisionComplianceOutput
+import re
+
+from ...observability import AgentEvent, current_node, emit, node_context
+from ..schemas import (
+    OPEN_COMPLIANCE_STATUSES,
+    ComplianceFinding,
+    RevisionComplianceOutput,
+)
 from ..utils.agent_states import AuditReport, ReviewState
 from ..utils.agent_utils import context_block
 from ..utils.llm import make_llm
@@ -36,10 +51,34 @@ from ..utils.structured import invoke_structured
 AUDITOR_NAME = "revision_compliance"
 AUDITOR_TITLE = "Revision Compliance"
 
-# Statuses that leave an ask open. `rebutted` is pointedly absent: the authors
-# answered, with a reason, and tallying an argued-back item as a gap would let
-# the checklist punish disagreement — see rule 2 in the system prompt.
-_OPEN_STATUSES = ("not_addressed", "partial", "unverifiable")
+# Statuses a finding can claim that assert the manuscript moved. Only these
+# are quote-checked: an absence has no quote to give, so demanding one from
+# `not_addressed` or `rebutted` would punish the auditor for reporting
+# honestly that nothing is there.
+_PROGRESS_STATUSES = ("addressed", "partial")
+
+# Where a demoted finding lands. Not `unverifiable`, which means "the answer
+# is somewhere I cannot see" — this one means "the text you quoted is not in
+# this paper", which is a different and worse thing.
+_DEMOTED_STATUS = "unsubstantiated"
+
+# Quoted spans in `manuscript_evidence`. Double quotes only, straight or
+# curly — which is what the prompt asks for. Apostrophes are why single
+# quotes are not accepted as delimiters: "the model's output" would open a
+# span at a possessive and close it at the next one, and the resulting
+# fragment failing to appear in the manuscript would demote a finding that
+# was fine. Newlines are allowed inside a span, because the manuscript is
+# converted text and a quote copied out of it carries the converter's line
+# breaks; the length cap keeps an unbalanced quote mark from swallowing the
+# whole field.
+_QUOTED = re.compile(r"[\"“”]([^\"“”]{2,600})[\"“”]")
+
+# Below this many normalized characters a "quotation" proves nothing: a
+# six-character string matches somewhere in any manuscript by accident, so
+# accepting it would make the check theatre. Short quotes are not rejected —
+# they are simply not counted as the verifiable unit, and the whole evidence
+# string is checked instead.
+_MIN_QUOTE_CHARS = 16
 
 # The response letter is unbounded input from an interested party. A very long
 # one would crowd the manuscript out of the window it is supposed to be checked
@@ -89,9 +128,9 @@ _STATEMENT_BLOCK = (
 
 _NO_STATEMENT_BLOCK = (
     "## The authors' response letter\n\n"
-    "None was submitted. Judge every item on the manuscript and the diff "
-    "alone, leave author_claim empty, and leave claim_accuracy at 'no_claim'. "
-    "A missing letter is not itself a compliance failure."
+    "None was submitted. Judge every item on the manuscript alone, leave "
+    "author_claim empty, and leave claim_accuracy at 'no_claim'. A missing "
+    "letter is not itself a compliance failure."
 )
 
 _TASK = (
@@ -105,15 +144,25 @@ _TASK = (
     "finding to a different item. If no required revisions are listed above, "
     "return no findings at all.\n\n"
     "For each item:\n"
-    "  - status — 'addressed' ONLY when you can point at revised text that "
-    "does what was asked; quote or locate it in manuscript_evidence. "
-    "'partial' when some of the ask landed. 'not_addressed' when nothing in "
-    "the manuscript speaks to it. 'rebutted' when the authors decline it and "
-    "give a reason a reasonable editor would weigh — record the reason, and "
-    "note in manuscript_evidence what the text still says. 'unverifiable' "
-    "when the answer lies somewhere you cannot see (an external repository, a "
-    "supplement you were not given). Prefer 'unverifiable' to guessing in "
-    "either direction.\n"
+    "  - status — 'addressed' ONLY when you can point at text in the "
+    "manuscript above that does what was asked. 'partial' when some of the "
+    "ask landed. 'not_addressed' when nothing in the manuscript speaks to it. "
+    "'rebutted' when the authors decline it and give a reason a reasonable "
+    "editor would weigh — record the reason, and note in manuscript_evidence "
+    "what the text still says. 'unverifiable' when the answer lies somewhere "
+    "you cannot see (an external repository, a supplement you were not "
+    "given). Prefer 'unverifiable' to guessing in either direction.\n"
+    "  - manuscript_evidence — for 'addressed' and 'partial' this must "
+    "contain a VERBATIM QUOTATION from the manuscript above, in double "
+    "quotes, long enough to find. Copy the words that are there; do not "
+    "paraphrase them, and do not describe the change instead of quoting it. "
+    "Every such quotation is searched for in the manuscript automatically "
+    "after you answer, and a finding whose quotation is not found is recorded "
+    "as 'unsubstantiated' — which counts against the revision, not for it. "
+    "'The methods section was expanded' and 'references 42-44 were added' are "
+    "descriptions, not quotations, and both are things an auditor has "
+    "previously reported about a manuscript that had not changed at all. If "
+    "you cannot find words to quote, the item is not addressed.\n"
     "  - author_claim / claim_accuracy — what the letter says about this "
     "item, and how it stands up: 'corroborated' = the text does what they say "
     "it does; 'overstated' = a real change, but smaller or narrower than "
@@ -124,12 +173,15 @@ _TASK = (
     "claim of the paper? Reserve it for that. Cosmetic, optional and "
     "nice-to-have items are not blocking, however many rounds they have "
     "survived.\n\n"
-    "**undisclosed_changes** — read the diff for substantive changes no item "
-    "above asked for and the letter does not mention: a reported value that "
-    "moved, a claim that got stronger, a caveat or limitation that "
-    "disappeared, a dropped condition, sample or baseline. Rewording, typo "
-    "fixes, reference formatting and other copy-editing do not belong here. "
-    "An empty list is the right answer for an ordinary revision.\n\n"
+    "**undisclosed_changes** — substantive things the manuscript now does "
+    "that no item above asked for and the letter does not mention: a reported "
+    "value that sits oddly against what the previous round's asks describe, a "
+    "caveat or limitation the letter claims to have kept that is not there, a "
+    "condition, sample or baseline the asks refer to that the paper no longer "
+    "contains. Quote the text. Rewording, typo fixes and reference formatting "
+    "do not belong here, and neither does anything you are inferring rather "
+    "than reading — you are shown one draft, not two. An empty list is the "
+    "right answer for an ordinary revision.\n\n"
     "**summary** — one short paragraph: how much of the list was carried out, "
     "and how well the letter's account matched the document. Factual "
     "reporting; the verdict is the editor's."
@@ -139,8 +191,8 @@ _TASK = (
 def node(state: ReviewState) -> dict:
     """Audit the revision against the prior round's required revisions.
 
-    Reads: ``prior_round`` (RoundRecord), ``manuscript_diff``,
-    ``author_statement``, plus the usual manuscript context.
+    Reads: ``prior_round`` (RoundRecord), ``author_statement``, plus the
+    usual manuscript context.
     Writes: one ``audits`` entry (``auditor="revision_compliance"``) and
     ``total_cost``.
     """
@@ -158,16 +210,17 @@ def _run(state: ReviewState) -> dict:
             config,
             _SYS,
             _user_prompt(state),
-            # Everything round-specific (the asks, the diff, the letter) rides
-            # in the user turn: this prefix is the manuscript block the whole
-            # fan-out shares byte-for-byte, and perturbing it would cost every
-            # other agent its cache hit.
+            # Everything round-specific (the asks, the letter) rides in the
+            # user turn: this prefix is the manuscript block the whole fan-out
+            # shares byte-for-byte, and perturbing it would cost every other
+            # agent its cache hit.
             cached_prefix=context_block(state),
         )
     except Exception as exc:  # noqa: BLE001
         return {"errors": [f"{AUDITOR_NAME} auditor failed: {exc}"]}
 
     output: RevisionComplianceOutput = result.instance  # type: ignore[assignment]
+    _verify_quotes(output, state.get("manuscript_md") or "")
     report: AuditReport = {
         "auditor": AUDITOR_NAME,
         "title": AUDITOR_TITLE,
@@ -192,19 +245,119 @@ def soft_gaps(output: RevisionComplianceOutput) -> list:
     """Open asks the auditor did not call blocking."""
     return [
         f for f in output.findings
-        if not f.blocking and f.status in _OPEN_STATUSES
+        if not f.blocking and f.status in OPEN_COMPLIANCE_STATUSES
     ]
 
 
+# --- the quote check --------------------------------------------------------
+
+
+def _verify_quotes(output: RevisionComplianceOutput, manuscript_md: str) -> None:
+    """Demote any claim of progress whose quoted evidence is not in the text.
+
+    This replaces the diff veto that used to sit in front of the editor, and
+    it is strictly better: the diff compared two *conversions* of two PDFs,
+    so a converter upgrade between rounds made an unchanged manuscript look
+    rewritten and a verified baseline look unverifiable. This compares the
+    auditor's own words against the very text the auditor was shown. There is
+    no second parse to disagree with, and conversion quality cannot make it
+    wrong.
+
+    It exists because of a live round on a byte-identical resubmission, where
+    the audit described an "expanded methods section" and "added references
+    42-44". Neither was in the paper. Both read to the editor as progress.
+
+    Only ``addressed`` and ``partial`` are checked. An item nobody acted on
+    has no passage to quote, and demanding one from ``not_addressed`` or
+    ``rebutted`` would penalise the auditor for the honest answer.
+    """
+    haystack = _normalize(manuscript_md)
+    if not haystack:
+        # Nothing to check against. Demoting every finding here would report a
+        # missing manuscript as an author failure, which is a lie about the
+        # authors rather than a fact about the audit.
+        return
+    for finding in output.findings:
+        if finding.status not in _PROGRESS_STATUSES:
+            continue
+        problem = _unlocatable(finding.manuscript_evidence, haystack)
+        if not problem:
+            continue
+        emit(AgentEvent(
+            kind="log",
+            node=current_node(),
+            text=(
+                f"compliance quote check: [{finding.id}] claimed "
+                f"{finding.status} on evidence that is not in the manuscript "
+                f"({problem}); recorded as {_DEMOTED_STATUS}"
+            ),
+        ))
+        _demote(finding, problem)
+
+
+def _demote(finding: ComplianceFinding, problem: str) -> None:
+    """Record the demotion on the finding, keeping what the auditor wrote.
+
+    The original evidence is preserved rather than blanked: the editor is
+    better served seeing the claim that could not be located than seeing an
+    empty field, and a later reader tracing this needs the actual words.
+    """
+    claimed = finding.status
+    finding.status = _DEMOTED_STATUS
+    finding.manuscript_evidence = (
+        f"[Recorded as {_DEMOTED_STATUS}: the audit reported this item "
+        f"{claimed}, but {problem}. The claim of progress is not counted.] "
+        + finding.manuscript_evidence.strip()
+    ).strip()
+
+
+def _unlocatable(evidence: str, haystack: str) -> str:
+    """'' when the evidence is in the manuscript, else what went wrong.
+
+    Quotation marks are how the prompt asks for the verifiable unit, so they
+    are what is checked when present. A field with no quotation in it is
+    checked whole, which lets a model that quoted without punctuation pass on
+    the merits — but a field that merely *describes* a change will not match
+    anything, which is the case this exists to catch.
+    """
+    text = evidence.strip()
+    if not text:
+        return "no manuscript evidence was given at all"
+
+    quotes = [q.strip() for q in _QUOTED.findall(text)]
+    checkable = [q for q in quotes if len(_normalize(q)) >= _MIN_QUOTE_CHARS]
+    if checkable:
+        missing = [q for q in checkable if _normalize(q) not in haystack]
+        if missing:
+            shown = "; ".join(f'"{q}"' for q in missing[:3])
+            return f"that text is not in the manuscript ({shown})"
+        return ""
+
+    whole = _normalize(text)
+    if len(whole) >= _MIN_QUOTE_CHARS and whole in haystack:
+        return ""
+    return "no verbatim quotation from the manuscript was given"
+
+
+def _normalize(text: str) -> str:
+    """Collapse whitespace and case, so a re-flowed line still matches.
+
+    Same idiom as the section diff used before it was removed: the manuscript
+    reaches the auditor as converted text whose line breaks are an artefact of
+    the converter, and a quote that differs from the source only in where a
+    line wrapped is the same quote.
+    """
+    return re.sub(r"\s+", " ", text).strip().casefold()
+
+
 def _user_prompt(state: ReviewState) -> str:
-    """Assemble the round-specific turn: asks, diff, letter, then the task.
+    """Assemble the round-specific turn: asks, letter, then the task.
 
     The task instructions come last so that the final thing the model reads is
     ours, not the untrusted letter's.
     """
     parts = [
         _revisions_block(state.get("prior_round")),
-        _diff_block(state.get("manuscript_diff")),
         _statement_block(state.get("author_statement") or ""),
         _TASK,
     ]
@@ -220,17 +373,6 @@ def _revisions_block(prior) -> str:
     if prior is None:
         return "(no prior round record was available; there are no required revisions to check)"
     return prior.required_revisions_block()
-
-
-def _diff_block(diff) -> str:
-    """What changed since the previous draft.
-
-    ``render_diff_block`` already says the right thing for an unavailable or
-    empty diff, so the only case left is a diff that was never computed.
-    """
-    if diff is None:
-        diff = ingest_diff.unavailable("no comparison against a previous draft was computed")
-    return ingest_diff.render_diff_block(diff)
 
 
 def _statement_block(statement: str) -> str:

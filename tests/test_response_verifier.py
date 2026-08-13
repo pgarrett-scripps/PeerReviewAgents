@@ -18,7 +18,6 @@ from peerreviewagents import rounds
 from peerreviewagents.agents.author import response_verifier
 from peerreviewagents.agents.schemas import ResponseVerificationOutput, VerifiedClaim
 from peerreviewagents.default_config import get_config
-from peerreviewagents.ingest import diff as ingest_diff
 from peerreviewagents.reports import write_reports
 
 # --- harness ----------------------------------------------------------------
@@ -71,9 +70,6 @@ def _state(tmp_path, statement: str = STATEMENT, **over):
         "sections": {"methods": "Three clusters, seed 42.", "results": "4% on A."},
         "config": get_config(output_dir=str(tmp_path)),
         "prior_round": _prior(),
-        "manuscript_diff": ingest_diff.diff_sections(
-            {"methods": "One cluster."}, {"methods": "Three clusters, seed 42."}
-        ),
         "author_statement": statement,
     }
     state.update(over)
@@ -170,10 +166,33 @@ def test_panel_block_carries_corroborated_pointers(monkeypatch, tmp_path):
     block = out["verified_claims_block"]
 
     assert "three clusters" in block
-    assert "re: R1-01" in block
     assert "We evaluate on three production clusters" in block
-    # Framed as a pointer to re-read, never as a finding.
-    assert "re-read" in block
+    # Framed as a pointer to read, never as a finding.
+    assert "pointers, not" in block
+
+
+def test_panel_block_tells_the_reviewers_nothing_about_the_round():
+    """The one channel from the letter to a blind panel must stay blind.
+
+    This block is the only thing a reviewer sees that the authors touched,
+    and the panel is never told which round it is reviewing. A prior-round id
+    in `targets`, or a sentence about "the previous round", would hand it the
+    exact fact the blinding withholds — so the ids stay in the editor-facing
+    record and only the passage goes to the panel.
+    """
+    output = ResponseVerificationOutput(
+        claims=[_claim("The methods state a seed.", "corroborated", targets="R1-01")],
+        instruction_attempts=[],
+        summary="",
+    )
+    block = output.panel_block()
+
+    assert "R1-01" not in block
+    for leak in ("previous round", "prior round", "revision", "resubmi", "round 1"):
+        assert leak not in block.lower()
+    # The editor's copy keeps the id: it is the lineage, and the editor is
+    # the agent that is allowed to know.
+    assert "R1-01" in output.to_markdown()
 
 
 def test_panel_block_excludes_everything_unsupported(monkeypatch, tmp_path):
@@ -275,7 +294,11 @@ def test_prior_round_ids_are_available_to_resolve_targets(monkeypatch, tmp_path)
     user = recorder.user_text()
     assert "[R1-01]" in user                     # the editor's numbered asks
     assert "[methodology-1]" in user             # the reviewer's own point ids
-    assert "What changed since the previous draft" in user
+    # The verifier is shown one draft, not two. It used to also receive a
+    # section diff against the previous draft, which is gone with the rest of
+    # the diff — a claim about what changed is checkable here only as a claim
+    # about what the manuscript says now.
+    assert "What changed since the previous draft" not in user
 
 
 # --- failure modes ----------------------------------------------------------
@@ -330,7 +353,7 @@ def test_empty_statement_verifies_nothing_and_calls_no_model(monkeypatch, tmp_pa
 def test_missing_prior_round_still_verifies(monkeypatch, tmp_path):
     """A letter without a resolvable round is checkable against the text alone."""
     _patch(monkeypatch)
-    out = response_verifier.node(_state(tmp_path, prior_round=None, manuscript_diff=None))
+    out = response_verifier.node(_state(tmp_path, prior_round=None))
     assert "three clusters" in out["verified_claims_block"]
 
 

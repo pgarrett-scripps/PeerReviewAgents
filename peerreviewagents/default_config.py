@@ -160,27 +160,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "manuscript_char_budget": None,
     # --- Revision rounds ---
     # Job ID (or report directory) of the previous round for this manuscript.
-    # Setting it turns the run into a revision round: each reviewer receives
-    # its OWN prior report and rules on every point it raised, a compliance
-    # auditor checks the previous decision letter's numbered required
-    # revisions against the new draft, and the editor decides on the delta.
-    # None (default) = an ordinary first-round review. See
-    # peerreviewagents.rounds for the record format.
+    # Setting it turns the run into a revision round: a compliance auditor
+    # checks the previous decision letter's numbered required revisions
+    # against the new draft, and the editor decides on the round-over-round
+    # delta. The eight specialist reviewers are deliberately NOT told — they
+    # review the manuscript as it stands, every round, because a panel told it
+    # is looking at a revision starts looking for progress. None (default) =
+    # an ordinary first-round review. See peerreviewagents.rounds for the
+    # record format.
     "revision_of": None,
-    # Optional path to the manuscript file the PREVIOUS round reviewed
-    # (pdf/md/tex/txt). Only meaningful alongside `revision_of`, and used for
-    # exactly one thing: the local (difflib, zero-token) section diff between
-    # the two drafts. Without it the diff recovers the prior draft from the
-    # ingest cache under the key recorded in round.json — which works on a
-    # long-lived machine and never on an ephemeral CI runner, where the cache
-    # dies with the job and any cache-key schema change orphans every round
-    # record already published. A caller that still has the prior draft hands
-    # the file in here instead; it is parsed under THIS run's ingest config,
-    # same as the new draft, so the diff compares like with like. Verified
-    # against the prior round's recorded text hash when one exists. A baseline
-    # that cannot be read, or is not the draft that round reviewed, costs the
-    # diff and never the run. None (default) = cache recovery only.
-    "revision_baseline_path": None,
     # Optional path to the REAL authors' response letter (pdf/md/tex/txt) —
     # the human scientists' reply, not the simulated author-rebuttal agent.
     # Treated as untrusted, interested-party input: never shown to the panel
@@ -195,19 +183,23 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # What kind of follow-up run this is. Both need `revision_of`; they differ
     # in what changed, and therefore in what is allowed to run.
     #
-    #   "revision"   (default) the AUTHORS changed the manuscript. Diff the
-    #                drafts, run the compliance auditor over the previous
-    #                letter's required revisions, decide on the delta.
+    #   "revision"   (default) the AUTHORS changed the manuscript. Run the
+    #                compliance auditor over the previous letter's required
+    #                revisions, and decide on the delta.
     #
     #   "correction" the manuscript is UNCHANGED and the review itself is
     #                challenged. The compliance auditor must not run: against
     #                an identical draft it would correctly report every
     #                required revision as undone and push the verdict down —
     #                punishing an author who was right that a reviewer misread
-    #                the paper. The diff is skipped for the same reason: there
-    #                is nothing to compare. The response verifier still runs,
-    #                and it is what separates a checkable factual claim from a
+    #                the paper. The response verifier still runs, and it is
+    #                what separates a checkable factual claim from a
     #                disagreement about judgment.
+    #
+    # The reviewer panel is unaffected by this setting. It is blind to the
+    # round in both modes, so there is nothing about a re-review to switch
+    # off; what a correction changes is which auditors run and, via
+    # `only_reviewers`, which specialists are resampled at all.
     "revision_mode": "revision",
     # Restrict the specialist fan-out to these reviewers by name, e.g.
     # ["methodology", "data_analysis"]. Empty (default) = the full panel.
@@ -406,7 +398,6 @@ _ENV_STR_KEYS = {
     "PEERREVIEW_ARTICLE_TYPE": "article_type",
     "PEERREVIEW_CAVEMAN": "caveman",
     "PEERREVIEW_CONVERSION_GATE": "conversion_gate",
-    "PEERREVIEW_REVISION_BASELINE_PATH": "revision_baseline_path",
     "PEERREVIEW_OPENAI_BASE_URL": "openai_base_url",
 }
 _ENV_INT_KEYS = {

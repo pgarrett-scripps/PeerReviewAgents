@@ -5,6 +5,11 @@ only thing standing between the editor and a verdict argued from the tone of a
 response letter. Second, it must never be the reason a run dies: its inputs
 come from sibling agents that are each allowed to produce less than the full
 picture, so a missing field costs a line, not the round.
+
+The editor is also the only agent in the pipeline that knows this is a
+revision at all; the panel is blind. So the tests over its prompt are not
+decoration — they are where "what the editor was told about the round" is
+pinned, and everything else in the run depends on it being told correctly.
 """
 
 from __future__ import annotations
@@ -17,10 +22,7 @@ from peerreviewagents.agents.editor import editor_in_chief
 from peerreviewagents.agents.schemas import (
     ComplianceFinding,
     EditorDecisionOutput,
-    NewIssue,
-    PriorPointVerdict,
     RevisionComplianceOutput,
-    RevisionReviewerOutput,
 )
 from peerreviewagents.agents.utils.round_delta import round_delta
 from peerreviewagents.default_config import get_config
@@ -67,12 +69,13 @@ def _prior(**over):
     return rounds.build_from_state(base, job_id="20260801-round1")
 
 
-def _state(prior=None, reports=None, audits=None, **config):
+def _state(prior=None, reports=None, audits=None, ingest=None, **config):
     return {
         "config": get_config(**config),
         "prior_round": prior,
         "reports": reports if reports is not None else _reports(),
         "audits": audits or [],
+        "ingest": ingest or {},
     }
 
 
@@ -142,99 +145,54 @@ def test_final_round_says_no_further_round_is_available():
     assert "last one this review can make" in block
 
 
-# --- the manuscript delta line ----------------------------------------------
+# --- the identical-resubmission line ----------------------------------------
+#
+# What replaced the section diff. Two sha256s of two files: no re-parse, no
+# converter to disagree with, and only one direction that carries a fact.
 
 
-def test_unchanged_manuscript_is_named_to_the_editor():
-    """Points marked resolved against an untouched draft must meet their contradiction."""
-    from peerreviewagents.ingest import diff as ingest_diff
-
-    sections = {"methods": "We train on one cluster."}
-    state = _state(prior=_prior())
-    state["manuscript_diff"] = ingest_diff.diff_sections(sections, dict(sections))
-    block = round_delta(state)
-    assert "did not substantively change" in block
-    assert "resolved against an unchanged text" in block
+def _hashed_prior(digest: str = "abc123"):
+    prior = _prior()
+    prior.manuscript_file_sha256 = digest
+    return prior
 
 
-def test_reference_only_churn_still_counts_as_unchanged():
-    """Padding the bibliography must not read as a substantive revision."""
-    from peerreviewagents.ingest import diff as ingest_diff
-
-    state = _state(prior=_prior())
-    state["manuscript_diff"] = ingest_diff.diff_sections(
-        {"methods": "Same.", "references": "[1] Smith 2019."},
-        {"methods": "Same.", "references": "[1] Smith 2019. [2] Jones 2020."},
+def test_a_byte_identical_resubmission_is_named_to_the_editor():
+    block = round_delta(
+        _state(prior=_hashed_prior(), ingest={"file_sha256": "abc123"})
     )
-    assert "did not substantively change" in round_delta(state)
+    assert "byte-identical to the draft the previous round reviewed" in block
+    assert "the text is the same text" in block
 
 
-def test_changed_sections_are_counted_and_named():
-    from peerreviewagents.ingest import diff as ingest_diff
-
-    state = _state(prior=_prior())
-    state["manuscript_diff"] = ingest_diff.diff_sections(
-        {"methods": "We train on one cluster."},
-        {
-            "methods": "We train on three clusters with seed 42.",
-            "limitations": "Single-domain evaluation.",
-        },
+def test_the_identical_line_forbids_reading_it_as_bad_faith():
+    """The editor rejected a byte-identical resubmission for "disregard for
+    the review process". Nobody had disregarded anything: an archive served
+    the same PDF twice. The fact ships with what it does not mean."""
+    block = round_delta(
+        _state(prior=_hashed_prior(), ingest={"file_sha256": "abc123"})
     )
-    block = round_delta(state)
-    assert "2 sections substantively changed" in block
-    assert "methods" in block and "limitations" in block
+    assert "NOT evidence of bad faith" in block
+    assert "not defiance of an editor" in block
+    assert "do not escalate the verdict" in block
 
 
-def test_a_never_computed_diff_yields_no_delta_line():
-    """No diff was ever in play (a first round has nothing to compare);
-    asserting anything would be a guess."""
-    assert "Manuscript delta" not in round_delta(_state(prior=_prior()))
-
-
-def test_an_unavailable_diff_is_disclosed_not_omitted():
-    """Silence let hallucinated deltas stand: on a live unchanged
-    resubmission whose baseline failed verification, a reviewer's 'the
-    authors have addressed both concerns' and a compliance audit's invented
-    'expanded methods section' reached the editor with nothing beside them
-    saying no comparison existed. Disclosure asserts nothing about the draft
-    — it prices the round's change claims."""
-    from peerreviewagents.ingest import diff as ingest_diff
-
-    state = _state(prior=_prior())
-    state["manuscript_diff"] = ingest_diff.unavailable("cache cleared")
-    block = round_delta(state)
-    assert "NO verified draft comparison is available" in block
-    assert "cache cleared" in block
-    assert "unverified" in block
-
-
-def test_progress_claims_on_an_unchanged_draft_are_contradicted():
-    """The compliance auditor described added references and an expanded
-    methods section on a byte-identical manuscript. When the deterministic
-    diff says nothing substantively changed, claimed progress is contradicted
-    next to the count it inflates."""
-    from peerreviewagents.ingest import diff as ingest_diff
-
-    output = RevisionComplianceOutput(
-        summary="Progress reported.",
-        findings=[
-            ComplianceFinding(id="R1-01", status="addressed", blocking=False),
-            ComplianceFinding(id="R1-02", status="partial", blocking=True),
-            ComplianceFinding(id="R1-03", status="not_addressed", blocking=True),
-        ],
+def test_a_different_file_says_nothing():
+    """A re-export of an unedited document differs in every byte, so
+    "the file changed" is a change claim nothing checked."""
+    block = round_delta(
+        _state(prior=_hashed_prior(), ingest={"file_sha256": "def456"})
     )
-    sections = {"methods": "Methods text here."}
-    state = _state(prior=_prior(), audits=[_compliance_audit(output)])
-    state["manuscript_diff"] = ingest_diff.diff_sections(sections, dict(sections))
-    block = round_delta(state)
-    assert "CONTRADICTION: 2 items reported addressed or partially addressed" in block
-    assert "no substantive change" in block
+    assert "Manuscript file:" not in block
 
-    # A round whose draft genuinely changed carries no contradiction.
-    state["manuscript_diff"] = ingest_diff.diff_sections(
-        sections, {"methods": "Methods rewritten with a second cluster and seeds."}
-    )
-    assert "CONTRADICTION" not in round_delta(state)
+
+def test_a_missing_hash_on_either_side_says_nothing():
+    for prior, ingest in (
+        (_prior(), {"file_sha256": "abc123"}),          # record predates the field
+        (_hashed_prior(), {}),                          # this round never hashed
+        (_hashed_prior(), {"file_sha256": ""}),
+    ):
+        assert "Manuscript file:" not in round_delta(_state(prior=prior, ingest=ingest))
 
 
 # --- compliance -------------------------------------------------------------
@@ -303,43 +261,32 @@ def test_other_auditors_are_not_mistaken_for_the_compliance_audit():
     assert "Required revisions from round" not in round_delta(_state(prior=_prior(), audits=audits))
 
 
-# --- reviewer drift ---------------------------------------------------------
+# --- the demoted status -----------------------------------------------------
 
 
-def _drifting_body() -> str:
-    return RevisionReviewerOutput(
-        prior_score=3,
-        score=3,
-        confidence=4,
-        prior_points=[
-            PriorPointVerdict(id="methodology-1", status="resolved", evidence="Table 2."),
+def test_unsubstantiated_items_are_counted_as_open_not_as_progress():
+    """A claim of progress whose quote was not in the manuscript is not
+    progress. Counting it as such is the inflation the quote check removes."""
+    output = RevisionComplianceOutput(
+        summary="Progress reported.",
+        findings=[
+            ComplianceFinding(id="R1-01", status="unsubstantiated", blocking=True),
+            ComplianceFinding(id="R1-02", status="addressed", blocking=False),
         ],
-        new_issues=[
-            NewIssue(issue="The loss function is never stated.", caused_by_the_revision=False),
-            NewIssue(issue="New Figure 4 has no error bars.", caused_by_the_revision=True),
-        ],
-        summary="Concerns addressed.",
-        score_rationale="Held flat for a newly noticed gap.",
-    ).to_markdown(role="Methodology")
+    )
+    block = round_delta(_state(prior=_prior(), audits=[_compliance_audit(output)]))
+
+    assert "1 addressed, 1 unsubstantiated" in block
+    assert "1 still-open item is marked blocking" in block
+    assert "could not be found in the manuscript" in block
+    assert "That is not progress" in block
 
 
-def test_drift_is_recovered_from_the_rendered_reviewer_body():
-    reports = _reports()
-    reports[0]["body"] = _drifting_body()
-    block = round_delta(_state(prior=_prior(), reports=reports))
-    assert "Reviewer drift: 1 new issue raised this round" in block
-    assert "moves the goalposts" in block
-
-
-def test_drift_line_omitted_when_no_reviewer_drifted():
-    """Silence is not a claim of no drift — the signal may simply be absent."""
-    assert "Reviewer drift" not in round_delta(_state(prior=_prior()))
-
-
-def test_drift_prefers_promoted_structure_over_the_body():
-    reports = _reports(drifted_issues=[{"issue": "a"}, {"issue": "b"}])
-    reports[0]["body"] = _drifting_body()
-    assert "Reviewer drift: 4 new issues" in round_delta(_state(prior=_prior(), reports=reports))
+def test_no_demotion_note_when_nothing_was_demoted():
+    block = round_delta(
+        _state(prior=_prior(), audits=[_compliance_audit(_compliance_output())])
+    )
+    assert "unsubstantiated" not in block
 
 
 # --- degradation ------------------------------------------------------------
@@ -472,6 +419,27 @@ def test_revision_system_prompt_states_the_load_bearing_rules(monkeypatch):
     # Manipulation is inert, not punished.
     assert "instruction_attempts" in sys_prompt
     assert "NO weight in the verdict" in sys_prompt
+
+
+def test_the_editor_is_told_the_panel_was_blind(monkeypatch):
+    """The editor is the only agent that knows this is a revision. If it reads
+    the panel's fresh scores as a reviewer's own before-and-after, it will
+    read resampling noise as the authors having fixed or broken something."""
+    sys_prompt = editor_in_chief._REVISION_SYS
+    assert "BLIND" in sys_prompt
+    assert "INDEPENDENT SAMPLE" in sys_prompt
+    assert "resampling noise" in sys_prompt
+    # And it is told where continuity actually lives instead.
+    assert "compliance audit is the ONLY account" in sys_prompt
+
+
+def test_the_editor_is_forbidden_from_escalating_over_an_unchanged_draft():
+    """The incident: a byte-identical resubmission rejected for "disregard for
+    the review process", against a paper no author had resubmitted."""
+    sys_prompt = editor_in_chief._REVISION_SYS
+    assert "AN UNCHANGED DRAFT IS NOT DEFIANCE" in sys_prompt
+    assert "NEVER escalate a verdict" in sys_prompt
+    assert "lands at the PRIOR DECISION" in sys_prompt
 
 
 def test_verified_response_replaces_the_simulated_rebuttal(monkeypatch):

@@ -13,17 +13,19 @@ carry the design:
 * **Stable ids.** ``R1-03`` names the third required revision of round 1 for
   the life of the manuscript. Round 2 reports on it under that id, round 3
   can say it has been open for two rounds, and metrics join on it. Reviewer
-  weaknesses get ids the same way (``methodology-2``) so a reviewer can be
-  asked about its *own* prior points.
-* **No copy of the manuscript.** The record stores the ingest cache key
-  instead. :mod:`.ingest.cache` is already keyed by file content, so the
-  previous draft's parsed text is recoverable for the diff without a second
-  copy on disk — and if the cache was cleared, the round degrades to a
-  no-diff review rather than failing. The record also stores the sha256 of
-  the parsed text itself, because the cache key is an address and an address
-  can go stale: a caller who still has the prior draft as a *file* (a CI
-  runner never has the cache) proves it is the reviewed draft against the
-  text hash, whatever the cache-key derivation has become since.
+  weaknesses get ids the same way (``methodology-2``) so the editor's asks
+  can be attributed to the reviewer who raised them.
+
+  This is load-bearing now rather than convenient. The reviewer panel is
+  blind to the round — it is never told a previous one exists — so the R-list
+  is the *entire* lineage of a manuscript through this pipeline. An id that
+  changes between rounds severs it. See :func:`build_from_state` for how a
+  carried item keeps the id it was born with.
+* **No copy of the manuscript.** The record stores the ingest cache key and
+  two hashes of what the round read, not the draft itself. The file hash is
+  what a later round compares against to know whether a resubmission is
+  byte-identical to the draft the previous panel saw — the one "what changed"
+  fact that needs no re-parse and no converter agreement.
 
 Records are plain dataclasses, not pydantic models: this is data we write
 and read, not an LLM output that needs schema-constrained generation. That
@@ -34,12 +36,18 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import asdict, dataclass, field
 from dataclasses import fields as dataclass_fields
 from typing import Any
 
 SCHEMA_VERSION = 1
 ROUND_FILENAME = "round.json"
+
+# An ask the editor restated from an earlier round, which it is instructed to
+# write as "[R1-03] what specifically is still missing". The tag is the item's
+# identity, not part of its text.
+_CARRIED_TAG = re.compile(r"^\s*\[\s*R(?P<round>\d+)\s*-\s*(?P<index>\d+)\s*\]\s*")
 
 
 def revision_id(round_no: int, index: int) -> str:
@@ -100,8 +108,8 @@ class PriorReviewerReport:
     ``score`` is None when the reviewer found nothing in its dimension to
     judge — the same nullable contract as
     :class:`~.agents.schemas.ReviewerOutput`. Coercing it to a number here
-    would hand round N a score round N-1 never gave, and the revision prompt
-    would then ask the reviewer to justify moving it.
+    would hand round N a score round N-1 never gave, and the editor's
+    round-over-round delta would then show a movement that never happened.
     """
 
     reviewer: str
@@ -119,8 +127,8 @@ class RoundRecord:
     round: int
     job_id: str
     manuscript_title: str
-    # Ingest cache key of the manuscript reviewed in THIS round, so the next
-    # round can diff against it. Empty when the parse wasn't cached.
+    # Ingest cache key of the manuscript reviewed in THIS round. Empty when
+    # the parse wasn't cached.
     manuscript_cache_key: str
     decision: str
     weighted_score: float | None
@@ -128,22 +136,20 @@ class RoundRecord:
     minor_suggestions: list[str] = field(default_factory=list)
     reviewer_reports: list[PriorReviewerReport] = field(default_factory=list)
     # sha256 of the manuscript TEXT this round reviewed (the loader's
-    # ingest["text_sha256"]). The cache key above names where the parse
-    # lived; this names what the panel read, and it is the only identity that
-    # survives both a wiped cache and a cache-key schema change — the key
-    # derivation has changed under existing records before (cache v8), which
-    # on an ephemeral CI runner left no way to prove a re-fetched prior draft
-    # was the reviewed one. A later round handed the prior draft as a file
-    # (revision_baseline_path) verifies it against this before diffing.
-    # "" on records written before the field existed.
+    # ingest["text_sha256"]). The cache key above names where the parse lived;
+    # this names what the panel actually read, and it survives both a wiped
+    # cache and a cache-key schema change — the key derivation has changed
+    # under existing records before (cache v8). "" on records written before
+    # the field existed.
     manuscript_text_sha256: str = ""
-    # SHA-256 of the manuscript FILE's bytes, not its parsed text. The text
-    # hash breaks across converter upgrades — the same PDF reads into
-    # different text under rustypaper 0.1.1 and 0.2.0, so a baseline that is
-    # provably the reviewed file failed text verification and the round lost
-    # its diff at exactly the upgrade boundary. Bytes survive the upgrade;
-    # this is what a later round verifies a supplied baseline file against
-    # first. "" on records written before the field existed.
+    # SHA-256 of the manuscript FILE's bytes, not its parsed text. This is
+    # what a later round compares its own file hash against to establish that
+    # a resubmission is byte-identical to the draft the previous panel read —
+    # the one statement about "what changed" that costs nothing, needs no
+    # re-parse, and cannot be wrong. The text hash cannot do that job: the
+    # same PDF reads into different text under rustypaper 0.1.1 and 0.2.0, so
+    # an unchanged file looked changed at exactly the upgrade boundary. Bytes
+    # survive the upgrade. "" on records written before the field existed.
     manuscript_file_sha256: str = ""
     # job_id of the round this one revised, forming the lineage back to round 1.
     prior_job_id: str = ""
@@ -201,45 +207,15 @@ class RoundRecord:
     def revision_by_id(self, item_id: str) -> RequiredRevision | None:
         return next((r for r in self.required_revisions if r.id == item_id), None)
 
-    def prior_report_block(self, reviewer: str) -> str:
-        """Render one reviewer's prior pass for its own round-N prompt.
-
-        Deliberately scoped to a single reviewer: the panel's independence
-        rests on reviewers never seeing each other's reports, and a revision
-        round must not quietly become the round where they do.
-        """
-        report = self.report_for(reviewer)
-        if report is None:
-            return ""
-        scored = isinstance(report.score, (int, float))
-        lines = [
-            f"## Your review in round {self.round}",
-            "",
-            (
-                f"You scored the manuscript {report.score:g}/5 "
-                f"(confidence {report.confidence:g}/5)."
-                if scored
-                # A reviewer that found nothing in its remit last round is
-                # told so plainly. Formatting None here used to crash; showing
-                # it as a number would be worse, because the revision prompt
-                # then asks the reviewer to justify moving a score it never
-                # gave.
-                else "You found nothing in your dimension to judge in that "
-                     "draft and gave no score. If the revision has added "
-                     "something your dimension covers, score it now; if not, "
-                     "return null again."
-            ),
-        ]
-        if report.weaknesses:
-            lines += ["", "Weaknesses you raised, by id:"]
-            lines += [f"- [{w.id}] {w.text}" for w in report.weaknesses]
-        if report.questions:
-            lines += ["", "Questions you asked the authors:"]
-            lines += [f"- {q}" for q in report.questions]
-        return "\n".join(lines)
-
     def required_revisions_block(self) -> str:
-        """Render the editor's numbered asks for the compliance auditor."""
+        """Render the editor's numbered asks for the compliance auditor.
+
+        One id per item, and the id is the item's own — a carried ask is
+        stored under the id it was raised with (see :func:`_assign_ids`), so
+        round 3 renders ``[R1-03]`` exactly once for an item that has been
+        open since round 1 rather than a fresh id with the real one inside
+        the sentence.
+        """
         if not self.required_revisions:
             return "(the previous decision letter required no revisions)"
         lines = [f"## Required revisions from round {self.round}", ""]
@@ -309,14 +285,7 @@ def build_from_state(state: dict, job_id: str, cache_key: str = "") -> RoundReco
     round_no = (prior.round + 1) if prior is not None else 1
     config = state.get("config") or {}
 
-    revisions = [
-        RequiredRevision(
-            id=revision_id(round_no, i),
-            text=text,
-            source_reviewer=_attribute(text, state),
-        )
-        for i, text in enumerate(state.get("required_revisions") or [])
-    ]
+    revisions = _assign_ids(state.get("required_revisions") or [], round_no, state)
 
     reports = [
         PriorReviewerReport(
@@ -361,6 +330,58 @@ def build_from_state(state: dict, job_id: str, cache_key: str = "") -> RoundReco
         prior_job_id=str(config.get("revision_of") or ""),
         desk_rejected=bool(state.get("desk_rejected")),
     )
+
+
+def _assign_ids(
+    texts: list[str], round_no: int, state: dict
+) -> list[RequiredRevision]:
+    """Give every ask an id, keeping the one a carried item already has.
+
+    The editor is told to restate a still-open ask as ``[R1-03] <what is
+    still missing>``, and it does. Re-enumerating those as ``R2-01`` used to
+    store the original id buried inside the *text*, so the item rendered as
+    "[R2-01] [R1-03] …" in round 3's compliance prompt — two ids for one ask,
+    neither of which was reliably the one round 2's auditor had reported
+    under. With the panel blinded, this list is the whole lineage of the
+    manuscript, and an ask that changes identity between rounds breaks it.
+
+    So a tagged item keeps its tag as its id and loses it from its text, and
+    only genuinely new asks draw a fresh ``R{this round}-nn``. New asks are
+    numbered among themselves, so round 3's first new item is ``R3-01``
+    however many carried items sit above it.
+
+    The id is re-rendered through :func:`revision_id` rather than copied
+    verbatim, so ``[R1-3]`` and ``[R1-03]`` become the same id and
+    ``revision_by_id("R1-03")`` resolves either way.
+    """
+    out: list[RequiredRevision] = []
+    taken: set[str] = set()
+    fresh = 0
+    for raw in texts:
+        text = str(raw)
+        match = _CARRIED_TAG.match(text)
+        if match:
+            item_id = revision_id(
+                int(match.group("round")), int(match.group("index")) - 1
+            )
+            text = text[match.end():].strip()
+        else:
+            item_id = ""
+        # Also covers the pathological case of the editor restating two asks
+        # under one id: the second gets a fresh id rather than silently
+        # overwriting the first for every consumer that looks items up by id.
+        while not item_id or item_id in taken:
+            item_id = revision_id(round_no, fresh)
+            fresh += 1
+        taken.add(item_id)
+        out.append(RequiredRevision(
+            id=item_id,
+            text=text,
+            # Attributed on the stripped text: an id tag is not evidence about
+            # which reviewer raised the point.
+            source_reviewer=_attribute(text, state),
+        ))
+    return out
 
 
 def _attribute(text: str, state: dict) -> str:

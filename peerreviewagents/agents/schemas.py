@@ -166,207 +166,30 @@ class ReviewerOutput(BaseModel):
         return "\n".join(parts)
 
 
-# --- Specialist reviewer, revision round ------------------------------------
-
-ResolutionStatus = Literal["resolved", "partial", "outstanding"]
-
-
-class PriorPointVerdict(BaseModel):
-    """A reviewer's ruling on one weakness it raised in an earlier round."""
-
-    id: str = Field(
-        ...,
-        description="The id of the prior weakness being ruled on, exactly as "
-                    "given to you (e.g. 'methodology-2'). Never invent ids.",
-    )
-    status: ResolutionStatus = Field(
-        ...,
-        description="resolved = the revised manuscript fully answers it; "
-                    "partial = moved in the right direction but incomplete; "
-                    "outstanding = not meaningfully addressed.",
-    )
-    evidence: str = Field(
-        ...,
-        description="For resolved/partial: quote or locate the revised text "
-                    "that answers it. For outstanding: say what you looked for "
-                    "and where, so the authors know what would satisfy it.",
-    )
-
-
-class NewIssue(BaseModel):
-    """An issue this reviewer is raising for the first time in this round."""
-
-    issue: str = Field(..., description="The issue, grounded in manuscript evidence.")
-    caused_by_the_revision: bool = Field(
-        ...,
-        description="True ONLY if the revision itself created this issue (new "
-                    "text, changed numbers, a fix that broke something else). "
-                    "False means it was equally visible in the previous draft "
-                    "and you did not raise it then. Answer honestly: raising "
-                    "old issues late moves the goalposts on the authors, and "
-                    "the editor is shown this flag.",
-    )
-
-
-class RevisionReviewerOutput(BaseModel):
-    """One specialist's re-review of a revised manuscript.
-
-    Extends the round-1 verdict with an explicit ruling on each point this
-    reviewer raised before, so score movement is *derivable* — the editor can
-    check the new score against what the reviewer says it resolved rather
-    than taking the number on faith.
-    """
-
-    prior_score: int | None = Field(
-        default=None, ge=1, le=5,
-        description="The score you gave this manuscript in the previous round, "
-                    "copied from the report shown to you. Do not re-derive it. "
-                    "Null when your prior report gave no score.",
-    )
-    # Nullable for the same reason and under the same contract as
-    # ReviewerOutput.score: a reviewer that abstained last round is told to
-    # "return null again" if the revision still gives its dimension nothing to
-    # judge, and a schema that forbids null at that moment forces the invented
-    # number the nullable score exists to prevent.
-    score: int | None = Field(
-        default=None, ge=1, le=5,
-        description="Your score for the REVISED manuscript. 1=reject, "
-                    "3=major-revision, 4=minor-revision, 5=accept. Use null "
-                    "ONLY when the revised manuscript still contains nothing "
-                    "within your dimension to judge; null is NOT for work you "
-                    "judge harshly.",
-    )
-    not_applicable_reason: str = Field(
-        default="",
-        description="Required when score is null, ignored otherwise. One "
-                    "sentence naming what is absent from the revised "
-                    "manuscript that puts it outside your dimension.",
-    )
-    confidence: int = Field(..., ge=1, le=5, description="Certainty in the new score.")
-    prior_points: list[PriorPointVerdict] = Field(
-        default_factory=list,
-        description="One entry for EVERY weakness you raised in the previous "
-                    "round, by id. Do not skip any, including ones you now "
-                    "consider unimportant.",
-    )
-    new_issues: list[NewIssue] = Field(
-        default_factory=list,
-        description="Issues not raised in your previous review. Prefer an "
-                    "empty list: a revision round judges the response to the "
-                    "critique that was given, not a fresh hunt for faults.",
-    )
-    summary: str = Field(
-        ...,
-        description="One paragraph: what the revision did about your concerns "
-                    "and where that leaves the manuscript from your specialty.",
-    )
-    score_rationale: str = Field(
-        ...,
-        description="Why the new score differs from (or matches) your prior "
-                    "score. If your points are resolved and you did not raise "
-                    "the score, name specifically what still holds it down.",
-    )
-    strengths: list[str] = Field(default_factory=list)
-    questions: list[str] = Field(default_factory=list)
-
-    @model_validator(mode="after")
-    def _abstention_must_be_justified(self) -> RevisionReviewerOutput:
-        """Same constraint as ReviewerOutput: a null score must name its reason.
-
-        The revision round inherits the round-1 failure mode unchanged — a
-        reviewer that can form a view but abstains removes its verdict from
-        the panel instead of committing to one. Rejecting the output makes the
-        structured-output layer ask again.
-        """
-        if self.score is None and not self.not_applicable_reason.strip():
-            raise ValueError(
-                "score is null but not_applicable_reason is empty. Give a null "
-                "score only when the revised manuscript contains nothing your "
-                "dimension covers, and say what is absent. If you can form any "
-                "view of this paper on your dimension — including a poor one — "
-                "give a number instead."
-            )
-        return self
-
-    def resolved_count(self) -> int:
-        return sum(1 for p in self.prior_points if p.status == "resolved")
-
-    def outstanding_count(self) -> int:
-        return sum(1 for p in self.prior_points if p.status == "outstanding")
-
-    def drifted_issues(self) -> list[NewIssue]:
-        """New issues the reviewer admits were visible last round."""
-        return [i for i in self.new_issues if not i.caused_by_the_revision]
-
-    def score_is_inconsistent(self) -> bool:
-        """True when the reviewer resolved everything yet withheld the score.
-
-        The mechanical guard behind the revision round: if every prior point
-        is resolved and the revision introduced no new issue, a score that
-        did not move is a contradiction the reviewer has to answer for. It
-        does not decide who is right — it decides that someone must explain.
-        """
-        if not self.prior_points:
-            return False
-        # A null on either side leaves nothing to compare: a score that moved
-        # from or to an abstention is not "held", it changed category.
-        if self.score is None or self.prior_score is None:
-            return False
-        all_resolved = all(p.status == "resolved" for p in self.prior_points)
-        revision_caused = any(i.caused_by_the_revision for i in self.new_issues)
-        return all_resolved and not revision_caused and self.score <= self.prior_score
-
-    def to_markdown(self, role: str = "Reviewer") -> str:
-        if self.score is None or self.prior_score is None:
-            # No arithmetic across an abstention — an arrow would claim a
-            # movement between a number and a score that was never given.
-            arrow = "→"
-        else:
-            delta = self.score - self.prior_score
-            arrow = "→" if delta == 0 else ("↑" if delta > 0 else "↓")
-        prior_shown = "n/a" if self.prior_score is None else f"{self.prior_score}/5"
-        now_shown = "n/a" if self.score is None else f"{self.score}/5"
-        parts: list[str] = [
-            f"# {role} — Revision Review",
-            "",
-            f"**Score:** {prior_shown} {arrow} {now_shown} "
-            f"(confidence {self.confidence}/5)",
-            "",
-        ]
-        # Same placement as ReviewerOutput: an unscorable dimension is stated
-        # at the top rather than left for a reader to infer from "n/a".
-        if self.score is None:
-            parts += [*_abstention_header(self.not_applicable_reason), ""]
-        parts += [
-            "## Summary",
-            self.summary.strip() or "(no summary provided)",
-            "",
-            "## Score rationale",
-            self.score_rationale.strip() or "(none given)",
-        ]
-        if self.prior_points:
-            parts += ["", "## Points from the previous round"]
-            for p in self.prior_points:
-                parts.append(f"- **[{p.id}] {p.status}** — {p.evidence.strip()}")
-        if self.new_issues:
-            parts += ["", "## Issues raised this round"]
-            for i in self.new_issues:
-                origin = ("introduced by the revision" if i.caused_by_the_revision
-                          else "was visible in the previous draft")
-                parts.append(f"- {i.issue} _({origin})_")
-        if self.strengths:
-            parts += ["", "## Strengths", *(f"- {s}" for s in self.strengths)]
-        if self.questions:
-            parts += ["", "## Questions", *(f"- {q}" for q in self.questions)]
-        return "\n".join(parts)
-
-
 # --- Revision compliance audit ----------------------------------------------
 
+# `unsubstantiated` is assigned by the pipeline, never chosen by the auditor:
+# it is where an 'addressed' or 'partial' lands when the manuscript text it
+# quoted cannot be found in the manuscript. Kept distinct from `unverifiable`
+# on purpose — "the answer is in a repository I cannot see" and "the sentence
+# you quoted is not in this paper" are different findings, and an auditor
+# shown an unchanged resubmission produced the second one, describing an
+# "expanded methods section" and "added references 42-44" that did not exist.
 ComplianceStatus = Literal[
-    "addressed", "partial", "not_addressed", "rebutted", "unverifiable"
+    "addressed", "partial", "not_addressed", "rebutted", "unverifiable",
+    "unsubstantiated",
 ]
 ClaimAccuracy = Literal["corroborated", "overstated", "contradicted", "no_claim"]
+
+# Statuses that leave an ask open. `rebutted` is pointedly absent: the authors
+# answered, with a reason, and tallying an argued-back item as a gap would let
+# the checklist punish disagreement. `unsubstantiated` is present because a
+# claim of progress whose evidence could not be located is not progress — the
+# editor's round-delta and the blocking count read this same tuple, so the
+# three of them cannot drift apart.
+OPEN_COMPLIANCE_STATUSES = (
+    "not_addressed", "partial", "unverifiable", "unsubstantiated",
+)
 
 
 class ComplianceFinding(BaseModel):
@@ -385,12 +208,20 @@ class ComplianceFinding(BaseModel):
                     "should not be (a response, not a failure); unverifiable = "
                     "you cannot tell from the manuscript alone. IMPORTANT: only "
                     "manuscript text can justify 'addressed'. An author's claim "
-                    "that they made a change is never sufficient on its own.",
+                    "that they made a change is never sufficient on its own. Do "
+                    "not return 'unsubstantiated' — that status is assigned by "
+                    "the pipeline when a quotation you gave cannot be found in "
+                    "the manuscript.",
     )
     manuscript_evidence: str = Field(
         default="",
-        description="The revised text that substantiates the status — quote or "
-                    "locate it. Empty when nothing in the manuscript speaks to it.",
+        description="The manuscript text that substantiates the status. For "
+                    "'addressed' and 'partial' this MUST contain a verbatim "
+                    "quotation from the manuscript, in double quotes, long "
+                    "enough to locate — it is checked against the manuscript "
+                    "automatically, and a quotation that is not found there "
+                    "demotes the finding. Naming a section is not a quotation. "
+                    "Empty when nothing in the manuscript speaks to it.",
     )
     author_claim: str = Field(
         default="",
@@ -457,7 +288,7 @@ class RevisionComplianceOutput(BaseModel):
     def blocking_open(self) -> list[ComplianceFinding]:
         return [
             f for f in self.findings
-            if f.blocking and f.status in ("not_addressed", "partial", "unverifiable")
+            if f.blocking and f.status in OPEN_COMPLIANCE_STATUSES
         ]
 
     def unreliable_claims(self) -> list[ComplianceFinding]:
@@ -571,27 +402,34 @@ class ResponseVerificationOutput(BaseModel):
         """What the reviewers see — corroborated pointers only.
 
         Reviewers are given the *locations* the authors point to and must
-        re-read them and decide for themselves. Nothing here asserts a
+        read them and decide for themselves. Nothing here asserts a
         conclusion, which is what keeps a persuasive letter from doing the
         reviewer's job for it.
+
+        Deliberately free of round framing. The panel is blind — it is never
+        told whether it is looking at a first submission or a resubmission —
+        and this block is the one channel by which anything the authors wrote
+        reaches it. Naming a previous round here, or carrying a prior-round id
+        in ``targets``, would hand the panel the very fact the blinding exists
+        to withhold, so the ids stay in ``to_markdown`` for the editor and
+        only the passage reaches a reviewer.
         """
         corroborated = self.corroborated()
         if not corroborated:
             return ""
         lines = [
-            "## Passages the authors ask you to re-read",
+            "## Passages the authors have asked the panel to read",
             "",
-            "The authors submitted a response to the previous round. Their "
-            "letter has been checked against the manuscript, and only claims "
-            "that point at a real passage are reproduced below. These are "
-            "pointers, not findings: re-read the passage and reach your own "
-            "conclusion. The authors are an interested party — the manuscript "
-            "is the evidence, their letter is not.",
+            "The authors have flagged the passages below. Each has been "
+            "checked against the manuscript, and only claims that point at a "
+            "real passage are reproduced here. These are pointers, not "
+            "findings: read the passage and reach your own conclusion. The "
+            "authors are an interested party — the manuscript is the "
+            "evidence, their account of it is not.",
             "",
         ]
         for c in corroborated:
-            target = f" (re: {c.targets})" if c.targets else ""
-            lines.append(f"- {c.claim}{target}")
+            lines.append(f"- {c.claim}")
             if c.manuscript_locator:
                 lines.append(f"  - Points to: {c.manuscript_locator.strip()}")
         return "\n".join(lines)
