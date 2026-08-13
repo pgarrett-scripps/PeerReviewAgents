@@ -4,10 +4,12 @@ Reviewers call *logical operations* via :func:`route` (e.g.
 ``route("find_related_work", config, query="X-ray diffraction")``).
 The router resolves the operation to a category, looks up the configured
 vendor list (``data_vendors[category]``), and tries each vendor in
-order. A :class:`peerreviewagents.research.RateLimitError` from a
-vendor triggers fall-through to the next vendor; any other exception
-the vendor either swallows (returning graceful-degrade text) or raises
-back to the caller.
+order. A :class:`peerreviewagents.research.RateLimitError` or
+:class:`peerreviewagents.research.VendorUnavailableError` from a vendor
+triggers fall-through to the next vendor; when the whole chain fails the
+router raises :class:`peerreviewagents.research.ResearchUnavailableError`
+so the tool loop records the lookup as an error rather than as a clean
+zero-hit search. Any other exception propagates to the caller.
 
 Per-method override: ``tool_vendors[method]`` wins over the
 category-level default. Vendors are listed comma-separated:
@@ -23,7 +25,15 @@ from __future__ import annotations
 import threading
 from typing import Any, Callable
 
-from . import RateLimitError, arxiv, biorxiv, pubmed, semantic_scholar
+from . import (
+    RateLimitError,
+    ResearchUnavailableError,
+    VendorUnavailableError,
+    arxiv,
+    biorxiv,
+    pubmed,
+    semantic_scholar,
+)
 
 # --- Category & method registry --------------------------------------------
 
@@ -123,11 +133,19 @@ def last_vendor() -> str:
 
 
 def route(method: str, config: dict | None = None, **kwargs: Any) -> str:
-    """Dispatch ``method`` to the first non-rate-limited vendor.
+    """Dispatch ``method`` to the first vendor that can serve it.
 
     ``kwargs`` are forwarded verbatim to the vendor function; every
     vendor function in this layer takes the same positional / keyword
     args (``query``, ``max_results``).
+
+    Raises :class:`ResearchUnavailableError` when every vendor in the
+    chain rate-limited or was unreachable. Raised, not returned: returned
+    text is a served answer, and it credited the last vendor with a clean
+    zero-hit search when in fact no index was ever consulted — the
+    provenance line behind "no prior art located" said the opposite of
+    what happened. The tool loop already converts a raised error into a
+    tool_error record and a failure note the model can carry on from.
     """
     # Defense-in-depth: in offline mode the reviewer/auditor nodes never bind
     # research tools, so this is normally unreachable — but if anything does
@@ -141,7 +159,7 @@ def route(method: str, config: dict | None = None, **kwargs: Any) -> str:
     if not vendors:
         return f"[no vendor configured for {method!r}]"
 
-    last_rate_limit: RateLimitError | None = None
+    failures: list[str] = []
     for vendor in vendors:
         fn = impls.get(vendor)
         if fn is None:
@@ -149,12 +167,16 @@ def route(method: str, config: dict | None = None, **kwargs: Any) -> str:
         try:
             result = fn(**kwargs)
         except RateLimitError as exc:
-            last_rate_limit = exc
+            failures.append(f"{vendor}: rate-limited ({exc})")
             continue
+        except VendorUnavailableError as exc:
+            failures.append(f"{vendor}: unavailable ({exc})")
+            continue
+        # Only a vendor that actually answered is credited here, so
+        # last_vendor() never names a vendor for a lookup that failed.
         _LAST.vendor = vendor
         return result
-    # Every vendor in the chain rate-limited.
-    return (
-        f"[{method}: all configured vendors rate-limited "
-        f"({last_rate_limit})]"
+    # Every vendor in the chain failed (rate-limited or unreachable).
+    raise ResearchUnavailableError(
+        f"{method}: every configured vendor failed — " + "; ".join(failures)
     )

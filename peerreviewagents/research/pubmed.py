@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import os
 
-from . import RateLimitError
+from . import RateLimitError, VendorUnavailableError
 
 _ESEARCH = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
 _ESUMMARY = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
@@ -22,8 +22,8 @@ def search(query: str, max_results: int = 5) -> str:
     """Return a formatted plaintext block of PubMed hits for ``query``."""
     try:
         import requests
-    except ImportError:
-        return "[pubmed unavailable: install `requests`]"
+    except ImportError as exc:
+        raise VendorUnavailableError("pubmed unavailable: install `requests`") from exc
 
     api_key = os.environ.get("NCBI_API_KEY")
     common: dict[str, str] = {"db": "pubmed", "retmode": "json"}
@@ -38,13 +38,18 @@ def search(query: str, max_results: int = 5) -> str:
             timeout=20,
         )
     except Exception as exc:  # noqa: BLE001
-        return f"[pubmed unavailable: {exc}]"
+        # Outage, not an answer: raised so the router can try the fallback
+        # vendor rather than filing a clean zero-hit search.
+        raise VendorUnavailableError(f"pubmed unreachable: {exc}") from exc
 
     if r.status_code == 429:
         raise RateLimitError("pubmed HTTP 429")
+    if r.status_code >= 500:
+        raise VendorUnavailableError(f"pubmed HTTP {r.status_code}")
     try:
         r.raise_for_status()
     except Exception as exc:  # noqa: BLE001
+        # Remaining 4xx: the API judged the query; that verdict is an answer.
         return f"[pubmed HTTP error: {exc}]"
 
     pmids = (r.json().get("esearchresult") or {}).get("idlist") or []
@@ -59,9 +64,11 @@ def search(query: str, max_results: int = 5) -> str:
             timeout=20,
         )
     except Exception as exc:  # noqa: BLE001
-        return f"[pubmed esummary failed: {exc}]"
+        raise VendorUnavailableError(f"pubmed esummary unreachable: {exc}") from exc
     if r2.status_code == 429:
         raise RateLimitError("pubmed HTTP 429")
+    if r2.status_code >= 500:
+        raise VendorUnavailableError(f"pubmed esummary HTTP {r2.status_code}")
     try:
         r2.raise_for_status()
     except Exception as exc:  # noqa: BLE001

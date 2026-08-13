@@ -56,13 +56,26 @@ def parse_rating(value: Any) -> float | None:
 
 
 def normalize_decision(raw: Any) -> str | None:
-    """Collapse a free-text decision to ``"accept"`` / ``"reject"`` / ``None``."""
+    """Collapse a free-text decision to ``"accept"`` / ``"reject"`` /
+    ``"withdrawn"`` / ``"desk_reject"`` / ``None``.
+
+    Withdrawn and desk-rejected are their own statuses, not ``"reject"``: a
+    withdrawal is the authors' act, not the reviewers' verdict, and folding
+    them into "reject" labeled papers the panel never judged as ground-truth
+    rejections — while the submission-field path was correctly skipping the
+    same papers. They come first because venue strings like "Desk Rejected
+    Submission" also contain "reject".
+    """
     if not raw:
         return None
     s = str(raw).strip().lower()
+    if "withdraw" in s:
+        return "withdrawn"
+    if "desk" in s:
+        return "desk_reject"
     if "accept" in s or "oral" in s or "poster" in s or "spotlight" in s:
         return "accept"
-    if "reject" in s or "withdraw" in s or "desk" in s:
+    if "reject" in s:
         return "reject"
     return None
 
@@ -80,8 +93,22 @@ def _is_review(invs: list[str]) -> bool:
     return any("Official_Review" in i or i.endswith("/Review") for i in invs)
 
 
+def _is_final_decision(invs: list[str]) -> bool:
+    return any("Decision" in i for i in invs)
+
+
+def _is_meta_review(invs: list[str]) -> bool:
+    return any("Meta_Review" in i for i in invs)
+
+
 def _is_decision(invs: list[str]) -> bool:
-    return any("Decision" in i or "Meta_Review" in i for i in invs)
+    """Decision-shaped notes: the venue's Decision, or a Meta_Review.
+
+    A meta-review's recommendation is the Area Chair's input to the decision,
+    not the decision — the two can differ, so :func:`extract_decision` only
+    consults Meta_Review notes when no Decision note yields a label.
+    """
+    return _is_final_decision(invs) or _is_meta_review(invs)
 
 
 def extract_scores(replies: list[Any], fields: tuple[str, ...] = _RATING_FIELDS) -> list[float]:
@@ -107,10 +134,20 @@ def extract_scores(replies: list[Any], fields: tuple[str, ...] = _RATING_FIELDS)
 def extract_decision(
     replies: list[Any], fields: tuple[str, ...] = _DECISION_FIELDS
 ) -> tuple[str | None, str]:
-    """Normalized + raw decision from the decision/meta note in a forum."""
-    for r in replies:
-        if not _is_decision(_invitations(r)):
-            continue
+    """Normalized + raw decision from the decision/meta note in a forum.
+
+    Decision notes are consulted before Meta_Review notes: the meta-review's
+    recommendation is advice to the program chairs and can differ from what
+    they decided, so it only counts when no Decision note yields a label.
+
+    May return the ``"withdrawn"`` / ``"desk_reject"`` sentinels — callers
+    skip those papers, mirroring :func:`decision_from_submission`, rather
+    than shopping other notes for a reviewer verdict that never happened.
+    """
+    decisions = [r for r in replies if _is_final_decision(_invitations(r))]
+    metas = [r for r in replies
+             if _is_meta_review(_invitations(r)) and r not in decisions]
+    for r in decisions + metas:
         content = getattr(r, "content", {}) or {}
         for fld in fields:
             raw = cval(content, fld)
@@ -307,6 +344,12 @@ def fetch_corpus(
             skipped["no_scores"] = skipped.get("no_scores", 0) + 1
             continue
         decision, decision_raw = extract_decision(replies, decision_fields)
+        if decision in ("withdrawn", "desk_reject"):
+            # Same exclusion as the submission-field path below: a withdrawal
+            # or desk rejection is not a reviewer accept-vs-reject verdict,
+            # whichever note it was announced in.
+            skipped[decision] = skipped.get(decision, 0) + 1
+            continue
         if decision is None:
             # No public Decision note (e.g. ICLR 2025) — outcome lives on the
             # submission's venue field; withdrawn/unknown come back as None.

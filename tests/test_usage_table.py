@@ -49,6 +49,27 @@ def test_repeated_calls_by_one_agent_accumulate():
     assert node_usage(RUN)["reviewer_novelty"][4] == pytest.approx(0.03)
 
 
+def test_concurrent_usage_events_lose_nothing():
+    """Usage callbacks land off-thread under the 8-reviewer fan-out, and the
+    per-node increments are read-modify-write: outside the lock, interleaving
+    callbacks silently dropped tokens and dollars from the table."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    per_thread, threads = 50, 8
+
+    def spend(_):
+        for _ in range(per_thread):
+            usage("reviewer_shared", input_tokens=3, output_tokens=1, cost_usd=0.5)
+
+    with ThreadPoolExecutor(max_workers=threads) as pool:
+        list(pool.map(spend, range(threads)))
+
+    row = node_usage(RUN)["reviewer_shared"]
+    assert row[0] == 3 * per_thread * threads
+    assert row[1] == per_thread * threads
+    assert row[4] == pytest.approx(0.5 * per_thread * threads)
+
+
 def test_a_fully_uncached_agent_is_visible_as_such():
     """The signal the table exists for: an agent sending the manuscript with
     no cache reads is writing its own entry instead of sharing the common

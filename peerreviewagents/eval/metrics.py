@@ -85,7 +85,12 @@ def cohen_kappa(a: list[str], b: list[str]) -> float | None:
     ca, cb = Counter(a), Counter(b)
     pe = sum((ca[label] / n) * (cb[label] / n) for label in labels)
     if pe == 1:
-        return 1.0
+        # Both raters used a single class, so chance agreement is total and
+        # kappa is 0/0 — undefined, not perfect. Reporting 1.0 here scored a
+        # system that rubber-stamps "accept" on an all-accept corpus as being
+        # in flawless calibrated agreement, when the data cannot distinguish
+        # it from a coin glued to one side.
+        return None
     return round((po - pe) / (1 - pe), 4)
 
 
@@ -208,6 +213,12 @@ def build_report(corpus_path: str, runs_path: str) -> dict[str, Any]:
     }
 
 
+def _fmt(value: Any) -> Any:
+    """Undefined statistics render as ``n/a`` — a κ that is 0/0 must not be
+    mistaken for a κ of 1.0 or for the string ``None``."""
+    return "n/a" if value is None else value
+
+
 def render_markdown(report: dict[str, Any]) -> str:
     h, a, c = report["health"], report["agreement"], report["consistency"]
     m = report.get("sample_manifest", {})
@@ -219,6 +230,16 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"git: `{m.get('git_sha','?')}` · config: `{m.get('config_digest','?')}` · "
         f"venue: `{m.get('venue','?')}`",
     ]
+    n_configs = report.get("distinct_configs", 1) or 1
+    if n_configs > 1:
+        # The manifest line above describes records[0] only; the numbers below
+        # blend every config in the file. Said loudly, because a pooled runs
+        # file otherwise reads as a single-configuration result.
+        lines.append(
+            f"> ⚠️ MIXED CONFIGS: this runs file pools {n_configs} distinct "
+            "configurations. Every number below blends them, and the manifest "
+            "above describes only one. Split the runs files to compare configs."
+        )
     if m.get("leakage_note"):
         lines.append(f"> ⚠️ Leakage: {m['leakage_note']}")
     lines += [
@@ -232,7 +253,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Scored papers: {a['n_scored_papers']}",
         f"- Score correlation: Spearman ρ = {a['score_spearman']}, Pearson r = {a['score_pearson']}",
         f"- Decision papers: {a['n_decision_papers']}",
-        f"- Decision accuracy: {a['decision_accuracy']}  ·  Cohen's κ = {a['decision_cohen_kappa']}",
+        f"- Decision accuracy: {_fmt(a['decision_accuracy'])}  ·  "
+        f"Cohen's κ = {_fmt(a['decision_cohen_kappa'])}",
         f"- Confusion (pred__truth): "
         f"accept→accept {cf['accept__accept']}, accept→reject {cf['accept__reject']}, "
         f"reject→accept {cf['reject__accept']}, reject→reject {cf['reject__reject']}",
