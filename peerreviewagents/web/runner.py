@@ -29,6 +29,35 @@ from .jobs import AGENT_NAMES, JobState
 
 _VALID_DECISIONS = {"accept", "minor", "major", "reject"}
 
+# State keys whose presence makes a failed run worth writing to disk anyway:
+# hours of finished per-agent work used to be discarded because the crash
+# came after the panel but before a valid decision.
+_SALVAGEABLE_KEYS = (
+    "reports", "audits", "debate", "meta_review", "desk_screen",
+    "author_rebuttal", "decision_letter",
+)
+
+
+def salvage_partial_reports(state: Any, errors: list[str]) -> str | None:
+    """Write whatever per-agent reports a failed run produced, or ``None``.
+
+    The run directory is clearly marked incomplete (summary.md carries a
+    FAILED banner and the errors) and no decision is fabricated. Returns the
+    run directory, or ``None`` when there is nothing on disk worth keeping.
+    Never raises: this is a best-effort last act on an already-failed run.
+    """
+    if not isinstance(state, dict) or not state.get("config"):
+        return None
+    if not any(state.get(k) for k in _SALVAGEABLE_KEYS):
+        return None
+    salvage = dict(state)
+    salvage["decision"] = ""  # never let a failure-path value read as a verdict
+    salvage["errors"] = list(dict.fromkeys([*(state.get("errors") or []), *errors]))
+    try:
+        return write_reports(salvage)
+    except Exception:  # noqa: BLE001
+        return None
+
 # Maps node names to phase labels so the frontend can scroll the camera
 # to the right room as work progresses.
 _NODE_PHASE = {
@@ -255,6 +284,11 @@ class JobRunner:
             if not self.job.errors:
                 errs = final.get("errors", []) if isinstance(final, dict) else []
                 self.job.errors.extend(errs or ["review did not produce a valid decision"])
+            # The failure came after real work: keep whatever the panel
+            # finished, marked incomplete, instead of discarding all of it.
+            salvaged = salvage_partial_reports(final, self.job.errors)
+            if salvaged:
+                self.job.report_dir = salvaged
 
         self.job.finished_at = time.time()
         # Use any per-call cost the graph itself accumulated (preferred)

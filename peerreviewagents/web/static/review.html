@@ -27,8 +27,11 @@
         </article>
     </main>
 
-    <script type="application/javascript"
-            src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <!-- Vendored, pinned copies: archived reports must render offline, and
+         model-echoed manuscript content is sanitized before every
+         innerHTML sink (see renderMarkdown below). -->
+    <script type="application/javascript" src="/static/vendor/marked.min.js"></script>
+    <script type="application/javascript" src="/static/vendor/purify.min.js"></script>
     <script>
         const RUN = new URLSearchParams(location.search).get('run');
         const els = {
@@ -43,7 +46,12 @@
                 '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
         }
         function renderMarkdown(md) {
-            return window.marked ? window.marked.parse(md) : `<pre>${esc(md)}</pre>`;
+            // Report markdown is model output over an untrusted manuscript;
+            // sanitize before it reaches innerHTML.
+            if (window.marked && window.DOMPurify) {
+                return window.DOMPurify.sanitize(window.marked.parse(md));
+            }
+            return `<pre>${esc(md)}</pre>`;
         }
 
         // Featured files lead the nav in reading order; everything else follows

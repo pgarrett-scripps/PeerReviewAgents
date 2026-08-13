@@ -25,8 +25,19 @@ def _slug(text: str) -> str:
 def write_reports(state: ReviewState) -> str:
     config = state["config"]
     ts = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    run_dir = os.path.join(config["output_dir"], f"{ts}-{_slug(state.get('manuscript_title', ''))}")
-    os.makedirs(run_dir, exist_ok=True)
+    base = os.path.join(config["output_dir"], f"{ts}-{_slug(state.get('manuscript_title', ''))}")
+    # Two same-second runs of the same title used to share (and silently
+    # overwrite) one directory; suffix instead. The timestamp prefix and the
+    # dir-name-as-job-id contract survive: consumers (rounds.resolve_run_dir,
+    # the web history endpoints) treat the name as opaque past the timestamp.
+    run_dir, n = base, 2
+    while True:
+        try:
+            os.makedirs(run_dir)
+            break
+        except FileExistsError:
+            run_dir = f"{base}-{n}"
+            n += 1
 
     for r in state.get("reports", []):
         _write(run_dir, f"review_{r['reviewer']}.md", r["body"])
@@ -151,7 +162,12 @@ def _summary(state: ReviewState) -> str:
     lines = [
         f"# Review Summary — {state.get('manuscript_title', 'Untitled')}",
         "",
-        f"**Decision:** {label}",
+        # A run salvaged after a mid-pipeline failure has finished per-agent
+        # reports but no verdict; the banner is what keeps it from reading as
+        # a decided review. (Errors are listed under Run Warnings below.)
+        f"**Decision:** {label}"
+        if decision in _VERDICT_LABEL
+        else "**FAILED — incomplete run: the pipeline stopped before a decision.**",
     ]
     venue = _target_venue(state)
     if venue:

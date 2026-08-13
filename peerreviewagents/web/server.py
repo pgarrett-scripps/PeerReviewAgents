@@ -21,8 +21,15 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from starlette.types import Scope
 
+from peerreviewagents.agents.editor.desk_screen import (
+    node_enabled as desk_screen_enabled,
+)
+from peerreviewagents.agents.editor.desk_screen import (
+    screen_mode as desk_screen_mode,
+)
 from peerreviewagents.article_types import ARTICLE_TYPES, normalize_article_type
 from peerreviewagents.default_config import get_config
 from peerreviewagents.journals import list_journals, load_journal
@@ -150,6 +157,25 @@ def _scan_history(root: Path, limit: int = 200) -> list[dict[str, Any]]:
     return runs
 
 
+def _upload_name(filename: str) -> str:
+    """Reduce a client-supplied upload filename to a safe bare basename.
+
+    The filename is attacker-controlled: ``../../x.md`` passes a suffix
+    allowlist while escaping the upload directory entirely. Everything up to
+    the last path separator (either flavour) is dropped, and a name that
+    reduces to nothing — or to a dotfile — is rejected outright.
+    """
+    name = Path(filename.replace("\\", "/")).name
+    if not name or name.startswith("."):
+        raise HTTPException(400, f"invalid upload filename {filename!r}")
+    return name
+
+
+def _copy_upload(src, dest: Path) -> None:
+    with dest.open("wb") as fh:
+        shutil.copyfileobj(src, fh)
+
+
 def _safe_run_dir(root: Path, run: str) -> Path:
     """Resolve ``run`` to a direct child directory of ``root`` or 404.
 
@@ -166,13 +192,15 @@ def _safe_run_dir(root: Path, run: str) -> Path:
 def create_app(
     *,
     config_overrides: dict[str, Any] | None = None,
+    config_path: str | os.PathLike | None = None,
     upload_dir: str | os.PathLike | None = None,
 ) -> FastAPI:
     """Build a FastAPI app instance.
 
     ``config_overrides`` is layered onto :func:`get_config` for every
-    job. ``upload_dir`` is where uploaded manuscripts are stored (one
-    subdirectory per job).
+    job; ``config_path`` is an explicit TOML file (CLI ``--config``)
+    handed to every :func:`get_config` call the app makes. ``upload_dir``
+    is where uploaded manuscripts are stored (one subdirectory per job).
     """
 
     upload_root = Path(upload_dir) if upload_dir else Path.cwd() / ".peerreview-uploads"
@@ -183,6 +211,7 @@ def create_app(
     app.state.buses: dict[str, EventBus] = {}
     app.state.runners: dict[str, JobRunner] = {}
     app.state.config_overrides = dict(config_overrides or {})
+    app.state.config_path = config_path
     app.state.upload_root = upload_root
 
     _register_routes(app)
@@ -191,6 +220,13 @@ def create_app(
 
 def _register_routes(app: FastAPI) -> None:
     jobs: JobManager = app.state.jobs
+
+    def _config(**overrides: Any) -> dict[str, Any]:
+        """Resolve config the way every route must: explicit --config TOML
+        first, then the server-level overrides, then per-call ones."""
+        merged = dict(app.state.config_overrides)
+        merged.update(overrides)
+        return get_config(config_path=app.state.config_path, **merged)
 
     # --- static UI -------------------------------------------------------
 
@@ -235,7 +271,7 @@ def _register_routes(app: FastAPI) -> None:
         choice (review against sound, field-general standards) is the first
         real option, ahead of the alphabetical list of specific venues.
         """
-        config = get_config(**app.state.config_overrides)
+        config = _config()
         profiles = list_journals(config)
         profiles.sort(key=lambda p: (p.slug != "general", p.name.lower()))
         try:
@@ -270,14 +306,16 @@ def _register_routes(app: FastAPI) -> None:
             "default_article_type": default_article_type,
             "default_strictness": default_strictness,
             "strictness_labels": LABELS,
-            "default_desk_screen": bool(config.get("desk_screen")),
+            # Whether the triage screen runs by default. Resolved through the
+            # same mode logic the graph uses, so desk_screen_mode = "gate" /
+            # "warm" in config is reflected in the form instead of ignored.
+            "default_desk_screen": desk_screen_mode(config) != "off",
         })
 
     # --- history (disk-backed past runs) ---------------------------------
 
     def _reports_root() -> Path:
-        config = get_config(**app.state.config_overrides)
-        return Path(config["output_dir"])
+        return Path(_config()["output_dir"])
 
     @app.get("/history")
     async def history() -> JSONResponse:
@@ -315,12 +353,32 @@ def _register_routes(app: FastAPI) -> None:
             raise HTTPException(
                 409, "another review is currently running; only one job is supported in the MVP"
             )
-        suffix = Path(manuscript.filename or "").suffix.lower()
+        # Reclaim per-job state from older finished runs. The most recent
+        # finished job stays replayable (its page may still be open); the
+        # rest would otherwise accumulate for the life of the process.
+        for stale_id in jobs.prune_finished(keep=1):
+            app.state.buses.pop(stale_id, None)
+            app.state.runners.pop(stale_id, None)
+
+        manuscript_name = _upload_name(manuscript.filename or "")
+        suffix = Path(manuscript_name).suffix.lower()
         if suffix not in _ALLOWED_SUFFIXES:
             raise HTTPException(
                 400,
                 f"unsupported file type {suffix!r}; allowed: {sorted(_ALLOWED_SUFFIXES)}",
             )
+        # Optional supplementary information, validated up front so a bad SI
+        # file is rejected before any job state or upload bytes exist.
+        supplement_name: str | None = None
+        if supplement is not None and supplement.filename:
+            supplement_name = _upload_name(supplement.filename)
+            sup_suffix = Path(supplement_name).suffix.lower()
+            if sup_suffix not in _ALLOWED_SUFFIXES:
+                raise HTTPException(
+                    400,
+                    f"unsupported SI file type {sup_suffix!r}; "
+                    f"allowed: {sorted(_ALLOWED_SUFFIXES)}",
+                )
 
         # Per-upload journal / strictness selection overrides any server-level
         # default; a field the form did not send falls through to that default.
@@ -334,7 +392,7 @@ def _register_routes(app: FastAPI) -> None:
             job_overrides["target_journal"] = ""
         elif target_journal:
             try:
-                load_journal(target_journal, get_config(**app.state.config_overrides))
+                load_journal(target_journal, _config())
             except FileNotFoundError as exc:
                 raise HTTPException(400, str(exc))
             job_overrides["target_journal"] = target_journal
@@ -354,40 +412,48 @@ def _register_routes(app: FastAPI) -> None:
         elif low in ("0", "false", "no", "off"):
             job_overrides["desk_screen"] = False
 
-        job = jobs.create(manuscript_path="", manuscript_filename=manuscript.filename or "manuscript")
-        job_dir = Path(app.state.upload_root) / job.id
-        job_dir.mkdir(parents=True, exist_ok=True)
-        dest = job_dir / (manuscript.filename or f"manuscript{suffix}")
-        with dest.open("wb") as fh:
-            shutil.copyfileobj(manuscript.file, fh)
-        job.manuscript_path = str(dest)
-
-        # Optional supplementary information. Saved alongside the manuscript
-        # and handed to the methods_completeness auditor only. Absent = a
-        # normal run; a wrong file type is rejected rather than silently dropped.
-        if supplement is not None and supplement.filename:
-            sup_suffix = Path(supplement.filename).suffix.lower()
-            if sup_suffix not in _ALLOWED_SUFFIXES:
-                raise HTTPException(
-                    400,
-                    f"unsupported SI file type {sup_suffix!r}; "
-                    f"allowed: {sorted(_ALLOWED_SUFFIXES)}",
-                )
-            sup_dest = job_dir / (supplement.filename or f"supplement{sup_suffix}")
-            with sup_dest.open("wb") as fh:
-                shutil.copyfileobj(supplement.file, fh)
-            job_overrides["supplement_path"] = str(sup_dest)
-
-        loop = asyncio.get_running_loop()
-        bus = EventBus(loop)
-        app.state.buses[job.id] = bus
-
-        config = get_config(**job_overrides)
-        job.desk_screen = bool(config.get("desk_screen"))
-        runner = JobRunner(job, config, bus)
-        app.state.runners[job.id] = runner
+        job = jobs.create(manuscript_path="", manuscript_filename=manuscript_name)
+        # Claim the single-job slot BEFORE the first await: the has_active
+        # check above and this claim run without yielding to the event loop,
+        # which is what keeps the one-job invariant race-free once the file
+        # copies below happen asynchronously.
         jobs.set_active(job.id)
-        runner.start()
+        try:
+            job_dir = Path(app.state.upload_root) / job.id
+            job_dir.mkdir(parents=True, exist_ok=True)
+            dest = job_dir / manuscript_name
+            # Copy off the event loop: a large upload written synchronously
+            # here froze every route and WebSocket for its duration.
+            await run_in_threadpool(_copy_upload, manuscript.file, dest)
+            job.manuscript_path = str(dest)
+
+            # Optional supplementary information. Saved alongside the
+            # manuscript and handed to the methods_completeness auditor only.
+            if supplement is not None and supplement_name:
+                sup_dest = job_dir / supplement_name
+                await run_in_threadpool(_copy_upload, supplement.file, sup_dest)
+                job_overrides["supplement_path"] = str(sup_dest)
+
+            loop = asyncio.get_running_loop()
+            bus = EventBus(loop)
+            app.state.buses[job.id] = bus
+
+            config = get_config(config_path=app.state.config_path, **job_overrides)
+            # The sprite is drawn whenever the desk node will actually run —
+            # resolved through the same enablement logic as the graph, so
+            # desk_screen_mode = "warm"/"gate" isn't ignored here.
+            job.desk_screen = desk_screen_enabled(config)
+            runner = JobRunner(job, config, bus)
+            app.state.runners[job.id] = runner
+            runner.start()
+        except Exception:
+            # Release the slot: a failed upload must not wedge the server
+            # into refusing every future job with a 409.
+            job.status = "error"
+            jobs.set_active(None)
+            app.state.buses.pop(job.id, None)
+            app.state.runners.pop(job.id, None)
+            raise
 
         return JSONResponse({"job_id": job.id, "status": job.status})
 
@@ -410,11 +476,12 @@ def _register_routes(app: FastAPI) -> None:
         job = jobs.get(job_id)
         if job is None or not job.report_dir:
             raise HTTPException(404, "no report available")
-        # Prevent path traversal: only allow files directly inside the
-        # job's report directory.
+        # Prevent path traversal: only files directly inside the job's report
+        # directory. Same parent== guard as the history routes — a prefix
+        # match also admits sibling dirs like "<report_dir>-evil".
         report_dir = Path(job.report_dir).resolve()
         target = (report_dir / name).resolve()
-        if not str(target).startswith(str(report_dir)) or not target.is_file():
+        if target.parent != report_dir or not target.is_file():
             raise HTTPException(404, "report file not found")
         return FileResponse(str(target), media_type="text/markdown")
 

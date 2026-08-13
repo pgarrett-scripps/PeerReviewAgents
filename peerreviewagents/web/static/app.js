@@ -107,7 +107,13 @@ function escapeHtml(s) {
 }
 
 function renderMarkdown(md) {
-    if (window.marked) return window.marked.parse(md);
+    // Agent output is derived from an untrusted manuscript: a payload the
+    // model echoes back would otherwise execute in the operator's browser
+    // the moment it lands in innerHTML. Every markdown render is sanitized;
+    // without both vendored libs, fall back to escaped preformatted text.
+    if (window.marked && window.DOMPurify) {
+        return window.DOMPurify.sanitize(window.marked.parse(md));
+    }
     return `<pre>${escapeHtml(md)}</pre>`;
 }
 

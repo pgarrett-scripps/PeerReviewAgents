@@ -356,3 +356,185 @@ def test_the_form_offers_the_sentinel_the_server_expects(tmp_path):
 def test_named_journal_still_wins(tmp_path, monkeypatch):
     config = _config_for_upload(tmp_path, monkeypatch, {"target_journal": "plos-one"})
     assert config["target_journal"] == "plos-one"
+
+
+# --- upload filename safety --------------------------------------------------
+
+
+def _stub_runner(monkeypatch, captured):
+    class _Stub:
+        def __init__(self, job, config, bus):
+            captured["job"] = job
+            captured["config"] = config
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr("peerreviewagents.web.server.JobRunner", _Stub)
+
+
+def test_traversal_upload_filename_cannot_escape_the_upload_dir(tmp_path, monkeypatch):
+    """'../../evil.md' passes the suffix allowlist; without sanitization the
+    write lands outside the upload root entirely."""
+    captured = {}
+    _stub_runner(monkeypatch, captured)
+    uploads = tmp_path / "uploads"
+    app = create_app(upload_dir=str(uploads))
+    port = _free_port()
+    with _running_server(app, port):
+        resp = httpx.post(
+            f"http://127.0.0.1:{port}/jobs",
+            files={"manuscript": ("../../evil.md", b"# T\n\nBody.", "text/markdown")},
+        )
+    assert resp.status_code == 200, resp.text
+    job = captured["job"]
+    # Nothing escaped: the file exists only as a bare basename inside the job dir.
+    assert not (tmp_path / "evil.md").exists()
+    assert Path(job.manuscript_path) == uploads / job.id / "evil.md"
+    assert Path(job.manuscript_path).is_file()
+    assert job.manuscript_filename == "evil.md"
+
+
+def test_traversal_supplement_filename_is_sanitized_too(tmp_path, monkeypatch):
+    captured = {}
+    _stub_runner(monkeypatch, captured)
+    uploads = tmp_path / "uploads"
+    app = create_app(upload_dir=str(uploads))
+    port = _free_port()
+    with _running_server(app, port):
+        resp = httpx.post(
+            f"http://127.0.0.1:{port}/jobs",
+            files={
+                "manuscript": ("paper.md", b"# T\n\nBody.", "text/markdown"),
+                "supplement": ("../../si.md", b"# SI", "text/markdown"),
+            },
+        )
+    assert resp.status_code == 200, resp.text
+    job = captured["job"]
+    sup = Path(captured["config"]["supplement_path"])
+    assert not (tmp_path / "si.md").exists()
+    assert sup == uploads / job.id / "si.md"
+    assert sup.is_file()
+
+
+def test_upload_name_that_reduces_to_a_dotfile_is_rejected(tmp_path):
+    app = create_app(upload_dir=str(tmp_path / "uploads"))
+    port = _free_port()
+    with _running_server(app, port):
+        for bad in ("../..", ".md", "..", "a/.md"):
+            resp = httpx.post(
+                f"http://127.0.0.1:{port}/jobs",
+                files={"manuscript": (bad, b"x", "text/markdown")},
+            )
+            assert resp.status_code == 400, bad
+
+
+# --- explicit --config TOML --------------------------------------------------
+
+
+def test_config_path_reaches_the_web_app(tmp_path):
+    toml = tmp_path / "explicit.toml"
+    toml.write_text("strictness = 5\n", encoding="utf-8")
+    app = create_app(config_path=str(toml), upload_dir=str(tmp_path / "uploads"))
+    port = _free_port()
+    with _running_server(app, port):
+        resp = httpx.get(f"http://127.0.0.1:{port}/journals")
+    assert resp.status_code == 200
+    assert resp.json()["default_strictness"] == 5
+
+
+def test_serve_subcommand_threads_config_path(tmp_path, monkeypatch):
+    """`peerreview serve --config <file>` used to stash the path under a
+    dunder key and strip it before create_app — silently ignored."""
+    import sys
+
+    import uvicorn as uvicorn_mod
+
+    from peerreviewagents.cli.main import run
+
+    toml = tmp_path / "explicit.toml"
+    toml.write_text("strictness = 5\n", encoding="utf-8")
+    served = {}
+    monkeypatch.setattr(uvicorn_mod, "run", lambda app, **_kw: served.update(app=app))
+    monkeypatch.setattr(sys, "argv", [
+        "peerreview", "serve", "--config", str(toml),
+        "--upload-dir", str(tmp_path / "uploads"),
+    ])
+    run()
+    app = served["app"]
+    port = _free_port()
+    with _running_server(app, port):
+        resp = httpx.get(f"http://127.0.0.1:{port}/journals")
+    assert resp.json()["default_strictness"] == 5
+
+
+# --- desk-screen enablement --------------------------------------------------
+
+
+def test_desk_screen_sprite_follows_graph_enablement(tmp_path, monkeypatch):
+    """The sprite must be drawn whenever the desk node will run — including
+    desk_screen_mode = "warm", which the old bool(config["desk_screen"])
+    computation ignored."""
+    captured = {}
+    _stub_runner(monkeypatch, captured)
+    app = create_app(
+        config_overrides={"desk_screen_mode": "warm", "conversion_gate": "off"},
+        upload_dir=str(tmp_path / "uploads"),
+    )
+    port = _free_port()
+    with _running_server(app, port):
+        resp = httpx.post(
+            f"http://127.0.0.1:{port}/jobs",
+            files={"manuscript": ("paper.md", b"# T\n\nBody.", "text/markdown")},
+        )
+    assert resp.status_code == 200, resp.text
+    assert captured["job"].desk_screen is True
+
+
+def test_journals_default_desk_screen_honours_mode(tmp_path):
+    app = create_app(
+        config_overrides={"desk_screen_mode": "warm"},
+        upload_dir=str(tmp_path / "uploads"),
+    )
+    port = _free_port()
+    with _running_server(app, port):
+        resp = httpx.get(f"http://127.0.0.1:{port}/journals")
+    assert resp.json()["default_desk_screen"] is True
+
+
+# --- per-job state reclamation -----------------------------------------------
+
+
+def test_prune_finished_keeps_the_most_recent_finished_job():
+    from peerreviewagents.web.jobs import JobManager
+
+    jm = JobManager()
+    old = jm.create("p", "a.md")
+    old.status, old.finished_at = "done", 100.0
+    newer = jm.create("p", "b.md")
+    newer.status, newer.finished_at = "error", 200.0
+    pending = jm.create("p", "c.md")
+
+    removed = jm.prune_finished(keep=1)
+    assert removed == [old.id]
+    assert jm.get(old.id) is None
+    assert jm.get(newer.id) is not None
+    assert jm.get(pending.id) is not None
+
+
+# --- offline, sanitized markdown rendering -----------------------------------
+
+
+def test_static_ui_is_offline_and_sanitized():
+    """No CDN script tags (the UI must work offline) and every markdown
+    renderer routes through DOMPurify before touching innerHTML."""
+    static = Path(__file__).parent.parent / "peerreviewagents/web/static"
+    assert (static / "vendor/marked.min.js").is_file()
+    assert (static / "vendor/purify.min.js").is_file()
+    for page in list(static.glob("*.html")) + [static / "app.js"]:
+        text = page.read_text(encoding="utf-8")
+        assert "cdn.jsdelivr.net" not in text, page.name
+        assert 'src="https://' not in text and "src='https://" not in text, page.name
+    for renderer in ("app.js", "review.html"):
+        text = (static / renderer).read_text(encoding="utf-8")
+        assert "DOMPurify.sanitize" in text, renderer

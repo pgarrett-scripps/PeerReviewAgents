@@ -108,11 +108,21 @@ def node(state: ReviewState) -> dict:
         return _run(state)
 
 
+def _draft_line(state: ReviewState) -> str:
+    """The Area Chair's draft recommendation, rendered honestly when absent.
+
+    A failed meta-reviewer emits no recommendation; the editor must be told
+    there is none rather than shown an empty slot it might read as a value.
+    """
+    draft = state.get("draft_recommendation") or ""
+    return draft if draft else "(none — the meta-reviewer did not produce one)"
+
+
 def _first_round_user(state: ReviewState) -> str:
     rebuttal = state.get("author_rebuttal") or "(no rebuttal provided)"
     return (
         f"Numerical signal:\n{score_summary(state)}\n\n"
-        f"Draft recommendation: {state.get('draft_recommendation')}\n\n"
+        f"Draft recommendation: {_draft_line(state)}\n\n"
         f"Meta-review:\n{state.get('meta_review', '')}\n\n"
         f"Author rebuttal:\n{rebuttal}\n\n"
         f"Editorial compliance audits (factual checklists — convert HARD gaps "
@@ -149,7 +159,7 @@ def _revision_user(state: ReviewState) -> str:
         f"Round-over-round delta (computed from the previous round's record — "
         f"these numbers are not opinions):\n{round_delta(state)}\n\n"
         f"Numerical signal for THIS round:\n{score_summary(state)}\n\n"
-        f"Draft recommendation: {state.get('draft_recommendation')}\n\n"
+        f"Draft recommendation: {_draft_line(state)}\n\n"
         f"Meta-review:\n{state.get('meta_review', '')}\n\n"
         f"{_author_voice(state)}\n\n"
         f"Editorial compliance audits (factual checklists — the "
@@ -197,11 +207,17 @@ def _run(state: ReviewState) -> dict:
 
     output: EditorDecisionOutput = result.instance  # type: ignore[assignment]
     decision: Verdict | str = output.decision
-    # Schema constrains decision to the Verdict literal, but defensively
-    # fall back to the draft if a non-conforming model slipped past.
+    # Schema constrains decision to the Verdict literal, but a non-conforming
+    # model can slip past. Refuse rather than repair: the draft recommendation
+    # is no substitute — it can itself come from a failed meta-reviewer — and
+    # per the rule above, a decision the editor never rendered surfaces as no
+    # decision. The letter body is kept for the record; the verdict is not.
     if decision not in _VALID_VERDICTS:
-        draft = state.get("draft_recommendation", "")
-        decision = draft if draft in _VALID_VERDICTS else ""
+        return {
+            "errors": [f"editor failed: non-verdict decision {decision!r}"],
+            "decision": "",
+            "decision_letter": output.to_markdown(),
+        }
     return {
         "decision": decision,
         "decision_letter": output.to_markdown(),
