@@ -70,10 +70,14 @@ def _run(state: ReviewState) -> dict:
             cached_prefix=directives_block(state),
         )
     except Exception as exc:  # noqa: BLE001
+        # No fabricated verdict on failure: a hardcoded "major" here reads
+        # downstream as a real Area Chair recommendation, and the editor's
+        # own fallback once adopted it as the FINAL decision. Emit an empty
+        # recommendation and a marker the editor prompt renders honestly.
         return {
             "errors": [f"meta_reviewer failed: {exc}"],
-            "meta_review": "",
-            "draft_recommendation": "major",
+            "meta_review": f"(the meta-reviewer did not run: {exc})",
+            "draft_recommendation": "",
         }
 
     output: MetaReviewOutput = result.instance  # type: ignore[assignment]

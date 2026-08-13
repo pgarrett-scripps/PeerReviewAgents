@@ -118,6 +118,23 @@ class JobManager:
         with self._lock:
             return self._jobs.get(job_id)
 
+    def prune_finished(self, keep: int = 1) -> list[str]:
+        """Drop finished jobs beyond the ``keep`` most recent; return their ids.
+
+        The MVP holds every JobState (plus its bus and runner, on the app)
+        in memory forever otherwise. Called when a new job is created, so
+        the job whose page a user may still have open survives one cycle.
+        """
+        with self._lock:
+            finished = [
+                j for j in self._jobs.values() if j.status in ("done", "error")
+            ]
+            finished.sort(key=lambda j: j.finished_at or j.created_at, reverse=True)
+            stale = finished[keep:]
+            for job in stale:
+                del self._jobs[job.id]
+            return [job.id for job in stale]
+
     def has_active(self) -> bool:
         with self._lock:
             if self._active_id is None:

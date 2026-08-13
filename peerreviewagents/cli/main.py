@@ -39,6 +39,34 @@ _NODE_LABELS = {
 _VALID_DECISIONS = {"accept", "minor", "major", "reject"}
 
 
+# State keys whose presence makes a failed run worth writing to disk anyway.
+_SALVAGEABLE_KEYS = (
+    "reports", "audits", "debate", "meta_review", "desk_screen",
+    "author_rebuttal", "decision_letter",
+)
+
+
+def salvage_partial_reports(state: dict, errors: list[str]) -> str | None:
+    """Write whatever per-agent reports a failed run produced, or ``None``.
+
+    A crash after seven of eight reviewers used to leave zero files on disk.
+    The salvaged run directory is clearly marked incomplete (summary.md
+    carries a FAILED banner plus the errors) and no decision is fabricated.
+    Never raises: this is a best-effort last act on an already-failed run.
+    """
+    if not isinstance(state, dict) or not state.get("config"):
+        return None
+    if not any(state.get(k) for k in _SALVAGEABLE_KEYS):
+        return None
+    salvage = dict(state)
+    salvage["decision"] = ""  # never let a failure-path value read as a verdict
+    salvage["errors"] = list(dict.fromkeys([*(state.get("errors") or []), *errors]))
+    try:
+        return write_reports(salvage)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _run_failed(state: dict) -> str | None:
     """Return a reason string if the run did not produce a real review, else None."""
     # A desk reject is a valid terminal outcome with no reviewer reports.
@@ -424,13 +452,23 @@ def run_headless(manuscript: str, config: dict) -> None:
             border_style="yellow",
         ))
         sys.exit(3)
+    except Exception as exc:  # noqa: BLE001
+        # A mid-run crash still leaves finished per-agent work in `final`;
+        # fall through to the failure path below so it can be salvaged.
+        final.setdefault("errors", []).append(f"pipeline crashed: {exc}")
+        final.pop("decision", None)
 
     reason = _run_failed(final)
     if reason:
         errors = final.get("errors", []) or ["(no error details collected)"]
         body = f"{reason}.\n\nErrors:\n" + "\n".join(f"  • {e}" for e in errors)
+        salvaged = salvage_partial_reports(final, errors)
+        if salvaged:
+            body += f"\n\nPartial reports (no decision — marked FAILED):\n  {salvaged}"
         console.print(Panel.fit(
-            f"[bold red]Review failed — no report written.[/bold red]\n\n{body}",
+            "[bold red]Review failed"
+            + (".[/bold red]" if salvaged else " — no report written.[/bold red]")
+            + f"\n\n{body}",
             border_style="red",
         ))
         sys.exit(2)
@@ -465,11 +503,13 @@ def run_server(args) -> None:
         val = getattr(args, key, None)
         if val is not None:
             overrides[key] = val
-    if args.config_path:
-        overrides["__config_path__"] = args.config_path
 
+    # --config is threaded through as a first-class parameter: the app hands
+    # it to every get_config call it makes, so an explicit TOML actually
+    # governs the jobs the server runs (it used to be silently dropped here).
     app = create_app(
-        config_overrides={k: v for k, v in overrides.items() if not k.startswith("__")},
+        config_overrides=overrides,
+        config_path=args.config_path,
         upload_dir=args.upload_dir,
     )
     console.print(Panel.fit(

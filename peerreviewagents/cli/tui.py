@@ -30,6 +30,8 @@ from peerreviewagents.observability import (
 )
 from peerreviewagents.reports import write_reports
 
+from .main import salvage_partial_reports
+
 _VERDICT = {
     "accept": "ACCEPT",
     "minor": "MINOR REVISION",
@@ -258,11 +260,17 @@ class ReviewApp(App):
         self.query_one("#decision", Static).update(msg)
 
     def _finish_with_error(self, errors: list[str]) -> None:
+        # Keep whatever the panel finished before the failure, marked
+        # incomplete, rather than discarding it with the run.
+        salvaged = salvage_partial_reports(self.final, errors)
         err_lines = "\n".join(f"  • {escape(e)}" for e in errors)
         msg = (
-            "[b red]REVIEW FAILED — no report written.[/b red]\n"
-            f"{err_lines}"
+            "[b red]REVIEW FAILED"
+            + (".[/b red]\n" if salvaged else " — no report written.[/b red]\n")
+            + f"{err_lines}"
         )
+        if salvaged:
+            msg += f"\n[b]Partial reports (no decision — marked FAILED):[/b] {escape(salvaged)}"
         self.query_one("#decision", Static).update(msg)
 
     # ------------------------------------------------------------------

@@ -82,8 +82,11 @@
         // Read job id from query string before loading the module.
         window.__JOB_ID = new URLSearchParams(location.search).get('id');
     </script>
-    <script type="application/javascript"
-            src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script type="module" src="/static/app.js?v=11"></script>
+    <!-- Vendored, pinned copies: report markdown must render offline, and a
+         hostile manuscript echoed by a model must never execute in the
+         operator's browser (DOMPurify sanitizes every innerHTML sink). -->
+    <script type="application/javascript" src="/static/vendor/marked.min.js"></script>
+    <script type="application/javascript" src="/static/vendor/purify.min.js"></script>
+    <script type="module" src="/static/app.js?v=12"></script>
 </body>
 </html>
