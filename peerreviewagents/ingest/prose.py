@@ -94,10 +94,14 @@ from dataclasses import asdict, dataclass, field
 # more words that lost the space between them.
 FUSED_MIN_CHARS = 25
 
-# Fused tokens per 1000 words. On the calibration corpus a healthy conversion
-# scores 0.00 — eleven of sixteen papers had literally none — while the two
-# genuinely broken ones scored 22.8 and 22.6. There is no middle ground in the
-# data, so these are set well inside the gap rather than at its edges.
+# Fused tokens per 1000 words, counted over the same prose-only text as the
+# word count (code fences, tables and math excluded — a DNA sequence in a
+# fenced block is data, not a conversion failure). On the calibration corpus
+# a healthy conversion scores 0.00 — eleven of sixteen papers had literally
+# none — while the two genuinely broken ones scored 22.8 and 22.6; their
+# fused runs sit in the prose, so the basis does not move them. There is no
+# middle ground in the data, so these are set well inside the gap rather
+# than at its edges.
 FUSED_DEGRADED = 1.0
 FUSED_BROKEN = 10.0
 
@@ -469,8 +473,15 @@ def _mattr(tokens: list[str], window: int = 500) -> float:
 # ---------------------------------------------------------------------------
 
 
-def _health(text: str, words: int, sections: dict[str, str] | None) -> Health:
-    fused = _per_1k(len(_FUSED_RE.findall(text)), words)
+def _health(text: str, prose: str, words: int, sections: dict[str, str] | None) -> Health:
+    # Fused tokens are counted on the same prose-only text the per-1k
+    # denominator comes from. Counted on the raw Markdown they refused a
+    # readable genomics paper: DNA sequences, accession identifiers and
+    # chemical names inside tables and code fences are 25+ letter runs, and
+    # the fences carrying them are excluded from the word count — so the
+    # numerator and denominator described two different documents. Genuine
+    # fusion damage is in the prose itself, so nothing broken slips through.
+    fused = _per_1k(len(_FUSED_RE.findall(prose)), words)
     hyphen = _per_1k(len(_HYPHEN_BREAK_RE.findall(text)), words)
     missing = _per_1k(len(_MISSING_SPACE_RE.findall(text)), words)
     headings = len(re.findall(r"^[ \t]*#{1,6}[ \t]+\S", text, re.M))
@@ -608,7 +619,7 @@ def analyze(
     tokens = _words(prose)
     compressed = bool(caveman) and caveman != "off"
     return ProseStats(
-        health=_health(text, len(tokens), sections),
+        health=_health(text, prose, len(tokens), sections),
         counts=_counts(text, prose, tokens, sections),
         density=None if compressed else _density(prose, tokens),
         caveman=caveman if compressed else None,
