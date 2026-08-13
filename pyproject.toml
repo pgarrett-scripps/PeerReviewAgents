@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "peerreviewagents"
-version = "0.3.0"
+version = "0.4.0"
 description = "Multi-agent LLM peer-review framework (an editorial board for manuscripts)"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
@@ -49,7 +49,11 @@ dependencies = [
     # Reads PDFs into Markdown. Required, not optional: PDF ingest has no
     # fallback, because the one it used to have fused words across column
     # boundaries and flattened every heading — see peerreviewagents.ingest.
-    "rustypaper>=0.1",
+    # 0.2 is where the converter reports the document's own section tree and
+    # typed bibliography; the loader feature-detects and still runs on 0.1.x,
+    # but a fresh install should get the version whose sections are read, not
+    # guessed.
+    "rustypaper>=0.2",
 ]
 
 [project.optional-dependencies]
