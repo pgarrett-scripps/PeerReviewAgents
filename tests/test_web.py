@@ -25,13 +25,13 @@ from peerreviewagents.agents.schemas import (
     AuditFinding,
     AuditOutput,
     AuthorRebuttalOutput,
-    GapFinding,
-    PanelGapOutput,
     DebateOutput,
     EditorDecisionOutput,
+    GapFinding,
     JournalRecommendationsOutput,
     JournalSuggestion,
     MetaReviewOutput,
+    PanelGapOutput,
     ReviewerOutput,
 )
 from peerreviewagents.web import create_app
