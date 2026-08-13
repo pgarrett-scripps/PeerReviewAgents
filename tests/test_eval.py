@@ -31,9 +31,18 @@ def test_normalize_decision():
     assert C.normalize_decision("Accept (Poster)") == "accept"
     assert C.normalize_decision("Spotlight") == "accept"
     assert C.normalize_decision("Reject") == "reject"
-    assert C.normalize_decision("Withdrawn") == "reject"
     assert C.normalize_decision("") is None
     assert C.normalize_decision("Borderline") is None
+
+
+def test_normalize_decision_withdrawn_is_not_a_reject():
+    """A withdrawal is the authors' act, not the reviewers' verdict — it must
+    come back as its own status so the paper is skipped, matching the
+    submission-field path's documented exclusion."""
+    assert C.normalize_decision("Withdrawn") == "withdrawn"
+    assert C.normalize_decision("ICLR 2025 Conference Withdrawn Submission") == "withdrawn"
+    # "Desk Rejected" contains "reject" too; the desk status must win.
+    assert C.normalize_decision("Desk Rejected Submission") == "desk_reject"
 
 
 def test_cval_handles_v1_and_v2():
@@ -58,10 +67,38 @@ def _decision(label):
     )
 
 
+def _meta_review(label):
+    return SimpleNamespace(
+        id="m1",
+        invitations=["ICLR.cc/2025/Conference/Submission1/-/Meta_Review"],
+        content={"recommendation": {"value": label}},
+    )
+
+
 def test_extract_scores_and_decision():
     replies = [_review("8: accept"), _review("6"), _decision("Accept (Oral)")]
     assert C.extract_scores(replies) == [8.0, 6.0]
     assert C.extract_decision(replies) == ("accept", "Accept (Oral)")
+
+
+def test_extract_decision_prefers_decision_note_over_meta_review():
+    """The AC's recommendation is input to the decision, not the decision —
+    the chairs can and do overrule it, so a Decision note wins regardless of
+    reply order."""
+    replies = [_meta_review("Accept"), _decision("Reject")]
+    assert C.extract_decision(replies) == ("reject", "Reject")
+
+
+def test_extract_decision_falls_back_to_meta_review_when_no_decision_note():
+    assert C.extract_decision([_meta_review("Accept")]) == ("accept", "Accept")
+
+
+def test_extract_decision_returns_withdrawn_sentinel():
+    """A Decision note announcing a withdrawal must positively exclude the
+    paper — not fall through to some other note's recommendation, and never
+    label the paper a ground-truth reject."""
+    replies = [_decision("Withdrawn"), _meta_review("Accept")]
+    assert C.extract_decision(replies) == ("withdrawn", "Withdrawn")
 
 
 def test_extract_ignores_non_review_notes():
@@ -139,6 +176,14 @@ def test_cohen_kappa_perfect_and_inverse():
     assert M.cohen_kappa(["accept", "reject"], ["reject", "accept"]) == -1.0
 
 
+def test_cohen_kappa_single_class_is_undefined_not_perfect():
+    """pe == 1 makes kappa 0/0. Reporting 1.0 scored a rubber stamp on an
+    all-accept corpus as flawless agreement; the honest answer is 'the data
+    cannot say'."""
+    assert M.cohen_kappa(["accept"] * 10, ["accept"] * 10) is None
+    assert M.cohen_kappa([], []) is None
+
+
 def test_confusion_counts():
     cf = M.confusion(["accept", "accept", "reject"], ["accept", "reject", "reject"])
     assert cf["accept__accept"] == 1
@@ -166,6 +211,24 @@ def test_weighted_score_matches_confidence_weighting():
     # (4*5 + 2*1) / (5+1) = 22/6 = 3.6667
     assert weighted_score(reports) == 3.6667
     assert weighted_score([]) is None
+
+
+def test_weighted_score_skips_null_score_reviewers():
+    """Scores are nullable by design (a dimension with nothing to judge
+    abstains). The abstention drops out of the average — mirroring
+    score_summary — instead of crashing the batch on None * confidence."""
+    reports = [
+        {"reviewer": "a", "score": 4, "confidence": 5},
+        {"reviewer": "ethics", "score": None, "confidence": 3,
+         "not_applicable_reason": "no human subjects"},
+        {"reviewer": "b", "score": 2, "confidence": 1},
+    ]
+    assert weighted_score(reports) == 3.6667  # same as without the abstainer
+
+
+def test_weighted_score_all_abstained_is_none():
+    reports = [{"reviewer": "ethics", "score": None, "confidence": 3}]
+    assert weighted_score(reports) is None
 
 
 # ---------- record round-trips ----------------------------------------------
@@ -247,6 +310,132 @@ def test_agreement_and_consistency_end_to_end(tmp_path):
 
     md = M.render_markdown(report)
     assert "# Evaluation Report" in md and "Agreement with human reviewers" in md
+
+
+def test_single_class_kappa_renders_as_na_not_perfect(tmp_path):
+    """An all-accept corpus must render κ as n/a, not as agreement."""
+    corpus_path = tmp_path / "corpus.jsonl"
+    runs_path = tmp_path / "runs.jsonl"
+    _write_corpus(corpus_path, [
+        CorpusItem(id="p1", title="A", pdf_path="x", human_mean=8.0, human_decision="accept"),
+        CorpusItem(id="p2", title="B", pdf_path="x", human_mean=6.0, human_decision="accept"),
+    ])
+    _write_runs(runs_path, [
+        RunRecord(paper_id="p1", repeat=0, ok=True, system_decision="accept",
+                  system_weighted_score=4.5, manifest={"model": "m"}),
+        RunRecord(paper_id="p2", repeat=0, ok=True, system_decision="accept",
+                  system_weighted_score=4.0, manifest={"model": "m"}),
+    ])
+    report = M.build_report(str(corpus_path), str(runs_path))
+    assert report["agreement"]["decision_cohen_kappa"] is None
+    md = M.render_markdown(report)
+    assert "Cohen's κ = n/a" in md
+    assert "Cohen's κ = None" not in md
+
+
+def test_mixed_config_pooling_gets_a_loud_warning(tmp_path):
+    """Pooling two configs into one runs file blends their numbers under one
+    manifest line; the report must say so instead of passing the blend off
+    as a single-configuration result."""
+    corpus_path = tmp_path / "corpus.jsonl"
+    runs_path = tmp_path / "runs.jsonl"
+    _write_corpus(corpus_path, [
+        CorpusItem(id="p1", title="A", pdf_path="x", human_mean=8.0, human_decision="accept"),
+        CorpusItem(id="p2", title="B", pdf_path="x", human_mean=3.0, human_decision="reject"),
+    ])
+    _write_runs(runs_path, [
+        RunRecord(paper_id="p1", repeat=0, ok=True, system_decision="accept",
+                  system_weighted_score=4.5, manifest={"model": "m1", "config_digest": "aaa"}),
+        RunRecord(paper_id="p2", repeat=0, ok=True, system_decision="reject",
+                  system_weighted_score=2.0, manifest={"model": "m2", "config_digest": "bbb"}),
+    ])
+    report = M.build_report(str(corpus_path), str(runs_path))
+    assert report["distinct_configs"] == 2
+    md = M.render_markdown(report)
+    assert "MIXED CONFIGS" in md and "2 distinct" in md
+
+    # And a homogeneous file stays clean of the warning.
+    _write_runs(runs_path, [
+        RunRecord(paper_id="p1", repeat=0, ok=True, system_decision="accept",
+                  system_weighted_score=4.5, manifest={"model": "m1"}),
+        RunRecord(paper_id="p2", repeat=0, ok=True, system_decision="reject",
+                  system_weighted_score=2.0, manifest={"model": "m1"}),
+    ])
+    md = M.render_markdown(M.build_report(str(corpus_path), str(runs_path)))
+    assert "MIXED CONFIGS" not in md
+
+
+# ---------- runner bookkeeping (fake graph, no LLM) ---------------------------
+
+
+def _run_one_with_state(monkeypatch, state):
+    from peerreviewagents.eval import runner as R
+
+    class FakeGraph:
+        def __init__(self, config):
+            pass
+
+        def review(self, pdf_path):
+            return state
+
+    monkeypatch.setattr(R, "PeerReviewGraph", FakeGraph)
+    item = SimpleNamespace(id="p1", title="T", venue="V", pdf_path="x.pdf")
+    return R._run_one(item, 0, {"provider": "test"}, "")
+
+
+def test_run_one_survives_an_abstaining_reviewer(monkeypatch):
+    """One null-score reviewer must not kill the batch: the run stays ok and
+    the abstention is preserved in the record for later analysis."""
+    rec = _run_one_with_state(monkeypatch, {
+        "reports": [
+            {"reviewer": "rigor", "score": 4.0, "confidence": 5.0,
+             "weaknesses": ["w1", "w2"], "not_applicable_reason": ""},
+            {"reviewer": "ethics", "score": None, "confidence": 3.0,
+             "weaknesses": [], "not_applicable_reason": "no human subjects"},
+        ],
+        "decision": "minor",
+        "total_cost": 1.25,
+        "errors": [],
+    })
+    assert rec.ok
+    assert rec.system_weighted_score == 4.0
+    ethics = next(r for r in rec.per_reviewer if r["name"] == "ethics")
+    assert ethics["score"] is None
+    assert ethics["not_applicable_reason"] == "no human subjects"
+
+
+def test_run_record_keeps_reviewer_weaknesses(monkeypatch):
+    """Weakness-level overlap with human reviews is the project's endpoint;
+    a record holding only name/score/confidence forecloses that analysis."""
+    rec = _run_one_with_state(monkeypatch, {
+        "reports": [{"reviewer": "rigor", "score": 3.0, "confidence": 4.0,
+                     "weaknesses": ["unblinded raters", "n too small"],
+                     "not_applicable_reason": ""}],
+        "decision": "major",
+    })
+    back = RunRecord.from_dict(json.loads(rec.to_json()))
+    assert back.per_reviewer[0]["weaknesses"] == ["unblinded raters", "n too small"]
+
+
+def test_run_one_records_bookkeeping_failure_instead_of_crashing(monkeypatch):
+    """A malformed state after a successful graph run is recorded like a graph
+    failure — the batch moves on and the slot retries next invocation."""
+    rec = _run_one_with_state(monkeypatch, {
+        # confidence None: summing it raises inside the bookkeeping.
+        "reports": [{"reviewer": "rigor", "score": 3.0, "confidence": None}],
+        "decision": "minor",
+    })
+    assert not rec.ok
+    assert any("bookkeeping failed" in e for e in rec.errors)
+
+
+def test_old_run_records_without_weakness_fields_still_load():
+    """Pre-existing runs.jsonl lines predate the added per_reviewer fields."""
+    old = {"paper_id": "p", "repeat": 0, "ok": True, "system_decision": "accept",
+           "system_weighted_score": 4.0,
+           "per_reviewer": [{"name": "rigor", "score": 4, "confidence": 3}]}
+    back = RunRecord.from_dict(old)
+    assert back.per_reviewer[0]["name"] == "rigor"
 
 
 def test_figure_renders_svg_and_png(tmp_path):

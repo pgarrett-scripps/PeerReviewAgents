@@ -92,7 +92,14 @@ def make_ablation_figure(corpus_path: str, runs_files: list[str], labels: list[s
                             xytext=(0, 7), ha="center", fontsize=7, color=color)
     ax.set_xticks(x)
     ax.set_xticklabels(labels, fontsize=8)
-    ax.set_ylim(0.4, 0.85)
+    # Limits follow the data and always include zero. A fixed window (this
+    # was 0.4–0.85) silently clipped low or negative κ points out of the
+    # frame, so the figure could only ever show the flattering range.
+    vals = [v for series in (accs, kappas, rhos) for v in series if v is not None]
+    if vals:
+        lo, hi = min(0.0, min(vals)), max(0.0, max(vals))
+        pad = 0.08 * max(hi - lo, 0.1)
+        ax.set_ylim(lo - pad, hi + pad)
     ax.set_ylabel("Agreement with humans")
     ax.set_title(title or "Structure ablation")
     ax.grid(True, axis="y", alpha=0.25, zorder=0)
@@ -172,9 +179,9 @@ def _agreement_panel(ax, corpus, records, agreement, Line2D) -> None:
     ax.grid(True, alpha=0.25, zorder=0)
     ax.text(
         0.04, 0.96,
-        f"Spearman ρ = {agreement['score_spearman']}\n"
-        f"Decision acc = {agreement['decision_accuracy']}\n"
-        f"Cohen's κ = {agreement['decision_cohen_kappa']}",
+        f"Spearman ρ = {M._fmt(agreement['score_spearman'])}\n"
+        f"Decision acc = {M._fmt(agreement['decision_accuracy'])}\n"
+        f"Cohen's κ = {M._fmt(agreement['decision_cohen_kappa'])}",
         transform=ax.transAxes, va="top", ha="left", fontsize=8,
         bbox=dict(boxstyle="round", fc="white", ec="0.7"),
     )

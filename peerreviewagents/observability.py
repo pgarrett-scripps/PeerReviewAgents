@@ -178,14 +178,18 @@ def note_cache_usage(run_id: str, read_tokens: int, write_tokens: int) -> None:
 
 
 def _note_node_usage(run_id: str, event: AgentEvent) -> None:
+    # The increments stay under the lock, like note_cache_usage's. Usage
+    # callbacks land off-thread under the 8-reviewer fan-out, and `row[i] +=`
+    # is a read-modify-write: two callbacks interleaving on the same row
+    # silently drop one call's tokens and dollars from the table.
     with _QUEUES_LOCK:
         by_node = _NODE_USAGE.setdefault(run_id or _DEFAULT_RUN, {})
         row = by_node.setdefault(event.node or "(unattributed)", [0, 0, 0, 0, 0.0])
-    row[0] += event.input_tokens
-    row[1] += event.output_tokens
-    row[2] += max(0, event.cache_read_tokens)
-    row[3] += max(0, event.cache_write_tokens)
-    row[4] += event.cost_usd
+        row[0] += event.input_tokens
+        row[1] += event.output_tokens
+        row[2] += max(0, event.cache_read_tokens)
+        row[3] += max(0, event.cache_write_tokens)
+        row[4] += event.cost_usd
 
 
 def _note_node_tool(run_id: str, event: AgentEvent) -> None:
@@ -291,7 +295,7 @@ _PRICING_USD_PER_M: dict[str, tuple[float, float]] = {
     "gpt-4o-mini": (0.15, 0.6),
     "gpt-4-1": (2.0, 8.0),
     "gpt-4-1-mini": (0.4, 1.6),
-    "o3": (10.0, 40.0),
+    "o3": (2.0, 8.0),   # cut from (10, 40) in OpenAI's June 2025 reprice
     "o4-mini": (1.1, 4.4),
     # Google
     "gemini-2-5-pro": (1.25, 10.0),
@@ -312,8 +316,9 @@ def _normalize_model_key(model: str) -> str:
 
 
 # Prompt-cache multipliers on the input rate (Anthropic's published pricing).
-# Reading a cache entry costs a tenth. Writing one costs a quarter more than
-# sending the tokens plain at the 5-minute TTL, and DOUBLE at the 1-hour TTL.
+# On Anthropic, reading a cache entry costs a tenth. Writing one costs a
+# quarter more than sending the tokens plain at the 5-minute TTL, and DOUBLE
+# at the 1-hour TTL.
 #
 # The two write rates are why this is a table rather than a constant. The
 # pipeline defaults to a 1h TTL (agent_utils.DEFAULT_CACHE_TTL) because a
@@ -324,7 +329,34 @@ def _normalize_model_key(model: str) -> str:
 # bill — on the one number a user consults to decide whether they can afford
 # another run.
 _CACHE_WRITE_MULTIPLIERS = {"5m": 1.25, "1h": 2.00}
-_CACHE_READ_MULTIPLIER = 0.10
+
+# Read discounts differ by provider, and applying Anthropic's 0.10 across the
+# board under-billed every OpenAI cache hit by 5x — OpenAI discounts reads to
+# 0.25–0.5x depending on model, so the deepest defensible figure here is the
+# 0.5x floor. Providers without a published rate we're sure of (Gemini's
+# caching adds a storage fee this table cannot express) get no discount at
+# all: their cache reads bill plain, which over-quotes, and of the two
+# available errors that is the survivable one.
+_CACHE_READ_MULTIPLIERS = {"anthropic": 0.10, "openai": 0.50}
+_DEFAULT_CACHE_READ_MULTIPLIER = 1.00
+
+
+def _provider_for_model(model: str) -> str:
+    """Best-effort provider family for a normalized model key."""
+    key = _normalize_model_key(model)
+    if key.startswith("claude"):
+        return "anthropic"
+    if key.startswith(("gpt-", "o1", "o3", "o4", "chatgpt")):
+        return "openai"
+    if key.startswith("gemini"):
+        return "google"
+    return "unknown"
+
+
+def _read_multiplier(model: str) -> float:
+    return _CACHE_READ_MULTIPLIERS.get(
+        _provider_for_model(model), _DEFAULT_CACHE_READ_MULTIPLIER
+    )
 
 
 def _write_multiplier(cache_ttl: str | None) -> float:
@@ -370,9 +402,11 @@ def estimate_cost(
     for a 1-hour entry against 1.25x for a 5-minute one. Omitting it bills at
     the 1h rate, which is what the pipeline configures by default.
 
-    The multipliers are Anthropic's. OpenAI reports no cache-creation tokens
-    (so the write term falls out) and discounts reads less steeply, which
-    makes this an approximation on that route rather than a quote.
+    The write multipliers are Anthropic's; OpenAI reports no cache-creation
+    tokens, so the write term falls out on that route. The read discount is
+    per-provider (see :data:`_CACHE_READ_MULTIPLIERS`): Anthropic's 0.10,
+    OpenAI's 0.50 floor, and no discount for providers without a rate we
+    trust — an approximation that errs toward over-quoting.
     """
     if not model:
         return 0.0
@@ -393,7 +427,7 @@ def estimate_cost(
     billed = (
         plain
         + cache_write * _write_multiplier(cache_ttl)
-        + cache_read * _CACHE_READ_MULTIPLIER
+        + cache_read * _read_multiplier(model)
     )
     return (billed / 1_000_000) * in_rate + (output_tokens / 1_000_000) * out_rate
 

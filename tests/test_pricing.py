@@ -63,6 +63,12 @@ def test_current_opus_is_not_priced_at_the_legacy_tier():
     assert estimate_cost("claude-opus-5", MTOK, 0) != 15.0
 
 
+def test_o3_reflects_the_june_2025_reprice():
+    """OpenAI cut o3 from (10, 40) to (2, 8); quoting the launch price
+    overstates that route's cost fivefold."""
+    assert rate("o3") == (2.0, 8.0)
+
+
 def test_unknown_model_falls_back_to_current_generation():
     # Something unreleased should guess current pricing, not the 2024 tier.
     assert rate("claude-opus-99") == (5.0, 25.0)
@@ -90,6 +96,24 @@ def test_a_cache_hit_is_cheaper_than_sending_the_tokens_plain():
     plain = estimate_cost("claude-opus-5", MTOK, 0)
     hit = estimate_cost("claude-opus-5", MTOK, 0, cache_read_tokens=MTOK)
     assert hit == pytest.approx(plain * 0.10)
+
+
+def test_the_read_discount_is_per_provider_not_anthropics_everywhere():
+    """Anthropic's 0.10 was being applied to OpenAI cache reads, which OpenAI
+    only discounts to 0.25-0.5x — under-billing every cached OpenAI call by
+    up to 5x. OpenAI bills at the 0.5 floor here: over-quoting is the
+    survivable error."""
+    plain = estimate_cost("gpt-4o", MTOK, 0)
+    hit = estimate_cost("gpt-4o", MTOK, 0, cache_read_tokens=MTOK)
+    assert hit == pytest.approx(plain * 0.50)
+
+
+def test_providers_without_a_trusted_read_rate_get_no_discount():
+    """Gemini's cache billing includes a storage fee this table cannot
+    express, so its reads bill plain rather than at an invented discount."""
+    plain = estimate_cost("gemini-2-5-pro", MTOK, 0)
+    hit = estimate_cost("gemini-2-5-pro", MTOK, 0, cache_read_tokens=MTOK)
+    assert hit == pytest.approx(plain)
 
 
 def test_a_five_minute_cache_write_costs_a_quarter_more():

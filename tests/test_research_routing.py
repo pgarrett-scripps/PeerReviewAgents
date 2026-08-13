@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from peerreviewagents.research import RateLimitError, interface
+from peerreviewagents.research import (
+    RateLimitError,
+    ResearchUnavailableError,
+    VendorUnavailableError,
+    interface,
+)
 from peerreviewagents.research import tools as research_tools
 
 # --- resolve_vendors --------------------------------------------------------
@@ -66,26 +71,72 @@ def test_route_rate_limit_falls_through(monkeypatch):
     assert out == "OK from fallback"
 
 
-def test_route_all_rate_limited_returns_message(monkeypatch):
+def test_route_outage_falls_through_like_a_rate_limit(monkeypatch):
+    """A primary that is down (connect error / timeout / 5xx) must not be
+    recorded as a served answer — the healthy fallback vendor answers."""
+    def down(**_):
+        raise VendorUnavailableError("connection refused")
+
+    def ok(**_):
+        return "OK from fallback"
+
+    monkeypatch.setitem(interface._VENDOR_IMPL["find_related_work"], "semantic_scholar", down)
+    monkeypatch.setitem(interface._VENDOR_IMPL["find_related_work"], "arxiv", ok)
+    out = interface.route("find_related_work", config=None, query="x", max_results=3)
+    assert out == "OK from fallback"
+    assert interface.last_vendor() == "arxiv"
+
+
+def test_route_all_rate_limited_raises_with_the_reason(monkeypatch):
+    """Exhausting the chain surfaces the rate limiting — as an exception, so
+    the tool loop records an error instead of a clean zero-hit search."""
     def boom(**_):
         raise RateLimitError("RL")
 
     monkeypatch.setitem(interface._VENDOR_IMPL["find_related_work"], "semantic_scholar", boom)
     monkeypatch.setitem(interface._VENDOR_IMPL["find_related_work"], "arxiv", boom)
-    out = interface.route("find_related_work", config=None, query="x", max_results=3)
-    assert "all configured vendors rate-limited" in out
+    with pytest.raises(ResearchUnavailableError, match="rate-limited"):
+        interface.route("find_related_work", config=None, query="x", max_results=3)
 
 
-def test_route_non_rate_limit_surfaces(monkeypatch):
-    """Non-RateLimitError must NOT trigger fallback — the vendor is
-    expected to swallow other errors and return graceful-degrade text.
-    If it raises something else, that propagates."""
+def test_route_all_vendors_down_raises_and_credits_no_vendor(monkeypatch):
+    """An outage across the chain is a failure, never 'searched clean, zero
+    hits' — and no vendor gets credited with having served it."""
+    def down(**_):
+        raise VendorUnavailableError("HTTP 503")
+
+    monkeypatch.setitem(interface._VENDOR_IMPL["find_related_work"], "semantic_scholar", down)
+    monkeypatch.setitem(interface._VENDOR_IMPL["find_related_work"], "arxiv", down)
+    with pytest.raises(ResearchUnavailableError, match="every configured vendor failed"):
+        interface.route("find_related_work", config=None, query="x", max_results=3)
+    assert interface.last_vendor() == ""
+
+
+def test_route_non_recoverable_error_surfaces(monkeypatch):
+    """Only RateLimitError / VendorUnavailableError trigger fallback; an
+    unexpected exception is a bug and propagates unchanged."""
     def explode(**_):
         raise RuntimeError("unexpected")
 
     monkeypatch.setitem(interface._VENDOR_IMPL["find_related_work"], "semantic_scholar", explode)
     with pytest.raises(RuntimeError, match="unexpected"):
         interface.route("find_related_work", config=None, query="x", max_results=3)
+
+
+def test_route_4xx_degrade_text_is_a_served_answer(monkeypatch):
+    """A non-429 4xx means the API judged the query; that verdict is returned
+    as text (credited to the vendor) rather than shopped to the fallback."""
+    def judged(**_):
+        return "[semantic_scholar HTTP error: 400 Bad Request]"
+
+    def never(**_):  # pragma: no cover - reaching this is the failure
+        raise AssertionError("fallback must not run for a judged query")
+
+    monkeypatch.setitem(interface._VENDOR_IMPL["find_related_work"], "semantic_scholar", judged)
+    monkeypatch.setitem(interface._VENDOR_IMPL["find_related_work"], "arxiv", never)
+    out = interface.route("find_related_work", config=None, query="x", max_results=3)
+    assert "400" in out
+    assert interface.last_vendor() == "semantic_scholar"
 
 
 # --- tool registry ---------------------------------------------------------

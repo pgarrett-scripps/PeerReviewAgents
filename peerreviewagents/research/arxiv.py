@@ -2,20 +2,25 @@
 
 from __future__ import annotations
 
-from . import RateLimitError
+from . import RateLimitError, VendorUnavailableError
 
 
 def search(query: str, max_results: int = 5) -> str:
     """Return a formatted plaintext block of arXiv hits for ``query``.
 
-    Graceful-degrade: on any error the function returns a short note
-    rather than raising, except for explicit rate-limit signals which
-    propagate as :class:`RateLimitError` so the router can fall through.
+    Rate limits propagate as :class:`RateLimitError` and every other client
+    failure as :class:`VendorUnavailableError`, so the router can fall
+    through. The client gives no clean "the API judged your query" channel
+    (bad queries come back as empty feeds, not errors), so unlike the
+    HTTP vendors there is no 4xx degrade-text path here: an exception from
+    the client means the lookup did not happen.
     """
     try:
         import arxiv  # type: ignore
-    except ImportError:
-        return "[arxiv unavailable: install with `pip install -e .[research]`]"
+    except ImportError as exc:
+        raise VendorUnavailableError(
+            "arxiv unavailable: install with `pip install -e .[research]`"
+        ) from exc
 
     try:
         client = arxiv.Client()
@@ -31,4 +36,4 @@ def search(query: str, max_results: int = 5) -> str:
         msg = str(exc).lower()
         if "429" in msg or "rate" in msg:
             raise RateLimitError(f"arxiv rate-limited: {exc}") from exc
-        return f"[arxiv unavailable: {exc}]"
+        raise VendorUnavailableError(f"arxiv unavailable: {exc}") from exc

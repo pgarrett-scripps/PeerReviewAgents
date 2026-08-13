@@ -22,12 +22,17 @@ def weighted_score(reports: list[dict[str, Any]]) -> float | None:
     """Confidence-weighted mean reviewer score — the system's headline number.
 
     Mirrors :func:`peerreviewagents.agents.utils.agent_utils.score_summary`
-    so the eval number matches what the pipeline shows.
+    so the eval number matches what the pipeline shows — including its
+    filter: a score is null by design when a dimension had nothing to judge
+    in a manuscript, and an abstaining reviewer must drop out of the average
+    rather than multiply ``None * confidence`` and take the batch down.
+    Returns ``None`` when no reviewer could score at all.
     """
-    if not reports:
+    scored = [r for r in reports if isinstance(r.get("score"), (int, float))]
+    if not scored:
         return None
-    total_w = sum(r["confidence"] for r in reports) or 1.0
-    return round(sum(r["score"] * r["confidence"] for r in reports) / total_w, 4)
+    total_w = sum(r["confidence"] for r in scored) or 1.0
+    return round(sum(r["score"] * r["confidence"] for r in scored) / total_w, 4)
 
 
 def existing_keys(runs_path: str) -> set[tuple[str, int]]:
@@ -110,21 +115,42 @@ def _run_one(item, rep: int, config: dict[str, Any], leakage_note: str) -> RunRe
             manifest=manifest.to_dict(),
         )
 
-    reports = state.get("reports") or []
-    per_reviewer = [
-        {"name": r.get("reviewer"), "score": r.get("score"), "confidence": r.get("confidence")}
-        for r in reports
-    ]
-    decision = state.get("decision") or None
-    return RunRecord(
-        paper_id=item.id, repeat=rep,
-        ok=bool(decision),
-        system_decision=decision,
-        system_weighted_score=weighted_score(reports),
-        per_reviewer=per_reviewer,
-        n_reviewers=len(reports),
-        cost_usd=round(float(state.get("total_cost") or 0.0), 4),
-        latency_s=round(time.time() - t0, 1),
-        errors=list(state.get("errors") or []),
-        manifest=manifest.to_dict(),
-    )
+    # Bookkeeping failures are recorded like graph failures, not raised: one
+    # paper's malformed state must not end a batch that other papers' runs
+    # are still waiting on — the record keeps the trail and the slot retries.
+    try:
+        reports = state.get("reports") or []
+        per_reviewer = [
+            {
+                "name": r.get("reviewer"),
+                "score": r.get("score"),
+                "confidence": r.get("confidence"),
+                # Kept per reviewer, not just the aggregate: weakness-level
+                # overlap against the human reviews is the study's endpoint,
+                # and it cannot be recomputed from a score after the fact.
+                "weaknesses": list(r.get("weaknesses") or []),
+                "not_applicable_reason": r.get("not_applicable_reason") or "",
+            }
+            for r in reports
+        ]
+        decision = state.get("decision") or None
+        return RunRecord(
+            paper_id=item.id, repeat=rep,
+            ok=bool(decision),
+            system_decision=decision,
+            system_weighted_score=weighted_score(reports),
+            per_reviewer=per_reviewer,
+            n_reviewers=len(reports),
+            cost_usd=round(float(state.get("total_cost") or 0.0), 4),
+            latency_s=round(time.time() - t0, 1),
+            errors=list(state.get("errors") or []),
+            manifest=manifest.to_dict(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return RunRecord(
+            paper_id=item.id, repeat=rep, ok=False,
+            system_decision=None, system_weighted_score=None,
+            errors=[f"post-run bookkeeping failed: {exc}"],
+            latency_s=round(time.time() - t0, 1),
+            manifest=manifest.to_dict(),
+        )
