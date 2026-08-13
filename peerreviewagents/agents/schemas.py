@@ -285,6 +285,9 @@ class RevisionComplianceOutput(BaseModel):
     def addressed_count(self) -> int:
         return sum(1 for f in self.findings if f.status == "addressed")
 
+    def partial_count(self) -> int:
+        return sum(1 for f in self.findings if f.status == "partial")
+
     def blocking_open(self) -> list[ComplianceFinding]:
         return [
             f for f in self.findings
@@ -302,10 +305,39 @@ class RevisionComplianceOutput(BaseModel):
             "## Summary",
             self.summary.strip() or "(no summary provided)",
             "",
+            # The counts sit directly under the summary because the summary is
+            # free prose and these are arithmetic over the findings. On a
+            # byte-identical resubmission an audit whose findings were entirely
+            # correct — 0 of 6 addressed, 4 blocking open, not one 'partial' —
+            # opened with "the authors have partially addressed some required
+            # revisions... the manuscript shows some improvements". The prose is
+            # what the editor reads first, so the numbers that contradict it
+            # have to be the next thing, and the reader has to be told they
+            # contradict it.
             f"**Addressed: {self.addressed_count()}/{total}** · "
+            f"partially addressed: {self.partial_count()} · "
             f"blocking still open: {len(self.blocking_open())} · "
             f"unreliable author claims: {len(self.unreliable_claims())}",
         ]
+        if self.findings and not self.addressed_count() and not self.partial_count():
+            # Fires on the counts alone, never on the wording of the summary:
+            # "progress language" is not a thing a regex can find, and a guard
+            # that tried would both miss the paraphrase and fire on "no
+            # improvement was made". Zero addressed and zero partial is a fact,
+            # and it is incompatible with any account of the paper having
+            # moved, however that account is phrased.
+            parts += [
+                "",
+                f"> **None of the {total} required revision"
+                f"{'s were' if total != 1 else ' was'} addressed, in whole or "
+                "in part.** No finding below records any item as addressed or "
+                "partially addressed. If the summary above describes progress, "
+                "improvement, partial compliance or any change to the "
+                "manuscript, it is contradicted by the per-item findings, "
+                "which are the audit's actual result — the counts are computed "
+                "from them, not written by hand. Read the list, not the "
+                "paragraph.",
+            ]
         if self.findings:
             parts += ["", "## Required revisions"]
             for f in self.findings:

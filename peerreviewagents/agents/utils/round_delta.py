@@ -139,8 +139,8 @@ def _score_line(prior: Any, state: ReviewState) -> str:
     )
 
 
-def _resubmission_line(prior: Any, state: ReviewState) -> str:
-    """Says so when this round's file is byte-for-byte the previous round's.
+def is_byte_identical_resubmission(prior: Any, state: ReviewState) -> bool:
+    """True when this round's file is byte-for-byte the previous round's.
 
     The one fact about "what changed" that needs no conversion, no second
     parse and no model: two sha256s of two files. It replaced a section-aware
@@ -148,10 +148,25 @@ def _resubmission_line(prior: Any, state: ReviewState) -> str:
     reads as "nothing changed", which the hash says for free, and a real
     revision reads as "everything changed", which says nothing at all.
 
-    Emitted only on a match. A file that differs proves very little: a
-    re-export of an unedited document differs in every byte, so announcing
-    "the file changed" would put a change claim in front of the editor that
-    nothing checked. Equality is the only direction that carries a fact.
+    Only equality is reported. A file that differs proves very little: a
+    re-export of an unedited document differs in every byte, so "the file
+    changed" would be a change claim nothing checked. A missing hash on
+    either side is not a match — an old round record predating the field
+    would otherwise read as identical to everything.
+
+    Lives here, and is public, because the compliance auditor needs the same
+    answer: it is the agent asked whether the asks were carried out, and it
+    was reading a byte-identical file while reporting improvements to it.
+    Two comparisons that could drift apart would put the auditor and the
+    editor's delta block on different sides of the same fact.
+    """
+    now = str((state.get("ingest") or {}).get("file_sha256") or "")
+    then = str(_get(prior, "manuscript_file_sha256", "") or "")
+    return bool(now) and bool(then) and now == then
+
+
+def _resubmission_line(prior: Any, state: ReviewState) -> str:
+    """Says so when this round's file is byte-for-byte the previous round's.
 
     The wording is careful about what the fact means. An identical
     resubmission means no ask can have been met by a change to the text; it
@@ -160,9 +175,7 @@ def _resubmission_line(prior: Any, state: ReviewState) -> str:
     that caveat has previously rejected a paper for "disregard for the review
     process" that no human had ever resubmitted.
     """
-    now = str((state.get("ingest") or {}).get("file_sha256") or "")
-    then = str(_get(prior, "manuscript_file_sha256", "") or "")
-    if not now or not then or now != then:
+    if not is_byte_identical_resubmission(prior, state):
         return ""
     return (
         "Manuscript file: byte-identical to the draft the previous round "
@@ -226,6 +239,13 @@ def _compliance_line(prior: Any, state: ReviewState) -> str:
     Omitted entirely when the compliance auditor produced nothing readable —
     reporting "0 addressed" in that case would read as a damning finding when
     it only means the audit is missing.
+
+    Deliberately carries no alarm for "nothing was addressed", byte-identical
+    resubmission or not. Zero addressed on an unchanged file is the expected
+    result, and the resubmission line above already says why. The case worth
+    flagging is a claim of progress against an unchanged file, and that claim
+    lives in the auditor's summary prose, not in these counts — it is caught
+    where it is written, in ``RevisionComplianceOutput.to_markdown``.
     """
     findings = _compliance_findings(state)
     if not findings:

@@ -417,6 +417,167 @@ def test_the_prompt_demands_a_quotation_and_says_it_is_checked():
     assert "The methods section was expanded" in task
 
 
+# --- the byte-identical resubmission ----------------------------------------
+#
+# The second half of the same incident. The quote check held the findings —
+# 0 of 6 addressed, 4 blocking open, no 'addressed' and no 'partial' anywhere —
+# and the summary above them opened "the authors have partially addressed some
+# required revisions... the manuscript shows some improvements in causal
+# language qualification and methodological transparency", on a file whose
+# sha256 was the previous round's. Nothing had been quoted, so nothing was
+# demoted; the prose was simply wrong, and it is what the editor reads first.
+
+
+def _identical(**over):
+    """A state whose file hashes match the prior round's, byte for byte."""
+    prior = _prior_round()
+    prior.manuscript_file_sha256 = "abc123"
+    return _state(prior=prior, ingest={"file_sha256": "abc123"}, **over)
+
+
+def test_the_auditor_is_told_when_the_file_did_not_change():
+    prompt = rc._user_prompt(_identical())
+    assert "byte-for-byte the draft the previous round reviewed" in prompt
+    assert "NO item can have been addressed by a change to the text" in prompt
+    assert "must not report that any of it was" in prompt
+
+
+def test_the_identical_file_fact_forbids_reading_it_as_bad_faith():
+    """The editor once rejected a paper for "disregard for the review process"
+    on this fact alone. It ships with what it does not mean."""
+    prompt = rc._user_prompt(_identical())
+    assert "NOT evidence of bad faith" in prompt
+    assert "not defiance of an editor" in prompt
+
+
+def test_the_identical_file_fact_leaves_rebuttal_and_pre_existing_text_open():
+    """It constrains claims about changes, not every non-negative status. An
+    ask the draft always satisfied is still addressed; a declined one is still
+    rebutted."""
+    prompt = rc._user_prompt(_identical())
+    assert "constrains claims about CHANGES, not every outcome" in prompt
+    assert "'rebutted' as it always was" in prompt
+    assert "text that was there all along" in prompt
+
+
+def test_the_identical_file_fact_is_ours_and_comes_after_the_letter():
+    prompt = rc._user_prompt(_identical())
+    assert prompt.index(rc._LETTER_CLOSE) < prompt.index("## This file is byte-for-byte")
+    assert prompt.index("## This file is byte-for-byte") < prompt.index("## Your task")
+
+
+def test_a_changed_file_is_told_nothing():
+    """A re-export of an unedited document differs in every byte; only
+    equality carries a fact."""
+    prior = _prior_round()
+    prior.manuscript_file_sha256 = "abc123"
+    prompt = rc._user_prompt(_state(prior=prior, ingest={"file_sha256": "def456"}))
+    assert "byte-for-byte" not in prompt
+
+
+def test_a_missing_hash_on_either_side_is_told_nothing():
+    prior_hashed = _prior_round()
+    prior_hashed.manuscript_file_sha256 = "abc123"
+    for prior, ingest in (
+        (_prior_round(), {"file_sha256": "abc123"}),  # record predates the field
+        (prior_hashed, {}),                           # this round never hashed
+        (prior_hashed, {"file_sha256": ""}),
+    ):
+        prompt = rc._user_prompt(_state(prior=prior, ingest=ingest))
+        assert "byte-for-byte" not in prompt
+
+
+def test_the_prompt_binds_the_summary_to_the_findings():
+    task = rc._TASK
+    assert "Do not describe a change that no finding records" in task
+    assert "may not say the authors partially addressed anything" in task
+
+
+# --- the summary cannot be the last word ------------------------------------
+
+
+def _no_progress_body(monkeypatch, total: int = 2) -> str:
+    """A body whose summary claims progress no finding records."""
+    output = _output(
+        summary=(
+            "The authors have partially addressed some required revisions and "
+            "the manuscript shows some improvements in methodological "
+            "transparency."
+        ),
+        findings=[
+            ComplianceFinding(id=f"R1-0{i + 1}", status="not_addressed", blocking=True)
+            for i in range(total)
+        ],
+    )
+    return _audit(_run(monkeypatch, output=output))["body"]
+
+
+def test_zero_addressed_or_partial_is_stated_under_the_summary(monkeypatch):
+    body = _no_progress_body(monkeypatch)
+    assert "None of the 2 required revisions were addressed, in whole or in part." in body
+    assert "contradicted by the per-item findings" in body
+    assert "Read the list, not the paragraph." in body
+
+
+def test_the_disclosure_follows_the_summary_and_precedes_the_findings(monkeypatch):
+    """It has to overtake the prose on the way to the editor's eye."""
+    body = _no_progress_body(monkeypatch)
+    assert body.index("shows some improvements") < body.index("in whole or in part")
+    assert body.index("in whole or in part") < body.index("## Required revisions")
+
+
+def test_the_counts_line_reports_partials_separately(monkeypatch):
+    body = _no_progress_body(monkeypatch)
+    assert "**Addressed: 0/2** · partially addressed: 0" in body
+
+
+def test_the_guard_is_the_counts_and_never_the_wording(monkeypatch):
+    """Regex over "progress language" was rejected: it would miss the
+    paraphrase and fire on "no improvement was made". Zero addressed and zero
+    partial is a fact, and it is the whole trigger."""
+    output = _output(
+        summary="Nothing was done. The manuscript shows no improvement at all.",
+        findings=[ComplianceFinding(id="R1-01", status="not_addressed")],
+    )
+    body = _audit(_run(monkeypatch, output=output))["body"]
+    assert "in whole or in part" in body, "the trigger is the counts, not the prose"
+
+
+def test_a_single_open_item_is_worded_in_the_singular(monkeypatch):
+    output = _output(
+        summary="Some progress was made.",
+        findings=[ComplianceFinding(id="R1-01", status="not_addressed")],
+    )
+    body = _audit(_run(monkeypatch, output=output))["body"]
+    assert "None of the 1 required revision was addressed" in body
+
+
+@pytest.mark.parametrize("status", ["addressed", "partial"])
+def test_one_item_of_real_progress_silences_the_disclosure(monkeypatch, status):
+    output = _output(findings=[
+        ComplianceFinding(
+            id="R1-01", status=status, manuscript_evidence=f'"{REAL_QUOTE}"',
+        ),
+        ComplianceFinding(id="R1-02", status="not_addressed", blocking=True),
+    ])
+    assert "in whole or in part" not in _audit(_run(monkeypatch, output=output))["body"]
+
+
+def test_a_demoted_claim_leaves_nothing_addressed_and_trips_the_guard(monkeypatch):
+    """The two halves meeting: the quote check demotes the only claim of
+    progress, and the disclosure then reports what is left."""
+    output = _finding("addressed", "The methods section was expanded.")
+    body = _audit(_run(monkeypatch, output=output))["body"]
+    assert "**Addressed: 0/1**" in body
+    assert "None of the 1 required revision was addressed" in body
+
+
+def test_an_audit_with_no_items_carries_no_disclosure(monkeypatch):
+    """No asks is not zero progress; it is nothing to report on."""
+    body = _audit(_run(monkeypatch, output=_output(findings=[])))["body"]
+    assert "in whole or in part" not in body
+
+
 # --- the letter is untrusted -------------------------------------------------
 
 

@@ -26,6 +26,15 @@ Because that first question is now load-bearing, the answer is checked in
 code: see :func:`_verify_quotes`. A claim of progress has to quote the
 manuscript, and the quote has to be in the manuscript.
 
+That check governs the per-item findings, which are structured. The free-text
+``summary`` is not a finding and has no quotation to verify, yet it is
+rendered above the list and is the first thing the editor reads — and it has
+drifted from the findings underneath it while every one of them was correct.
+So it is constrained from both ends: the prompt requires it to agree with the
+findings, and :meth:`~..schemas.RevisionComplianceOutput.to_markdown` prints
+the counts computed from those findings directly beneath it, labelled as
+contradicting it when they do.
+
 This auditor cannot be built with :func:`..auditors.base.make_auditor_node`:
 that builder emits ``AuditOutput`` over a category checklist, whereas the
 unit here is the prior round's numbered ask, keyed by *its* id. Everything
@@ -46,6 +55,7 @@ from ..schemas import (
 from ..utils.agent_states import AuditReport, ReviewState
 from ..utils.agent_utils import context_block
 from ..utils.llm import make_llm
+from ..utils.round_delta import is_byte_identical_resubmission
 from ..utils.structured import invoke_structured
 
 AUDITOR_NAME = "revision_compliance"
@@ -126,6 +136,39 @@ _STATEMENT_BLOCK = (
     + _LETTER_CLOSE
 )
 
+# Told to the auditor when the pipeline knows, from two sha256s, that the file
+# in front of it is the previous round's file. It is the only agent that reads
+# the asks against the draft, and on a byte-identical resubmission it wrote
+# "the manuscript shows some improvements in causal language qualification and
+# methodological transparency" — of a document that had not changed by one
+# byte. Its own findings said 0 of 6 addressed. The quote check governs the
+# findings; this governs everything the auditor says about change.
+#
+# The last paragraph is not optional politeness. An editor handed the bare
+# fact once rejected a paper for "disregard for the review process" that no
+# human had resubmitted; the same fact reaches the same model here.
+_IDENTICAL_FILE_BLOCK = (
+    "## This file is byte-for-byte the draft the previous round reviewed\n\n"
+    "The manuscript above has the same sha256 as the file the previous round "
+    "was given. It is not a revised draft: it is the same document, "
+    "unchanged. Therefore NO item can have been addressed by a change to the "
+    "text, because there is no change to the text. Nothing in this manuscript "
+    "was added, expanded, rewritten, clarified, qualified, softened or "
+    "reworded since the last round, and you must not report that any of it "
+    "was — not in a finding, not in manuscript_evidence, and not in your "
+    "summary.\n\n"
+    "This constrains claims about CHANGES, not every outcome. Two remain "
+    "fully open to you: an item the authors decline with a defensible reason "
+    "is 'rebutted' as it always was; and an item is still 'addressed' if the "
+    "manuscript already satisfied the ask in text that was there all along "
+    "and the previous round simply misread it — quote that text and say so. "
+    "What you may not do is credit a revision that did not happen.\n\n"
+    "This is a fact about the file and NOT evidence of bad faith. This "
+    "pipeline reviews whatever draft it is handed, an unchanged resubmission "
+    "is not defiance of an editor, and punishing the authors for it is not "
+    "your job or anyone's. Report the items."
+)
+
 _NO_STATEMENT_BLOCK = (
     "## The authors' response letter\n\n"
     "None was submitted. Judge every item on the manuscript alone, leave "
@@ -183,8 +226,18 @@ _TASK = (
     "than reading — you are shown one draft, not two. An empty list is the "
     "right answer for an ordinary revision.\n\n"
     "**summary** — one short paragraph: how much of the list was carried out, "
-    "and how well the letter's account matched the document. Factual "
-    "reporting; the verdict is the editor's."
+    "and how well the letter's account matched the document. It must be "
+    "consistent with the findings you just wrote, because it is rendered "
+    "ABOVE them and the editor reads it first. Do not describe a change that "
+    "no finding records. When you have marked no item 'addressed' and none "
+    "'partial', the summary may not say the authors partially addressed "
+    "anything, may not report improvements, and may not describe the "
+    "manuscript as having moved at all — an audit that filed six findings, "
+    "none of them addressed or partial, and opened with 'the authors have "
+    "partially addressed some required revisions' told the editor the "
+    "opposite of its own result. The counts are rendered under your summary "
+    "and a summary that contradicts them is labelled as contradicting them. "
+    "Factual reporting; the verdict is the editor's."
 )
 
 
@@ -351,17 +404,35 @@ def _normalize(text: str) -> str:
 
 
 def _user_prompt(state: ReviewState) -> str:
-    """Assemble the round-specific turn: asks, letter, then the task.
+    """Assemble the round-specific turn: asks, letter, the file fact, the task.
 
     The task instructions come last so that the final thing the model reads is
-    ours, not the untrusted letter's.
+    ours, not the untrusted letter's. The identical-file fact sits between the
+    two for the same reason: a letter describing extensive revisions is
+    immediately followed by the hash saying the file never changed, and the
+    fact is ours rather than the letter's.
     """
     parts = [
         _revisions_block(state.get("prior_round")),
         _statement_block(state.get("author_statement") or ""),
+        _identical_file_block(state),
         _TASK,
     ]
     return "\n\n".join(p for p in parts if p)
+
+
+def _identical_file_block(state: ReviewState) -> str:
+    """The byte-identical fact, or '' when the hashes differ or are missing.
+
+    The predicate is :func:`..utils.round_delta.is_byte_identical_resubmission`
+    rather than a second sha256 comparison here: the editor's delta block is
+    told the same thing from the same two hashes, and an auditor and an editor
+    disagreeing about whether the file changed is worse than neither being
+    told.
+    """
+    if not is_byte_identical_resubmission(state.get("prior_round"), state):
+        return ""
+    return _IDENTICAL_FILE_BLOCK
 
 
 def _revisions_block(prior) -> str:
