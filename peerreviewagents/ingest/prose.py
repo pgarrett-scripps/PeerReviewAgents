@@ -4,7 +4,7 @@ No model, no API call, no judgment. Everything here is a count over the text
 the panel is about to read, produced at ingest time and published alongside
 the rest of the provenance on ``state["ingest"]``.
 
-Three groups, in descending order of how much they can be trusted:
+Four groups, in descending order of how much they can be trusted:
 
 * **Health** (:class:`Health`) — how well the PDF converted. Valid on every
   document, and the gate for everything else. A manuscript that arrives as
@@ -16,6 +16,10 @@ Three groups, in descending order of how much they can be trusted:
 * **Density** (:class:`Density`) — style and rhetoric per 1000 words. Valid
   only when the text is the author's own prose, which rules out any run with
   ``caveman`` compression on.
+* **Per section** (:class:`SectionStats`) — the same shape of measurement over
+  each section separately. Valid where Density is *and* where the section map
+  is (see :attr:`Health.sections_usable`): a document whose text mostly landed
+  in no known section has sections in name only.
 
 Calibration for the thresholds below comes from a 16-paper corpus of real
 converted submissions (ML, proteomics, neuroscience). Where a number looks
@@ -35,8 +39,17 @@ produced more false statements than true ones:
   technical vocabulary inflates them mechanically. Every paper scores
   "graduate level," which is not a finding.
 
-Figure/table cross-reference integrity and per-section statistics are viable
-but need the section map, so they are not in this module yet.
+Figure/table cross-reference integrity is still not here, and now has exactly
+one thing missing. The converter types ``figure``, ``caption`` and ``table``
+blocks, so the set of floats a paper actually contains is a read rather than a
+regex — but the loader keeps only the Markdown and the section tree from the
+document model, and a caption's *number* ("Figure 3.") is not a typed field.
+Doing it honestly means carrying the caption blocks through
+:class:`.structured.Converted` and matching ``Fig(ure)? N`` mentions in the
+prose against them, reporting only mentions with no matching float and floats
+with no mention — and reporting nothing at all on a document with no block
+model, because a heuristic count of captions in Markdown produces the false
+positives this module exists to avoid.
 
 What reaches a prompt, and what does not
 ----------------------------------------
@@ -71,8 +84,18 @@ offered to anyone:
 * MATTR is a ratio with no reference distribution attached, so a reviewer given
   0.47 has nothing to compare it against and will invent a comparison.
 * Citations, p-values and numbers-per-1000 are evidence density rather than
-  presentation, and the citation count in particular is often ``undetected``
-  for reasons that are about the converter.
+  presentation, and the in-text citation count in particular is often
+  ``undetected`` for reasons that are about the converter — superscript
+  numerals convert to bare digits. What is *not* a guess is the bibliography
+  itself, which the converter types as entries:
+  :attr:`Counts.reference_entries` is how many it found, and it is why "too
+  few citations detected" no longer has to be reported as though the size of
+  the reference list were unknown too.
+
+The per-section numbers are reported and not sent to any agent either, and for
+the sharper version of the same reason: "the discussion hedges twice as often
+as the results" reads like a finding, is not one, and a reviewer handed it
+will write a paragraph about it.
 
 The word-count-against-a-venue-limit check is the near miss, and it stays out:
 preprints are not formatted to any venue's limit, so it would fire on almost
@@ -284,6 +307,12 @@ class Counts:
     # limit off by up to half.
     references_separable: bool
     main_text_words: int | None
+    # How many bibliography entries the converter typed. `None` means nobody
+    # could have counted them — a Markdown or LaTeX submission has no block
+    # model — and is not the same answer as 0, which means the converter read
+    # the whole document and typed none. Neither is evidence that a paper
+    # cites nothing: an entry count is positive evidence only.
+    reference_entries: int | None
 
 
 @dataclass(frozen=True)
@@ -315,6 +344,26 @@ class Density:
 
 
 @dataclass(frozen=True)
+class SectionStats:
+    """One section, measured on its own.
+
+    A subset of :class:`Density` — the measures that mean something over a
+    part of a document rather than over all of it. Sentence length and
+    hedging concentrate where a paper argues rather than where it reports,
+    and word share says where a paper spends its length; MATTR and the
+    p-value counts are left out because a window statistic over 400 words and
+    a total over a section are both answers to questions nobody asked.
+    """
+
+    words: int
+    sentences: int
+    sentence_len_mean: float
+    citations_per_1k: float
+    hedges_per_1k: float
+    boosters_per_1k: float
+
+
+@dataclass(frozen=True)
 class ProseStats:
     """Everything this module measures about one manuscript."""
 
@@ -324,6 +373,9 @@ class ProseStats:
     # length, hedging and lexical diversity all describe prose the author did
     # not write.
     density: Density | None
+    # Per section, keyed as the section map is. None when there is no section
+    # map, and under compression for the same reason Density is.
+    sections: dict[str, SectionStats] | None
     caveman: str | None
 
     def to_dict(self) -> dict:
@@ -332,6 +384,10 @@ class ProseStats:
             "health": asdict(self.health),
             "counts": asdict(self.counts),
             "density": asdict(self.density) if self.density else None,
+            "sections": (
+                {name: asdict(s) for name, s in self.sections.items()}
+                if self.sections else None
+            ),
             "caveman": self.caveman,
         }
 
@@ -527,7 +583,11 @@ def _health(text: str, prose: str, words: int, sections: dict[str, str] | None) 
 
 
 def _counts(
-    text: str, prose: str, tokens: list[str], sections: dict[str, str] | None
+    text: str,
+    prose: str,
+    tokens: list[str],
+    sections: dict[str, str] | None,
+    references: list[dict] | None,
 ) -> Counts:
     sentences = split_sentences(prose)
     blocks = [p for p in _BLOCK_SPLIT_RE.split(prose) if p.strip()]
@@ -539,6 +599,15 @@ def _counts(
         if refs.strip():
             reference_words = len(_words(prose_only(refs)))
             separable = reference_words > 0
+    if not separable and references:
+        # No section named the bibliography, but the converter typed its
+        # entries — so its words can be counted from the entries themselves
+        # and `main_text_words` becomes knowable on a paper that would
+        # otherwise have reported it unavailable. Positive evidence only: an
+        # empty entry list is a bibliography that was not parsed, not one that
+        # is not there, and never turns `separable` off.
+        reference_words = sum(len(_words(str(e.get("raw") or ""))) for e in references)
+        separable = reference_words > 0
 
     main_text = len(tokens) - reference_words if separable else None
     return Counts(
@@ -551,6 +620,7 @@ def _counts(
         reference_words=reference_words,
         references_separable=separable,
         main_text_words=main_text,
+        reference_entries=len(references) if references is not None else None,
     )
 
 
@@ -597,16 +667,56 @@ def _density(prose: str, tokens: list[str]) -> Density:
     )
 
 
+def _section_stats(sections: dict[str, str] | None) -> dict[str, SectionStats] | None:
+    """Measure each section on its own, or ``None`` without a section map.
+
+    The bibliography is skipped. Hedges, boosters and sentence length over a
+    reference list measure the house style of a dozen journals, and its
+    citation density is 1000 per 1000 words by construction.
+    """
+    if not sections:
+        return None
+    measured: dict[str, SectionStats] = {}
+    for name, body in sections.items():
+        if name == "references":
+            continue
+        section_prose = prose_only(body)
+        tokens = _words(section_prose)
+        if not tokens:
+            continue
+        sentences = split_sentences(section_prose)
+        lengths = [n for n in (len(_words(s)) for s in sentences) if n]
+        citations = len(_NUMERIC_CITE_RE.findall(section_prose)) + len(
+            _AUTHOR_YEAR_CITE_RE.findall(section_prose)
+        )
+        measured[name] = SectionStats(
+            words=len(tokens),
+            sentences=len(sentences),
+            sentence_len_mean=round(sum(lengths) / len(lengths), 2) if lengths else 0.0,
+            citations_per_1k=_per_1k(citations, len(tokens)),
+            hedges_per_1k=_per_1k(len(_HEDGE_RE.findall(section_prose)), len(tokens)),
+            boosters_per_1k=_per_1k(len(_BOOSTER_RE.findall(section_prose)), len(tokens)),
+        )
+    return measured or None
+
+
 def analyze(
     text: str,
     sections: dict[str, str] | None = None,
     caveman: str | None = None,
+    references: list[dict] | None = None,
 ) -> ProseStats:
     """Measure ``text``. Pure, deterministic, and never raises on real input.
 
     ``sections`` is the loader's section map; without it the reference list
-    cannot be separated and ``preamble_share`` is unknown, so the affected
-    fields report themselves unavailable rather than guessing.
+    cannot be separated, ``preamble_share`` is unknown and there is nothing to
+    measure per section, so the affected fields report themselves unavailable
+    rather than guessing.
+
+    ``references`` is the converter's typed bibliography, as
+    :attr:`.structured.Converted.references`. ``None`` — the default, and what
+    every non-PDF input passes — means no block model existed to type one,
+    which is a different answer from an empty list and is reported as one.
 
     ``caveman`` is the run's compression level. When it is on, :attr:`Density`
     is withheld entirely: the compressor strips articles and function words,
@@ -620,7 +730,8 @@ def analyze(
     compressed = bool(caveman) and caveman != "off"
     return ProseStats(
         health=_health(text, prose, len(tokens), sections),
-        counts=_counts(text, prose, tokens, sections),
+        counts=_counts(text, prose, tokens, sections, references),
         density=None if compressed else _density(prose, tokens),
+        sections=None if compressed else _section_stats(sections),
         caveman=caveman if compressed else None,
     )

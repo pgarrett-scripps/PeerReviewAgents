@@ -52,4 +52,10 @@ node = make_reviewer_node(
         "alone, ask the authors to confirm rather than asserting it's wrong."
     ),
     tool_names=["find_related_work", "search_biomedical_literature"],
+    # Citation hygiene is half this mandate, and it used to be checked by
+    # reading the reference list back out of the converted prose. The typed
+    # bibliography is the same list as entries, with the manuscript's own
+    # labels, and it survives the manuscript truncation that drops the
+    # reference section first.
+    needs_references=True,
 )

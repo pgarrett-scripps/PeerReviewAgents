@@ -71,6 +71,14 @@ class ReviewState(TypedDict, total=False):
     manuscript_title: str
     manuscript_md: str           # normalized full text
     sections: dict[str, str]     # section name -> text
+    # The bibliography as the converter typed it: one dict per entry, in the
+    # order the manuscript prints them, carrying `raw` always and `label`,
+    # `authors`, `title`, `year`, `doi`, `arxiv` where they parsed. Empty for
+    # a submission with no document model behind it (Markdown, LaTeX) and for
+    # a converter that types no reference blocks — so the two agents that read
+    # it keep the path that reads the prose. Passed only to those two, as a
+    # cached block after the shared prefix (agent_utils.references_block).
+    references: list[dict]
     # How the manuscript was read, from ingest.loader.Manuscript.ingest:
     # format, tool (with version), caveman level, chars, and the reason the
     # structured backend was not used. Carried on the state because it is

@@ -31,10 +31,19 @@ def _fake_pdf(tmp_path):
     return str(path)
 
 
-def _stub_convert(monkeypatch, markdown="# Real Title\n\n## Methods\n\nWe did it.\n"):
+def _stub_convert(
+    monkeypatch,
+    markdown="# Real Title\n\n## Methods\n\nWe did it.\n",
+    outline=(),
+    references=(),
+):
     def convert(path, caveman="off", kind="manuscript"):
         return structured.Converted(
-            markdown=markdown, title="Real Title", tool="rustypaper 9.9.9"
+            markdown=markdown,
+            title="Real Title",
+            tool="rustypaper 9.9.9",
+            outline=outline,
+            references=references,
         )
 
     monkeypatch.setattr(structured, "convert", convert)
@@ -237,6 +246,170 @@ def test_cached_entry_reports_the_original_ingest(tmp_path, monkeypatch, cache_d
     assert second.sections == first.sections
 
 
+# --- one conversion, not two ------------------------------------------------
+#
+# `to_markdown` and `to_document` are two views of one conversion, and asking
+# for them separately reads, lays out and classifies the PDF twice. A
+# converter that offers `convert` returns both from one run — but the installed
+# one may not, so the two-call path has to keep working.
+
+
+def _fake_rustypaper(monkeypatch, *, one_call: bool, sections=None, blocks=None):
+    """Install a fake converter module. Returns the list of calls it received."""
+    import sys
+    import types
+    from collections import namedtuple
+
+    calls: list[str] = []
+    document = {
+        "title": "Real Title",
+        "sections": sections if sections is not None else [],
+        "blocks": blocks if blocks is not None else [],
+    }
+    markdown = "# Real Title\n\n## Methods\n\n" + "We measured the thing. " * 400
+
+    fake = types.ModuleType("rustypaper")
+    fake.__version__ = "9.9.9"
+
+    def to_markdown(path, caveman=None):
+        calls.append("to_markdown")
+        return markdown
+
+    def to_document(path, caveman=None):
+        calls.append("to_document")
+        return document
+
+    fake.to_markdown = to_markdown
+    fake.to_document = to_document
+    if one_call:
+        conversion = namedtuple("Conversion", "markdown document")
+
+        def convert(path, caveman=None):
+            calls.append("convert")
+            return conversion(markdown, document)
+
+        fake.convert = convert
+
+    monkeypatch.setitem(sys.modules, "rustypaper", fake)
+    return calls
+
+
+def test_the_pdf_is_read_once_when_the_converter_can_do_both(monkeypatch):
+    calls = _fake_rustypaper(
+        monkeypatch, one_call=True, sections=[{"title": "Methods", "level": 1}]
+    )
+    out = structured.convert("paper.pdf")
+    assert calls == ["convert"]
+    assert out.title == "Real Title"
+    assert [s.title for s in out.outline] == ["Methods"]
+
+
+def test_an_older_converter_is_still_asked_for_both(monkeypatch):
+    """Feature-detected, not version-compared: PRA has to keep running against
+    an installed rustypaper that predates the single-call entry point."""
+    calls = _fake_rustypaper(
+        monkeypatch, one_call=False, sections=[{"title": "Methods", "level": 1}]
+    )
+    out = structured.convert("paper.pdf")
+    assert calls == ["to_markdown", "to_document"]
+    assert out.title == "Real Title"
+    assert [s.title for s in out.outline] == ["Methods"]
+
+
+def test_a_converter_with_no_section_tree_reports_no_outline(monkeypatch):
+    """Which is what puts the loader back on its heading heuristic."""
+    _fake_rustypaper(monkeypatch, one_call=True, sections=None)
+    assert structured.convert("paper.pdf").outline == ()
+
+
+def test_the_outline_is_flattened_into_reading_order(monkeypatch):
+    """Preorder, because that is the order the headings appear in the
+    Markdown. The untitled front matter is left out: no heading introduces
+    it, so there is no line to pair it with."""
+    _fake_rustypaper(monkeypatch, one_call=True, sections=[
+        {"title": None, "level": 0},
+        {"title": "1 Methods", "level": 1, "children": [
+            {"title": "1.1 Data", "level": 2},
+        ]},
+        {"title": "2 Results", "level": 1},
+    ])
+    out = structured.convert("paper.pdf")
+    assert [(s.title, s.level) for s in out.outline] == [
+        ("1 Methods", 1), ("1.1 Data", 2), ("2 Results", 1)
+    ]
+
+
+# --- the typed bibliography --------------------------------------------------
+
+
+def _reference_block(text, **parsed):
+    return {"kind": {"type": "reference"}, "text": text, "reference": parsed}
+
+
+def test_reference_entries_carry_only_the_fields_that_parsed(monkeypatch):
+    """An absent field is the converter saying it could not read one, and it
+    stays absent: an empty authors list would read as "this entry names
+    nobody", which is a different and false claim."""
+    _fake_rustypaper(monkeypatch, one_call=True, blocks=[
+        {"kind": {"type": "paragraph"}, "text": "Body."},
+        _reference_block(
+            "[1] Kaiming He and others. Deep residual learning. 2016.",
+            label="1",
+            raw="Kaiming He and others. Deep residual learning. 2016.",
+            authors=["Kaiming He"],
+            title="Deep residual learning",
+            year=2016,
+        ),
+        _reference_block("[2] Something the parser could not read.", raw="Something the parser could not read."),
+    ])
+    entries = structured.convert("paper.pdf").references
+    assert [e["raw"] for e in entries] == [
+        "Kaiming He and others. Deep residual learning. 2016.",
+        "Something the parser could not read.",
+    ]
+    assert entries[0]["year"] == 2016 and entries[0]["authors"] == ["Kaiming He"]
+    assert "authors" not in entries[1] and "year" not in entries[1]
+
+
+def test_an_untyped_reference_block_still_yields_its_text(monkeypatch):
+    """A converter that types reference blocks without parsing their fields
+    still gives the bibliography as a list rather than as a wall of prose."""
+    _fake_rustypaper(monkeypatch, one_call=True, blocks=[
+        {"kind": {"type": "reference"}, "text": "Smith, J. 2020. A paper."},
+    ])
+    assert structured.convert("paper.pdf").references == (
+        {"raw": "Smith, J. 2020. A paper."},
+    )
+
+
+def test_the_loader_carries_the_entries_and_names_how_it_read_the_sections(
+    tmp_path, monkeypatch, cache_dir
+):
+    _stub_convert(
+        monkeypatch,
+        markdown="# T\n\n## Methods\n\n" + "We did the thing. " * 300,
+        outline=(structured.Section(title="Methods", level=1),),
+        references=({"raw": "Smith, J. 2020. A paper.", "label": "1"},),
+    )
+    parsed = loader.load_manuscript_record(_fake_pdf(tmp_path), cache_dir)
+    assert parsed.references == [{"raw": "Smith, J. 2020. A paper.", "label": "1"}]
+    assert parsed.ingest["section_source"] == "document"
+    assert "methods" in parsed.sections
+    # And it survives the cache, which is what the schema bump is for.
+    assert loader.load_manuscript_record(_fake_pdf(tmp_path), cache_dir).references == \
+        parsed.references
+
+
+def test_without_a_section_tree_the_loader_says_it_matched_headings(
+    tmp_path, monkeypatch, cache_dir
+):
+    _stub_convert(monkeypatch, markdown="# T\n\nMethods\n\n" + "We did the thing. " * 300)
+    parsed = loader.load_manuscript_record(_fake_pdf(tmp_path), cache_dir)
+    assert parsed.ingest["section_source"] == "headings"
+    assert "methods" in parsed.sections
+    assert parsed.references == []
+
+
 # --- section mapping --------------------------------------------------------
 
 
@@ -367,6 +540,134 @@ def test_a_real_references_heading_still_wins(tmp_path):
     text = "# Paper\n\nBody.\n\nReferences\n\nSmith, J. 2020. A paper.\n"
     sections = loader._split_sections(text, references_anchor="Smith, J. 2020")
     assert sections["references"].startswith("Smith")
+
+
+# --- section mapping from the converter's own outline ------------------------
+#
+# The outline is a tree over blocks and PRA's sections are slices of the
+# Markdown, so the two are joined on the heading text: the emitter writes each
+# heading block as a `#` line carrying exactly the title the tree reports.
+
+
+def _outline(*titles):
+    return tuple(
+        structured.Section(title=t, level=lv) for t, lv in titles
+    )
+
+
+def test_the_outline_says_which_lines_are_headings():
+    text = (
+        "# A Paper\n\nFront matter.\n\n"
+        "## 1 Introduction\n\nWe begin the work.\n\n"
+        "## 2 Methods\n\nWe pipetted carefully.\n\n"
+        "## 3 Results\n\nThe effect held.\n"
+    )
+    sections = loader._sections_from_outline(
+        text, _outline(("1 Introduction", 1), ("2 Methods", 1), ("3 Results", 1))
+    )
+    assert sections["introduction"] == "We begin the work."
+    assert sections["methods"] == "We pipetted carefully."
+    assert sections["results"] == "The effect held."
+    # The heading line names the section rather than being its text, so it is
+    # dropped — as in the heuristic path, because the revision diff compares
+    # section bodies between rounds.
+    assert "#" not in sections["methods"]
+
+
+def test_a_section_the_document_has_and_the_bucket_list_does_not_stays_put():
+    """"4 Why Self-Attention" is a real section and no bucket's name. It reads
+    as part of the section above it, exactly as it does when headings are
+    matched out of the prose."""
+    text = (
+        "# A Paper\n\n## 1 Introduction\n\nWe begin.\n\n"
+        "## 2 Why Self-Attention\n\nBecause it is fast.\n"
+    )
+    sections = loader._sections_from_outline(
+        text, _outline(("1 Introduction", 1), ("2 Why Self-Attention", 1))
+    )
+    assert "Because it is fast." in sections["introduction"]
+
+
+def test_a_subsection_names_its_bucket_too():
+    """A "Data availability" printed under Methods is that section wherever
+    the document puts it."""
+    text = (
+        "# A Paper\n\n## 2 Methods\n\nWe pipetted.\n\n"
+        "### 2.3 Data availability\n\nDeposited at PRIDE.\n"
+    )
+    sections = loader._sections_from_outline(
+        text, _outline(("2 Methods", 1), ("2.3 Data availability", 2))
+    )
+    assert sections["methods"] == "We pipetted."
+    assert sections["data availability"] == "Deposited at PRIDE."
+
+
+def test_a_section_the_outline_missed_is_still_found_in_the_prose():
+    """Measured on the rustypaper corpus: four of sixteen papers' section
+    trees name no bibliography, because the heading is set at body size. The
+    heading match still finds those, so it fills what the outline did not
+    name — dropping a section the old path had been finding would be a
+    regression however much better the new path's provenance is."""
+    text = (
+        "# A Paper\n\n## 1 Introduction\n\nWe begin.\n\n"
+        "References\n\nSmith, J. 2020. A paper.\n"
+    )
+    sections = loader._sections_from_outline(text, _outline(("1 Introduction", 1)))
+    assert sections["introduction"] == "We begin."
+    assert sections["references"].startswith("Smith")
+
+
+def test_the_outline_keeps_a_contents_line_from_opening_a_section():
+    """The other half of the same rule: the heuristic fills gaps only, so a
+    line the outline has already placed a bucket for cannot open a second one.
+
+    Measured on a number-theory preprint, whose table of contents opens
+    "1. Introduction 2. …" — numbered, so the length guard is waived, so the
+    heuristic started the introduction at the contents page and swept the
+    real one into it.
+    """
+    contents = (
+        "1. Introduction 2. Reduced traces and fixed-parameter quaternion "
+        "formulas 3. Finite freezing at the ramified places 4. Conclusion"
+    )
+    text = (
+        f"# A Paper\n\nAbstract. We prove things.\n\n{contents}\n\n"
+        "## 1. Introduction\n\nHilbert's Tenth Problem asks for an algorithm.\n"
+    )
+    guessed = loader._split_sections(text)
+    assert "Reduced traces" in guessed["introduction"]
+
+    read = loader._sections_from_outline(text, _outline(("1. Introduction", 1)))
+    assert read["introduction"] == "Hilbert's Tenth Problem asks for an algorithm."
+    assert "Reduced traces" in read["_preamble"]
+
+
+def test_an_outline_title_with_no_heading_line_is_skipped_not_hunted():
+    """Pairing it with some other section's heading further down would move
+    two boundaries to fix none."""
+    text = (
+        "# A Paper\n\n## 1 Introduction\n\nWe begin.\n\n"
+        "## 3 Results\n\nThe effect held.\n"
+    )
+    sections = loader._sections_from_outline(
+        text,
+        _outline(("1 Introduction", 1), ("2 Methods", 1), ("3 Results", 1)),
+    )
+    assert "methods" not in sections
+    assert sections["results"] == "The effect held."
+
+
+def test_a_heading_line_reads_back_as_the_title_the_outline_reports():
+    """The pairing is by heading text, so the two spellings have to agree.
+
+    The emitter backslash-escapes a heading that opens with a character
+    Markdown would otherwise read as syntax; the outline reports the title
+    unescaped, and a heading left escaped here would pair with nothing.
+    """
+    assert loader._heading_text("## 3.2 Attention") == "3.2 Attention"
+    assert loader._heading_text("#### Data availability:") == "Data availability"
+    assert loader._heading_text("## \\- Methods") == "- Methods"
+    assert loader._heading_text("We begin the work.") is None
 
 
 # --- text safety ------------------------------------------------------------

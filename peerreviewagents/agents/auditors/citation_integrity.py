@@ -35,4 +35,10 @@ node = make_auditor_node(
         "unverifiable citation passes."
     ),
     tool_names=["find_related_work", "search_biomedical_literature"],
+    # The reference list is this auditor's primary material, and reading it
+    # out of the prose is what it used to do: the bibliography arrives as
+    # entries, so "does [12] resolve" is a lookup rather than a re-segmenting
+    # of two flattened columns. The manuscript text is still there and is
+    # still where in-text citations are read from.
+    needs_references=True,
 )

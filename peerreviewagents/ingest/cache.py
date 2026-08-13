@@ -9,7 +9,7 @@ Layout: one directory per entry under
 ``$XDG_CACHE_HOME/peerreviewagents/manuscripts/<key>/``::
 
     <key>/
-        metadata.json    # schema_version, title, sections, ingest, meta
+        metadata.json    # schema_version, title, sections, references, ingest, meta
         manuscript.md    # extracted text
 """
 
@@ -44,7 +44,11 @@ from typing import Any
 # conversion forever. And manuscript.md was not written atomically, so a torn
 # write read back cleanly as a shorter manuscript and could be served on
 # every later run.
-_SCHEMA_VERSION = 8
+# v9: the entry carries the typed bibliography. A v8 entry has none, and
+# serving one would tell the citation auditor a paper has no reference list —
+# which is a claim about the manuscript — when what happened is that the entry
+# predates the field.
+_SCHEMA_VERSION = 9
 
 
 def cache_root(config: dict | None = None) -> Path:
@@ -125,6 +129,7 @@ def get(key: str, config: dict | None = None):
         title=meta.get("title", ""),
         text=text,
         sections=meta.get("sections", {}),
+        references=meta.get("references", []),
         # Cached alongside the text so that a served entry reports the same
         # provenance the original parse did. Without it the second review of
         # a paper would publish "read via pypdf" for text rustypaper produced.
@@ -147,6 +152,7 @@ def put(
         "schema_version": _SCHEMA_VERSION,
         "title": manuscript.title,
         "sections": manuscript.sections,
+        "references": manuscript.references,
         "ingest": manuscript.ingest,
         "meta": {
             "source_path": str(source_path),

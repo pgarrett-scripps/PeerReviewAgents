@@ -190,9 +190,24 @@ silent fallback arranges for that to happen on exactly the runs nobody is
 watching. A missing or failing converter is now an error.
 
 Every run records how the manuscript was read on `state["ingest"]`: format,
-converter and version, compression level, length. Publish it. A reader
-checking a quoted sentence against the PDF needs to know the panel read a
-conversion of it.
+converter and version, compression level, length, and which of the two ways
+the section map was built. Publish it. A reader checking a quoted sentence
+against the PDF needs to know the panel read a conversion of it.
+
+**Sections are read where they can be, and guessed where they cannot.** A
+converter that reports its own section tree hands over the document's
+structure, and the map is cut from that — joined to the Markdown on the
+heading text, so each section stays a literal slice of what the panel read. A
+Markdown or LaTeX submission has no such tree, and neither does an older
+rustypaper, so for those the map is still matched out of lines that look like
+headings. The guess also fills what a tree does not name: measured over a
+sixteen-paper corpus, four papers' trees name no bibliography, because the
+heading is set at body size and reads as body text. `section_source` on the
+ingest record says which happened. The same document model types the
+bibliography as entries with their parsed fields, and the two agents whose
+remit is the reference list — the citation-integrity auditor and the
+literature reviewer — are given that list rather than left to recover it from
+the prose.
 
 **Convert here, not before.** Handing the pipeline a `.md` you converted
 yourself looks equivalent and is not: the run records which converter read the

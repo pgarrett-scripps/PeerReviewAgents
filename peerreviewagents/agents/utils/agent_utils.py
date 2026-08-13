@@ -550,6 +550,69 @@ def supplement_block(state: ReviewState) -> str:
     )
 
 
+# A cap no real bibliography reaches — the longest in the calibration corpus
+# is 341 entries — but a survey's can, and a prompt that does not fit is not a
+# review. What is dropped is named rather than silently missing, because the
+# agent reading this block is the one auditing the list for completeness.
+_MAX_RENDERED_REFERENCES = 1000
+
+# Told to the agents that receive the block, because both facts change how it
+# should be read: an entry the converter could not type is not in the list,
+# and a field it could not parse is absent rather than wrong.
+REFERENCES_NOTE = (
+    "\n\nA REFERENCE LIST block is included above. It is the bibliography as "
+    "the PDF converter typed it — one entry per line, in the manuscript's own "
+    "order, with the manuscript's own labels — not a rendering of the prose, "
+    "so it survives even where the reference section was truncated out of the "
+    "manuscript block or ran together in conversion. Two limits, and both "
+    "matter for what you may conclude from it: an entry the converter failed "
+    "to type is simply absent from the list, so a citation with no matching "
+    "entry is a lead to check against the manuscript text and never on its "
+    "own evidence that the reference does not exist; and a field it could not "
+    "read confidently is left out rather than guessed, so a missing year or "
+    "DOI is a gap in the parse unless the entry as printed also lacks it."
+)
+
+
+def references_block(state: ReviewState) -> str:
+    """The typed bibliography as a cached block, or '' when there is none.
+
+    Given only to the agents whose remit is the reference list — the citation
+    auditor and the literature reviewer — and appended after the shared
+    prefix, so the manuscript and directives blocks every other agent sends
+    stay byte-identical and these two write only this block on top of the
+    shared entry.
+
+    Worth sending even though the same text is in the manuscript. The
+    reference list is not a priority section, so it is the first thing
+    :func:`fit_manuscript` drops when a char budget is set — which would take
+    the bibliography away from the two agents that exist to check it, on
+    exactly the long papers where a budget gets set. And as entries it is a
+    list with the manuscript's own labels on it, rather than a two-column
+    bibliography flattened into prose that an agent has to re-segment before
+    it can check anything.
+    """
+    entries = state.get("references") or []
+    if not entries:
+        return ""
+    shown = entries[:_MAX_RENDERED_REFERENCES]
+    lines = []
+    for entry in shown:
+        label = str(entry.get("label") or "").strip()
+        raw = str(entry.get("raw") or "").strip()
+        lines.append(f"[{label}] {raw}" if label else raw)
+    if len(entries) > len(shown):
+        lines.append(
+            f"[... {len(entries) - len(shown)} further entries omitted to fit "
+            "the prompt; the manuscript block carries them]"
+        )
+    return (
+        f"=== REFERENCE LIST ({len(entries)} entries) ===\n"
+        + "\n".join(lines)
+        + "\n=== END REFERENCE LIST ==="
+    )
+
+
 def directives_block(state: ReviewState) -> str | None:
     """Run-wide framing directives only: journal + article-type + strictness,
     WITHOUT the manuscript text.

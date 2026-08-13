@@ -21,6 +21,15 @@ loader, where what the panel read and what the record claims cannot diverge.
 
 Other supported inputs: Markdown / LaTeX / TXT, read directly. All paths
 converge on ``(title, text, sections)``.
+
+The section map has two sources, and which one a run used is recorded on the
+ingest record as ``section_source``. A converted PDF has a document model
+behind it, so its sections are *read* from the converter's own section tree
+(:func:`_sections_from_outline`). Everything else — a Markdown submission, a
+LaTeX source, an older converter — has only the text, so its sections are
+*guessed* from lines that look like headings (:func:`_split_sections`). Both
+produce the same map, and both must keep working: the guess is what a
+non-PDF submission has, and it is not going away.
 """
 
 from __future__ import annotations
@@ -97,6 +106,12 @@ class Manuscript:
     title: str
     text: str
     sections: dict[str, str] = field(default_factory=dict)
+    # The bibliography as typed entries, in the order the document prints
+    # them; see :data:`.structured.Converted.references` for the shape. Empty
+    # for a Markdown or LaTeX submission, which has no document model, and for
+    # a converter that types no reference blocks — so every consumer keeps the
+    # path that reads the prose.
+    references: list[dict] = field(default_factory=list)
     # Published verbatim in a review's provenance. Shape:
     #   format  "markdown" (structure preserved) | "text" (flat)
     #   tool    what produced it, with version, e.g. "rustypaper 0.1.0"
@@ -229,9 +244,10 @@ def _load_uncached(
 ) -> Manuscript:
     ext = os.path.splitext(path)[1].lower()
     title = ""
-    anchor = ""
+    converted = None
     if ext == ".pdf":
-        text, title, anchor, record = _read_pdf(path, ingest_config(config), kind)
+        converted, record = _read_pdf(path, ingest_config(config), kind)
+        text, title = converted.markdown, converted.title
     elif ext in (".md", ".markdown", ".txt", ".tex"):
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
             text = fh.read()
@@ -259,28 +275,48 @@ def _load_uncached(
     record["text_sha256"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
     if not title:
         title = _guess_title(text, fallback=os.path.basename(path))
-    sections = _split_sections(text, references_anchor=anchor)
+    # The converter's own section tree where there is one, and the heading
+    # heuristic where there is not — a Markdown, LaTeX or plain-text
+    # submission has no document model behind it, and neither does a
+    # rustypaper old enough to predate the tree.
+    if converted is not None and converted.outline:
+        sections = _sections_from_outline(
+            text, converted.outline, references_anchor=converted.references_anchor
+        )
+    else:
+        sections = _split_sections(
+            text, references_anchor=converted.references_anchor if converted else ""
+        )
+    # None, not [], for a document with no block model behind it: a PDF whose
+    # bibliography typed as zero entries and a Markdown file nobody could have
+    # typed one from are different answers, and prose.analyze reports the
+    # second as unknown rather than as none.
+    references = list(converted.references) if converted else None
     # Measured here rather than by a caller so that every path into a review —
     # graph, cache hit, web job — reports the same numbers, and so that a
     # conversion bad enough to be worth stopping over is known before any
     # agent has been paid to read it.
     record["prose"] = prose.analyze(
-        text, sections=sections, caveman=record.get("caveman")
+        text, sections=sections, caveman=record.get("caveman"), references=references
     ).to_dict()
     return Manuscript(
         title=title,
         text=text,
         sections=sections,
+        references=references or [],
         ingest=record,
     )
 
 
-def _read_pdf(path: str, ingest: dict, kind: str = "manuscript") -> tuple[str, str, str, dict]:
+def _read_pdf(
+    path: str, ingest: dict, kind: str = "manuscript"
+) -> tuple[structured.Converted, dict]:
     """Convert a PDF to Markdown.
 
-    Returns ``(text, title, references_anchor, record)``. The title is the
-    converter's own, which beats the loader's line-order heuristic; the anchor
-    is where the bibliography starts, empty when it found none.
+    Returns ``(converted, record)`` — the converter's whole result, because
+    the loader reads more of it than the text: the title (its own, which beats
+    the loader's line-order heuristic), the section tree, and the typed
+    bibliography.
 
     Raises when the converter is unavailable, rather than reading the PDF a
     worse way. See this module's docstring for why there is no second path.
@@ -311,11 +347,16 @@ def _read_pdf(path: str, ingest: dict, kind: str = "manuscript") -> tuple[str, s
         text=f"read {os.path.basename(path)} as markdown via {converted.tool}"
              + (f" (caveman {caveman})" if caveman != "off" else ""),
     ))
-    return converted.markdown, converted.title, converted.references_anchor, {
+    return converted, {
         "format": "markdown",
         "tool": converted.tool,
         "caveman": None if caveman == "off" else caveman,
         "chars": len(converted.markdown),
+        # Provenance for the section map: which of the two ways it was built.
+        # A reader comparing two rounds of the same paper needs to know
+        # whether a section appearing or vanishing is the manuscript changing
+        # or the converter having learned to read its headings.
+        "section_source": "document" if converted.outline else "headings",
     }
 
 
@@ -379,8 +420,153 @@ def _guess_title(text: str, fallback: str) -> str:
     return fallback
 
 
+def _match_section_key(raw: str) -> tuple[str | None, bool]:
+    """The section key ``raw`` names, and whether it carried a section number.
+
+    ``raw`` is a heading with its Markdown hashes and trailing colon already
+    stripped. Returns the matched key *before* aliasing, because the heuristic
+    path's guards below are phrased over the match itself, and ``None`` when
+    the text names no known section.
+
+    Shared by both ways of building the map — the converter's outline and the
+    heading heuristic — so a heading spelled "Materials & Methods" lands in
+    the same bucket whichever path read it.
+    """
+    prefix = _NUMERIC_PREFIX_RE.match(raw)
+    candidate = (raw[prefix.end():] if prefix else raw).strip().lower()
+    matched = next(
+        (k for k in _SECTION_KEYS if candidate == k or candidate.startswith(k + " ")),
+        None,
+    )
+    return matched, bool(prefix)
+
+
+def _heading_text(line: str) -> str | None:
+    """The title on a Markdown heading line, or ``None`` if it is not one.
+
+    The converter's Markdown emitter escapes a heading that opens with a
+    character Markdown would otherwise read as syntax, so a single leading
+    backslash is removed before the text is compared to the outline's.
+    """
+    stripped = line.strip()
+    if not stripped.startswith("#"):
+        return None
+    title = stripped.lstrip("#").strip()
+    if title.startswith("\\") and len(title) > 1:
+        title = title[1:]
+    return title.rstrip(":").strip()
+
+
+def _outline_opens(lines: list[str], outline) -> dict[int, tuple[str, bool]]:
+    """Where each section of the converter's outline starts, by line.
+
+    The outline and the Markdown are indexed differently and have to be joined
+    somewhere: the outline is a tree over *blocks*, while everything
+    downstream of the loader — budget fitting, the revision diff, the
+    per-section statistics — slices the *Markdown*. They are joined on the
+    heading text itself, which is the one thing both hold: the emitter renders
+    a heading block as a ``#``-prefixed line carrying exactly the title the
+    tree reports, so walking the outline in reading order against the
+    Markdown's heading lines in document order pairs each section with the
+    line it starts on. Nothing is re-derived and nothing is re-rendered, so
+    each section's text stays a literal slice of the text the panel reads.
+
+    A title with no heading line to pair it with is skipped rather than
+    searched for out of order: its section then reads as part of the section
+    above it, which is a smaller lie than pairing it with some other section's
+    heading further down.
+
+    Subsections open a bucket too. A "Data availability" that a paper prints
+    under Methods is that section wherever it sits, and the numbering the
+    outline reports is not a reason to lose it.
+    """
+    headings = [(i, _heading_text(line)) for i, line in enumerate(lines)]
+    headings = [(i, title) for i, title in headings if title]
+
+    opens: dict[int, tuple[str, bool]] = {}
+    at = 0
+    for section in outline:
+        title = section.title.strip().rstrip(":").strip()
+        found = next(
+            (
+                n for n in range(at, len(headings))
+                if headings[n][1].casefold() == title.casefold()
+            ),
+            None,
+        )
+        if found is None:
+            continue
+        at = found + 1
+        matched, _numbered = _match_section_key(title)
+        if matched:
+            # False: a heading line is the section's name, not its text, and
+            # is dropped as it is in the heuristic path — the revision diff
+            # compares section bodies between rounds.
+            opens[headings[found][0]] = (_SECTION_ALIASES.get(matched, matched), False)
+    return opens
+
+
+def _sections_from_outline(text: str, outline, references_anchor: str = "") -> dict[str, str]:
+    """Bucket ``text`` using the converter's own section tree, then the prose.
+
+    The outline is authoritative where it speaks. Where it says nothing, the
+    heading heuristic still runs, and this is not belt-and-braces: measured
+    over the sixteen-paper corpus, the outline alone lost the bibliography on
+    four papers and every section on one — a two-column IEEE paper whose
+    headings the converter reads as body text. On those the "References" line
+    is still sitting there in the Markdown, and the pipeline used to find it.
+    A structural improvement that quietly drops a section a heading match had
+    been finding is a regression however much better its provenance is.
+
+    So the heuristic fills gaps only: it may open a bucket the outline never
+    named, and never a second one for a bucket the outline already placed.
+    That is also what suppresses its false positives on the papers where the
+    outline works — a body line reading "Discussion of these results…" cannot
+    open a discussion the outline has already located.
+
+    The result is the same shape as :func:`_split_sections` — canonical bucket
+    names, ``_preamble`` for everything ahead of the first one — because the
+    map is a contract, and this is a better way of building it rather than a
+    different thing. Sections the document has and the bucket list does not
+    ("4 Why Self-Attention") stay with the bucket above them, exactly as they
+    do when the heading is matched out of the prose.
+    """
+    lines = text.splitlines()
+    opens = _outline_opens(lines, outline)
+    placed = {bucket for bucket, _keep in opens.values()}
+    for i, (bucket, keep) in _heading_opens(lines, references_anchor.strip()).items():
+        if bucket not in placed and i not in opens:
+            opens[i] = (bucket, keep)
+    return _bucket_lines(lines, opens)
+
+
+def _bucket_lines(lines: list[str], opens: dict[int, tuple[str, bool]]) -> dict[str, str]:
+    """Cut ``lines`` into sections at ``opens``.
+
+    ``opens`` maps a line index to the bucket it starts and whether the line
+    itself belongs to that bucket's text: a bare heading does not, a heading
+    with the section's first sentence fused onto it does.
+    """
+    sections: dict[str, list[str]] = {"_preamble": []}
+    current = "_preamble"
+    for i, line in enumerate(lines):
+        opened = opens.get(i)
+        if opened is not None:
+            current, keep = opened
+            sections.setdefault(current, [])
+            if not keep:
+                continue
+        sections.setdefault(current, []).append(line)
+    return {k: "\n".join(v).strip() for k, v in sections.items() if "".join(v).strip()}
+
+
 def _split_sections(text: str, references_anchor: str = "") -> dict[str, str]:
     """Best-effort bucketing of text into known sections by heading match.
+
+    The whole map for a Markdown, LaTeX or plain-text submission — those have
+    no document model behind them — and for a converter too old to report a
+    section tree. Where there is one, :func:`_sections_from_outline` reads the
+    sections the converter typed and calls this only for the ones it did not.
 
     When the document has real headings — Markdown, submitted or converted —
     only those lines are considered. Flat text has none, so every line is a
@@ -400,36 +586,41 @@ def _split_sections(text: str, references_anchor: str = "") -> dict[str, str]:
     those lines took the document from five sections to two. A heading that
     was not detected as a heading is still a line reading "Introduction".
     """
-    anchor = references_anchor.strip()
+    lines = text.splitlines()
+    return _bucket_lines(lines, _heading_opens(lines, references_anchor.strip()))
 
-    sections: dict[str, list[str]] = {"_preamble": []}
-    current = "_preamble"
+
+def _heading_opens(lines: list[str], anchor: str = "") -> dict[int, tuple[str, bool]]:
+    """Where each section starts, guessed from lines that read like headings.
+
+    The heuristic behind :func:`_split_sections`, factored out so that the
+    outline path can use it to fill what the converter did not name — see
+    :func:`_sections_from_outline`.
+    """
+    opens: dict[int, tuple[str, bool]] = {}
+    found_anchor = False
     in_fence = False
-    for line in text.splitlines():
+    for i, line in enumerate(lines):
         # Fenced code is opaque to the heading match. A `# results` line
         # inside a fence is code, and treating it as a heading both invented
         # a section that was never there and deleted the line from the text.
         if line.lstrip().startswith("```"):
             in_fence = not in_fence
-            sections.setdefault(current, []).append(line)
             continue
         if in_fence:
-            sections.setdefault(current, []).append(line)
             continue
         # Checked before the heading match: the anchor's whole purpose is to
         # work on a line no heading rule will fire on. The line is kept —
         # unlike a heading, it is a reference in its own right.
-        if anchor and current != "references" and anchor in line:
-            current = "references"
-            sections.setdefault(current, []).append(line)
+        if anchor and not found_anchor and anchor in line:
+            found_anchor = True
+            opens[i] = ("references", True)
             continue
         raw = line.strip().lstrip("#").strip().rstrip(":").strip()
-        # Strip leading numeric / roman-numeral prefixes ("1.", "2.1", "II."),
-        # matched against the original case — see _NUMERIC_PREFIX_RE.
-        prefix = _NUMERIC_PREFIX_RE.match(raw)
-        numbered = bool(prefix)
-        candidate = (raw[prefix.end():] if prefix else raw).strip().lower()
-        matched = next((k for k in _SECTION_KEYS if candidate == k or candidate.startswith(k + " ")), None)
+        # Leading numeric / roman-numeral prefixes ("1.", "2.1", "II.") are
+        # stripped before the match, against the original case — see
+        # _NUMERIC_PREFIX_RE.
+        matched, numbered = _match_section_key(raw)
         # A numbered line that ends the way a sentence does is a Markdown
         # list item, not a heading: "2. Results were consistent with prior
         # work." used to open a phantom results section and then vanish from
@@ -449,14 +640,9 @@ def _split_sections(text: str, references_anchor: str = "") -> dict[str, str]:
             # reviewer and the revision diff find the section whatever the
             # authors called it this round.
             bucket = _SECTION_ALIASES.get(matched, matched)
-            current = bucket
-            sections.setdefault(current, [])
             # A short line is a heading and nothing else, so it is dropped. A
             # long one carries the section's opening sentence, so it is kept
             # whole — the few words of heading left at its front cost far
             # less than the paragraph would.
-            if len(line.strip()) >= 80:
-                sections[current].append(line)
-            continue
-        sections.setdefault(current, []).append(line)
-    return {k: "\n".join(v).strip() for k, v in sections.items() if "".join(v).strip()}
+            opens[i] = (bucket, len(line.strip()) >= 80)
+    return opens

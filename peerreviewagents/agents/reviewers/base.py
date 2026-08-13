@@ -34,7 +34,7 @@ from ...ingest.diff import render_diff_block
 from ...observability import AgentEvent, current_node, emit, node_context
 from ..schemas import PriorPointVerdict, ReviewerOutput, RevisionReviewerOutput
 from ..utils.agent_states import ReviewReport, ReviewState
-from ..utils.agent_utils import context_block
+from ..utils.agent_utils import REFERENCES_NOTE, context_block, references_block
 from ..utils.llm import make_llm
 from ..utils.structured import (
     StructuredResult,
@@ -319,6 +319,7 @@ def make_reviewer_node(
     *,
     tool_names: list[str] | None = None,
     mandate_extra: Callable[[ReviewState], str] | None = None,
+    needs_references: bool = False,
 ):
     """Build a LangGraph node for one specialist reviewer.
 
@@ -332,6 +333,12 @@ def make_reviewer_node(
     lives in the user turn, never in ``cached_prefix``: the prefix is the
     shared manuscript block that all eight reviewers hit, and varying it per
     reviewer would split one cache entry into eight.
+
+    ``needs_references`` opts a reviewer into the converter's typed
+    bibliography, appended *after* the shared prefix rather than mixed into
+    it — so the blocks the other seven send stay byte-identical and this one
+    writes only the reference list on top of the entry they share. Currently
+    the literature reviewer alone, whose lane is that list.
 
     The returned node handles both a first review and a revision round;
     ``state["prior_round"]`` decides which, so the graph wires the same eight
@@ -351,6 +358,11 @@ def make_reviewer_node(
                 _revision_pass if state.get("prior_round") is not None else _first_pass
             )
             extra = mandate_extra(state) if mandate_extra else ""
+            if needs_references:
+                references = references_block(state)
+                if references:
+                    cached_prefix = [*cached_prefix, references]
+                    extra += REFERENCES_NOTE
             return run_pass(
                 state,
                 llm,

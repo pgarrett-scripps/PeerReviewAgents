@@ -260,6 +260,7 @@ class PeerReviewGraph:
             manuscript_title=title,
             manuscript_md=md,
             sections=sections,
+            references=parsed.references,
             ingest=parsed.ingest,
             supplement_md=sup_md,
             supplement_sections=sup_sections,

@@ -276,6 +276,12 @@ def _prose_report(state: ReviewState) -> str:
         "## How the file converted",
         "",
         f"- Format: {ingest.get('format', 'unknown')} via {ingest.get('tool', 'unknown')}",
+        # Which of the two ways the section map was built — read from the
+        # converter's own section tree, or guessed from lines that look like
+        # headings. A reader comparing two rounds needs it: a section that
+        # appears between them may be the manuscript changing or the converter
+        # having learned to read its headings.
+        f"- Section map: {'read from the document model' if ingest.get('section_source') == 'document' else 'matched from heading text'}",
         f"- Conversion health: **{health.get('verdict', 'unknown')}**",
         f"- Fused tokens: {health.get('fused_per_1k', 0)} per 1000 words",
         f"- Hyphenated line breaks: {health.get('hyphen_breaks_per_1k', 0)} per 1000 words",
@@ -328,9 +334,15 @@ def _prose_report(state: ReviewState) -> str:
         f"- Citations: {density.get('citations', 0)} ({density.get('citations_per_1k', 0)} "
         f"per 1000 words), style {style}"
         if style != "undetected"
-        else "- Citations: too few detected to count reliably — this venue most "
-        "likely sets them as superscript numerals, which convert to bare digits"
+        else "- In-text citations: too few detected to count reliably — this venue "
+        "most likely sets them as superscript numerals, which convert to bare digits"
     )
+    # The bibliography is typed rather than pattern-matched, so its size is
+    # known even on the papers whose in-text markers are not. Reported next to
+    # the line above precisely because that line is the uncertain one.
+    entries = counts.get("reference_entries")
+    if entries is not None:
+        citation_line += f"\n- Bibliography: {entries} entries typed by the converter"
     lines += [
         "",
         "## Prose",
@@ -352,7 +364,39 @@ def _prose_report(state: ReviewState) -> str:
         f"- p-values: {density.get('p_values_exact', 0)} exact, "
         f"{density.get('p_values_threshold', 0)} reported only as a threshold",
     ]
+    lines += _per_section_table(stats)
     return "\n".join(lines) + "\n"
+
+
+def _per_section_table(stats: dict) -> list[str]:
+    """The per-section numbers, or nothing when there are none.
+
+    A table rather than bullets because the point of these is the comparison
+    down a column — where a paper spends its length, and where it hedges —
+    and that is unreadable as prose. Sections are listed in the map's own
+    order, which is the document's.
+    """
+    sections = stats.get("sections") or {}
+    if not sections:
+        return []
+    rows = [
+        "",
+        "## By section",
+        "",
+        "Measured over each section separately. The bibliography is left out: "
+        "hedging and sentence length over a reference list describe a dozen "
+        "journals' house styles rather than this manuscript.",
+        "",
+        "| Section | Words | Sentences | Mean sentence | Citations/1k | Hedges/1k | Boosters/1k |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for name, s in sections.items():
+        rows.append(
+            f"| {name} | {s.get('words', 0):,} | {s.get('sentences', 0):,} | "
+            f"{s.get('sentence_len_mean', 0)} | {s.get('citations_per_1k', 0)} | "
+            f"{s.get('hedges_per_1k', 0)} | {s.get('boosters_per_1k', 0)} |"
+        )
+    return rows
 
 
 def _ingest_health_line(state: ReviewState) -> str:

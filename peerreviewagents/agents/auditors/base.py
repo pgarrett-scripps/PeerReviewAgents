@@ -22,7 +22,12 @@ from __future__ import annotations
 from ...observability import node_context
 from ..schemas import AuditOutput
 from ..utils.agent_states import AuditReport, ReviewState
-from ..utils.agent_utils import context_block, supplement_block
+from ..utils.agent_utils import (
+    REFERENCES_NOTE,
+    context_block,
+    references_block,
+    supplement_block,
+)
 from ..utils.llm import make_llm
 from ..utils.structured import (
     invoke_structured,
@@ -78,6 +83,7 @@ def make_auditor_node(
     *,
     tool_names: list[str] | None = None,
     needs_supplement: bool = False,
+    needs_references: bool = False,
 ):
     """Build a LangGraph node for one editorial auditor.
 
@@ -86,7 +92,9 @@ def make_auditor_node(
     resolve a citation); pass ``None`` for a tool-free auditor.
     ``needs_supplement`` opts this auditor into receiving the full
     supplementary-information block (when one was provided) appended after the
-    manuscript in its cached prefix.
+    manuscript in its cached prefix. ``needs_references`` opts it into the
+    converter's typed bibliography, for an auditor whose checklist is about
+    the reference list itself.
     """
     node_name = f"audit_{name}"
     bound_tool_names = list(tool_names or [])
@@ -101,12 +109,17 @@ def make_auditor_node(
                 mandate=mandate,
             )
             cached_prefix = context_block(state)
-            # Opt-in agents get the full SI as a further cached block. It goes
-            # last so the blocks before it stay byte-identical to what every
-            # other agent sends: this agent then reads the shared manuscript
-            # entry and writes only the SI on top, instead of writing a second
-            # copy of the manuscript because its prefix differed.
-            # No-op when no SI was provided, so the prefix is unchanged.
+            # Opt-in blocks are appended, never interleaved, for the same
+            # reason in both cases: the blocks before them stay byte-identical
+            # to what every other agent sends, so this agent reads the shared
+            # manuscript entry and writes only its own block on top instead of
+            # writing a second copy of the manuscript because its prefix
+            # differed. Both are no-ops when the material is absent.
+            if needs_references:
+                references = references_block(state)
+                if references:
+                    cached_prefix = [*cached_prefix, references]
+                    instructions = instructions + REFERENCES_NOTE
             if needs_supplement:
                 supplement = supplement_block(state)
                 if supplement:
