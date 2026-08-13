@@ -118,10 +118,14 @@ def _write_round_record(state: ReviewState, run_dir: str) -> None:
 
     Best-effort: a review whose artifacts are on disk should not fail at the
     last step because the record could not be built. The cost of skipping it
-    is that this run cannot be used as the basis of a revision round, which
-    the next run reports clearly.
+    is that this run cannot be used as the basis of a revision round — which
+    is why the failure is recorded rather than swallowed. A bare pass here
+    once hid a crash on every null-score panel: no round.json was written,
+    nothing said so, and the first symptom was a *later* run refusing to
+    revise a review that looked perfectly healthy on disk.
     """
     from . import rounds
+    from .observability import AgentEvent, emit
 
     try:
         record = rounds.build_from_state(
@@ -130,8 +134,16 @@ def _write_round_record(state: ReviewState, run_dir: str) -> None:
             cache_key=_manuscript_cache_key(state),
         )
         rounds.save(record, run_dir)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        message = f"round.json was not written ({exc!r}): this run cannot be revised"
+        state.setdefault("errors", []).append(message)
+        emit(AgentEvent(
+            kind="log",
+            node="reports",
+            text=message,
+            run_id=state.get("config", {}).get("run_id", ""),
+        ))
+        print(f"WARNING: {message}")
 
 
 def _manuscript_cache_key(state: ReviewState) -> str:

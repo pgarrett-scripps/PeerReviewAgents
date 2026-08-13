@@ -72,6 +72,7 @@ def round_delta(state: ReviewState) -> str:
         _score_line(prior, state),
     ]
     for optional in (
+        _diff_line(state),
         _per_reviewer_line(prior, state),
         _compliance_line(prior, state),
         _drift_line(state),
@@ -134,6 +135,36 @@ def _score_line(prior: Any, state: ReviewState) -> str:
     )
 
 
+def _diff_line(state: ReviewState) -> str:
+    """What the text itself did between rounds — the fact every 'resolved' answers to.
+
+    The adversarial invariant of a revision round is that an unchanged
+    resubmission resolves nothing. The reviewers and the compliance auditor
+    are shown the diff, but the editor weighing their output was not — so a
+    round where points came back "resolved" against an untouched draft put no
+    contradiction in front of the one agent deciding the verdict. Omitted
+    when the diff was never computed or could not be recovered: asserting
+    either "changed" or "unchanged" from a diff that does not exist would be
+    the kind of guess this block exists to prevent.
+    """
+    diff = state.get("manuscript_diff")
+    if diff is None or not getattr(diff, "available", False):
+        return ""
+    substantive = tuple(getattr(diff, "substantive", ()) or ())
+    if not substantive:
+        return (
+            "Manuscript delta: the manuscript did not substantively change "
+            "between rounds — any prior point reported resolved this round "
+            "was resolved against an unchanged text."
+        )
+    names = ", ".join(d.name for d in substantive)
+    count = len(substantive)
+    return (
+        f"Manuscript delta: {count} section{'s' if count != 1 else ''} "
+        f"substantively changed ({names})."
+    )
+
+
 def _per_reviewer_line(prior: Any, state: ReviewState) -> str:
     """Per-reviewer movement, so a flat average that hides a split is visible.
 
@@ -155,8 +186,14 @@ def _per_reviewer_line(prior: Any, state: ReviewState) -> str:
         score = _float_or_none(report.get("score"))
         before = _float_or_none(_get(then.get(name), "score", None)) if name in then else None
         if score is None:
-            continue
-        if before is None:
+            # A reviewer that produced no score this round is a fact about the
+            # panel, not a row to drop — omitting the name here left the
+            # editor counting reviewers against a line that was one short.
+            if before is not None:
+                parts.append(f"{name} {before:g} -> N/A (no score this round)")
+            else:
+                parts.append(f"{name} N/A (no score this round)")
+        elif before is None:
             parts.append(f"{name} {score:g} (new this round)")
         else:
             parts.append(f"{name} {before:g} -> {score:g} ({score - before:+g})")

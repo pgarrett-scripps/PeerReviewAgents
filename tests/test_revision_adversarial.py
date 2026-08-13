@@ -156,6 +156,40 @@ def test_identical_manuscript_keeps_blocking_items_open(tmp_path, monkeypatch):
     assert "R1-01" in audit["body"], "the editor must see the item by its id"
 
 
+def test_omitted_rulings_cannot_erase_the_record(tmp_path, monkeypatch):
+    """A reviewer that rules on nothing must not launder its critique away.
+
+    Ruling every point resolved gets challenged; ruling on none of them used
+    to get the same outcome for free — the carried weaknesses came only from
+    the rulings, so silence emptied the record. The unruled ids are filled as
+    outstanding instead, and carry forward.
+    """
+    job_id = _first_round(tmp_path, monkeypatch)
+    silent = RevisionReviewerOutput(
+        prior_score=3,
+        score=3,
+        confidence=4,
+        prior_points=[],
+        new_issues=[],
+        summary="I am satisfied.",
+        score_rationale="No further comment.",
+    )
+    monkeypatch.setitem(_CANNED, RevisionReviewerOutput, silent)
+
+    state = _revision(tmp_path, monkeypatch, job_id)
+
+    prior = state["prior_round"]
+    for report in state["reports"]:
+        prior_report = prior.report_for(report["reviewer"])
+        if prior_report is None or not prior_report.weaknesses:
+            continue
+        assert report["weaknesses"], (
+            f"{report['reviewer']} erased its prior points by not ruling on them"
+        )
+        assert any("did not rule" in w for w in report["weaknesses"])
+        assert "outstanding" in report["body"], "the fill must be visible to the editor"
+
+
 # --- the single-genuine-fix test --------------------------------------------
 
 

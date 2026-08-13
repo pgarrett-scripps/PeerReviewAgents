@@ -286,6 +286,145 @@ def test_reviewer_without_a_prior_report_is_told_so(monkeypatch, prior_round):
     assert "leave prior_points empty" in prompt
 
 
+# --- prior_score is pinned, never trusted -----------------------------------
+
+
+def test_prior_score_is_pinned_from_the_record(monkeypatch, prior_round):
+    """A miscopied prior_score must not reach the rendered arrow."""
+    llm = _ScriptedLLM(_revision_output(prior_score=5, score=4))
+    _patch(monkeypatch, llm)
+    out = methodology.node(_state(prior_round))
+    # The record says 3, whatever the model copied.
+    assert "3/5 ↑ 4/5" in out["reports"][0]["body"]
+
+
+def test_miscopied_prior_score_cannot_disarm_the_guard(monkeypatch, prior_round):
+    """Inventing a lower prior makes a stuck score look like a raise."""
+    disguised = _revision_output(prior_score=2, score=3)   # true prior is 3
+    earned = _revision_output(
+        score=4, score_rationale="On reflection the fixes earn a 4.",
+    )
+    llm = _ScriptedLLM(disguised, earned)
+    _patch(monkeypatch, llm)
+    out = methodology.node(_state(prior_round))
+
+    assert len(llm.prompts) == 2, "the guard must fire on the true prior score"
+    assert out["reports"][0]["score"] == 4.0
+
+
+# --- omitted rulings ---------------------------------------------------------
+
+
+def test_omitted_rulings_are_filled_as_outstanding(monkeypatch, prior_round):
+    """Silence on a prior point must not erase it from the record."""
+    llm = _ScriptedLLM(_revision_output(score=3, prior_points=[]))
+    _patch(monkeypatch, llm)
+    out = methodology.node(_state(prior_round))
+
+    report = out["reports"][0]
+    assert len(llm.prompts) == 1, "an outstanding fill is not a stuck score"
+    assert report["weaknesses"], "an unruled point must carry forward"
+    assert report["weaknesses"][0].startswith("Only a single production cluster")
+    assert "did not rule" in report["weaknesses"][0]
+    # The fill is visible in the rendered report, not just in state.
+    assert "[methodology-1] outstanding" in report["body"]
+    assert "did not rule" in report["body"]
+
+
+def test_partial_omission_fills_only_the_skipped_ids(monkeypatch):
+    prior = rounds.build_from_state(
+        {
+            "manuscript_title": "A Lightweight Method",
+            "config": {},
+            "decision": "major",
+            "required_revisions": [],
+            "reports": [
+                {
+                    "reviewer": "methodology",
+                    "score": 3,
+                    "confidence": 4,
+                    "weaknesses": [
+                        "Only a single production cluster is used.",
+                        "The ablation omits the largest workload.",
+                    ],
+                    "questions": [],
+                    "body": "",
+                },
+            ],
+        },
+        job_id="j",
+    )
+    llm = _ScriptedLLM(_revision_output(score=4))   # rules on methodology-1 only
+    _patch(monkeypatch, llm)
+    report = methodology.node(_state(prior))["reports"][0]
+
+    assert len(report["weaknesses"]) == 1
+    assert report["weaknesses"][0].startswith("The ablation omits")
+    assert "did not rule" in report["weaknesses"][0]
+    assert "[methodology-2] outstanding" in report["body"]
+
+
+# --- repeated abstention -----------------------------------------------------
+
+
+def test_a_prior_abstainer_may_return_null_again(monkeypatch):
+    """The prompt's 'return null again' must be an answer the schema accepts."""
+    prior = rounds.build_from_state(
+        {
+            "manuscript_title": "A Lightweight Method",
+            "config": {},
+            "decision": "major",
+            "required_revisions": [],
+            "reports": [
+                {
+                    "reviewer": "methodology",
+                    "score": None,
+                    "not_applicable_reason": "Nothing methodological to judge.",
+                    "confidence": 5,
+                    "weaknesses": [],
+                    "questions": [],
+                    "body": "",
+                },
+            ],
+        },
+        job_id="j",
+    )
+    still_na = RevisionReviewerOutput(
+        prior_score=None,
+        score=None,
+        not_applicable_reason="The revision still contains nothing methodological.",
+        confidence=5,
+        prior_points=[],
+        new_issues=[],
+        summary="Still nothing in my dimension to judge.",
+        score_rationale="No score last round and none now.",
+    )
+    llm = _ScriptedLLM(still_na)
+    _patch(monkeypatch, llm)
+    out = methodology.node(_state(prior))
+
+    assert "return null again" in llm.prompts[0]
+    report = out["reports"][0]
+    assert report["score"] is None
+    assert "n/a → n/a" in report["body"]
+    assert "Not applicable to this manuscript" in report["body"]
+    assert not out.get("errors")
+
+
+def test_revision_abstention_requires_a_reason():
+    """Same contract as ReviewerOutput: a bare null is rejected, not recorded."""
+    with pytest.raises(Exception, match="not_applicable_reason"):
+        RevisionReviewerOutput(
+            prior_score=None,
+            score=None,
+            confidence=5,
+            prior_points=[],
+            new_issues=[],
+            summary="s",
+            score_rationale="r",
+        )
+
+
 # --- score-consistency guard ----------------------------------------------
 
 
@@ -385,6 +524,8 @@ def test_guard_keeps_the_first_verdict_when_the_answer_moves_the_goalposts(
     # The reviewer's original verdict stands — nothing is fabricated for it.
     assert report["score"] == 3.0
     assert "has not been adjusted" in report["body"]
+    # The note blames the reviewer, because this time the reviewer earned it.
+    assert "did neither" in report["body"]
     assert "The abstract has always overstated" not in report["body"]
     assert out["total_cost"] == pytest.approx(2 * _CALL_COST)
 
@@ -408,6 +549,9 @@ def test_guard_refuses_an_answer_that_lowers_the_score(monkeypatch, prior_round)
 
     assert out["reports"][0]["score"] == 3.0
     assert "has not been adjusted" in out["reports"][0]["body"]
+    # The note names what happened — a refused cut, not a reviewer that went silent.
+    assert "scoring lower instead" in out["reports"][0]["body"]
+    assert "did neither" not in out["reports"][0]["body"]
 
 
 def test_failed_challenge_keeps_the_review(monkeypatch, prior_round):
@@ -427,6 +571,9 @@ def test_failed_challenge_keeps_the_review(monkeypatch, prior_round):
     report = out["reports"][0]
     assert report["score"] == 3.0
     assert "has not been adjusted" in report["body"]
+    # The failure was the call's, and the note must not pin it on the reviewer.
+    assert "infrastructure failure" in report["body"]
+    assert "did neither" not in report["body"]
     assert not out.get("errors")
 
 

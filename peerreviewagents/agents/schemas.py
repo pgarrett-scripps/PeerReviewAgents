@@ -188,15 +188,30 @@ class RevisionReviewerOutput(BaseModel):
     than taking the number on faith.
     """
 
-    prior_score: int = Field(
-        ..., ge=1, le=5,
+    prior_score: int | None = Field(
+        default=None, ge=1, le=5,
         description="The score you gave this manuscript in the previous round, "
-                    "copied from the report shown to you. Do not re-derive it.",
+                    "copied from the report shown to you. Do not re-derive it. "
+                    "Null when your prior report gave no score.",
     )
-    score: int = Field(
-        ..., ge=1, le=5,
+    # Nullable for the same reason and under the same contract as
+    # ReviewerOutput.score: a reviewer that abstained last round is told to
+    # "return null again" if the revision still gives its dimension nothing to
+    # judge, and a schema that forbids null at that moment forces the invented
+    # number the nullable score exists to prevent.
+    score: int | None = Field(
+        default=None, ge=1, le=5,
         description="Your score for the REVISED manuscript. 1=reject, "
-                    "3=major-revision, 4=minor-revision, 5=accept.",
+                    "3=major-revision, 4=minor-revision, 5=accept. Use null "
+                    "ONLY when the revised manuscript still contains nothing "
+                    "within your dimension to judge; null is NOT for work you "
+                    "judge harshly.",
+    )
+    not_applicable_reason: str = Field(
+        default="",
+        description="Required when score is null, ignored otherwise. One "
+                    "sentence naming what is absent from the revised "
+                    "manuscript that puts it outside your dimension.",
     )
     confidence: int = Field(..., ge=1, le=5, description="Certainty in the new score.")
     prior_points: list[PriorPointVerdict] = Field(
@@ -225,6 +240,25 @@ class RevisionReviewerOutput(BaseModel):
     strengths: list[str] = Field(default_factory=list)
     questions: list[str] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def _abstention_must_be_justified(self) -> RevisionReviewerOutput:
+        """Same constraint as ReviewerOutput: a null score must name its reason.
+
+        The revision round inherits the round-1 failure mode unchanged — a
+        reviewer that can form a view but abstains removes its verdict from
+        the panel instead of committing to one. Rejecting the output makes the
+        structured-output layer ask again.
+        """
+        if self.score is None and not self.not_applicable_reason.strip():
+            raise ValueError(
+                "score is null but not_applicable_reason is empty. Give a null "
+                "score only when the revised manuscript contains nothing your "
+                "dimension covers, and say what is absent. If you can form any "
+                "view of this paper on your dimension — including a poor one — "
+                "give a number instead."
+            )
+        return self
+
     def resolved_count(self) -> int:
         return sum(1 for p in self.prior_points if p.status == "resolved")
 
@@ -245,19 +279,43 @@ class RevisionReviewerOutput(BaseModel):
         """
         if not self.prior_points:
             return False
+        # A null on either side leaves nothing to compare: a score that moved
+        # from or to an abstention is not "held", it changed category.
+        if self.score is None or self.prior_score is None:
+            return False
         all_resolved = all(p.status == "resolved" for p in self.prior_points)
         revision_caused = any(i.caused_by_the_revision for i in self.new_issues)
         return all_resolved and not revision_caused and self.score <= self.prior_score
 
     def to_markdown(self, role: str = "Reviewer") -> str:
-        delta = self.score - self.prior_score
-        arrow = "→" if delta == 0 else ("↑" if delta > 0 else "↓")
+        if self.score is None or self.prior_score is None:
+            # No arithmetic across an abstention — an arrow would claim a
+            # movement between a number and a score that was never given.
+            arrow = "→"
+        else:
+            delta = self.score - self.prior_score
+            arrow = "→" if delta == 0 else ("↑" if delta > 0 else "↓")
+        prior_shown = "n/a" if self.prior_score is None else f"{self.prior_score}/5"
+        now_shown = "n/a" if self.score is None else f"{self.score}/5"
         parts: list[str] = [
             f"# {role} — Revision Review",
             "",
-            f"**Score:** {self.prior_score}/5 {arrow} {self.score}/5 "
+            f"**Score:** {prior_shown} {arrow} {now_shown} "
             f"(confidence {self.confidence}/5)",
             "",
+        ]
+        # Same placement as ReviewerOutput: an unscorable dimension is stated
+        # at the top rather than left for a reader to infer from "n/a".
+        if self.score is None:
+            parts += [
+                "**Not applicable to this manuscript — no score given, and "
+                "this dimension is excluded from the panel mean.**",
+                "",
+                self.not_applicable_reason.strip()
+                or "This manuscript contains nothing within this reviewer's remit.",
+                "",
+            ]
+        parts += [
             "## Summary",
             self.summary.strip() or "(no summary provided)",
             "",

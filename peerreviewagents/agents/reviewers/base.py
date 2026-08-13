@@ -32,7 +32,7 @@ from collections.abc import Callable
 
 from ...ingest.diff import render_diff_block
 from ...observability import AgentEvent, current_node, emit, node_context
-from ..schemas import ReviewerOutput, RevisionReviewerOutput
+from ..schemas import PriorPointVerdict, ReviewerOutput, RevisionReviewerOutput
 from ..utils.agent_states import ReviewReport, ReviewState
 from ..utils.agent_utils import context_block
 from ..utils.llm import make_llm
@@ -195,7 +195,7 @@ _REVISION_HEADER = (
 
 # Shown instead of the prior report when this reviewer has none on record —
 # a panel that gained a specialist since round 1, or a prior round that ended
-# at the desk. The schema still demands a prior_score, so it needs an answer.
+# at the desk. The schema still records a prior_score, so it needs an answer.
 _NO_PRIOR_REPORT = (
     "## Your review in the previous round\n\n"
     "You have no report on record for the previous round, so there are no "
@@ -236,7 +236,9 @@ _REVISION_TASK = (
     "the flag, and an issue that was equally visible in the draft you already "
     "reviewed is a goalpost moved, not a finding.\n"
     "  - score: your score for the REVISED manuscript on the same 1-5 scale "
-    "(1=reject, 3=major revision, 4=minor revision, 5=accept).\n"
+    "(1=reject, 3=major revision, 4=minor revision, 5=accept). Null is "
+    "allowed ONLY if the revised draft still contains nothing your dimension "
+    "covers — then set not_applicable_reason, exactly as in a first review.\n"
     "  - score_rationale: why the score moved, or specifically what still "
     "holds it where it was.\n"
     "  - confidence, summary, strengths, questions: as in your first review.\n\n"
@@ -278,18 +280,35 @@ _CONSISTENCY_CHALLENGE = (
     "wrong. If the work earned a better score, give it."
 )
 
-# Appended to the body when the reviewer was challenged and answered with
-# neither a moved score nor a named blocker. The verdict stands as the
-# reviewer left it — the guard forces an explanation, it does not manufacture
-# a number no reviewer endorsed — but the editor sees that it went
-# unexplained.
-_UNRESOLVED_GUARD_NOTE = (
+# Appended to the body when the challenge did not produce an accepted answer.
+# The verdict stands as the reviewer left it — the guard forces an
+# explanation, it does not manufacture a number no reviewer endorsed — but
+# the editor sees that it went unexplained. Three notes, not one: "the call
+# failed" and "the reviewer refused" are different findings, and a note that
+# blames the reviewer for a provider outage tells the editor something false
+# about the panel.
+_GUARD_NOTE_STEM = (
     "\n\n---\n\n"
     "_Consistency check: this reviewer marked every point it raised as "
     "resolved and recorded no issue introduced by the revision, yet did not "
-    "move its score. Asked once to either raise the score or name what still "
-    "holds it down, it did neither. The score above is the reviewer's own and "
-    "has not been adjusted._"
+    "move its score. "
+)
+_GUARD_NOTE_CALL_FAILED = _GUARD_NOTE_STEM + (
+    "The one follow-up call asking it to reconcile that failed before any "
+    "answer was given — an infrastructure failure, not the reviewer declining "
+    "to explain. The score above is the reviewer's own and has not been "
+    "adjusted._"
+)
+_GUARD_NOTE_LOWERED = _GUARD_NOTE_STEM + (
+    "Asked once to either raise the score or name what still holds it down, "
+    "it answered by scoring lower instead. That answer is refused — a request "
+    "for justification must not become a penalty — so the score above is the "
+    "reviewer's original and has not been adjusted._"
+)
+_GUARD_NOTE_UNRESOLVED = _GUARD_NOTE_STEM + (
+    "Asked once to either raise the score or name what still holds it down, "
+    "it did neither. The score above is the reviewer's own and has not been "
+    "adjusted._"
 )
 
 
@@ -415,20 +434,27 @@ def _revision_pass(
 
     output: RevisionReviewerOutput = result.instance  # type: ignore[assignment]
     cost = result.cost
+    prior_report = prior.report_for(name)
+    _pin_prior_score(output, prior_report)
+    _fill_unruled_points(output, prior_report)
     guard_note = ""
     if output.score_is_inconsistent():
-        answered, challenge_cost = _challenge_stuck_score(
+        answered, challenge_cost, guard_note = _challenge_stuck_score(
             llm, config, instructions, cached_prefix, output, prior.round
         )
         cost += challenge_cost
         if answered is not None:
+            # The corrected answer is held to the same ground truth as the
+            # first: its prior_score is pinned and any ruling it dropped
+            # while revising itself is restored as outstanding.
             output = answered
-        else:
-            guard_note = _UNRESOLVED_GUARD_NOTE
+            _pin_prior_score(output, prior_report)
+            _fill_unruled_points(output, prior_report)
 
     report: ReviewReport = {
         "reviewer": name,
         "score": None if output.score is None else float(output.score),
+        "not_applicable_reason": output.not_applicable_reason.strip(),
         "confidence": float(output.confidence),
         "weaknesses": _carried_weaknesses(output, prior, name),
         "questions": list(output.questions),
@@ -505,6 +531,56 @@ def _author_pointers(state: ReviewState) -> str:
     return f"{block}\n\n{_AUTHOR_POINTERS_NOTE}"
 
 
+def _pin_prior_score(
+    output: RevisionReviewerOutput, prior_report
+) -> None:
+    """Overwrite ``prior_score`` with what the record says this reviewer scored.
+
+    The schema asks the model to copy its prior score, but a copied value is
+    a value that can be miscopied — and both the stuck-score guard and the
+    rendered arrow compare against it, so one wrong digit either silences the
+    guard or shows the editor a movement that never happened. The state
+    already holds the true number; the model's copy is never trusted over it.
+
+    A reviewer with no prior report keeps the model's value: the prompt told
+    it to set prior_score equal to its new score, and there is no ground
+    truth to pin it to.
+    """
+    if prior_report is not None:
+        output.prior_score = (
+            None if prior_report.score is None else int(prior_report.score)
+        )
+
+
+def _fill_unruled_points(
+    output: RevisionReviewerOutput, prior_report
+) -> None:
+    """Auto-rule "outstanding" on every prior weakness the model skipped.
+
+    ``_carried_weaknesses`` iterates only the rulings the model returned, so
+    an omitted id used to vanish from the record — the one way a reviewer
+    could make its own point disappear without ever marking it resolved. And
+    ``score_is_inconsistent`` returns False on an empty ``prior_points``, so
+    returning no rulings at all also disarmed the guard. The node knows the
+    ground-truth id list; anything unruled is recorded as outstanding, which
+    carries it forward and puts the omission in front of the editor.
+    """
+    if prior_report is None:
+        return
+    ruled = {p.id for p in output.prior_points}
+    for weakness in prior_report.weaknesses:
+        if weakness.id in ruled:
+            continue
+        output.prior_points.append(PriorPointVerdict(
+            id=weakness.id,
+            status="outstanding",
+            evidence=(
+                "The reviewer did not rule on this point this round; it is "
+                "recorded as outstanding and carried forward unruled."
+            ),
+        ))
+
+
 def _challenge_stuck_score(
     llm,
     config: dict,
@@ -512,14 +588,16 @@ def _challenge_stuck_score(
     cached_prefix: str,
     output: RevisionReviewerOutput,
     round_no: int,
-) -> tuple[RevisionReviewerOutput | None, float]:
+) -> tuple[RevisionReviewerOutput | None, float, str]:
     """Re-ask once when a reviewer's own rulings contradict its score.
 
-    Returns the corrected verdict and the cost of the extra call, or
-    ``(None, cost)`` when the reviewer failed to answer — the caller then
-    keeps the original verdict. The guard never edits a score itself: a
-    number no reviewer endorsed would be a fabrication dressed as a panel
-    opinion, and the panel's scores are what the editor weighs.
+    Returns ``(corrected verdict, cost, "")``, or ``(None, cost, note)`` when
+    no acceptable answer arrived — the caller then keeps the original verdict
+    and appends the note, which names what actually happened: the call
+    failing, the reviewer lowering the score, or the reviewer answering with
+    neither of the two things asked for. The guard never edits a score
+    itself: a number no reviewer endorsed would be a fabrication dressed as a
+    panel opinion, and the panel's scores are what the editor weighs.
 
     Deliberately tool-free even for reviewers that carry research tools. The
     reviewer is being asked to reconcile what it already wrote; handing it a
@@ -556,16 +634,20 @@ def _challenge_stuck_score(
         # A failed re-ask is not a failed review. The first verdict is a real
         # verdict; dropping this reviewer from the panel over the guard would
         # cost the round more than the unexplained contradiction does.
-        return None, 0.0
+        return None, 0.0, _GUARD_NOTE_CALL_FAILED
 
     answered: RevisionReviewerOutput = result.instance  # type: ignore[assignment]
+    # An answer that scores *lower* than before is refused — the re-ask
+    # demands a justification and must not become a way to punish having
+    # been asked for one. (output.score is a number here: the guard only
+    # fires on a numeric, unmoved score.)
+    if answered.score is not None and answered.score < output.score:
+        return None, result.cost, _GUARD_NOTE_LOWERED
     # A second pass that lands back in the same contradiction has not
-    # answered. Neither has one that answers by scoring *lower* than before —
-    # the re-ask demands a justification and must not become a way to punish
-    # having been asked for one.
-    if answered.score_is_inconsistent() or answered.score < output.score:
-        return None, result.cost
-    return answered, result.cost
+    # answered; neither has one that retreats to a null score.
+    if answered.score is None or answered.score_is_inconsistent():
+        return None, result.cost, _GUARD_NOTE_UNRESOLVED
+    return answered, result.cost, ""
 
 
 def _carried_weaknesses(
