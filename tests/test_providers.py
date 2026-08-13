@@ -404,3 +404,40 @@ def test_the_subclass_still_reads_as_an_openrouter_chat_model(monkeypatch):
     llm = _openrouter_llm(monkeypatch)
     assert spec_for_llm(llm).name == "openrouter"
     assert _cache_control_supported(llm) is True
+
+
+# ---------------------------------------------------------------------------
+# Every call must carry a deadline.
+#
+# Without one, a provider that stops sending mid-stream hangs the whole run:
+# LangGraph's executor waits on pending futures with no timeout on teardown,
+# and a future that has started cannot be cancelled. Two consecutive runs were
+# lost that way with the panel's work already finished and paid for. These
+# assert the deadline exists on every route, because the failure it prevents
+# is silent, expensive, and looks exactly like a slow model.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("provider", "model", "env"),
+    [
+        ("openrouter", "deepseek/deepseek-v4-flash-0731", "OPENROUTER_API_KEY"),
+        ("openai", "gpt-4o-mini", "OPENAI_API_KEY"),
+        ("anthropic", "claude-haiku-4-5", "ANTHROPIC_API_KEY"),
+    ],
+)
+def test_every_provider_sets_a_request_deadline(monkeypatch, provider, model, env):
+    monkeypatch.setenv(env, "stub-key")
+    llm = make_chat_model(_cfg(provider, model))
+
+    timeout = getattr(llm, "request_timeout", None)
+    if timeout is None:
+        timeout = getattr(llm, "default_request_timeout", None)
+    assert timeout is not None, f"{provider} builds a client with no timeout"
+
+    # httpx.Timeout on the OpenAI-shaped clients, a bare float on Anthropic,
+    # which rejects the structured form. Either way it must be finite.
+    read = getattr(timeout, "read", timeout)
+    assert read is not None and 0 < float(read) < 600
+
+    assert getattr(llm, "max_retries", 0) >= 1, f"{provider} would not retry a drop"

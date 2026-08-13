@@ -24,6 +24,56 @@ from ..observability import StreamingCallback
 
 _TEMPERATURE = 0.3
 
+# Every call gets a deadline, because a call without one can hang the whole
+# run — not the node, the run.
+#
+# LangGraph fans the panel out across worker threads, and on teardown its
+# executor does `concurrent.futures.wait(pending)` with no timeout. A future
+# that has already started cannot be cancelled, so one worker blocked in a
+# socket read pins the process forever. Observed twice in a row on the same
+# afternoon: the graph finished, ~95% of the run had been paid for, and the
+# bundle was never written because the interpreter could not leave the
+# executor's `__exit__`.
+#
+# The stall is in a dependency and there is no knob for it there. The only
+# lever we own is the request, so the request carries the deadline: the stuck
+# call raises, its future completes, teardown drains, and the run ends with
+# one node recorded as failed instead of losing a review that was done.
+#
+# `read` is the gap between chunks of a streaming response, not the length of
+# the answer — a long review streams continuously and never approaches it,
+# while a provider that has stopped sending trips it in two minutes. Retries
+# belong to the client, so a single dropped connection still costs only time.
+_CONNECT_TIMEOUT_S = 15.0
+_READ_TIMEOUT_S = 120.0
+_MAX_RETRIES = 2
+
+
+def _http_timeout() -> Any:
+    """Per-phase timeouts for the OpenAI-shaped clients.
+
+    Falls back to the scalar if httpx is missing — it ships with `openai` and
+    `anthropic`, so that is defensive rather than expected, but a failed
+    import here would take out every provider.
+
+    ``ChatAnthropic`` types this field as a plain float and rejects an
+    ``httpx.Timeout`` outright, so it takes :data:`_READ_TIMEOUT_S` directly.
+    The semantics are the same either way: httpx applies a scalar to each
+    phase separately, so neither form caps how long an answer may take, only
+    how long a single phase may be silent.
+    """
+    try:
+        import httpx
+    except ImportError:  # pragma: no cover
+        return _READ_TIMEOUT_S
+    return httpx.Timeout(
+        connect=_CONNECT_TIMEOUT_S,
+        read=_READ_TIMEOUT_S,
+        write=_READ_TIMEOUT_S,
+        pool=_CONNECT_TIMEOUT_S,
+    )
+
+
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 # OpenRouter uses these for project attribution + rate-limit accounting.
 # https://openrouter.ai/docs/api-reference/overview#headers
@@ -134,6 +184,8 @@ def _make_openrouter(model: str, *, reasoning_effort: str | None = None,
         "streaming": True,
         "stream_usage": True,
         "callbacks": [StreamingCallback(default_model=model, default_node=node, default_run=run_id)],
+        "timeout": _http_timeout(),
+        "max_retries": _MAX_RETRIES,
         # Named, rather than left to whatever ceiling the routed model
         # defaults to. OpenRouter authorizes the request against the *cap*,
         # not against what the answer will actually cost, so an unstated
@@ -171,6 +223,8 @@ def _make_openai(model: str, *, reasoning_effort: str | None = None,
         "streaming": True,
         "stream_usage": True,
         "callbacks": [StreamingCallback(default_model=model, default_node=node, default_run=run_id)],
+        "timeout": _http_timeout(),
+        "max_retries": _MAX_RETRIES,
     }
     # The o-series and GPT-5 reasoning models 400 on `temperature` — the
     # field is rejected, not ignored — and every reviewer configured onto
@@ -211,6 +265,9 @@ def _make_anthropic(model: str, *, reasoning_effort: str | None = None,
         "streaming": True,
         "stream_usage": True,
         "callbacks": [StreamingCallback(default_model=model, default_node=node, default_run=run_id)],
+        # Scalar, not httpx.Timeout: see _http_timeout.
+        "timeout": _READ_TIMEOUT_S,
+        "max_retries": _MAX_RETRIES,
         # Output is billed per token generated, not per token allowed, so a
         # generous cap costs nothing until it is used — but hitting it costs
         # the whole call. A reviewer truncated mid-schema produces an
