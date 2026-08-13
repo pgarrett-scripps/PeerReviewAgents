@@ -269,7 +269,7 @@ class PeerReviewGraph:
             article_type_block=self._article_type_block(),
             strictness_block=self._strictness_block(),
             prior_round=prior,
-            manuscript_diff=self._manuscript_diff(prior, sections),
+            manuscript_diff=self._manuscript_diff(prior, sections, manuscript_path),
             author_statement=self._load_author_statement(),
             response_verification="",
             verified_claims_block="",
@@ -359,7 +359,7 @@ class PeerReviewGraph:
             return None
         return rounds_mod.load_prior(str(job_id), self.config)
 
-    def _manuscript_diff(self, prior, sections: dict[str, str]):
+    def _manuscript_diff(self, prior, sections: dict[str, str], manuscript_path: str = ""):
         """Compare this draft against the one the prior round reviewed.
 
         The previous text comes from a caller-supplied baseline file when
@@ -379,7 +379,7 @@ class PeerReviewGraph:
             )
         baseline = str(self.config.get("revision_baseline_path") or "")
         if baseline:
-            return self._baseline_diff(baseline, prior, sections)
+            return self._baseline_diff(baseline, prior, sections, manuscript_path)
         if not prior.manuscript_cache_key:
             return ingest_diff.unavailable(
                 "the previous round did not record a manuscript cache key"
@@ -411,7 +411,7 @@ class PeerReviewGraph:
                 )
         return ingest_diff.diff_sections(cached.sections, sections)
 
-    def _baseline_diff(self, path: str, prior, sections: dict[str, str]):
+    def _baseline_diff(self, path: str, prior, sections: dict[str, str], manuscript_path: str = ""):
         """Diff against the prior draft handed in as a file by the caller.
 
         Exists for ephemeral runners. The cache path assumes the machine
@@ -440,21 +440,56 @@ class PeerReviewGraph:
             return ingest_diff.unavailable(
                 f"the supplied revision baseline could not be read ({exc})"
             )
-        # Verify against the text hash the prior round recorded, when it
-        # recorded one. A diff over the wrong baseline is worse than no diff:
-        # it reports author edits that never happened, confidently. The
-        # recorded hash is of text parsed under the prior round's ingest
-        # config, so a config changed between rounds also lands here — and
-        # refusing then is right too, because the baseline can no longer be
-        # verified as the reviewed draft. Records that predate the hash
-        # proceed unverified rather than losing the diff they always had.
-        recorded = str(getattr(prior, "manuscript_text_sha256", "") or "")
-        got = str((parsed.ingest or {}).get("text_sha256") or "")
-        if recorded and got != recorded:
+        # Verify the baseline is the draft the prior round reviewed. A diff
+        # over the wrong baseline is worse than no diff: it reports author
+        # edits that never happened, confidently. Three proofs are accepted,
+        # strongest first:
+        #
+        # 1. The FILE hash the prior round recorded. Bytes survive a
+        #    converter upgrade; the text hash below does not, and verifying
+        #    by text alone is how an unchanged resubmission reviewed across
+        #    the 0.1.1 → 0.2.0 boundary lost its diff — after which the
+        #    panel hallucinated an expanded methods section and a raised
+        #    novelty score onto a byte-identical manuscript.
+        # 2. The TEXT hash, for records that predate the file hash and runs
+        #    where the converter did not change.
+        # 3. The baseline being byte-identical to THIS round's manuscript.
+        #    No recorded hash is needed to conclude anything from that: the
+        #    resubmission IS the draft it is being compared against, so the
+        #    diff is empty by construction — and "nothing changed" is the
+        #    one fact the adversarial invariant most needs said out loud.
+        #
+        # A record carrying a hash that matches none of these refuses: the
+        # baseline can no longer be shown to be the reviewed draft. Records
+        # that predate both hashes proceed unverified rather than losing the
+        # diff they always had.
+        recorded_file = str(getattr(prior, "manuscript_file_sha256", "") or "")
+        recorded_text = str(getattr(prior, "manuscript_text_sha256", "") or "")
+        got_file = str((parsed.ingest or {}).get("file_sha256") or "")
+        got_text = str((parsed.ingest or {}).get("text_sha256") or "")
+
+        verified = bool(
+            (recorded_file and got_file and got_file == recorded_file)
+            or (recorded_text and got_text == recorded_text)
+        )
+        if not verified and manuscript_path:
+            try:
+                current = load_manuscript_record(manuscript_path, self.config)
+                same_file = bool(got_file) and (
+                    got_file == str((current.ingest or {}).get("file_sha256") or "")
+                )
+            except Exception:  # noqa: BLE001 — verification only, never fatal
+                same_file = False
+            verified = same_file
+        if not verified and (recorded_file or recorded_text):
             return ingest_diff.unavailable(
-                "the supplied baseline is not the draft the previous round "
-                f"reviewed (that round read text {recorded[:12]}…, this file "
-                f"parses to {got[:12]}…)"
+                "the supplied baseline could not be verified as the draft the "
+                f"previous round reviewed (that round recorded text "
+                f"{recorded_text[:12] or '—'}…, this file parses to "
+                f"{got_text[:12]}…). One honest cause: a converter upgrade "
+                "between rounds re-reads the same bytes into different text. "
+                "Rounds recorded from now on carry the file hash, which "
+                "survives that."
             )
         return ingest_diff.diff_sections(parsed.sections, sections)
 

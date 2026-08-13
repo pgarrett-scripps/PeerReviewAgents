@@ -137,6 +137,14 @@ class RoundRecord:
     # (revision_baseline_path) verifies it against this before diffing.
     # "" on records written before the field existed.
     manuscript_text_sha256: str = ""
+    # SHA-256 of the manuscript FILE's bytes, not its parsed text. The text
+    # hash breaks across converter upgrades — the same PDF reads into
+    # different text under rustypaper 0.1.1 and 0.2.0, so a baseline that is
+    # provably the reviewed file failed text verification and the round lost
+    # its diff at exactly the upgrade boundary. Bytes survive the upgrade;
+    # this is what a later round verifies a supplied baseline file against
+    # first. "" on records written before the field existed.
+    manuscript_file_sha256: str = ""
     # job_id of the round this one revised, forming the lineage back to round 1.
     prior_job_id: str = ""
     # True when the round ended at the desk (triage), so a later
@@ -180,6 +188,7 @@ class RoundRecord:
                 for r in raw.get("reviewer_reports", [])
             ],
             manuscript_text_sha256=str(raw.get("manuscript_text_sha256", "")),
+        manuscript_file_sha256=str(raw.get("manuscript_file_sha256", "")),
             prior_job_id=str(raw.get("prior_job_id", "")),
             desk_rejected=bool(raw.get("desk_rejected", False)),
         )
@@ -345,6 +354,9 @@ def build_from_state(state: dict, job_id: str, cache_key: str = "") -> RoundReco
         # the cache entry the key above names.
         manuscript_text_sha256=str(
             (state.get("ingest") or {}).get("text_sha256") or ""
+        ),
+        manuscript_file_sha256=str(
+            (state.get("ingest") or {}).get("file_sha256") or ""
         ),
         prior_job_id=str(config.get("revision_of") or ""),
         desk_rejected=bool(state.get("desk_rejected")),

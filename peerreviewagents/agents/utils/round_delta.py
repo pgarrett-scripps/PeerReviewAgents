@@ -142,14 +142,29 @@ def _diff_line(state: ReviewState) -> str:
     resubmission resolves nothing. The reviewers and the compliance auditor
     are shown the diff, but the editor weighing their output was not — so a
     round where points came back "resolved" against an untouched draft put no
-    contradiction in front of the one agent deciding the verdict. Omitted
-    when the diff was never computed or could not be recovered: asserting
-    either "changed" or "unchanged" from a diff that does not exist would be
-    the kind of guess this block exists to prevent.
+    contradiction in front of the one agent deciding the verdict.
+
+    A diff that exists but could not be computed is DISCLOSED rather than
+    omitted. Silence here is not neutral: on a live unchanged resubmission
+    whose baseline failed verification, the missing line let a reviewer's
+    hallucinated "the authors have addressed both concerns" and a compliance
+    audit's invented "expanded methods section" stand unchallenged in front
+    of the editor. Saying "there is no comparison" asserts nothing about the
+    draft — it tells the editor what the change claims in this round are
+    worth, which is exactly this block's job.
     """
     diff = state.get("manuscript_diff")
-    if diff is None or not getattr(diff, "available", False):
+    if diff is None:
         return ""
+    if not getattr(diff, "available", False):
+        note = str(getattr(diff, "note", "") or "").strip()
+        return (
+            "Manuscript delta: NO verified draft comparison is available"
+            + (f" ({note})" if note else "")
+            + ". Any change to the manuscript described by a reviewer or by "
+            "the compliance audit this round is unverified — an unchanged "
+            "resubmission would have produced the same reports."
+        )
     substantive = tuple(getattr(diff, "substantive", ()) or ())
     if not substantive:
         return (
@@ -235,6 +250,26 @@ def _compliance_line(prior: Any, state: ReviewState) -> str:
         )
     else:
         line += " No still-open item is marked blocking."
+
+    # The audit's verdicts answer to the text. A compliance auditor shown an
+    # unchanged draft still described "added references" and an "expanded
+    # methods section" in enough detail to read as findings — so when the
+    # deterministic diff says nothing substantively changed, any claim of
+    # progress is contradicted here, next to the count it inflates.
+    diff = state.get("manuscript_diff")
+    progressed = sum(counts.get(s, 0) for s in ("addressed", "partial"))
+    if (
+        progressed
+        and diff is not None
+        and getattr(diff, "available", False)
+        and not tuple(getattr(diff, "substantive", ()) or ())
+    ):
+        line += (
+            f" CONTRADICTION: {progressed} item{'s' if progressed != 1 else ''} "
+            "reported addressed or partially addressed, but the draft "
+            "comparison shows no substantive change between rounds — treat "
+            "those statuses as unverified."
+        )
     return line
 
 

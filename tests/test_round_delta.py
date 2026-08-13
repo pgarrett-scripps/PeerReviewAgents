@@ -185,14 +185,56 @@ def test_changed_sections_are_counted_and_named():
     assert "methods" in block and "limitations" in block
 
 
-def test_missing_or_unavailable_diff_yields_no_delta_line():
-    """Asserting 'unchanged' from a diff that does not exist would be a guess."""
+def test_a_never_computed_diff_yields_no_delta_line():
+    """No diff was ever in play (a first round has nothing to compare);
+    asserting anything would be a guess."""
+    assert "Manuscript delta" not in round_delta(_state(prior=_prior()))
+
+
+def test_an_unavailable_diff_is_disclosed_not_omitted():
+    """Silence let hallucinated deltas stand: on a live unchanged
+    resubmission whose baseline failed verification, a reviewer's 'the
+    authors have addressed both concerns' and a compliance audit's invented
+    'expanded methods section' reached the editor with nothing beside them
+    saying no comparison existed. Disclosure asserts nothing about the draft
+    — it prices the round's change claims."""
     from peerreviewagents.ingest import diff as ingest_diff
 
-    assert "Manuscript delta" not in round_delta(_state(prior=_prior()))
     state = _state(prior=_prior())
     state["manuscript_diff"] = ingest_diff.unavailable("cache cleared")
-    assert "Manuscript delta" not in round_delta(state)
+    block = round_delta(state)
+    assert "NO verified draft comparison is available" in block
+    assert "cache cleared" in block
+    assert "unverified" in block
+
+
+def test_progress_claims_on_an_unchanged_draft_are_contradicted():
+    """The compliance auditor described added references and an expanded
+    methods section on a byte-identical manuscript. When the deterministic
+    diff says nothing substantively changed, claimed progress is contradicted
+    next to the count it inflates."""
+    from peerreviewagents.ingest import diff as ingest_diff
+
+    output = RevisionComplianceOutput(
+        summary="Progress reported.",
+        findings=[
+            ComplianceFinding(id="R1-01", status="addressed", blocking=False),
+            ComplianceFinding(id="R1-02", status="partial", blocking=True),
+            ComplianceFinding(id="R1-03", status="not_addressed", blocking=True),
+        ],
+    )
+    sections = {"methods": "Methods text here."}
+    state = _state(prior=_prior(), audits=[_compliance_audit(output)])
+    state["manuscript_diff"] = ingest_diff.diff_sections(sections, dict(sections))
+    block = round_delta(state)
+    assert "CONTRADICTION: 2 items reported addressed or partially addressed" in block
+    assert "no substantive change" in block
+
+    # A round whose draft genuinely changed carries no contradiction.
+    state["manuscript_diff"] = ingest_diff.diff_sections(
+        sections, {"methods": "Methods rewritten with a second cluster and seeds."}
+    )
+    assert "CONTRADICTION" not in round_delta(state)
 
 
 # --- compliance -------------------------------------------------------------

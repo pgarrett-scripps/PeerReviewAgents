@@ -223,20 +223,26 @@ def load_manuscript_record(
     from . import cache as _cache
 
     key = _cache.cache_key(path, config)
-    cached = _cache.get(key, config)
-    if cached is not None:
-        return cached
-
-    parsed = _load_uncached(path, config, kind=kind)
-    try:
-        _cache.put(key, parsed, source_path=path, config=config)
-    except (OSError, ValueError):
-        # Cache write failure is non-fatal: the run still has the parsed
-        # text in memory, so we just skip persisting it. ValueError covers
-        # encoding failures on text this loader could not sanitise — losing
-        # the cache entry is the right cost, losing the review is not.
-        pass
-    return parsed
+    manuscript = _cache.get(key, config)
+    if manuscript is None:
+        manuscript = _load_uncached(path, config, kind=kind)
+        try:
+            _cache.put(key, manuscript, source_path=path, config=config)
+        except (OSError, ValueError):
+            # Cache write failure is non-fatal: the run still has the parsed
+            # text in memory, so we just skip persisting it. ValueError covers
+            # encoding failures on text this loader could not sanitise — losing
+            # the cache entry is the right cost, losing the review is not.
+            pass
+    # Hashed at load time from the bytes on disk, never stored: a cache hit
+    # must report the file it was served FOR, and old entries never carried
+    # the field anyway. This is the fingerprint that survives a converter
+    # upgrade — the text hash above it does not, because a new converter
+    # reads the same bytes into different text, and a revision round that
+    # verified its baseline by text alone lost its diff at exactly the
+    # upgrade boundary.
+    manuscript.ingest["file_sha256"] = _file_sha256(path)
+    return manuscript
 
 
 def _load_uncached(
@@ -385,6 +391,23 @@ def _drop_surrogates(text: str) -> str:
     except UnicodeEncodeError:
         return text.encode("utf-8", "replace").decode("utf-8")
     return text
+
+
+def _file_sha256(path: str) -> str:
+    """SHA-256 of the file's bytes, or "" when it cannot be read back.
+
+    Best-effort because it is provenance, not input: by the time this runs
+    the text is already parsed, and a file that vanished between the parse
+    and the hash should cost the fingerprint, not the review.
+    """
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return ""
 
 
 def _guess_title(text: str, fallback: str) -> str:

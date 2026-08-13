@@ -348,7 +348,9 @@ def test_unavailable_diff_tells_the_agent_not_to_assume():
     assert "do not assume" in block
 
 
-def _prior_record_with_key(key: str, text_sha256: str = "") -> rounds.RoundRecord:
+def _prior_record_with_key(
+    key: str, text_sha256: str = "", file_sha256: str = ""
+) -> rounds.RoundRecord:
     return rounds.RoundRecord(
         schema_version=rounds.SCHEMA_VERSION,
         round=1,
@@ -358,6 +360,7 @@ def _prior_record_with_key(key: str, text_sha256: str = "") -> rounds.RoundRecor
         decision="major",
         weighted_score=3.0,
         manuscript_text_sha256=text_sha256,
+        manuscript_file_sha256=file_sha256,
     )
 
 
@@ -503,7 +506,7 @@ def test_a_wrong_baseline_is_refused_by_the_recorded_text_hash(tmp_path):
         dict(_BASELINE_SECTIONS),
     )
     assert not diff.available
-    assert "not the draft the previous round reviewed" in diff.note
+    assert "could not be verified as the draft" in diff.note
     # Both fingerprints are named, so the operator can see which side moved.
     assert recorded[:12] in diff.note
     parsed = load_manuscript_record(baseline, cfg).ingest["text_sha256"]
@@ -529,6 +532,83 @@ def test_a_verified_baseline_diffs(tmp_path):
     )
     assert diff.available
     assert all(d.status == "unchanged" for d in diff.deltas)
+
+
+def test_a_converter_upgrade_baseline_is_verified_by_the_file_hash(tmp_path):
+    """The text hash breaks across converter upgrades — the same bytes read
+    into different text — and verifying by text alone is how an unchanged
+    resubmission reviewed across the 0.1.1 → 0.2.0 boundary lost its diff.
+    The file hash is of the bytes, and bytes survive the upgrade."""
+    import hashlib
+
+    from peerreviewagents.graph.review_graph import PeerReviewGraph
+
+    baseline = _baseline_file(tmp_path)
+    cfg = get_config(
+        revision_baseline_path=baseline,
+        cache_dir=str(tmp_path / "cache"),
+        output_dir=str(tmp_path),
+    )
+    with open(baseline, "rb") as fh:
+        file_hash = hashlib.sha256(fh.read()).hexdigest()
+    # The recorded TEXT hash mismatches — round 1's converter read the same
+    # file into different text — but the recorded FILE hash matches, which is
+    # proof enough that this is the reviewed draft.
+    diff = PeerReviewGraph(cfg)._manuscript_diff(
+        _prior_record_with_key("", text_sha256="0" * 64, file_sha256=file_hash),
+        dict(_BASELINE_SECTIONS),
+    )
+    assert diff.available
+    assert all(d.status == "unchanged" for d in diff.deltas)
+
+
+def test_an_unchanged_resubmission_is_its_own_proof(tmp_path):
+    """An old record whose text hash cannot match (converter upgraded, no
+    file hash recorded) still gets its diff when the baseline is byte-equal
+    to this round's manuscript: the resubmission IS the draft it is compared
+    against, so 'nothing changed' holds with no recorded hash at all — and
+    that is the exact fact the adversarial invariant needs said out loud."""
+    from peerreviewagents.graph.review_graph import PeerReviewGraph
+
+    baseline = _baseline_file(tmp_path)
+    cfg = get_config(
+        revision_baseline_path=baseline,
+        cache_dir=str(tmp_path / "cache"),
+        output_dir=str(tmp_path),
+    )
+    diff = PeerReviewGraph(cfg)._manuscript_diff(
+        _prior_record_with_key("", text_sha256="0" * 64),
+        dict(_BASELINE_SECTIONS),
+        manuscript_path=baseline,  # resubmitted unchanged: same file
+    )
+    assert diff.available
+    assert all(d.status == "unchanged" for d in diff.deltas)
+
+
+def test_the_loader_fingerprints_the_file_even_on_a_cache_hit(tmp_path):
+    """round.json records the file hash off the ingest record, so the record
+    has to carry it on every path — including a manuscript served from the
+    cache, where the stored entry predates the field."""
+    import hashlib
+
+    from peerreviewagents.ingest.loader import load_manuscript_record
+
+    path = _baseline_file(tmp_path)
+    cfg = {"cache_dir": str(tmp_path / "cache")}
+    with open(path, "rb") as fh:
+        expected = hashlib.sha256(fh.read()).hexdigest()
+    first = load_manuscript_record(path, cfg)
+    assert first.ingest["file_sha256"] == expected
+    served = load_manuscript_record(path, cfg)  # cache hit this time
+    assert served.ingest["file_sha256"] == expected
+
+
+def test_round_record_roundtrips_the_file_hash():
+    from dataclasses import asdict
+
+    record = _prior_record_with_key("k", file_sha256="f" * 64)
+    again = rounds.RoundRecord.from_dict(json.loads(json.dumps(asdict(record))))
+    assert again.manuscript_file_sha256 == "f" * 64
 
 
 def test_a_correction_ignores_the_baseline(tmp_path):
