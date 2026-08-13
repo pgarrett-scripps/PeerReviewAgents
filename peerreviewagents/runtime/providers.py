@@ -57,12 +57,62 @@ class ProviderSpec:
 # --- Provider factories -----------------------------------------------------
 
 
+# Built lazily (langchain_openai is imported inside the factories) and cached
+# so every OpenRouter model shares one class object.
+_CHAT_OPENROUTER_CLS: Any = None
+
+
+def _chat_openrouter_class() -> Any:
+    """``ChatOpenAI`` subclass that keeps OpenRouter's reported ``usage.cost``.
+
+    The factory asks OpenRouter for cost-inclusive usage accounting
+    (``extra_body={"usage": {"include": True}}``), and every response carries
+    the authoritative spend in the usage object's nonstandard ``cost`` key.
+    langchain-openai preserves that dict verbatim only on the NON-streaming
+    path (``_create_chat_result`` stores it in ``llm_output["token_usage"]``,
+    which langchain-core copies onto ``response_metadata``). On the streaming
+    path — the only one this pipeline uses — ``_convert_chunk_to_generation_chunk``
+    reduces the chunk's raw usage dict to a ``UsageMetadata`` of token counts
+    and drops everything else on the floor, so a live DeepSeek run recorded
+    ``total_cost_usd: 0.0`` while spending real money: the pricing table has
+    no DeepSeek row, and the number OpenRouter reported never reached the
+    message. This override gives the streaming path the same
+    ``response_metadata["token_usage"]`` shape as the non-streaming one, which
+    is exactly where ``_call_cost`` and ``_extract_usage`` already look.
+    """
+    global _CHAT_OPENROUTER_CLS
+    if _CHAT_OPENROUTER_CLS is not None:
+        return _CHAT_OPENROUTER_CLS
+
+    from langchain_openai import ChatOpenAI
+
+    class ChatOpenRouter(ChatOpenAI):
+        def _convert_chunk_to_generation_chunk(
+            self, chunk: dict, default_chunk_class: type,
+            base_generation_info: dict | None,
+        ) -> Any:
+            generation_chunk = super()._convert_chunk_to_generation_chunk(
+                chunk, default_chunk_class, base_generation_info
+            )
+            usage = chunk.get("usage") if isinstance(chunk, dict) else None
+            if (
+                generation_chunk is not None
+                and isinstance(usage, dict)
+                and usage.get("cost") is not None
+            ):
+                # Only the final chunk carries usage, so this merges cleanly
+                # into the accumulated message's response_metadata.
+                generation_chunk.message.response_metadata["token_usage"] = usage
+            return generation_chunk
+
+    _CHAT_OPENROUTER_CLS = ChatOpenRouter
+    return ChatOpenRouter
+
+
 def _make_openrouter(model: str, *, reasoning_effort: str | None = None,
                      node: str | None = None,
                      run_id: str | None = None,
                      temperature: float = _TEMPERATURE) -> Any:
-    from langchain_openai import ChatOpenAI
-
     api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")
     # `extra_body` is forwarded verbatim to OpenRouter: cost-inclusive
     # usage accounting + optional reasoning-effort knob for r-series /
@@ -90,23 +140,43 @@ def _make_openrouter(model: str, *, reasoning_effort: str | None = None,
         kwargs["temperature"] = temperature
     if api_key:
         kwargs["api_key"] = api_key
-    return ChatOpenAI(**kwargs)
+    return _chat_openrouter_class()(**kwargs)
+
+
+# OpenAI reasoning models that 400 on `temperature` (o1/o3/o4-mini, the GPT-5
+# line). Matched against the bare final path segment so a gateway id like
+# "org/oasis-model" never trips the o-series pattern: with a custom base_url
+# the "openai" provider serves arbitrary vendors' models, and a name these
+# OpenAI-specific heuristics don't recognize simply keeps its temperature —
+# which is the correct default for everything that isn't provably o-series.
+_OPENAI_NO_SAMPLING_RE = re.compile(r"^(o\d+(-|$)|gpt-5)")
+
+
+def _openai_rejects_sampling(model: str) -> bool:
+    return bool(_OPENAI_NO_SAMPLING_RE.match(model.lower().rsplit("/", 1)[-1]))
 
 
 def _make_openai(model: str, *, reasoning_effort: str | None = None,
                  node: str | None = None,
                  run_id: str | None = None,
-                 temperature: float = _TEMPERATURE) -> Any:
+                 temperature: float = _TEMPERATURE,
+                 base_url: str | None = None) -> Any:
     from langchain_openai import ChatOpenAI
 
     api_key = os.environ.get("OPENAI_API_KEY")
     kwargs: dict[str, Any] = {
         "model": model,
-        "temperature": temperature,
         "streaming": True,
         "stream_usage": True,
         "callbacks": [StreamingCallback(default_model=model, default_node=node, default_run=run_id)],
     }
+    if not _openai_rejects_sampling(model):
+        kwargs["temperature"] = temperature
+    if base_url:
+        # Any OpenAI-compatible gateway (Ollama, vLLM, Groq) — see the
+        # `openai_base_url` config key. The API key stays OPENAI_API_KEY;
+        # gateways that need none tolerate a stub value.
+        kwargs["base_url"] = base_url
     if reasoning_effort:
         # o-series + GPT-5-class reasoning models accept this top-level.
         # Older models ignore the field on the wire.
@@ -309,10 +379,13 @@ def spec_for_llm(llm: Any) -> ProviderSpec:
     ``config['provider']``, so it stays correct when different agents run on
     different providers via model tags.
     """
-    cls = type(llm).__name__
-    if cls == "ChatAnthropic":
+    # MRO names, not the leaf name: the OpenRouter factory builds a ChatOpenAI
+    # *subclass* (see _chat_openrouter_class), and a string check on the leaf
+    # class alone would misfile it under the fallback.
+    mro = {c.__name__ for c in type(llm).__mro__}
+    if "ChatAnthropic" in mro:
         return PROVIDERS["anthropic"]
-    if cls == "ChatOpenAI":
+    if "ChatOpenAI" in mro:
         base = str(
             getattr(llm, "openai_api_base", "")
             or getattr(llm, "base_url", "")
@@ -357,7 +430,48 @@ def resolve_model(
     model = raw.get("model") or config.get("reasoning_model")
     if not model:
         raise ValueError("no model resolved: set reasoning_model or a model tag")
+    _check_model_shape(str(provider).lower(), str(model), config, agent=agent)
     return ModelSpec(provider=provider, model=model, effort=_effort(raw.get("effort")))
+
+
+def _check_model_shape(
+    provider: str, model: str, config: dict, *, agent: str | None = None
+) -> None:
+    """Fail fast on a model id that cannot belong to its provider.
+
+    An OpenRouter id is ``vendor/model[:tag]`` — it always contains "/";
+    Anthropic and OpenAI direct ids never do. Sitting here in resolve_model,
+    the check covers per-tag/per-agent providers too, and it fires before any
+    request is built: without it the mismatch surfaced as a mid-run 404 after
+    the desk screen and half the panel had already billed.
+
+    Exception: the "openai" provider with a custom ``openai_base_url`` points
+    at an OpenAI-compatible gateway (Ollama, vLLM, Groq), and gateways serve
+    HuggingFace-style ``org/model`` ids — the slash is legitimate there.
+    """
+    where = f" (agent {agent!r})" if agent else ""
+    if provider == "openrouter" and "/" not in model:
+        raise ValueError(
+            f"{model!r} is not an OpenRouter id{where}; OpenRouter ids look "
+            f"like 'anthropic/{model}' — either change the provider or the "
+            "model id"
+        )
+    if provider == "anthropic" and "/" in model:
+        bare = model.rsplit("/", 1)[-1]
+        raise ValueError(
+            f"{model!r} is not an Anthropic API id{where}; direct Anthropic "
+            f"ids have no vendor prefix (e.g. {bare!r}) — either change the "
+            "provider or the model id"
+        )
+    if provider == "openai" and "/" in model and not config.get("openai_base_url"):
+        bare = model.rsplit("/", 1)[-1]
+        raise ValueError(
+            f"{model!r} is not an OpenAI API id{where}; direct OpenAI ids "
+            f"have no vendor prefix (e.g. {bare!r}). Either change the "
+            "provider or the model id — or, if this id belongs to an "
+            "OpenAI-compatible gateway, set openai_base_url "
+            "(PEERREVIEW_OPENAI_BASE_URL), which serves 'org/model' ids."
+        )
 
 
 # Config spellings for "no thinking at all". Without one of these there is no
@@ -422,10 +536,14 @@ def make_chat_model(
     # right name and no run is filed under the un-keyed mailbox, and
     # `_usage_table` asks for one run's rows — so that agent is missing from
     # the report rather than mislabelled in it.
-    return prov.factory(
-        spec.model,
-        reasoning_effort=effort,
-        temperature=temp,
-        node=agent,
-        run_id=config.get("run_id"),
-    )
+    factory_kwargs: dict[str, Any] = {
+        "reasoning_effort": effort,
+        "temperature": temp,
+        "node": agent,
+        "run_id": config.get("run_id"),
+    }
+    # Only the OpenAI factory takes a gateway base_url (see `openai_base_url`
+    # in default_config); OpenRouter's is fixed and Anthropic has none.
+    if prov.name == "openai" and config.get("openai_base_url"):
+        factory_kwargs["base_url"] = str(config["openai_base_url"])
+    return prov.factory(spec.model, **factory_kwargs)

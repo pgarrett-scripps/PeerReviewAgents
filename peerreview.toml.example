@@ -21,6 +21,13 @@
 # "openai". Set the matching API key in your .env.
 # provider = "openrouter"
 
+# Base URL for the "openai" provider — any OpenAI-compatible gateway (Ollama,
+# vLLM, Groq) works without a fourth provider. Also via
+# PEERREVIEW_OPENAI_BASE_URL. Unset = api.openai.com. When set, the
+# provider/model-id shape check allows "org/model" ids on this provider,
+# since that is what such gateways serve.
+# openai_base_url = "http://localhost:11434/v1"
+
 # Single text model used by every reviewer, debater, synthesizer,
 # author rebuttal, editor, and journal recommender. The model string
 # is interpreted by the active provider:
@@ -38,6 +45,18 @@ reasoning_model = "anthropic/claude-opus-5"
 # Different models per group of agents: see the [models] / [agent_models]
 # tables at the bottom of this file. Leave them out and every agent uses
 # reasoning_model above.
+
+# Run reasoning_model for EVERY agent by clearing the [models]/[agent_models]
+# tables after all config layers are applied. The tables out-rank an explicit
+# --reasoning-model for every tagged agent, so without this a per-run cheap
+# model can end up reviewing nothing while the tables' models are billed.
+# Usually per-run as `--single-model` (or PEERREVIEW_SINGLE_MODEL).
+# single_model = false
+
+# Preview what a run would bill before running one:
+#   peerreview --show-panel
+# prints agent / tag / provider / model / effort / rate for every agent,
+# after running the same config validation a run would.
 
 # ---------------------------------------------------------------------------
 # Workflow
@@ -224,9 +243,13 @@ output_dir = "./reports"
 
 # Per-agent models. A [models.<tag>] table retargets a whole group of agents;
 # an [agent_models] entry retargets a single agent and wins over its tag.
-# Tags: "reviewer" (the specialist panel), "debate", "audit", "screen" (desk
-# triage), "synthesis" (editor, meta-reviewer, rebuttal, recommender). Any
-# field left out falls back to the provider / reasoning_model above.
+# Tags: "reviewer" (the specialist panel, plus the desk screen and response
+# verifier, which share it so the prompt cache they warm is the one the panel
+# reads), "debate", "audit", "synthesis" (editor, meta-reviewer, rebuttal,
+# recommender). There is NO "screen" tag — a [models.screen] block is inert,
+# and get_config warns about it. Any field left out falls back to the
+# provider / reasoning_model above. Check the result with
+# `peerreview --show-panel`.
 
 # [models.reviewer]
 # model = "claude-haiku-4-5"

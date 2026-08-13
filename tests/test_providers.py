@@ -35,7 +35,9 @@ def test_unknown_provider_raises():
 def test_openrouter_factory(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "stub-key")
     llm = make_chat_model(_cfg("openrouter", "anthropic/claude-opus-5"))
-    assert type(llm).__name__ == "ChatOpenAI"
+    # A ChatOpenAI *subclass*: the override that keeps OpenRouter's reported
+    # usage.cost on the streamed message (see _chat_openrouter_class).
+    assert "ChatOpenAI" in {c.__name__ for c in type(llm).__mro__}
     # Base URL is what makes this OpenRouter rather than OpenAI direct.
     base = (
         getattr(llm, "openai_api_base", None)
@@ -141,7 +143,10 @@ def test_spec_table_consistency():
         ("claude-opus-4-7", True, True),
         ("claude-sonnet-5", True, True),
         ("claude-fable-5", True, True),
-        ("anthropic/claude-opus-4.8", True, True),
+        # Dotted spelling still normalizes; the OpenRouter-slug spelling now
+        # fails resolve_model's shape check on the direct provider by design,
+        # and its matching is covered by the openrouter temperature test.
+        ("claude-opus-4.8", True, True),
         ("claude-opus-6", True, True),            # unreleased — must not regress
         ("claude-opus-4-6", True, False),         # adaptive, but sampling still ok
         ("claude-sonnet-4-6", True, False),
@@ -195,3 +200,142 @@ def test_openrouter_omits_temperature_for_current_anthropic(monkeypatch):
     # Non-Anthropic slugs are unaffected.
     other = make_chat_model(_cfg("openrouter", "openai/gpt-4o"))
     assert other.temperature is not None
+
+
+# --- provider/model-id shape ------------------------------------------------
+#
+# An OpenRouter id is vendor/model[:tag]; Anthropic and OpenAI direct ids
+# never contain "/". A mismatch used to surface as a mid-run 404 after the
+# desk screen and half the panel had billed; resolve_model now refuses it
+# before any request exists, including for per-tag providers.
+
+
+def test_openrouter_rejects_a_bare_model_id(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "stub-key")
+    with pytest.raises(ValueError, match="not an OpenRouter id"):
+        make_chat_model(_cfg("openrouter", "claude-haiku-4-5"))
+
+
+def test_anthropic_rejects_an_openrouter_slug(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "stub-key")
+    with pytest.raises(ValueError, match="no vendor prefix"):
+        make_chat_model(_cfg("anthropic", "anthropic/claude-opus-5"))
+
+
+def test_openai_rejects_an_org_model_id_without_a_gateway(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "stub-key")
+    with pytest.raises(ValueError, match="openai_base_url"):
+        make_chat_model(_cfg("openai", "meta-llama/llama-3-70b"))
+
+
+def test_the_shape_check_covers_per_tag_providers(monkeypatch):
+    """The whole point of putting it in resolve_model: a [models.reviewer]
+    block with its own provider gets the same preflight as the global one."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "stub-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "stub-key")
+    cfg = {
+        "provider": "openrouter",
+        "reasoning_model": "anthropic/claude-opus-5",
+        "models": {"reviewer": {"provider": "anthropic",
+                                "model": "anthropic/claude-haiku-4.5"}},
+    }
+    with pytest.raises(ValueError, match="reviewer_rigor"):
+        make_chat_model(cfg, agent="reviewer_rigor", default_tag="reviewer")
+
+
+# --- openai_base_url gateways -----------------------------------------------
+
+
+def test_openai_base_url_reaches_the_client_and_relaxes_the_shape_check(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "stub-key")
+    cfg = _cfg("openai", "meta-llama/llama-3-70b")
+    cfg["openai_base_url"] = "http://localhost:11434/v1"
+    llm = make_chat_model(cfg)  # org/model is what gateways serve — no raise
+    base = str(getattr(llm, "openai_api_base", "") or getattr(llm, "base_url", ""))
+    assert base == "http://localhost:11434/v1"
+
+
+def test_openai_direct_keeps_the_default_endpoint(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "stub-key")
+    llm = make_chat_model(_cfg("openai", "gpt-4.1"))
+    base = str(getattr(llm, "openai_api_base", "") or getattr(llm, "base_url", "") or "")
+    assert "localhost" not in base
+
+
+def test_openai_o_series_omits_temperature_but_gateway_names_keep_it(monkeypatch):
+    """The sampling gate is an OpenAI-name heuristic and must stay one: an
+    o-series id 400s on `temperature`, but a gateway model that merely fails
+    to match the pattern is not an o-series model and keeps sampling."""
+    monkeypatch.setenv("OPENAI_API_KEY", "stub-key")
+
+    o3 = make_chat_model(_cfg("openai", "o3"))
+    assert o3.temperature is None
+
+    gpt5 = make_chat_model(_cfg("openai", "gpt-5"))
+    assert gpt5.temperature is None
+
+    gpt4 = make_chat_model(_cfg("openai", "gpt-4o"))
+    assert gpt4.temperature is not None
+
+    gateway = _cfg("openai", "org/oasis-7b")  # starts with "o" + not o-series
+    gateway["openai_base_url"] = "http://localhost:8000/v1"
+    assert make_chat_model(gateway).temperature is not None
+
+
+# --- OpenRouter reported cost survives streaming ------------------------------
+#
+# The factory requests cost-inclusive usage accounting, and OpenRouter answers
+# with the authoritative spend in the usage object's nonstandard `cost` key.
+# langchain-openai's streaming path reduces that dict to token counts
+# (_create_usage_metadata) and dropped the cost on the floor — a live DeepSeek
+# run recorded total_cost_usd: 0.0. The subclass keeps the raw dict on
+# response_metadata["token_usage"], the same place the non-streaming path
+# already puts it, which is where _call_cost and _extract_usage look.
+
+
+def _openrouter_llm(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "stub-key")
+    return make_chat_model(_cfg("openrouter", "deepseek/deepseek-chat"))
+
+
+def test_streamed_openrouter_cost_lands_on_response_metadata(monkeypatch):
+    from langchain_core.messages import AIMessageChunk
+
+    llm = _openrouter_llm(monkeypatch)
+    # The final streamed chunk, as OpenRouter sends it: empty choices, usage
+    # carrying the nonstandard `cost` in USD.
+    final_chunk = {
+        "choices": [],
+        "usage": {
+            "prompt_tokens": 51_000,
+            "completion_tokens": 800,
+            "total_tokens": 51_800,
+            "cost": 0.0123,
+        },
+    }
+    gen = llm._convert_chunk_to_generation_chunk(final_chunk, AIMessageChunk, None)
+    assert gen.message.response_metadata["token_usage"]["cost"] == 0.0123
+    # LangChain's normalized counts are untouched.
+    assert gen.message.usage_metadata["input_tokens"] == 51_000
+
+
+def test_a_costless_chunk_is_left_alone(monkeypatch):
+    """Ordinary content chunks (and providers that report no cost) must not
+    grow a token_usage block that could clash when the chunks merge."""
+    from langchain_core.messages import AIMessageChunk
+
+    llm = _openrouter_llm(monkeypatch)
+    chunk = {"choices": [{"delta": {"content": "hi"}, "finish_reason": None, "index": 0}]}
+    gen = llm._convert_chunk_to_generation_chunk(chunk, AIMessageChunk, None)
+    assert "token_usage" not in gen.message.response_metadata
+
+
+def test_the_subclass_still_reads_as_an_openrouter_chat_model(monkeypatch):
+    """spec_for_llm and the cache-control probe matched on the literal class
+    name "ChatOpenAI"; the subclass must not fall out of either."""
+    from peerreviewagents.agents.utils.agent_utils import _cache_control_supported
+    from peerreviewagents.runtime.providers import spec_for_llm
+
+    llm = _openrouter_llm(monkeypatch)
+    assert spec_for_llm(llm).name == "openrouter"
+    assert _cache_control_supported(llm) is True

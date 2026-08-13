@@ -51,6 +51,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # sampling (e.g. the Haiku reading panel).
     "temperature": None,
 
+    # Base URL for the "openai" provider. None (default) = api.openai.com.
+    # Point it at any OpenAI-compatible gateway (Ollama, vLLM, Groq, ...) to
+    # use local or third-party models without wiring a fourth provider —
+    # TradingAgents' `backend_url` idea. Setting it also relaxes the
+    # provider/model-id shape check for this provider: gateways serve
+    # HuggingFace-style "org/model" ids, which the check would otherwise
+    # reject as impossible OpenAI ids. (Env: PEERREVIEW_OPENAI_BASE_URL.)
+    "openai_base_url": None,
+
     # --- Per-agent models (optional) ---
     # Named model "tags". Each maps a tag to {provider?, model?, effort?};
     # any field left out falls back to the global provider / reasoning_model
@@ -59,26 +68,40 @@ DEFAULT_CONFIG: dict[str, Any] = {
     #     provider = "anthropic"
     #     model = "claude-opus-5"
     #     effort = "high"
-    #     [models.reviewer]            # the specialist panel
+    #     [models.reviewer]            # the specialist panel + desk screen
     #     provider = "anthropic"
     #     model = "claude-sonnet-5"
-    #     [models.screen]              # desk-screen triage
-    #     model = "claude-haiku-4-5"
     # Agents resolve their model through a code-declared default tag:
     #   reviewers -> "reviewer", debate -> "debate", auditors -> "audit",
-    #   desk-screen -> "screen", and editor / meta-reviewer / author-rebuttal /
-    #   journal-recommender -> "synthesis". Defining a tag retargets that whole
-    #   group; leaving "models" empty means every agent uses the global model.
+    #   and editor / meta-reviewer / author-rebuttal / journal-recommender ->
+    #   "synthesis". There is deliberately NO "screen" tag: the desk screen
+    #   (and the response verifier) share "reviewer", so the prompt cache
+    #   they warm is the one the panel then reads — caches are per-model.
+    #   This file used to advertise [models.screen] as an example, and the
+    #   In Silico journal shipped one; it was silently inert. get_config now
+    #   warns on any tag no agent resolves through (see panel.KNOWN_TAGS).
+    #   Defining a tag retargets that whole group; leaving "models" empty
+    #   means every agent uses the global model.
     "models": {},
     # Per-agent override map: agent key -> tag name or an inline
     # {provider?, model?, effort?} spec. Wins over the agent's default tag.
     # Agent keys: reviewer_<name> (e.g. reviewer_methodology), debate_advocate,
-    # debate_skeptic, audit_<name>, desk_screen, meta_reviewer, editor,
-    # author_rebuttal, journal_recommender. Example (TOML):
+    # debate_skeptic, audit_<name>, desk_screen, response_verifier,
+    # meta_reviewer, editor, author_rebuttal, journal_recommender (the full
+    # roster lives in peerreviewagents.panel). Example (TOML):
     #     [agent_models]
     #     reviewer_novelty = "synthesis"          # give one reviewer the big model
     #     editor = { model = "claude-opus-5", effort = "max" }
     "agent_models": {},
+    # Run the named reasoning_model for EVERY agent by clearing `models` and
+    # `agent_models` after all config layers are applied. This exists because
+    # the tag tables win over an explicit --reasoning-model for every tagged
+    # agent: In Silico's per-agent split meant a dev's `--model
+    # minimax/minimax-m3` reviewed nothing and the run billed the lab for
+    # Claude, and the only workaround was manually writing `models = {}` on
+    # the command line's config layer. `--single-model <flag>` / this key is
+    # that dance, upstreamed. (Env: PEERREVIEW_SINGLE_MODEL.)
+    "single_model": False,
 
     # --- Workflow ---
     "max_debate_rounds": 2,
@@ -363,6 +386,7 @@ _ENV_STR_KEYS = {
     "PEERREVIEW_ARTICLE_TYPE": "article_type",
     "PEERREVIEW_CAVEMAN": "caveman",
     "PEERREVIEW_CONVERSION_GATE": "conversion_gate",
+    "PEERREVIEW_OPENAI_BASE_URL": "openai_base_url",
 }
 _ENV_INT_KEYS = {
     "PEERREVIEW_DEBATE_ROUNDS": "max_debate_rounds",
@@ -371,6 +395,7 @@ _ENV_INT_KEYS = {
 _ENV_BOOL_KEYS = {
     "PEERREVIEW_DESK_SCREEN": "desk_screen",
     "PEERREVIEW_RESEARCH_ENABLED": "research_enabled",
+    "PEERREVIEW_SINGLE_MODEL": "single_model",
 }
 _ENV_FLOAT_KEYS = {
     "PEERREVIEW_TEMPERATURE": "temperature",
@@ -410,6 +435,97 @@ def _env_overrides() -> dict[str, Any]:
     return out
 
 
+# --- model-table validation ---------------------------------------------------
+
+# The only fields a {provider?, model?, effort?} spec can carry. Anything else
+# is a typo (`modle = ...`) that TOML happily parses and resolve_model happily
+# ignores, running the default model with no indication anything was wrong.
+_SPEC_KEYS = {"provider", "model", "effort"}
+
+
+def _warn(message: str) -> None:
+    # stacklevel points at the get_config caller, matching _normalize_toml.
+    warnings.warn(message, UserWarning, stacklevel=4)
+
+
+def _validate_model_tables(cfg: dict[str, Any], *, explicit_model: bool) -> None:
+    """Warn (never crash — same philosophy as _normalize_toml) on model-table
+    entries the pipeline can never read.
+
+    Every case here is a real way someone silently paid for the wrong model:
+    a ``[models.screen]`` block for a tag no agent resolves through, an
+    ``[agent_models]`` key spelled ``data_analysis`` where the agent is
+    ``reviewer_data_analysis``, a ``modle = ...`` typo inside a spec, and an
+    explicit ``--reasoning-model`` that the tag tables out-rank for every
+    tagged agent (In Silico: "minimax reviews nothing, and the run bills the
+    lab for Claude").
+    """
+    # Lazy: the roster imports the agents package, which this module must not
+    # pull in at import time (get_config is used by lightweight callers).
+    from .panel import KNOWN_AGENTS, KNOWN_TAGS
+
+    models = cfg.get("models") or {}
+    agent_models = cfg.get("agent_models") or {}
+
+    for tag, spec in models.items():
+        if tag not in KNOWN_TAGS:
+            _warn(
+                f"[models.{tag}] matches no agent's model tag and is silently "
+                f"inert. Known tags: {', '.join(sorted(KNOWN_TAGS))}. (The "
+                "desk screen shares the 'reviewer' tag — there is no 'screen' "
+                "tag.)"
+            )
+        _check_spec_keys(f"[models.{tag}]", spec)
+
+    for name, selection in agent_models.items():
+        if name not in KNOWN_AGENTS:
+            hints = [
+                known for known in sorted(KNOWN_AGENTS)
+                if known.endswith(f"_{name}")
+            ]
+            hint = f" Did you mean {' or '.join(repr(h) for h in hints)}?" if hints else ""
+            _warn(
+                f"[agent_models] entry {name!r} matches no agent and is "
+                f"silently inert.{hint} Known agents: "
+                f"{', '.join(sorted(KNOWN_AGENTS))}."
+            )
+        if isinstance(selection, str):
+            # A tag name that neither [models] defines nor any agent declares
+            # resolves to the empty spec — the override does nothing.
+            if selection not in KNOWN_TAGS and selection not in models:
+                _warn(
+                    f"[agent_models] {name} = {selection!r} names a tag that "
+                    "is neither defined under [models] nor a known default "
+                    f"tag; the override is silently inert. Known tags: "
+                    f"{', '.join(sorted(KNOWN_TAGS))}."
+                )
+        else:
+            _check_spec_keys(f"[agent_models.{name}]", selection)
+
+    if explicit_model and (models or agent_models):
+        _warn(
+            f"an explicit reasoning_model ({cfg.get('reasoning_model')!r} — "
+            "CLI --reasoning-model or a kwargs override) is out-ranked by the "
+            "[models]/[agent_models] tables for every tagged agent, so it may "
+            "run few agents or none while the tables' models are billed. Pass "
+            "--single-model (config: single_model = true) to clear the tables "
+            "and run it everywhere."
+        )
+
+
+def _check_spec_keys(where: str, spec: Any) -> None:
+    if not isinstance(spec, dict):
+        return
+    unknown = sorted(set(spec) - _SPEC_KEYS)
+    if unknown:
+        _warn(
+            f"{where} has unrecognized field(s): {', '.join(unknown)}. "
+            f"A spec takes only: {', '.join(sorted(_SPEC_KEYS))}. Unknown "
+            "fields are ignored, so a typo like 'modle' runs the default "
+            "model without complaint."
+        )
+
+
 # --- public API -------------------------------------------------------------
 
 
@@ -433,4 +549,20 @@ def get_config(config_path: str | os.PathLike | None = None, **overrides: Any) -
 
     cfg.update(_env_overrides())
     cfg.update(overrides)
+
+    # single_model wins over the tables no matter which layer defined them:
+    # the whole point of the key is "run the named model everywhere", and it
+    # replaces In Silico's manual trick of appending `models = {}` /
+    # `agent_models = {}` as a final config layer to flatten its per-agent
+    # split for cheap local iteration.
+    if cfg.get("single_model"):
+        cfg["models"] = {}
+        cfg["agent_models"] = {}
+
+    # `overrides` is the only layer whose reasoning_model is knowably
+    # explicit (CLI --reasoning-model / --model, library kwargs); a TOML or
+    # env model is a default the tables are *meant* to refine.
+    _validate_model_tables(
+        cfg, explicit_model="reasoning_model" in overrides
+    )
     return cfg

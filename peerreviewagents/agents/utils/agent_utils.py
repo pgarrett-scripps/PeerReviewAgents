@@ -216,10 +216,13 @@ def _cache_control_supported(llm) -> bool:
     forwards it to Anthropic-class providers. OpenAI direct does not
     accept unknown content-block keys, so we strip the marker there.
     """
-    cls_name = type(llm).__name__
-    if cls_name == "ChatAnthropic":
+    # MRO names, not the leaf class name: the OpenRouter factory builds a
+    # ChatOpenAI subclass (providers._chat_openrouter_class), which must keep
+    # its cache-control support.
+    mro_names = {c.__name__ for c in type(llm).__mro__}
+    if "ChatAnthropic" in mro_names:
         return True
-    if cls_name == "ChatOpenAI":
+    if "ChatOpenAI" in mro_names:
         base_url = str(
             getattr(llm, "openai_api_base", "")
             or getattr(llm, "base_url", "")
@@ -283,11 +286,15 @@ def _build_messages(
 def _call_cost(resp: AIMessage, cache_ttl: str | None = None) -> float:
     """Best-effort USD cost for a single model call.
 
-    OpenRouter reports actual spend on the response; Anthropic and OpenAI
-    direct do not. They do return token counts, so fall back to pricing those
-    from the static table. Without the fallback the whole ``total_cost`` chain
-    reads 0.0 on every direct-API run, including the figure written into
-    summary.md and any downstream provenance record.
+    OpenRouter reports actual spend on the response (``usage.cost``, kept on
+    ``response_metadata["token_usage"]`` by the streaming subclass in
+    ``runtime.providers``), and that number is authoritative — it is what the
+    account was actually billed, for any model OpenRouter serves, with no
+    pricing-table row to go stale. Anthropic and OpenAI direct report no
+    spend, only token counts, so those are priced from the static table.
+    Without the fallback the whole ``total_cost`` chain reads 0.0 on every
+    direct-API run, including the figure written into summary.md and any
+    downstream provenance record.
     """
     meta = getattr(resp, "response_metadata", None) or {}
     usage = meta.get("token_usage") or meta.get("usage") or {}
