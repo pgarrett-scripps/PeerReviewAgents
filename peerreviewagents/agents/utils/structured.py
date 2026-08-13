@@ -30,10 +30,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ...observability import AgentEvent, current_node, emit
 from ...runtime.providers import spec_for_llm
+from ..schemas import NO_SCORE_NO_REASON
 from .agent_utils import (
     DEFAULT_CACHE_TTL,
     _build_messages,
@@ -239,6 +240,12 @@ def _try_structured(
     if parsed2 is not None:
         return StructuredResult(instance=parsed2, cost=cost + cost2)
 
+    repaired = _repair_abstention(llm, schema, result2)
+    if repaired is not None:
+        return StructuredResult(
+            instance=repaired.instance, cost=cost + cost2 + repaired.cost
+        )
+
     salvaged = _salvage(schema, result2)
     if salvaged is not None:
         return StructuredResult(instance=salvaged, cost=cost + cost2)
@@ -291,7 +298,92 @@ def _rejected_turn(result: Any) -> list:
 #
 # Deliberately narrow. A response truncated mid-JSON is not salvaged: half a
 # review is not a review, and the fix for that one is the token cap.
-_NO_REASON_GIVEN = "The reviewer gave no score and did not say why."
+NO_REASON_GIVEN = NO_SCORE_NO_REASON  # the renderers in schemas.py key on it
+_NO_REASON_GIVEN = NO_REASON_GIVEN
+
+
+class _ScoreRepair(BaseModel):
+    """The two fields the abstention rule is about, and nothing else.
+
+    The full schema is where the failure happens: a model that has just
+    written a long review omits the score at the end of a large object. Asked
+    the same question through a two-field schema, the same model answers
+    reliably — measured 4/4 recoveries on the model that produced 4/8
+    unexplained abstentions through the full schema on one live run.
+    """
+
+    score: int | None = Field(None, ge=1, le=5)
+    not_applicable_reason: str = ""
+
+
+def _repair_abstention(llm, schema: type[BaseModel], result: Any) -> StructuredResult | None:
+    """One targeted ask before an unexplained abstention is published.
+
+    Observed live on a long manuscript: a reviewer writes the complete
+    review — summary, strengths, seven weaknesses — and returns a null score
+    with no reason, twice. Half the panel abstaining that way skews the mean
+    over whoever happened to comply, so before the salvage path publishes
+    "gave no score and did not say why", the model is shown its own review
+    once and asked for the score it implies, or the missing reason.
+
+    The number is still the model's own: a repair that fails, abstains again
+    without a reason, or produces an object the schema rejects changes
+    nothing, and the salvage below publishes the abstention as unexplained.
+    """
+    payload = _tool_args(result)
+    if not isinstance(payload, dict) or not payload:
+        return None
+    if "not_applicable_reason" not in schema.model_fields:
+        return None
+    if payload.get("score") is not None or str(payload.get("not_applicable_reason") or "").strip():
+        return None  # rejected for some other reason; not ours to second-guess
+    quote = _review_quote(payload)
+    if not quote:
+        return None  # nothing of the review survived to quote back
+
+    ask = HumanMessage(content=(
+        "You wrote the review below and returned it without a score and "
+        "without a reason for abstaining.\n\n"
+        f"{quote}\n\n"
+        "Either give the 1-5 score your own review implies (1=reject, "
+        "3=major revision, 4=minor revision, 5=accept), or the one-sentence "
+        "reason this dimension has nothing to judge in this manuscript. Do "
+        "not soften or revisit the review itself."
+    ))
+    spec = spec_for_llm(llm)
+    structured = _bind(llm, _ScoreRepair, spec.structured_method)
+    try:
+        repair_result = _invoke_with_retries(structured, [ask])
+    except Exception:  # noqa: BLE001 - a failed repair must cost nothing
+        return None
+    fixed, cost = _unpack(repair_result)
+    if fixed is None:
+        return None
+
+    merged = dict(payload)
+    if fixed.score is not None:
+        merged["score"] = fixed.score
+    elif fixed.not_applicable_reason.strip():
+        merged["not_applicable_reason"] = fixed.not_applicable_reason.strip()
+    else:
+        return None
+    try:
+        return StructuredResult(instance=schema.model_validate(merged), cost=cost)
+    except Exception:  # noqa: BLE001 - fall through to the plain salvage
+        return None
+
+
+def _review_quote(payload: dict) -> str:
+    """The review the model wrote, compact enough to quote back to it."""
+    parts: list[str] = []
+    summary = str(payload.get("summary") or "").strip()
+    if summary:
+        parts.append(summary)
+    for w in (payload.get("weaknesses") or [])[:6]:
+        text = w.get("text") if isinstance(w, dict) else w
+        if str(text or "").strip():
+            parts.append(f"- {str(text).strip()}")
+    return "\n".join(parts)[:2000]
 
 
 def _salvage(schema: type[BaseModel], result: Any) -> BaseModel | None:

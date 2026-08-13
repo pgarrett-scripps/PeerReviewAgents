@@ -252,6 +252,98 @@ def test_salvage_does_not_touch_a_scored_review():
         invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
 
 
+# ---------- the score-repair ask before an unexplained abstention -----------
+#
+# Observed live: on a long manuscript, half a panel wrote complete, sharp
+# reviews and returned them with a null score and no reason. The salvage kept
+# the reviews, but the panel mean was then computed over whoever happened to
+# comply — and the abstaining bodies argued for LOW scores, so the failure
+# moved the mean up. Probed directly, the same model scores its own review
+# reliably when the two fields are the whole question, so one targeted repair
+# ask runs before the abstention is published as unexplained.
+
+
+def test_repair_recovers_the_score_the_review_implies():
+    from peerreviewagents.agents.utils.structured import _ScoreRepair
+
+    llm = _StubLLM([
+        _fail_with(_tool_call(_ABSTAINED)),
+        _fail_with(_tool_call(_ABSTAINED)),
+        _ok(_ScoreRepair(score=2)),
+    ])
+    result = invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
+    assert result.instance.score == 2
+    assert result.instance.summary == _ABSTAINED["summary"]
+    assert result.instance.weaknesses == ["non-standard FDR"]
+    assert result.instance.not_applicable_reason == ""
+    # The repair quotes the review back rather than re-running it: the model
+    # is scoring what it already wrote, not writing again.
+    ask = llm.chain.invocations[-1][-1].content
+    assert _ABSTAINED["summary"] in ask
+    assert "non-standard FDR" in ask
+
+
+def test_repair_accepts_a_reason_instead_of_a_score():
+    from peerreviewagents.agents.utils.structured import _ScoreRepair
+
+    reason = "Qualitative study; no statistical claims to judge."
+    llm = _StubLLM([
+        _fail_with(_tool_call(_ABSTAINED)),
+        _fail_with(_tool_call(_ABSTAINED)),
+        _ok(_ScoreRepair(not_applicable_reason=reason)),
+    ])
+    result = invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
+    assert result.instance.score is None
+    assert result.instance.not_applicable_reason == reason
+
+
+def test_failed_repair_falls_back_to_the_unexplained_abstention():
+    from peerreviewagents.agents.utils.structured import _ScoreRepair
+
+    # The repair abstaining AGAIN with neither field changes nothing: the
+    # number is the model's to give, never this layer's to invent.
+    llm = _StubLLM([
+        _fail_with(_tool_call(_ABSTAINED)),
+        _fail_with(_tool_call(_ABSTAINED)),
+        _ok(_ScoreRepair()),
+    ])
+    result = invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
+    assert result.instance.score is None
+    assert "did not say why" in result.instance.not_applicable_reason
+
+
+def test_repair_call_error_falls_back_to_the_unexplained_abstention():
+    # Queue holds only the two failed reviews; the repair's own invoke hits an
+    # empty script and raises. A repair that fails must cost the run nothing.
+    llm = _StubLLM([
+        _fail_with(_tool_call(_ABSTAINED)),
+        _fail_with(_tool_call(_ABSTAINED)),
+    ])
+    result = invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
+    assert result.instance.score is None
+    assert "did not say why" in result.instance.not_applicable_reason
+
+
+def test_reporting_failure_renders_apart_from_a_reasoned_abstention():
+    from peerreviewagents.agents.schemas import NO_SCORE_NO_REASON
+
+    salvaged = ReviewerOutput(
+        score=None, confidence=3, summary="s",
+        not_applicable_reason=NO_SCORE_NO_REASON,
+    )
+    md = salvaged.to_markdown()
+    assert "reporting failure" in md.lower()
+    assert "Not applicable to this manuscript" not in md
+
+    reasoned = ReviewerOutput(
+        score=None, confidence=3, summary="s",
+        not_applicable_reason="No statistical claims to judge.",
+    )
+    md2 = reasoned.to_markdown()
+    assert "Not applicable to this manuscript" in md2
+    assert "reporting failure" not in md2.lower()
+
+
 # ---------- transient provider-error retries --------------------------------
 
 

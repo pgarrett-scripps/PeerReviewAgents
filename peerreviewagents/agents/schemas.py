@@ -16,6 +16,42 @@ from pydantic import BaseModel, Field, model_validator
 
 Verdict = Literal["accept", "minor", "major", "reject"]
 
+# Written into not_applicable_reason by the structured-output layer when a
+# reviewer returned neither a score nor a reason and one repair ask did not
+# change that. The renderers key on it: an abstention carrying this exact
+# sentence is a reporting failure to disclose, not a judgment that the
+# dimension had nothing to examine — the review body usually exists and says
+# plenty.
+NO_SCORE_NO_REASON = "The reviewer gave no score and did not say why."
+
+
+def _abstention_header(reason: str) -> list[str]:
+    """The bold banner atop a report whose reviewer returned no score.
+
+    Two different events share a null score and must not share a headline. A
+    reasoned abstention is a judgment ("no statistical claims to evaluate")
+    and reads as one. The sentinel means the reviewer wrote its assessment
+    and simply never scored it, even when asked once more — presenting that
+    as "not applicable" would dress a reporting failure up as a considered
+    call, on exactly the reports whose bodies argue hardest for a number.
+    """
+    reason = reason.strip()
+    if reason == NO_SCORE_NO_REASON:
+        return [
+            "**No score returned — the reviewer completed this assessment "
+            "but never scored it, even when asked again. A reporting "
+            "failure, not a judgment; the dimension is excluded from the "
+            "panel mean.**",
+            "",
+            NO_SCORE_NO_REASON,
+        ]
+    return [
+        "**Not applicable to this manuscript — no score given, and this "
+        "dimension is excluded from the panel mean.**",
+        "",
+        reason or "This manuscript contains nothing within this reviewer's remit.",
+    ]
+
 
 # --- Specialist reviewer ----------------------------------------------------
 
@@ -116,14 +152,7 @@ class ReviewerOutput(BaseModel):
         # State an unscorable dimension at the top of the report rather than
         # leaving a reader to notice a missing number further down.
         if self.score is None:
-            parts += [
-                "**Not applicable to this manuscript — no score given, and "
-                "this dimension is excluded from the panel mean.**",
-                "",
-                self.not_applicable_reason.strip()
-                or "This manuscript contains nothing within this reviewer's remit.",
-                "",
-            ]
+            parts += [*_abstention_header(self.not_applicable_reason), ""]
         parts += [
             "## Summary",
             self.summary.strip() or "(no summary provided)",
@@ -307,14 +336,7 @@ class RevisionReviewerOutput(BaseModel):
         # Same placement as ReviewerOutput: an unscorable dimension is stated
         # at the top rather than left for a reader to infer from "n/a".
         if self.score is None:
-            parts += [
-                "**Not applicable to this manuscript — no score given, and "
-                "this dimension is excluded from the panel mean.**",
-                "",
-                self.not_applicable_reason.strip()
-                or "This manuscript contains nothing within this reviewer's remit.",
-                "",
-            ]
+            parts += [*_abstention_header(self.not_applicable_reason), ""]
         parts += [
             "## Summary",
             self.summary.strip() or "(no summary provided)",

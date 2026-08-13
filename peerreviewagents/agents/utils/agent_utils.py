@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from ...observability import AgentEvent, current_node, emit, estimate_cost
+from ..schemas import NO_SCORE_NO_REASON
 
 if TYPE_CHECKING:
     from .agent_states import ReviewState
@@ -629,8 +630,18 @@ def score_summary(state: ReviewState) -> str:
         for r in reports
     )
     if unscored:
+        # Two events share a null score and must not share a label here: a
+        # reasoned abstention is a judgment the editor should weigh, while
+        # the sentinel marks a reviewer that wrote its assessment and never
+        # scored it. Rendering both as "n/a" invited the editor to read a
+        # reporting failure as "nothing in my dimension to judge" — on
+        # exactly the reports whose bodies argue hardest for a low number.
         per_reviewer += "; " + "; ".join(
-            f"{r['reviewer']} n/a" for r in unscored
+            f"{r['reviewer']} no score returned (reporting failure — "
+            "its written review still stands)"
+            if str(r.get("not_applicable_reason") or "").strip() == NO_SCORE_NO_REASON
+            else f"{r['reviewer']} n/a"
+            for r in unscored
         )
 
     buckets: dict[str, int] = {}

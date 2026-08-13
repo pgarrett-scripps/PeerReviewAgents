@@ -64,3 +64,26 @@ def test_the_absence_warns_against_reading_it_as_no_concern():
     present = [n for n in REVIEWER_NAMES if n != "methodology"]
     s = score_summary(state_with([report(n) for n in present]))
     assert "do not read a missing specialty as no concern" in s
+
+
+def test_reporting_failure_labelled_apart_from_reasoned_abstention():
+    """The editor must not read a schema failure as 'nothing to judge'.
+
+    Both events carry a null score, but one is a judgment and the other is a
+    reviewer that wrote its assessment and never scored it. On the live run
+    that motivated this, the unlabelled version invited the editor to treat
+    four sharp, low-scoring review bodies as neutral abstentions.
+    """
+    from peerreviewagents.agents.schemas import NO_SCORE_NO_REASON
+    from peerreviewagents.agents.utils.agent_utils import score_summary
+
+    state = {"config": {}, "reports": [
+        {"reviewer": "rigor", "score": None, "confidence": 3,
+         "not_applicable_reason": NO_SCORE_NO_REASON},
+        {"reviewer": "data_analysis", "score": None, "confidence": 3,
+         "not_applicable_reason": "No statistical claims to judge."},
+        {"reviewer": "clarity", "score": 4.0, "confidence": 4.0},
+    ]}
+    line = score_summary(state)
+    assert "rigor no score returned (reporting failure" in line
+    assert "data_analysis n/a" in line
