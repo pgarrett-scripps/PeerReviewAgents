@@ -221,6 +221,67 @@ def test_cache_tokens_fall_back_to_anthropics_raw_field_names():
     assert cache_tokens(msg) == (48_000, 1_200)
 
 
+def test_openrouters_reported_cost_beats_the_pricing_table():
+    """The metadata shape the streaming subclass in runtime.providers writes:
+    OpenRouter's raw usage dict — nonstandard `cost` key included — kept under
+    response_metadata["token_usage"], where the non-streaming path already
+    puts it. DeepSeek has no pricing-table row, so before the subclass a live
+    DeepSeek run priced every call at 0.0; the reported number is what the
+    account was actually billed and must win over any estimate."""
+    from peerreviewagents.agents.utils.agent_utils import _call_cost
+
+    msg = _msg(
+        usage_metadata={
+            "input_tokens": 51_000, "output_tokens": 800, "total_tokens": 51_800,
+        },
+        response_metadata={
+            "model_name": "deepseek/deepseek-chat",
+            "token_usage": {
+                "prompt_tokens": 51_000,
+                "completion_tokens": 800,
+                "total_tokens": 51_800,
+                "cost": 0.0123,
+            },
+        },
+    )
+    assert _call_cost(msg) == 0.0123
+
+
+def test_reported_cost_wins_even_when_the_table_could_estimate():
+    """A priced model routed through OpenRouter still uses the reported spend:
+    the table is a guess about list prices, the response is the bill."""
+    from peerreviewagents.agents.utils.agent_utils import _call_cost
+
+    msg = _msg(
+        usage_metadata={"input_tokens": 1_000_000, "output_tokens": 0},
+        response_metadata={
+            "model_name": "anthropic/claude-opus-5",
+            "token_usage": {"prompt_tokens": 1_000_000, "cost": 4.2},
+        },
+    )
+    assert _call_cost(msg) == 4.2
+    assert _call_cost(msg) != estimate_cost("anthropic/claude-opus-5", 1_000_000, 0)
+
+
+def test_the_streaming_callback_prefers_the_reported_cost_too():
+    """Same preference on the observability path that fills the usage table."""
+    from types import SimpleNamespace
+
+    from peerreviewagents.observability import _extract_usage
+
+    msg = SimpleNamespace(
+        usage_metadata={"input_tokens": 51_000, "output_tokens": 800},
+        response_metadata={
+            "model_name": "deepseek/deepseek-chat",
+            "token_usage": {"prompt_tokens": 51_000, "cost": 0.0123},
+        },
+    )
+    result = SimpleNamespace(generations=[[SimpleNamespace(message=msg)]])
+    in_tok, out_tok, cost, model, _read, _write = _extract_usage(result)
+    assert (in_tok, out_tok) == (51_000, 800)
+    assert cost == 0.0123
+
+
 def test_a_cached_reviewer_call_is_priced_below_an_uncached_one():
     """End to end through the call-cost path the agents actually use."""
     from peerreviewagents.agents.utils.agent_utils import _call_cost

@@ -124,6 +124,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="Model id for the active provider (e.g. anthropic/claude-opus-5 "
              "on OpenRouter, claude-opus-5 on Anthropic direct, gpt-4.1 on OpenAI).",
     )
+    p.add_argument(
+        "--single-model",
+        dest="single_model",
+        action="store_const",
+        const=True,
+        default=None,
+        help="Run --reasoning-model for EVERY agent by clearing the "
+             "[models]/[agent_models] tables from the config files. Without "
+             "this, the tables out-rank an explicit model for every tagged "
+             "agent — it may run nothing while the tables' models are billed.",
+    )
+    p.add_argument(
+        "--show-panel",
+        action="store_true",
+        help="Resolve the config exactly as a run would (all layers), print "
+             "one line per agent — name, model tag, provider, model, effort, "
+             "pricing-table rate — run the config validation, and exit. "
+             "Needs no API key and no manuscript; use it as a preflight "
+             "check on what a run would bill.",
+    )
     p.add_argument("--debate-rounds", type=int, dest="max_debate_rounds")
     p.add_argument(
         "--strictness",
@@ -261,7 +281,8 @@ def config_from_args(args) -> dict:
     for key in ("provider", "reasoning_model", "max_debate_rounds",
                 "output_dir", "cache_dir", "target_journal", "article_type",
                 "review_strictness", "desk_screen", "revision_of", "author_statement_path", "revision_mode",
-                "revision_baseline_path", "supplement_path", "temperature", "caveman"):
+                "revision_baseline_path", "supplement_path", "temperature",
+                "caveman", "single_model"):
         val = getattr(args, key, None)
         if val is not None:
             overrides[key] = val
@@ -398,6 +419,56 @@ def _validate_article_type(config: dict) -> None:
         console.print(
             "Run [bold]peerreview --list-article-types[/bold] to see valid keys."
         )
+        sys.exit(1)
+
+
+def _show_panel(config: dict) -> None:
+    """Print who runs on what, before anyone is billed for it.
+
+    One plain line per agent in pipeline order — grep-able on purpose, so
+    `peerreview --show-panel | grep opus` answers "which agents am I paying
+    Opus rates for". get_config has already run the model-table validation
+    (inert tags, misspelled agent names, out-ranked --reasoning-model), so
+    this doubles as a preflight check; a provider/model-id shape mismatch is
+    caught here per-agent instead of mid-run with half the panel billed.
+    Needs no API key and no manuscript: nothing here builds a client.
+    """
+    from peerreviewagents.observability import (
+        _PRICING_USD_PER_M,
+        _family_rate,
+        _normalize_model_key,
+    )
+    from peerreviewagents.panel import PIPELINE_AGENTS
+    from peerreviewagents.runtime.providers import resolve_model
+
+    rows: list[tuple[str, ...]] = []
+    errors: list[str] = []
+    for agent, tag, call_effort in PIPELINE_AGENTS:
+        try:
+            spec = resolve_model(config, agent=agent, default_tag=tag)
+        except ValueError as exc:
+            errors.append(f"{agent}: {exc}")
+            continue
+        # Same precedence make_chat_model applies: config effort wins over
+        # the call-site default; "off" means thinking suppressed.
+        effort = spec.effort if spec.effort is not None else call_effort
+        rates = _PRICING_USD_PER_M.get(
+            _normalize_model_key(spec.model)
+        ) or _family_rate(spec.model)
+        rate = f"${rates[0]:g}/${rates[1]:g} per Mtok" if rates else "unpriced"
+        rows.append((agent, tag, spec.provider, spec.model, effort or "-", rate))
+
+    if rows:
+        header = ("agent", "tag", "provider", "model", "effort", "rate")
+        widths = [
+            max(len(header[i]), *(len(r[i]) for r in rows))
+            for i in range(len(header))
+        ]
+        for line in (header, *rows):
+            print("  ".join(col.ljust(widths[i]) for i, col in enumerate(line)).rstrip())
+    for err in errors:
+        console.print(f"[red]{err}[/red]")
+    if errors:
         sys.exit(1)
 
 
@@ -582,6 +653,9 @@ def run() -> None:
         return
     if args.list_article_types:
         _print_article_types(config_from_args(args))
+        return
+    if args.show_panel:
+        _show_panel(config_from_args(args))
         return
     if not args.manuscript:
         console.print("[red]Provide a manuscript path or use the `serve` subcommand.[/red] See --help.")
