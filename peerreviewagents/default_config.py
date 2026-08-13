@@ -144,6 +144,20 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # None (default) = an ordinary first-round review. See
     # peerreviewagents.rounds for the record format.
     "revision_of": None,
+    # Optional path to the manuscript file the PREVIOUS round reviewed
+    # (pdf/md/tex/txt). Only meaningful alongside `revision_of`, and used for
+    # exactly one thing: the local (difflib, zero-token) section diff between
+    # the two drafts. Without it the diff recovers the prior draft from the
+    # ingest cache under the key recorded in round.json — which works on a
+    # long-lived machine and never on an ephemeral CI runner, where the cache
+    # dies with the job and any cache-key schema change orphans every round
+    # record already published. A caller that still has the prior draft hands
+    # the file in here instead; it is parsed under THIS run's ingest config,
+    # same as the new draft, so the diff compares like with like. Verified
+    # against the prior round's recorded text hash when one exists. A baseline
+    # that cannot be read, or is not the draft that round reviewed, costs the
+    # diff and never the run. None (default) = cache recovery only.
+    "revision_baseline_path": None,
     # Optional path to the REAL authors' response letter (pdf/md/tex/txt) —
     # the human scientists' reply, not the simulated author-rebuttal agent.
     # Treated as untrusted, interested-party input: never shown to the panel
@@ -369,6 +383,7 @@ _ENV_STR_KEYS = {
     "PEERREVIEW_ARTICLE_TYPE": "article_type",
     "PEERREVIEW_CAVEMAN": "caveman",
     "PEERREVIEW_CONVERSION_GATE": "conversion_gate",
+    "PEERREVIEW_REVISION_BASELINE_PATH": "revision_baseline_path",
 }
 _ENV_INT_KEYS = {
     "PEERREVIEW_DEBATE_ROUNDS": "max_debate_rounds",

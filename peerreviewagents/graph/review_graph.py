@@ -237,7 +237,13 @@ class PeerReviewGraph:
         # without seeing another's. Callers wanting that isolation pass
         # `graph.run_id` to register_observer; registering without one still
         # receives everything.
-        self.config.setdefault("run_id", uuid.uuid4().hex[:12])
+        # Not setdefault: every config built by get_config() carries the
+        # DEFAULT_CONFIG key run_id=None, which setdefault treats as "set" —
+        # so no run built that way was ever tagged, and a consumer keying its
+        # observer on graph.run_id fell through to the shared mailbox, where
+        # two concurrent runs interleave.
+        if not self.config.get("run_id"):
+            self.config["run_id"] = uuid.uuid4().hex[:12]
         self.graph = build_graph(self.config)
 
     @property
@@ -355,8 +361,10 @@ class PeerReviewGraph:
     def _manuscript_diff(self, prior, sections: dict[str, str]):
         """Compare this draft against the one the prior round reviewed.
 
-        The previous text comes from the ingest cache by key, so no second
-        copy is kept on disk. A cleared cache costs the diff, not the run.
+        The previous text comes from a caller-supplied baseline file when
+        ``revision_baseline_path`` is set, and from the ingest cache by key
+        otherwise — so no second copy is kept on disk. Either source failing
+        costs the diff, not the run.
         """
         if prior is None:
             return None
@@ -368,6 +376,9 @@ class PeerReviewGraph:
                 "this is a correction to the previous review, not a revised "
                 "draft: the manuscript is unchanged and was not re-compared"
             )
+        baseline = str(self.config.get("revision_baseline_path") or "")
+        if baseline:
+            return self._baseline_diff(baseline, prior, sections)
         if not prior.manuscript_cache_key:
             return ingest_diff.unavailable(
                 "the previous round did not record a manuscript cache key"
@@ -398,6 +409,53 @@ class PeerReviewGraph:
                     "as a rewrite the authors never made"
                 )
         return ingest_diff.diff_sections(cached.sections, sections)
+
+    def _baseline_diff(self, path: str, prior, sections: dict[str, str]):
+        """Diff against the prior draft handed in as a file by the caller.
+
+        Exists for ephemeral runners. The cache path assumes the machine
+        reviewing round N still holds round N-1's parse, and a CI runner
+        destroyed between rounds never does. The overlay-journal consumer
+        used to re-fetch the prior PDF and re-parse it *hoping* to land on
+        the cache key recorded in round.json — a hope the v8 cache-key
+        change (converter version hashed into PDF keys) broke for every
+        round record already published. Taking the file directly removes
+        the key derivation from the contract: the caller proves it has the
+        right draft, not the right address.
+
+        The baseline is parsed under THIS run's config — same caveman
+        level, same converter — exactly as the new draft was, so the two
+        section maps are comparable by construction. That is why the cache
+        path's compression-flip guard does not appear here: it protects
+        against a prior parse made under a *different* config, and this
+        path never reads one.
+
+        Never fatal: a baseline that cannot be read, or is not the draft
+        the prior round reviewed, costs the diff and not the round.
+        """
+        try:
+            parsed = load_manuscript_record(path, self.config)
+        except Exception as exc:  # noqa: BLE001 — optional input, never fail the run
+            return ingest_diff.unavailable(
+                f"the supplied revision baseline could not be read ({exc})"
+            )
+        # Verify against the text hash the prior round recorded, when it
+        # recorded one. A diff over the wrong baseline is worse than no diff:
+        # it reports author edits that never happened, confidently. The
+        # recorded hash is of text parsed under the prior round's ingest
+        # config, so a config changed between rounds also lands here — and
+        # refusing then is right too, because the baseline can no longer be
+        # verified as the reviewed draft. Records that predate the hash
+        # proceed unverified rather than losing the diff they always had.
+        recorded = str(getattr(prior, "manuscript_text_sha256", "") or "")
+        got = str((parsed.ingest or {}).get("text_sha256") or "")
+        if recorded and got != recorded:
+            return ingest_diff.unavailable(
+                "the supplied baseline is not the draft the previous round "
+                f"reviewed (that round read text {recorded[:12]}…, this file "
+                f"parses to {got[:12]}…)"
+            )
+        return ingest_diff.diff_sections(parsed.sections, sections)
 
     def _load_author_statement(self) -> str:
         """Parse the real authors' response letter, or '' when none was given.

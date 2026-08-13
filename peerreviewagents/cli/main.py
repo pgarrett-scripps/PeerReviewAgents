@@ -156,6 +156,18 @@ def build_parser() -> argparse.ArgumentParser:
              "draft, and the editor decides on the delta.",
     )
     p.add_argument(
+        "--revision-baseline",
+        dest="revision_baseline_path",
+        metavar="PATH",
+        help="The manuscript file the previous round reviewed (pdf/md/tex/"
+             "txt). Used only to compute the local section diff between the "
+             "drafts, which otherwise needs the previous parse to still be in "
+             "this machine's ingest cache — it never is on a fresh CI runner. "
+             "Verified against the prior round's recorded text hash; a wrong "
+             "or unreadable file costs the diff, not the run. Requires "
+             "--revision-of.",
+    )
+    p.add_argument(
         "--correction",
         dest="revision_mode",
         action="store_const",
@@ -249,7 +261,7 @@ def config_from_args(args) -> dict:
     for key in ("provider", "reasoning_model", "max_debate_rounds",
                 "output_dir", "cache_dir", "target_journal", "article_type",
                 "review_strictness", "desk_screen", "revision_of", "author_statement_path", "revision_mode",
-                "supplement_path", "temperature", "caveman"):
+                "revision_baseline_path", "supplement_path", "temperature", "caveman"):
         val = getattr(args, key, None)
         if val is not None:
             overrides[key] = val
@@ -266,12 +278,13 @@ def config_from_args(args) -> dict:
             "--author-statement requires --revision-of: a response letter "
             "answers a previous round's review, so there has to be one."
         )
-    # Both of these are defined relative to a previous round — one skips work
-    # that only makes sense against it, the other carries reports forward from
-    # it. Caught here so the failure names the flag rather than surfacing from
-    # inside the graph build.
+    # All of these are defined relative to a previous round — one skips work
+    # that only makes sense against it, one carries reports forward from it,
+    # one is the draft it reviewed. Caught here so the failure names the flag
+    # rather than surfacing from inside the graph build.
     for flag, key in (("--correction", "revision_mode"),
-                      ("--only-reviewers", "only_reviewers")):
+                      ("--only-reviewers", "only_reviewers"),
+                      ("--revision-baseline", "revision_baseline_path")):
         if overrides.get(key) and not overrides.get("revision_of"):
             raise SystemExit(f"{flag} requires --revision-of.")
     # --offline is an inversion: presence means research_enabled=False.
@@ -347,6 +360,13 @@ def _validate_revision_inputs(config: dict) -> None:
     statement = config.get("author_statement_path")
     if statement and not os.path.exists(str(statement)):
         console.print(f"[red]Author statement not found:[/red] {statement}")
+        sys.exit(1)
+    # The baseline itself degrades gracefully mid-run (a bad file costs the
+    # diff, not the round), but a path that doesn't exist at launch is a typo,
+    # and a typo is better answered here than as a quietly diff-less review.
+    baseline = config.get("revision_baseline_path")
+    if baseline and not os.path.exists(str(baseline)):
+        console.print(f"[red]Revision baseline not found:[/red] {baseline}")
         sys.exit(1)
 
 

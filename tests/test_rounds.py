@@ -179,6 +179,33 @@ def test_round_trips_through_disk(tmp_path):
     assert loaded.reviewer_reports[0].weaknesses[0].text.startswith("Only a single")
 
 
+def test_text_hash_is_recorded_and_round_trips(tmp_path):
+    """The hash is what lets a later round verify a caller-supplied baseline
+    file — the cache key alone proved unverifiable the moment its derivation
+    changed (cache v8) under every record already published."""
+    state = _state()
+    state["ingest"] = {"text_sha256": "a" * 64, "chars": 18}
+    rec = rounds.build_from_state(state, job_id="j", cache_key="abc123")
+    assert rec.manuscript_text_sha256 == "a" * 64
+
+    rounds.save(rec, str(tmp_path))
+    assert rounds.load(str(tmp_path)).manuscript_text_sha256 == "a" * 64
+
+
+def test_records_without_the_text_hash_still_load():
+    """Every round.json published before the field existed lacks it, and
+    those manuscripts' revision lineages must stay readable."""
+    rec = rounds.build_from_state(_state(), job_id="j")
+    raw = json.loads(rec.to_json())
+    del raw["manuscript_text_sha256"]
+
+    loaded = rounds.RoundRecord.from_dict(raw)
+    assert loaded.manuscript_text_sha256 == ""
+    # A state with no ingest record (the _state() fixture) records "" too,
+    # rather than crashing the record build.
+    assert rec.manuscript_text_sha256 == ""
+
+
 def test_future_record_fields_do_not_break_the_load(tmp_path):
     """A round.json from a newer schema must load under this code.
 
@@ -244,6 +271,9 @@ def test_written_by_write_reports(tmp_path, monkeypatch):
     assert raw["round"] == 1
     assert raw["decision"] == "major"
     assert raw["manuscript_cache_key"]          # sample is a real file
+    # The parsed text's own fingerprint travels with the record: it is what a
+    # later round on another machine verifies a baseline file against.
+    assert raw["manuscript_text_sha256"]
     assert raw["required_revisions"], "editor's asks must survive as structured data"
     assert raw["reviewer_reports"][0]["weaknesses"]
 
@@ -318,7 +348,7 @@ def test_unavailable_diff_tells_the_agent_not_to_assume():
     assert "do not assume" in block
 
 
-def _prior_record_with_key(key: str) -> rounds.RoundRecord:
+def _prior_record_with_key(key: str, text_sha256: str = "") -> rounds.RoundRecord:
     return rounds.RoundRecord(
         schema_version=rounds.SCHEMA_VERSION,
         round=1,
@@ -327,6 +357,7 @@ def _prior_record_with_key(key: str) -> rounds.RoundRecord:
         manuscript_cache_key=key,
         decision="major",
         weighted_score=3.0,
+        manuscript_text_sha256=text_sha256,
     )
 
 
@@ -379,6 +410,156 @@ def test_a_stable_caveman_level_still_diffs(tmp_path):
     cfg = get_config(
         caveman="off", cache_dir=str(tmp_path / "cache"), output_dir=str(tmp_path)
     )
+    _cached_prior_draft(tmp_path, cfg, caveman="off")
+
+    diff = PeerReviewGraph(cfg)._manuscript_diff(
+        _prior_record_with_key("priorkey"), {"methods": "Methods text here."}
+    )
+    assert diff.available
+    assert all(d.status == "unchanged" for d in diff.deltas)
+
+
+# --- the caller-supplied baseline (revision_baseline_path) -------------------
+#
+# A round record stores a cache key, and a cache key is an address on one
+# machine. On an ephemeral CI runner the cache dies with the job, and the v8
+# cache-key change (converter version hashed into PDF keys) re-addressed every
+# round record already published — the overlay-journal consumer could re-fetch
+# and re-parse the exact draft a round reviewed and still never land on the
+# recorded key. `revision_baseline_path` lets such a caller hand the prior
+# draft in as a file and prove it with the recorded text hash instead.
+
+
+# The body deliberately does not open with a section keyword: a line
+# starting "Methods ..." reads as a heading to the flat-text splitter and
+# would be swallowed as one.
+def _baseline_file(tmp_path, text: str = "We train on one production cluster.") -> str:
+    path = tmp_path / "prior-draft.md"
+    path.write_text(f"# A paper\n\n## Methods\n\n{text}\n", encoding="utf-8")
+    return str(path)
+
+
+# The section map load_manuscript produces for _baseline_file's content.
+_BASELINE_SECTIONS = {
+    "_preamble": "# A paper",
+    "methods": "We train on one production cluster.",
+}
+
+
+def test_a_baseline_file_diffs_with_no_cache_entry_at_all(tmp_path):
+    from peerreviewagents.graph.review_graph import PeerReviewGraph
+
+    cfg = get_config(
+        revision_baseline_path=_baseline_file(tmp_path),
+        cache_dir=str(tmp_path / "cache"),  # empty: nothing to recover from
+        output_dir=str(tmp_path),
+    )
+    # The prior record does not even carry a cache key — the case every
+    # pre-v8 record is in after the key derivation changed under it. A record
+    # this old predates the text hash too, so the diff proceeds unverified
+    # rather than being lost to a check it cannot pass.
+    diff = PeerReviewGraph(cfg)._manuscript_diff(
+        _prior_record_with_key(""),
+        {"_preamble": "# A paper",
+         "methods": "We train on three clusters with seed 42."},
+    )
+    assert diff.available
+    by_name = {d.name: d for d in diff.deltas}
+    assert by_name["methods"].status == "changed"
+    assert by_name["_preamble"].status == "unchanged"
+
+
+def test_an_unreadable_baseline_costs_the_diff_not_the_round(tmp_path):
+    from peerreviewagents.graph.review_graph import PeerReviewGraph
+
+    cfg = get_config(
+        revision_baseline_path=str(tmp_path / "vanished.md"),
+        cache_dir=str(tmp_path / "cache"),
+        output_dir=str(tmp_path),
+    )
+    diff = PeerReviewGraph(cfg)._manuscript_diff(
+        _prior_record_with_key(""), dict(_BASELINE_SECTIONS)
+    )
+    assert not diff.available
+    assert "could not be read" in diff.note
+
+
+def test_a_wrong_baseline_is_refused_by_the_recorded_text_hash(tmp_path):
+    """A diff over the wrong baseline reports author edits that never
+    happened, confidently — worse than no diff, so it must not survive a
+    hash the prior round recorded."""
+    from peerreviewagents.graph.review_graph import PeerReviewGraph
+    from peerreviewagents.ingest.loader import load_manuscript_record
+
+    baseline = _baseline_file(tmp_path, text="A different paper entirely.")
+    cfg = get_config(
+        revision_baseline_path=baseline,
+        cache_dir=str(tmp_path / "cache"),
+        output_dir=str(tmp_path),
+    )
+    recorded = "0" * 64  # what round 1 wrote; not what this file parses to
+    diff = PeerReviewGraph(cfg)._manuscript_diff(
+        _prior_record_with_key("", text_sha256=recorded),
+        dict(_BASELINE_SECTIONS),
+    )
+    assert not diff.available
+    assert "not the draft the previous round reviewed" in diff.note
+    # Both fingerprints are named, so the operator can see which side moved.
+    assert recorded[:12] in diff.note
+    parsed = load_manuscript_record(baseline, cfg).ingest["text_sha256"]
+    assert parsed[:12] in diff.note
+
+
+def test_a_verified_baseline_diffs(tmp_path):
+    from peerreviewagents.graph.review_graph import PeerReviewGraph
+    from peerreviewagents.ingest.loader import load_manuscript_record
+
+    baseline = _baseline_file(tmp_path)
+    cfg = get_config(
+        revision_baseline_path=baseline,
+        cache_dir=str(tmp_path / "cache"),
+        output_dir=str(tmp_path),
+    )
+    # The hash round 1 recorded is of the parsed text, so derive it the same
+    # way the pipeline did.
+    recorded = load_manuscript_record(baseline, cfg).ingest["text_sha256"]
+    diff = PeerReviewGraph(cfg)._manuscript_diff(
+        _prior_record_with_key("", text_sha256=recorded),
+        dict(_BASELINE_SECTIONS),
+    )
+    assert diff.available
+    assert all(d.status == "unchanged" for d in diff.deltas)
+
+
+def test_a_correction_ignores_the_baseline(tmp_path):
+    """A correction has nothing to diff by definition — the complaint is
+    about the review. A supplied baseline must not resurrect the comparison."""
+    from peerreviewagents.graph.review_graph import PeerReviewGraph
+
+    cfg = get_config(
+        revision_of="round-1",
+        revision_mode="correction",
+        revision_baseline_path=_baseline_file(tmp_path),
+        cache_dir=str(tmp_path / "cache"),
+        output_dir=str(tmp_path),
+    )
+    diff = PeerReviewGraph(cfg)._manuscript_diff(
+        _prior_record_with_key(""), dict(_BASELINE_SECTIONS)
+    )
+    assert not diff.available
+    assert "correction" in diff.note
+
+
+def test_no_baseline_still_means_the_cache_path(tmp_path):
+    """With the key unset the cache recovery must behave exactly as before —
+    the baseline is an addition for callers without a cache, not a change
+    for the callers with one."""
+    from peerreviewagents.graph.review_graph import PeerReviewGraph
+
+    cfg = get_config(
+        cache_dir=str(tmp_path / "cache"), output_dir=str(tmp_path)
+    )
+    assert cfg["revision_baseline_path"] is None
     _cached_prior_draft(tmp_path, cfg, caveman="off")
 
     diff = PeerReviewGraph(cfg)._manuscript_diff(
@@ -492,6 +673,7 @@ def test_revision_defaults_are_off():
     config = get_config()
     assert config["revision_of"] is None
     assert config["author_statement_path"] is None
+    assert config["revision_baseline_path"] is None
     assert config["max_rounds"] == 3
 
 
@@ -501,6 +683,32 @@ def test_author_statement_requires_a_prior_round():
     args = build_parser().parse_args(["m.pdf", "--author-statement", "letter.md"])
     with pytest.raises(SystemExit, match="requires --revision-of"):
         config_from_args(args)
+
+
+def test_revision_baseline_requires_a_prior_round():
+    """The baseline is 'the draft the previous round reviewed'; without a
+    previous round the phrase names nothing."""
+    from peerreviewagents.cli.main import build_parser, config_from_args
+
+    args = build_parser().parse_args(["m.pdf", "--revision-baseline", "prior.pdf"])
+    with pytest.raises(SystemExit, match="requires --revision-of"):
+        config_from_args(args)
+
+
+def test_missing_baseline_file_fails_before_any_spend(tmp_path):
+    """A typo'd path would otherwise surface as a silently diff-less review,
+    discovered after the whole panel has been paid."""
+    from peerreviewagents.cli.main import _validate_revision_inputs
+
+    cfg = get_config(revision_baseline_path=str(tmp_path / "gone.pdf"))
+    with pytest.raises(SystemExit):
+        _validate_revision_inputs(cfg)
+
+
+def test_baseline_env_var_reaches_the_config(monkeypatch):
+    """CI callers set config through PEERREVIEW_* rather than flags."""
+    monkeypatch.setenv("PEERREVIEW_REVISION_BASELINE_PATH", "/ci/prior-draft.pdf")
+    assert get_config()["revision_baseline_path"] == "/ci/prior-draft.pdf"
 
 
 def test_unloadable_prior_round_fails_loudly(tmp_path):

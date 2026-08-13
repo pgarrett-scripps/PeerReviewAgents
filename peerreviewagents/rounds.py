@@ -19,7 +19,11 @@ carry the design:
   instead. :mod:`.ingest.cache` is already keyed by file content, so the
   previous draft's parsed text is recoverable for the diff without a second
   copy on disk — and if the cache was cleared, the round degrades to a
-  no-diff review rather than failing.
+  no-diff review rather than failing. The record also stores the sha256 of
+  the parsed text itself, because the cache key is an address and an address
+  can go stale: a caller who still has the prior draft as a *file* (a CI
+  runner never has the cache) proves it is the reviewed draft against the
+  text hash, whatever the cache-key derivation has become since.
 
 Records are plain dataclasses, not pydantic models: this is data we write
 and read, not an LLM output that needs schema-constrained generation. That
@@ -123,6 +127,16 @@ class RoundRecord:
     required_revisions: list[RequiredRevision] = field(default_factory=list)
     minor_suggestions: list[str] = field(default_factory=list)
     reviewer_reports: list[PriorReviewerReport] = field(default_factory=list)
+    # sha256 of the manuscript TEXT this round reviewed (the loader's
+    # ingest["text_sha256"]). The cache key above names where the parse
+    # lived; this names what the panel read, and it is the only identity that
+    # survives both a wiped cache and a cache-key schema change — the key
+    # derivation has changed under existing records before (cache v8), which
+    # on an ephemeral CI runner left no way to prove a re-fetched prior draft
+    # was the reviewed one. A later round handed the prior draft as a file
+    # (revision_baseline_path) verifies it against this before diffing.
+    # "" on records written before the field existed.
+    manuscript_text_sha256: str = ""
     # job_id of the round this one revised, forming the lineage back to round 1.
     prior_job_id: str = ""
     # True when the round ended at the desk (triage), so a later
@@ -165,6 +179,7 @@ class RoundRecord:
                 )
                 for r in raw.get("reviewer_reports", [])
             ],
+            manuscript_text_sha256=str(raw.get("manuscript_text_sha256", "")),
             prior_job_id=str(raw.get("prior_job_id", "")),
             desk_rejected=bool(raw.get("desk_rejected", False)),
         )
@@ -324,6 +339,13 @@ def build_from_state(state: dict, job_id: str, cache_key: str = "") -> RoundReco
         required_revisions=revisions,
         minor_suggestions=list(state.get("minor_suggestions") or []),
         reviewer_reports=reports,
+        # Read off the state's ingest record, like the title: the loader
+        # fingerprints every text it parses, so this is free — and it is what
+        # lets a later round verify a caller-supplied baseline file without
+        # the cache entry the key above names.
+        manuscript_text_sha256=str(
+            (state.get("ingest") or {}).get("text_sha256") or ""
+        ),
         prior_job_id=str(config.get("revision_of") or ""),
         desk_rejected=bool(state.get("desk_rejected")),
     )
