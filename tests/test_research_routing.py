@@ -161,3 +161,48 @@ def test_get_tools_by_name_returns_bound_tools():
 def test_get_tools_by_name_rejects_unknown():
     with pytest.raises(ValueError, match="unknown research tool"):
         research_tools.get_tools_by_name(["bogus_tool"], {})
+
+
+# ---------------------------------------------------------------------------
+# The arXiv client's session must carry a timeout.
+#
+# `arxiv.Client` issues `self._session.get(url, headers=...)` with none, and
+# `requests` defaults to None — blocking forever. A hung lookup left a worker
+# future pending, and LangGraph's teardown waits on pending futures without a
+# timeout of its own, so a finished review sat with one open socket until it
+# was killed. The constructor exposes no timeout, so this is enforced here.
+# ---------------------------------------------------------------------------
+
+
+def test_the_arxiv_session_gets_a_default_timeout():
+    from peerreviewagents.research.arxiv import _TIMEOUT_S, _bounded
+
+    seen = {}
+
+    class _Session:
+        def request(self, method, url, **kwargs):
+            seen.update(kwargs)
+            return "ok"
+
+        def get(self, url, **kwargs):
+            # How the arxiv client actually calls it.
+            return self.request("get", url, **kwargs)
+
+    session = _bounded(_Session())
+    session.get("https://export.arxiv.org/api/query", headers={"user-agent": "x"})
+    assert seen["timeout"] == _TIMEOUT_S
+
+
+def test_an_explicit_timeout_is_left_alone():
+    from peerreviewagents.research.arxiv import _bounded
+
+    seen = {}
+
+    class _Session:
+        def request(self, method, url, **kwargs):
+            seen.update(kwargs)
+            return "ok"
+
+    session = _bounded(_Session())
+    session.request("get", "https://example.invalid", timeout=3)
+    assert seen["timeout"] == 3
