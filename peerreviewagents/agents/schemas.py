@@ -10,11 +10,47 @@ verdicts, no duplicated scalars to keep in sync.
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
 Verdict = Literal["accept", "minor", "major", "reject"]
+
+# Text that fills a required field without saying anything. A model under a
+# schema will sometimes emit the *shape* of an answer — "...", "TBD", a bare
+# dash — and every structural check passes: the field is present, it is a
+# string, the score is an integer in range.
+#
+# Observed on a DeepSeek run of a 40 MB proteomics manuscript: four of eight
+# reviewers returned "..." as their entire summary, with numeric scores
+# attached. The bundle recorded a healthy 8/8 panel, the editor decided on
+# those scores, and the gap finder reported "no gap worth reporting" after
+# auditing two reports that were empty. Nothing in the pipeline noticed,
+# because nothing was looking at whether a review said anything.
+#
+# A short report is legitimate — an ethics reviewer on a modelling paper has
+# little to say and should say so briefly. A *contentless* one is not.
+_PLACEHOLDER_ONLY = re.compile(r"^[\s.…\-–—*_`\"'\[\]()]*$")
+_PLACEHOLDER_WORDS = {"tbd", "todo", "n/a", "na", "none", "nil", "unknown", "xxx"}
+
+# A backstop under the placeholder check, for contentless text that is made of
+# real words — "Fine.", "Good paper." The placeholder pattern is the load-
+# bearing rule; this only catches what slips past it.
+#
+# Deliberately low. The first attempt set 40 and rejected "Method is sensible
+# but undertested." — a terse but genuine assessment. Judging a review by its
+# length is the wrong instinct, and the threshold is set where it can only
+# catch text too short to contain a claim. The observed failures were 3
+# characters.
+_MIN_SUMMARY_CHARS = 25
+
+
+def _is_placeholder(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped or _PLACEHOLDER_ONLY.match(stripped):
+        return True
+    return stripped.rstrip(".").strip().lower() in _PLACEHOLDER_WORDS
 
 # Written into not_applicable_reason by the structured-output layer when a
 # reviewer returned neither a score nor a reason and one repair ask did not
@@ -142,6 +178,41 @@ class ReviewerOutput(BaseModel):
                 "this paper on your dimension — including a poor one — give a "
                 "number instead."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _a_report_must_say_something(self) -> ReviewerOutput:
+        """Reject the shape of a review with nothing inside it.
+
+        See :data:`_PLACEHOLDER_ONLY`. A reviewer that returns "..." is not
+        abstaining — an abstention is a null score with a stated reason, which
+        the validator above already governs, and it stays in the record as a
+        disclosed gap. This is a report that claims to have reviewed the paper
+        and scored it, while containing no assessment at all.
+
+        Raising here makes the structured-output layer ask again, which is the
+        cheapest available response and usually enough. What it must never do
+        is reach the editor: a scored, empty review is counted in the mean and
+        is indistinguishable from a real one in every summary the run writes.
+        """
+        if _is_placeholder(self.summary):
+            raise ValueError(
+                "summary is a placeholder rather than a review. Write what you "
+                "actually found in this manuscript on your dimension."
+            )
+        if len(self.summary.strip()) < _MIN_SUMMARY_CHARS:
+            raise ValueError(
+                f"summary is {len(self.summary.strip())} characters, which is "
+                "too short to be an assessment. Give your overall take on this "
+                "manuscript in a sentence or more."
+            )
+        for name in ("strengths", "weaknesses", "questions"):
+            items = getattr(self, name)
+            if items and all(_is_placeholder(item) for item in items):
+                raise ValueError(
+                    f"every entry in {name} is a placeholder. Either write real "
+                    f"{name} grounded in the manuscript, or return an empty list."
+                )
         return self
 
     def to_markdown(self, role: str = "Reviewer") -> str:

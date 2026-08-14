@@ -30,7 +30,7 @@ def test_reviewer_output_renders_all_sections():
     r = ReviewerOutput(
         score=4,
         confidence=5,
-        summary="Solid contribution.",
+        summary="A solid contribution, clearly argued.",
         strengths=["clear writing"],
         weaknesses=["small N"],
         questions=["what about Y?"],
@@ -45,9 +45,9 @@ def test_reviewer_output_renders_all_sections():
 
 def test_reviewer_output_rejects_out_of_range():
     with pytest.raises(ValidationError):
-        ReviewerOutput(score=7, confidence=3, summary="x")
+        ReviewerOutput(score=7, confidence=3, summary="The design is sound but the evaluation is thin.")
     with pytest.raises(ValidationError):
-        ReviewerOutput(score=3, confidence=0, summary="x")
+        ReviewerOutput(score=3, confidence=0, summary="The design is sound but the evaluation is thin.")
 
 
 def test_debate_output_renders():
@@ -160,7 +160,7 @@ def _cfg(provider: str = "openrouter") -> dict:
 
 
 def test_invoke_structured_first_try():
-    inst = ReviewerOutput(score=3, confidence=3, summary="ok")
+    inst = ReviewerOutput(score=3, confidence=3, summary="The design is sound but the evaluation is thin.")
     llm = _StubLLM([_ok(inst)])
     result = invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
     assert isinstance(result, StructuredResult)
@@ -168,7 +168,7 @@ def test_invoke_structured_first_try():
 
 
 def test_invoke_structured_retry_then_success():
-    inst = ReviewerOutput(score=3, confidence=3, summary="ok")
+    inst = ReviewerOutput(score=3, confidence=3, summary="The design is sound but the evaluation is thin.")
     llm = _StubLLM([_fail("bad json"), _ok(inst)])
     result = invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
     assert result.instance is inst
@@ -328,7 +328,7 @@ def test_reporting_failure_renders_apart_from_a_reasoned_abstention():
     from peerreviewagents.agents.schemas import NO_SCORE_NO_REASON
 
     salvaged = ReviewerOutput(
-        score=None, confidence=3, summary="s",
+        score=None, confidence=3, summary="The design is sound but the evaluation is thin.",
         not_applicable_reason=NO_SCORE_NO_REASON,
     )
     md = salvaged.to_markdown()
@@ -336,7 +336,7 @@ def test_reporting_failure_renders_apart_from_a_reasoned_abstention():
     assert "Not applicable to this manuscript" not in md
 
     reasoned = ReviewerOutput(
-        score=None, confidence=3, summary="s",
+        score=None, confidence=3, summary="The design is sound but the evaluation is thin.",
         not_applicable_reason="No statistical claims to judge.",
     )
     md2 = reasoned.to_markdown()
@@ -374,7 +374,7 @@ class _FlakyLLM:
 def test_invoke_structured_retries_transient_provider_error(monkeypatch):
     import peerreviewagents.agents.utils.structured as s
     monkeypatch.setattr(s, "_RETRY_BACKOFF_S", 0)
-    inst = ReviewerOutput(score=3, confidence=3, summary="ok")
+    inst = ReviewerOutput(score=3, confidence=3, summary="The design is sound but the evaluation is thin.")
     chain = _FlakyChain(fails=2, result=_ok(inst))  # fails twice, succeeds 3rd
     result = invoke_structured(_FlakyLLM(chain), ReviewerOutput, _cfg(), "sys", "user")
     assert result.instance is inst
@@ -400,7 +400,7 @@ def test_invoke_structured_provider_error_exhausts_attempts(monkeypatch):
 
 
 def test_validation_retry_replays_the_rejected_answer():
-    inst = ReviewerOutput(score=3, confidence=3, summary="ok")
+    inst = ReviewerOutput(score=3, confidence=3, summary="The design is sound but the evaluation is thin.")
     bad = AIMessage(content="a bulleted list where the JSON should be")
     llm = _StubLLM([_fail_with(bad), _ok(inst)])
     result = invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
@@ -415,7 +415,7 @@ def test_a_rejected_tool_call_is_answered_before_the_correction():
     """Replaying a tool call unanswered is itself an invalid transcript —
     both APIs 400 on a tool_use with no tool_result — so a stub result has to
     sit between the rejected turn and the human correction."""
-    inst = ReviewerOutput(score=3, confidence=3, summary="ok")
+    inst = ReviewerOutput(score=3, confidence=3, summary="The design is sound but the evaluation is thin.")
     bad = _tool_call({"summary": "no score"})
     llm = _StubLLM([_fail_with(bad), _ok(inst)])
     invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
@@ -429,7 +429,7 @@ def test_a_rejected_tool_call_is_answered_before_the_correction():
 def test_an_empty_rejected_response_is_not_replayed():
     """Nothing in it for the model to keep, and Anthropic rejects an
     assistant turn with empty content."""
-    inst = ReviewerOutput(score=3, confidence=3, summary="ok")
+    inst = ReviewerOutput(score=3, confidence=3, summary="The design is sound but the evaluation is thin.")
     llm = _StubLLM([_fail_with(AIMessage(content="")), _ok(inst)])
     invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
     first, retry = llm.chain.invocations
@@ -448,7 +448,7 @@ def test_short_text_fallback_still_counts_the_tool_loop_cost(monkeypatch):
         s, "run_agent",
         lambda *a, **k: RunResult(text="Let me verify a few more citations.", cost=0.42),
     )
-    inst = ReviewerOutput(score=3, confidence=3, summary="ok")
+    inst = ReviewerOutput(score=3, confidence=3, summary="The design is sound but the evaluation is thin.")
     llm = _StubLLM([_ok(inst)])
     result = s.invoke_structured_after_tools(
         llm, ReviewerOutput, _cfg(), "sys", "user", [],

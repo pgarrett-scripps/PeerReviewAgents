@@ -87,3 +87,64 @@ def test_reporting_failure_labelled_apart_from_reasoned_abstention():
     line = score_summary(state)
     assert "rigor no score returned (reporting failure" in line
     assert "data_analysis n/a" in line
+
+
+# ---------------------------------------------------------------------------
+# A review that says nothing must not pass as a review.
+#
+# Four of eight reviewers once returned "..." as their entire summary, with
+# numeric scores attached. Every structural check passed, the run recorded a
+# healthy 8/8 panel, and the editor decided on those scores. The failure was
+# not that a model wrote nothing — models do that — but that nothing in the
+# pipeline was looking at whether a report contained an assessment.
+# ---------------------------------------------------------------------------
+
+import pytest
+from pydantic import ValidationError
+
+from peerreviewagents.agents.schemas import ReviewerOutput
+
+_REAL = dict(
+    score=3,
+    confidence=4,
+    summary=(
+        "The quantification rests on an MS1 intensity ratio that is valid in "
+        "bulk but not for the specific cases the paper builds on."
+    ),
+)
+
+
+def test_a_real_report_is_untouched():
+    assert ReviewerOutput(**_REAL).score == 3
+
+
+def test_a_terse_but_real_report_still_passes():
+    """An ethics reviewer on a modelling paper has little to say and should be
+    free to say it briefly. Shortness is not the defect being caught."""
+    out = ReviewerOutput(
+        score=None,
+        confidence=2,
+        not_applicable_reason="No human or animal subjects.",
+        summary="This is a computational modelling study with no human or animal subjects.",
+    )
+    assert out.score is None
+
+
+@pytest.mark.parametrize(
+    "field_overrides",
+    [
+        {"summary": "..."},
+        {"summary": "…"},
+        {"summary": "-"},
+        {"summary": "TBD."},
+        {"summary": "N/A"},
+        {"summary": "Fine."},  # real words, still not an assessment
+        {"summary": "Good paper."},
+        {"weaknesses": ["...", "..."]},
+        {"strengths": ["-"]},
+        {"questions": ["TBD"]},
+    ],
+)
+def test_a_contentless_report_is_rejected(field_overrides):
+    with pytest.raises(ValidationError):
+        ReviewerOutput(**{**_REAL, **field_overrides})
