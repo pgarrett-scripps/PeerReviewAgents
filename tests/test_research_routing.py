@@ -206,3 +206,74 @@ def test_an_explicit_timeout_is_left_alone():
     session = _bounded(_Session())
     session.request("get", "https://example.invalid", timeout=3)
     assert seen["timeout"] == 3
+
+
+# ---------------------------------------------------------------------------
+# A round's lookups run at the same time.
+#
+# They were sequential, which was most of what a researched review cost in
+# wall-clock: a citation audit spent 753s and a literature reviewer 3764s on
+# one manuscript, against non-searching reviewers finishing in 30-90s. The
+# model names every call in a round before seeing any result, so they are
+# independent by construction.
+# ---------------------------------------------------------------------------
+
+
+def test_a_round_of_lookups_runs_concurrently():
+    import time
+
+    from peerreviewagents.agents.utils.agent_utils import _run_round
+
+    class _Slow:
+        def invoke(self, args):
+            time.sleep(0.4)
+            return f"hit {args['q']}"
+
+    calls = [{"id": f"c{i}", "name": "s", "args": {"q": i}} for i in range(6)]
+    started = time.monotonic()
+    out = _run_round(calls, {"s": _Slow()})
+    elapsed = time.monotonic() - started
+
+    # Sequential would be 2.4s. Generous bound: the point is that it is not
+    # the sum, not that it hits any particular speedup on a loaded machine.
+    assert elapsed < 1.6, f"lookups still serialised ({elapsed:.2f}s)"
+    assert [r for r, _ in out] == [f"hit {i}" for i in range(6)]
+
+
+def test_call_order_survives_uneven_lookup_times():
+    """Results are zipped back against `calls` to build ToolMessages, and a
+    tool_result carrying the wrong tool_call_id is a 400 from every vendor."""
+    import time
+
+    from peerreviewagents.agents.utils.agent_utils import _run_round
+
+    class _Uneven:
+        def invoke(self, args):
+            time.sleep(0.3 if args["q"] == 0 else 0.01)
+            return f"hit {args['q']}"
+
+    calls = [{"id": f"c{i}", "name": "s", "args": {"q": i}} for i in range(4)]
+    out = _run_round(calls, {"s": _Uneven()})
+    assert [r for r, _ in out] == [f"hit {i}" for i in range(4)]
+
+
+def test_one_failing_vendor_does_not_take_down_the_round():
+    from peerreviewagents.agents.utils.agent_utils import _run_round
+
+    class _Ok:
+        def invoke(self, args):
+            return "fine"
+
+    class _Boom:
+        def invoke(self, args):
+            raise RuntimeError("vendor down")
+
+    calls = [
+        {"id": "a", "name": "ok", "args": {}},
+        {"id": "b", "name": "boom", "args": {}},
+        {"id": "c", "name": "missing", "args": {}},
+    ]
+    out = _run_round(calls, {"ok": _Ok(), "boom": _Boom()})
+    assert out[0] == ("fine", "")
+    assert out[1][0].startswith("[tool error") and "RuntimeError" in out[1][1]
+    assert out[2][1] == "unknown tool"

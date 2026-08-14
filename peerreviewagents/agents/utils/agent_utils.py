@@ -5,6 +5,7 @@ manuscript truncation, score aggregation, cost capture.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -25,6 +26,11 @@ _MAX_TOOL_STEPS = 8
 # Rounds alone do not bound the work: a model batching six lookups a round
 # would run 48. This caps the lookups themselves.
 _MAX_TOOL_CALLS = 24
+
+# How many of one round's lookups run at once. Small deliberately: these are
+# third-party APIs with their own rate limits, and firing a whole round at
+# them earns 429s that cost more than the concurrency saves.
+_TOOL_FANOUT = 4
 
 # What to say when the budget runs out.
 #
@@ -163,19 +169,9 @@ def run_agent(
                 ))
             break
         calls_made += len(calls)
-        for call in calls:
-            fn = tool_map.get(call["name"])
-            try:
-                result = fn.invoke(call["args"]) if fn else f"[unknown tool {call['name']}]"
-                failure = "" if fn else "unknown tool"
-            except Exception as exc:  # noqa: BLE001
-                # A vendor being down must not take the reviewer down with it.
-                # Hand the model the failure as a tool result and let it carry
-                # on without that lookup, as it would an empty search.
-                result = f"[tool error: {type(exc).__name__}]"
-                failure = f"{type(exc).__name__}: {exc}"
-            _record_tool_call(call, str(result), failure)
-            messages.append(ToolMessage(content=str(result), tool_call_id=call["id"]))
+        for call, (result, failure) in zip(calls, _run_round(calls, tool_map)):
+            _record_tool_call(call, result, failure)
+            messages.append(ToolMessage(content=result, tool_call_id=call["id"]))
     if final_resp is None:
         # Tool budget exhausted: ask for a final answer; keep tools bound
         # so the API accepts the tool-call / tool-result history.
@@ -190,6 +186,49 @@ def run_agent(
         cost_total += _call_cost(final_resp, cache_ttl)
 
     return RunResult(text=_text(final_resp.content), cost=cost_total)
+
+
+def _run_one(call: dict, tool_map: dict) -> tuple[str, str]:
+    """One lookup. Returns (result, failure) — never raises.
+
+    A vendor being down must not take the reviewer down with it: the failure
+    is handed back to the model as a tool result and it carries on without
+    that lookup, as it would an empty search.
+    """
+    fn = tool_map.get(call["name"])
+    if fn is None:
+        return f"[unknown tool {call['name']}]", "unknown tool"
+    try:
+        return str(fn.invoke(call["args"])), ""
+    except Exception as exc:  # noqa: BLE001
+        return f"[tool error: {type(exc).__name__}]", f"{type(exc).__name__}: {exc}"
+
+
+def _run_round(calls: list[dict], tool_map: dict) -> list[tuple[str, str]]:
+    """Every lookup the model asked for in one turn, at the same time.
+
+    These were sequential, and that was most of what a researched review cost
+    in wall-clock. The model asks for several lookups in a single turn — they
+    are independent by construction, since it had to name them all before
+    seeing any result — and each one is an HTTP round trip to a vendor that
+    may be slow, rate-limiting, or retrying. Measured on one manuscript: a
+    citation audit spent 753s and a literature reviewer 3764s, against
+    non-searching reviewers on the same panel that finished in 30-90s. The
+    searching agents were the entire critical path of every run.
+
+    Results stay in call order because the caller zips them back against
+    `calls` to build the ToolMessages, and a tool_result carrying the wrong
+    tool_call_id is a 400 from both Anthropic and OpenAI.
+
+    The pool is small on purpose. These are third-party APIs with their own
+    rate limits, and firing twenty at once earns 429s that cost more than the
+    concurrency saves — the point is to stop paying for six round trips in
+    series, not to hammer arXiv.
+    """
+    if len(calls) < 2:
+        return [_run_one(call, tool_map) for call in calls]
+    with ThreadPoolExecutor(max_workers=min(len(calls), _TOOL_FANOUT)) as pool:
+        return list(pool.map(lambda c: _run_one(c, tool_map), calls))
 
 
 def _record_tool_call(call: dict, result: str, failure: str) -> None:
