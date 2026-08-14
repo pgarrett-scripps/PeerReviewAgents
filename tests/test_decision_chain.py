@@ -256,3 +256,15 @@ def test_editor_schema_allows_accept_and_reject_without_revisions():
             summary_of_evaluation="Settled either way.",
         )
         assert out.required_revisions == []
+
+
+def test_editor_prompt_defines_the_minor_major_boundary():
+    """The boundary was deliberately unwritten for a while; the model's prior
+    drifted to counting items (a 20-item letter of caption fixes and missing
+    statements decided 'major' while itself noting no new experiments were
+    needed). The line is now stated: the verdict tracks what the revision
+    requires, not how many items the letter lists."""
+    sys = editor_in_chief._SYS
+    assert "what the revision REQUIRES" in sys
+    assert "new experiments, new data, or a reanalysis" in sys
+    assert "however numerous" in sys
