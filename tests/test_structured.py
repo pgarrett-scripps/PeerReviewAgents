@@ -590,3 +590,72 @@ def test_the_repair_budget_is_bounded():
         invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
     # initial call + 3 repair rounds, and nothing more
     assert len(llm.chain.invocations) == 4
+
+
+# ---------------------------------------------------------------------------
+# Last resort: drop the schema, ask for the review, extract it.
+#
+# Everything before this asks the same failing question again. This asks a
+# different one, because the difficulty is the formatting contract and not the
+# manuscript. The alternative is what it replaces: the reviewer is dropped and
+# the paper is decided by seven.
+# ---------------------------------------------------------------------------
+
+# Long enough to clear MIN_AGENT_TEXT_CHARS, which is the point of that floor:
+# a short answer is a failed call, not a terse review.
+_PROSE = (
+    "The quantification rests on a ratio of two measured intensities with no "
+    "stated error model. The headline claim that 378 proteins have the "
+    "substituted form as their dominant product is not established: a ratio of "
+    "two noisy intensities exceeding one is not evidence the underlying ratio "
+    "exceeds one. Several p-values are reported without naming the test, the n, "
+    "or the correction applied, which makes them uninterpretable as written. "
+    "The tissue-specificity comparison does not state its unit of replication, "
+    "so it is unclear whether n counts patients or peptides. The degradation "
+    "correlation is computed from intensities that also enter the ratio, so the "
+    "two quantities are not independent measurements of the same thing."
+)
+
+
+class _ProseLLM(_StubLLM):
+    """Fails the schema every time; answers in prose when asked for prose."""
+
+    def __init__(self, scripted, prose=_PROSE):
+        super().__init__(scripted)
+        self._prose = prose
+
+    def invoke(self, messages, **_kwargs):
+        return AIMessage(content=self._prose)
+
+
+def test_a_reviewer_that_cannot_fill_the_schema_is_recovered_from_prose():
+    inst = ReviewerOutput(
+        score=2, confidence=4,
+        summary="The quantification rests on a ratio with no stated error model.",
+    )
+    llm = _ProseLLM([_fail("no score")] * 4 + [_ok(inst)])
+    result = invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
+    assert result.instance is inst
+
+
+def test_prose_too_thin_to_be_a_review_is_refused():
+    """The floor exists so an empty answer cannot become a fabricated verdict —
+    the failure that once put a made-up 1/5 score into a published panel."""
+    llm = _ProseLLM([_fail("no score")] * 5, prose="ok")
+    with pytest.raises(ValueError):
+        invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
+
+
+def test_the_extraction_sees_only_the_prose():
+    """It must not be handed the manuscript again: the job is to convert what
+    the reviewer wrote, not to write a review of its own."""
+    inst = ReviewerOutput(
+        score=2, confidence=4,
+        summary="The quantification rests on a ratio with no stated error model.",
+    )
+    llm = _ProseLLM([_fail("no score")] * 4 + [_ok(inst)])
+    invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "MANUSCRIPT-BODY")
+    extraction = llm.chain.invocations[-1]
+    assert len(extraction) == 2
+    assert _PROSE in str(extraction[-1].content)
+    assert "MANUSCRIPT-BODY" not in str(extraction)

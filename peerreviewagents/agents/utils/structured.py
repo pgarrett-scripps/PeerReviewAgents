@@ -40,6 +40,7 @@ from .agent_utils import (
     _build_messages,
     _cache_control_supported,
     _call_cost,
+    _text,
     run_agent,
 )
 
@@ -276,11 +277,69 @@ def _try_structured(
     if salvaged is not None:
         return StructuredResult(instance=salvaged, cost=total)
 
+    prose = _via_prose(llm, schema, messages, spec)
+    if prose is not None:
+        return StructuredResult(instance=prose.instance, cost=total + prose.cost)
+
     err = _parsing_error(result)
     raise ValueError(
         f"structured-output validation failed after {_MAX_REPAIR_ROUNDS} "
-        f"repair attempts: {err}"
+        f"repair attempts and a prose fallback: {err}"
     )
+
+
+def _via_prose(llm, schema: type[BaseModel], messages: list, spec) -> StructuredResult | None:
+    """Last resort: drop the schema, ask for the review, then extract it.
+
+    Everything above this asks the same failing question again in a firmer
+    voice. This asks a different one. A model that cannot fill a twelve-field
+    object under a tool-call constraint can usually still write the review in
+    prose — the difficulty is the formatting contract, not the manuscript —
+    and a second, much smaller call turns that prose into the object.
+
+    The alternative is what this replaces: the agent raises, its node records
+    an error, and the panel is one reviewer short. On the manuscript that
+    prompted this, data_analysis was lost on two runs out of three, and it is
+    the reviewer that owns most of what the human referees raised. A degraded
+    review from the right specialist beats a silent absence.
+
+    Two calls, both cheap, and it never raises: if the prose is too thin to be
+    a review, or the extraction fails in its turn, this returns None and the
+    caller reports the original validation error. The extraction is given only
+    the prose, not the manuscript, so it cannot invent content the reviewer
+    did not write.
+    """
+    ask = HumanMessage(content=(
+        "Ignore the required output format. Write your review as plain prose: "
+        "an overall assessment, then the specific weaknesses you found, then "
+        "any questions for the authors. Do not return JSON or a tool call."
+    ))
+    try:
+        drafted = llm.invoke(messages + [ask])
+    except Exception:  # noqa: BLE001 - a failed fallback must cost nothing
+        return None
+    text = _text(getattr(drafted, "content", ""))
+    if len(text.strip()) < MIN_AGENT_TEXT_CHARS:
+        return None
+    cost = _call_cost(drafted)
+
+    extractor = _bind(llm, schema, spec.structured_method)
+    extract_ask = [
+        SystemMessage(content=(
+            "Convert the review below into the required object. Use only what "
+            "it says — do not add findings, soften them, or invent a score the "
+            "reviewer did not imply."
+        )),
+        HumanMessage(content=text),
+    ]
+    try:
+        extracted = _invoke_with_retries(extractor, extract_ask)
+    except Exception:  # noqa: BLE001
+        return None
+    instance, extract_cost = _unpack(extracted)
+    if instance is None:
+        return None
+    return StructuredResult(instance=instance, cost=cost + extract_cost)
 
 
 def _rejected_turn(result: Any) -> list:
