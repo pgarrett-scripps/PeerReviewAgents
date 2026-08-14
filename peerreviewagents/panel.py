@@ -43,16 +43,17 @@ PIPELINE_AGENTS: tuple[tuple[str, str, str | None], ...] = (
     *[(f"audit_{name}", "audit", None) for name in ALL_AUDITOR_NAMES],
     ("debate_advocate", "debate", None),
     ("debate_skeptic", "debate", None),
-    ("gap_finder", "synthesis", None),
-    ("meta_reviewer", "synthesis", None),
-    ("author_rebuttal", "synthesis", None),
     ("editor", "synthesis", "medium"),
     ("journal_recommender", "synthesis", None),
 )
 
 # Agents outside the review graph that still resolve through agent_models
 # (the eval harness's single-model baseline).
-EXTRA_AGENTS: frozenset[str] = frozenset({"baseline"})
+# Legacy modules remain importable for old integrations, but are not graph
+# stages and therefore do not appear in PIPELINE_AGENTS / --show-panel.
+EXTRA_AGENTS: frozenset[str] = frozenset(
+    {"baseline", "gap_finder", "meta_reviewer", "author_rebuttal"}
+)
 
 KNOWN_AGENTS: frozenset[str] = (
     frozenset(name for name, _tag, _effort in PIPELINE_AGENTS) | EXTRA_AGENTS

@@ -9,6 +9,8 @@ node = make_debate_node(
         "flaw say explicitly whether it is FATAL or FIXABLE in revision; an "
         "undifferentiated pile of objections is exactly what you must avoid. "
         "Acknowledge when the advocate has genuinely answered a concern; conceding a "
-        "resolved point sharpens the ones that remain. Do not nitpick trivia."
+        "resolved point sharpens the ones that remain. Explicitly check whether any "
+        "load-bearing manuscript claim was left materially untested by the specialist "
+        "reports, and name collective panel blind spots. Do not nitpick trivia."
     ),
 )

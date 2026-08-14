@@ -49,7 +49,6 @@ from ..utils.agent_utils import REFERENCES_NOTE, context_block, references_block
 from ..utils.llm import make_llm
 from ..utils.structured import (
     StructuredResult,
-    invoke_structured,
     invoke_structured_after_tools,
 )
 
@@ -177,7 +176,9 @@ _INSTRUCTIONS = (
 _SYSTEM = (
     "You are a specialist on a journal peer-review editorial panel. "
     "Your role is given in the user message; follow it strictly. "
-    "Return your verdict as the structured ReviewerOutput schema."
+    "Write the complete review as plain text with clearly labelled score, "
+    "confidence, summary, strengths, weaknesses, and questions. Do not emit "
+    "JSON or a tool call for the final answer."
 )
 
 # Appended under the verifier's pointer list. That list is already framed as
@@ -306,21 +307,26 @@ def _call_model(
     tool_names: list[str],
     cached_prefix: str,
 ) -> StructuredResult:
-    """Structured call, through the research-tool loop when this reviewer has one."""
+    """Write prose once, then extract the report schema from that prose.
+
+    Keeping the manuscript-reading call free of the large ReviewerOutput tool
+    contract prevents a missing scalar near the end from discarding and
+    regenerating the entire review. Schema repair sees only the completed
+    prose, so retries are small and cannot rewrite the scientific assessment.
+    """
+    tools = []
     if tool_names and config.get("research_enabled", True):
         from ...research.tools import get_tools_by_name
 
-        return invoke_structured_after_tools(
-            llm,
-            schema,
-            config,
-            system,
-            instructions,
-            get_tools_by_name(tool_names, config),
-            cached_prefix=cached_prefix,
-        )
-    return invoke_structured(
-        llm, schema, config, system, instructions, cached_prefix=cached_prefix
+        tools = get_tools_by_name(tool_names, config)
+    return invoke_structured_after_tools(
+        llm,
+        schema,
+        config,
+        system,
+        instructions,
+        tools,
+        cached_prefix=cached_prefix,
     )
 
 
@@ -355,5 +361,3 @@ def _author_pointers(state: ReviewState) -> str:
     if not block:
         return ""
     return f"{block}\n\n{_AUTHOR_POINTERS_NOTE}"
-
-

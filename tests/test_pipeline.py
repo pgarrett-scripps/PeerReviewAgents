@@ -253,10 +253,9 @@ def test_full_pipeline(monkeypatch, tmp_path):
     # Debate ran the configured number of rounds (advocate+skeptic per round).
     assert state["debate_round"] == cfg["max_debate_rounds"]
     assert len(state["debate"]) == cfg["max_debate_rounds"] * 2
-    # Author rebuttal ran between meta-review and editor.
-    assert state.get("author_rebuttal")
-    # Meta-reviewer's draft recommendation came straight off the schema.
-    assert state["draft_recommendation"] == "major"
+    # There is no lossy intermediate synthesis or simulated author voice.
+    assert not state.get("author_rebuttal")
+    assert not state.get("meta_review")
     # Editor's final decision came straight off the schema.
     assert state["decision"] == "major"
     # Decision letter is markdown rendered from the schema.
@@ -264,18 +263,48 @@ def test_full_pipeline(monkeypatch, tmp_path):
     # Journal recommender ran after the editor and produced a tiered list.
     assert state["journal_recommendations"].startswith("# Journal Recommendations")
     assert "Specialty Journal X" in state["journal_recommendations"]
+    assert state["publication_ready"] is True
+    assert state["run_status"] == "publishable"
     assert not state.get("errors")
 
     run_dir = write_reports(state)
     assert os.path.exists(os.path.join(run_dir, "summary.md"))
     assert os.path.exists(os.path.join(run_dir, "decision_letter.md"))
-    assert os.path.exists(os.path.join(run_dir, "author_rebuttal.md"))
     assert os.path.exists(os.path.join(run_dir, "debate_transcript.md"))
     assert os.path.exists(os.path.join(run_dir, "journal_recommendations.md"))
     # No citations file should be produced — that pipeline was removed.
     assert not any(
         f.startswith("citations_") for f in os.listdir(run_dir)
     )
+
+
+def test_incomplete_panel_stops_before_synthesis(monkeypatch, tmp_path):
+    """One missing specialist must produce no editorial decision."""
+    _patch_llms(monkeypatch)
+    import peerreviewagents.graph.review_graph as review_graph_mod
+
+    real_nodes = review_graph_mod.get_reviewer_nodes()
+
+    def failed(_state):
+        return {"errors": ["methodology reviewer failed: provider down"]}
+
+    monkeypatch.setattr(
+        review_graph_mod,
+        "get_reviewer_nodes",
+        lambda: [
+            (name, failed if name == "methodology" else node)
+            for name, node in real_nodes
+        ],
+    )
+
+    state = PeerReviewGraph(get_config(output_dir=str(tmp_path))).review(SAMPLE)
+
+    assert state["panel_complete"] is False
+    assert len(state["reports"]) == len(REVIEWER_NAMES) - 1
+    assert "decision" not in state
+    assert not state.get("meta_review")
+    assert not state.get("debate")
+    assert any("incomplete panel" in error for error in state["errors"])
 
 
 def test_ingest_sections():

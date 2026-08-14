@@ -87,8 +87,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # {provider?, model?, effort?} spec. Wins over the agent's default tag.
     # Agent keys: reviewer_<name> (e.g. reviewer_methodology), debate_advocate,
     # debate_skeptic, audit_<name>, desk_screen, response_verifier,
-    # meta_reviewer, editor, author_rebuttal, journal_recommender (the full
-    # roster lives in peerreviewagents.panel). Example (TOML):
+    # editor and journal_recommender (the full roster lives in
+    # peerreviewagents.panel). Example (TOML):
     #     [agent_models]
     #     reviewer_novelty = "synthesis"          # give one reviewer the big model
     #     editor = { model = "claude-opus-5", effort = "max" }
@@ -106,16 +106,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # --- Workflow ---
     "max_debate_rounds": 2,
     # Advocate/skeptic debate. True (default) runs the dialectical debate
-    # between the reviewer panel and the meta-reviewer; False ablates it
-    # (reviewers feed the meta-reviewer directly) — used to measure the
+    # after the reviewer panel; False sends the panel directly to the editor.
+    # This remains an evaluation ablation for measuring the
     # debate's contribution in the eval harness.
     "enable_debate": True,
-    # Gap finder. True (default) runs one node between the panel and the
-    # debate that audits the three technical reports against the manuscript
-    # for what they missed; False ablates it, which is how the eval harness
-    # measures what it contributes. The reviewers never read each other, so
-    # without this nothing checks whether a weakness fell between them.
-    "enable_gap_finder": True,
+    # Post-decision venue suggestions are optional enrichment and never part
+    # of the publication contract.
+    "enable_journal_recommender": True,
     # Optional editorial desk-screen gate. When True, a triage node runs once
     # before the reviewer fan-out and may desk-reject the manuscript (scope /
     # completeness / fatal-flaw / below-venue-bar), short-circuiting the run
@@ -134,15 +131,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # What a failed PDF conversion does. Measured deterministically at ingest
     # (peerreviewagents.ingest.prose) and checked before any agent is paid.
     #
-    #   "broken"   (default) stop the run when the text arrives as
+    #   "broken"   stop the run when the text arrives as
     #              `well-definedsitecanbeengaged` — words fused, spaces gone.
     #              Raises ManuscriptUnreadable rather than desk-rejecting: a
     #              converter failure is a fact about a file, and recording it
     #              as a verdict would follow the paper around as a rejection
     #              of work no model ever read.
-    #   "degraded" also stop on lesser damage. For callers who would rather
-    #              fix the conversion than have a panel read around it.
-    #   "off"      review whatever arrives. The prior behaviour.
+    #   "degraded" (default) also stop on lesser damage. Publishing a review
+    #              of text whose sections or references were lost is worse
+    #              than asking for a clean source file.
+    #   "off"      explicitly review whatever arrives.
     #
     # On the calibration corpus there is no middle ground to worry about:
     # healthy conversions score 0.0 fused tokens per 1000 words and the broken
@@ -150,7 +148,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # short of the gate is not silently absorbed either — it is named to every
     # reviewer inside the manuscript block, so nobody writes up the authors
     # for the converter's spacing.
-    "conversion_gate": "broken",
+    "conversion_gate": "degraded",
     # Optional cap on manuscript chars sent to a single agent. None (default)
     # sends the FULL manuscript — no truncation. Set an int to cap it: long
     # papers are then truncated section-aware, preserving the most load-bearing
@@ -251,7 +249,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # specific slug (e.g. "nature-methods") for venue-specific standards, or
     # to "" for a fully venue-agnostic review with no journal framing. The
     # selected journal's scope/standards/limits are injected into the
-    # reviewer, meta-reviewer, editor, and recommender prompts.
+    # reviewer, editor, and recommender prompts.
     "target_journal": "general",
     # Directory holding journal profile .toml files. Empty/None = the
     # profiles bundled inside the peerreviewagents.journals package (resolved
@@ -272,12 +270,27 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # How easy or harsh the panel is, as an integer 1-5 (see
     # peerreviewagents.strictness): 1=very lenient, 3=balanced (default),
     # 5=very strict. The level is rendered to a directive that is injected
-    # into the reviewer, meta-reviewer, and editor prompts. Level 3 injects
+    # into the reviewer and editor prompts. Level 3 injects
     # nothing, so a default run behaves exactly as before.
     "review_strictness": 3,
 
     # --- Output ---
     "output_dir": os.path.join(os.getcwd(), "reports"),
+    # Successful node outputs are written atomically here and reused when the
+    # same manuscript + semantic configuration is run again. Empty disables
+    # checkpoints; the default keeps them beside the ordinary output tree.
+    # Opt in explicitly (the InSilico runner does). A process-global default
+    # can accidentally reuse results across independent library callers.
+    "checkpoint_dir": "",
+    "resume": True,
+    # Hard request/output budgets. The timeout is per network phase (including
+    # the maximum silence between streamed chunks); max_output_tokens is the
+    # absolute generation ceiling for every node.
+    "request_timeout_s": 120.0,
+    "max_output_tokens": 12000,
+    # A successful node exceeding this recorded spend is rejected and not
+    # checkpointed. Zero disables the cost gate.
+    "max_node_cost_usd": 5.0,
 
     # --- Manuscript ingest ---
     # PDFs are converted to Markdown by rustypaper, which keeps headings,

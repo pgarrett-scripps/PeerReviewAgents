@@ -26,6 +26,8 @@ from peerreviewagents.reports import write_reports
 def _panel_state(**extra):
     state = {
         "config": {"run_id": ""},
+        "manuscript_md": "# Test manuscript\n\nA complete synthetic manuscript.",
+        "sections": {},
         "reports": [
             {
                 "reviewer": "methodology",
@@ -58,10 +60,12 @@ def test_meta_failure_emits_no_recommendation(monkeypatch):
     assert any("meta_reviewer failed" in e for e in out["errors"])
 
 
-def test_editor_prompt_names_the_missing_recommendation():
+def test_editor_prompt_contains_primary_reports_without_meta_recommendation():
     state = _panel_state(draft_recommendation="", meta_review="(the meta-reviewer did not run: x)")
     user = editor_in_chief._first_round_user(state)
-    assert "the meta-reviewer did not produce one" in user
+    assert "Specialist reports (primary panel evidence)" in user
+    assert "# Methodology" in user
+    assert "meta-reviewer" not in user
 
 
 # --- editor refuses to repair a non-verdict ----------------------------------
@@ -142,7 +146,7 @@ def test_web_runner_salvages_partial_reports_on_pipeline_error(tmp_path):
     assert job.report_dir, "completed reviewer work should survive the crash"
     run_dir = Path(job.report_dir)
     assert (run_dir / "review_methodology.md").is_file()
-    assert (run_dir / "meta_review.md").is_file()
+    assert not (run_dir / "meta_review.md").exists()
     summary = (run_dir / "summary.md").read_text(encoding="utf-8")
     assert "FAILED" in summary
     assert "boom" in summary

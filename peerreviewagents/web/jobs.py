@@ -36,9 +36,6 @@ AGENT_LAYOUT: list[dict[str, Any]] = [
     # Debate stage
     {"name": "advocate",               "label": "Advocate",        "role": "debate",    "emoji": "🗣️"},
     {"name": "skeptic",                "label": "Skeptic",         "role": "debate",    "emoji": "🤨"},
-    # Synthesis room
-    {"name": "meta_reviewer",          "label": "Area Chair",      "role": "synthesis", "emoji": "🧑‍⚖️"},
-    {"name": "author_rebuttal",        "label": "Verifier",        "role": "verifier",  "emoji": "🔎"},
     {"name": "editor",                 "label": "Editor-in-Chief", "role": "editor",    "emoji": "👔"},
     # Post-decision: venue suggestions
     {"name": "journal_recommender",    "label": "Journal Scout",   "role": "recommend", "emoji": "🗺️"},

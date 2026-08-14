@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from ...observability import node_context
-from ..debate.base import panel_gaps_block
+from ..debate.base import _debate_so_far, _reports_digest
 from ..schemas import EditorDecisionOutput, Verdict
 from ..utils.agent_states import ReviewState
-from ..utils.agent_utils import audit_digest, directives_block, score_summary
+from ..utils.agent_utils import audit_digest, context_block, score_summary
 from ..utils.llm import make_llm
 from ..utils.round_delta import round_delta
 from ..utils.structured import invoke_structured
@@ -14,13 +14,12 @@ from ..utils.structured import invoke_structured
 _VALID_VERDICTS = ("accept", "minor", "major", "reject")
 
 _SYS = (
-    "You are the Editor-in-Chief. Using the meta-review, the author's "
-    "rebuttal, and the panel's numerical signal, make the FINAL decision "
+    "You are the Editor-in-Chief. Read the specialist reports and editorial "
+    "debate directly, then use the panel's numerical signal to make the FINAL decision "
     "and write a professional, constructive decision letter to the "
-    "authors. Weigh the rebuttal: a concession is evidence the manuscript "
-    "can improve in revision; a credible disagreement (with manuscript "
-    "quote) is evidence a reviewer misread; a load-bearing critique the "
-    "author cannot rebut is evidence of a fundamental flaw. You also receive "
+    "authors. The advocate supplies the strongest fair defense and the skeptic "
+    "must identify unresolved objections and collective panel blind spots. "
+    "You also receive "
     "one or more editorial compliance audits (e.g. methods completeness, "
     "citation integrity). These are factual checklists, NOT opinions or "
     "scores, produced in parallel with the panel. Treat HARD gaps as items "
@@ -39,7 +38,7 @@ _SYS = (
     "like 'improve rigor' — and keep the letter consistent with the verdict "
     "(a minor-revision decision must not read like a rejection). Let the "
     "verdict track the evidence rather than the raw average; if you depart "
-    "from the draft recommendation, give the reasoning in "
+    "materially from the panel's numerical signal, give the reasoning in "
     "summary_of_evaluation. Return the structured EditorDecisionOutput schema."
 )
 
@@ -133,7 +132,7 @@ _REVISION_SYS = (
     "keep the letter consistent with the verdict. When the delta says no "
     "further revision round is available, decide accept or reject on what is "
     "in front of you — asking for a revision the process cannot grant is not "
-    "a decision. If you depart from the draft recommendation, give the "
+    "a decision. If you depart materially from the panel's numerical signal, give the "
     "reasoning in summary_of_evaluation. Return the structured "
     "EditorDecisionOutput schema."
 )
@@ -144,32 +143,17 @@ def node(state: ReviewState) -> dict:
         return _run(state)
 
 
-def _draft_line(state: ReviewState) -> str:
-    """The Area Chair's draft recommendation, rendered honestly when absent.
-
-    A failed meta-reviewer emits no recommendation; the editor must be told
-    there is none rather than shown an empty slot it might read as a value.
-    """
-    draft = state.get("draft_recommendation") or ""
-    return draft if draft else "(none — the meta-reviewer did not produce one)"
-
-
 def _first_round_user(state: ReviewState) -> str:
-    rebuttal = state.get("author_rebuttal") or "(no rebuttal provided)"
     return (
         f"Numerical signal:\n{score_summary(state)}\n\n"
-        f"Draft recommendation: {_draft_line(state)}\n\n"
-        f"Meta-review:\n{state.get('meta_review', '')}\n\n"
-        f"Gaps the technical reviewers missed, each tied to a place in the "
-        f"manuscript:\n{panel_gaps_block(state)}\n\n"
-        f"Author rebuttal:\n{rebuttal}\n\n"
+        f"Specialist reports (primary panel evidence):\n{_reports_digest(state)}\n\n"
+        f"Editorial debate:\n{_debate_so_far(state)}\n\n"
         f"Editorial compliance audits (factual checklists — convert HARD gaps "
         f"to required revisions, SOFT/unverifiable to minor suggestions or "
         f"questions):\n{audit_digest(state)}\n\n"
-        "Produce the final decision letter. If the rebuttal credibly "
-        "addressed a reviewer's concern, note that you weighed it in "
-        "summary_of_evaluation rather than restating the original "
-        "critique as a required revision."
+        "Produce the final decision letter. Resolve conflicts yourself from "
+        "the primary reports, debate and manuscript; no intermediate model's "
+        "summary is authoritative."
     )
 
 
@@ -189,7 +173,7 @@ def _author_voice(state: ReviewState) -> str:
             "(each claim checked against the manuscript; the letter itself is "
             "deliberately not reproduced):\n" + verified
         )
-    return f"Author rebuttal:\n{state.get('author_rebuttal') or '(no rebuttal provided)'}"
+    return "(no author response was supplied)"
 
 
 def _revision_user(state: ReviewState) -> str:
@@ -198,10 +182,8 @@ def _revision_user(state: ReviewState) -> str:
         f"these numbers are not opinions):\n{round_delta(state)}\n\n"
         f"Numerical signal for THIS round (a blind panel's independent "
         f"assessment of the manuscript as it stands):\n{score_summary(state)}\n\n"
-        f"Draft recommendation: {_draft_line(state)}\n\n"
-        f"Meta-review:\n{state.get('meta_review', '')}\n\n"
-        f"Gaps the technical reviewers missed, each tied to a place in the "
-        f"manuscript:\n{panel_gaps_block(state)}\n\n"
+        f"Specialist reports (primary panel evidence):\n{_reports_digest(state)}\n\n"
+        f"Editorial debate:\n{_debate_so_far(state)}\n\n"
         f"{_author_voice(state)}\n\n"
         f"Editorial compliance audits (factual checklists — the "
         f"revision-compliance audit is the record of what was actually done; "
@@ -230,18 +212,15 @@ def _run(state: ReviewState) -> dict:
             system_prompt, user = _REVISION_SYS, _revision_user(state)
         else:
             system_prompt, user = _SYS, _first_round_user(state)
-        # The Editor decides on the synthesis (meta-review + rebuttal +
-        # numerical signal), not by re-reading the manuscript — that trusts
-        # the panel's work instead of re-litigating it. Only the
-        # venue/strictness directives ride along so the decision is made
-        # against the target venue's bar.
+        # The manuscript is a cached prefix so the editor can verify disputed
+        # reviewer/debate claims without another lossy synthesis layer.
         result = invoke_structured(
             llm,
             EditorDecisionOutput,
             config,
             system_prompt,
             user,
-            cached_prefix=directives_block(state),
+            cached_prefix=context_block(state),
         )
     except Exception as exc:  # noqa: BLE001
         # Do NOT fabricate a verdict on failure — leave decision empty so
@@ -251,10 +230,8 @@ def _run(state: ReviewState) -> dict:
     output: EditorDecisionOutput = result.instance  # type: ignore[assignment]
     decision: Verdict | str = output.decision
     # Schema constrains decision to the Verdict literal, but a non-conforming
-    # model can slip past. Refuse rather than repair: the draft recommendation
-    # is no substitute — it can itself come from a failed meta-reviewer — and
-    # per the rule above, a decision the editor never rendered surfaces as no
-    # decision. The letter body is kept for the record; the verdict is not.
+    # model can slip past. Refuse rather than substitute another agent's
+    # opinion: a decision the editor never rendered surfaces as no decision.
     if decision not in _VALID_VERDICTS:
         return {
             "errors": [f"editor failed: non-verdict decision {decision!r}"],

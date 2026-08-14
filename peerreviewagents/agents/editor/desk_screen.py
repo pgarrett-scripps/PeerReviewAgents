@@ -2,7 +2,7 @@
 
 Two screens live in this one node:
 
-1. **Conversion health** (``conversion_gate``, ``"broken"`` by default) — a
+1. **Conversion health** (``conversion_gate``, ``"degraded"`` by default) — a
    deterministic verdict on how the PDF converted, measured at ingest by
    :mod:`peerreviewagents.ingest.prose`. Text that arrived as
    ``well-definedsitecanbeengaged`` stops the run rather than being reviewed
@@ -150,4 +150,3 @@ def _run(state: ReviewState) -> dict:
         "desk_screen": body,
         "total_cost": result.cost,
     }
-

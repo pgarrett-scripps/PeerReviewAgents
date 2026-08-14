@@ -20,6 +20,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
+import httpx
+
 from ..observability import StreamingCallback
 
 _TEMPERATURE = 0.3
@@ -42,11 +44,15 @@ _TEMPERATURE = 0.3
 #
 # `read` is the gap between chunks of a streaming response, not the length of
 # the answer — a long review streams continuously and never approaches it,
-# while a provider that has stopped sending trips it in two minutes. Retries
-# belong to the client, so a single dropped connection still costs only time.
+# while a provider that has stopped sending trips it in two minutes. Retry
+# policy lives in the structured-output layer so it remains visible and bounded.
 _CONNECT_TIMEOUT_S = 15.0
 _READ_TIMEOUT_S = 120.0
-_MAX_RETRIES = 2
+# Retries are owned by the structured-output layer, which can distinguish a
+# transport failure from a schema failure.  Retrying here as well multiplies
+# every logical attempt (three client attempts x three application attempts)
+# and can keep one failed node alive longer than the enclosing CI job.
+_MAX_RETRIES = 0
 
 
 def _http_timeout() -> Any:
@@ -167,7 +173,9 @@ def _chat_openrouter_class() -> Any:
 def _make_openrouter(model: str, *, reasoning_effort: str | None = None,
                      node: str | None = None,
                      run_id: str | None = None,
-                     temperature: float = _TEMPERATURE) -> Any:
+                     temperature: float = _TEMPERATURE,
+                     timeout_s: float = _READ_TIMEOUT_S,
+                     max_tokens: int = 12000) -> Any:
     api_key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("OPENAI_API_KEY")
     # `extra_body` is forwarded verbatim to OpenRouter: cost-inclusive
     # usage accounting + optional reasoning-effort knob for r-series /
@@ -184,7 +192,8 @@ def _make_openrouter(model: str, *, reasoning_effort: str | None = None,
         "streaming": True,
         "stream_usage": True,
         "callbacks": [StreamingCallback(default_model=model, default_node=node, default_run=run_id)],
-        "timeout": _http_timeout(),
+        "timeout": httpx.Timeout(connect=_CONNECT_TIMEOUT_S, read=timeout_s,
+                                 write=timeout_s, pool=_CONNECT_TIMEOUT_S),
         "max_retries": _MAX_RETRIES,
         # Named, rather than left to whatever ceiling the routed model
         # defaults to. OpenRouter authorizes the request against the *cap*,
@@ -194,7 +203,7 @@ def _make_openrouter(model: str, *, reasoning_effort: str | None = None,
         # the whole run with 402 — observed mid-benchmark on a run whose
         # real price was ten cents. Matching the Anthropic path also means
         # the two routes truncate at the same length.
-        "max_tokens": 32000,
+        "max_tokens": max_tokens,
     }
     # Current Anthropic models (Opus 5/4.7/4.8, Sonnet 5, Fable/Mythos 5)
     # and OpenAI's reasoning line (o-series, GPT-5 family) reject
@@ -214,7 +223,8 @@ def _make_openai(model: str, *, reasoning_effort: str | None = None,
                  node: str | None = None,
                  run_id: str | None = None,
                  temperature: float = _TEMPERATURE,
-                 base_url: str | None = None) -> Any:
+                 base_url: str | None = None, timeout_s: float = _READ_TIMEOUT_S,
+                 max_tokens: int = 12000) -> Any:
     from langchain_openai import ChatOpenAI
 
     api_key = os.environ.get("OPENAI_API_KEY")
@@ -223,8 +233,10 @@ def _make_openai(model: str, *, reasoning_effort: str | None = None,
         "streaming": True,
         "stream_usage": True,
         "callbacks": [StreamingCallback(default_model=model, default_node=node, default_run=run_id)],
-        "timeout": _http_timeout(),
+        "timeout": httpx.Timeout(connect=_CONNECT_TIMEOUT_S, read=timeout_s,
+                                 write=timeout_s, pool=_CONNECT_TIMEOUT_S),
         "max_retries": _MAX_RETRIES,
+        "max_tokens": max_tokens,
     }
     # The o-series and GPT-5 reasoning models 400 on `temperature` — the
     # field is rejected, not ignored — and every reviewer configured onto
@@ -250,7 +262,9 @@ def _make_openai(model: str, *, reasoning_effort: str | None = None,
 def _make_anthropic(model: str, *, reasoning_effort: str | None = None,
                     node: str | None = None,
                     run_id: str | None = None,
-                    temperature: float = _TEMPERATURE) -> Any:
+                    temperature: float = _TEMPERATURE,
+                    timeout_s: float = _READ_TIMEOUT_S,
+                    max_tokens: int = 12000) -> Any:
     try:
         from langchain_anthropic import ChatAnthropic
     except ImportError as exc:  # pragma: no cover
@@ -266,7 +280,7 @@ def _make_anthropic(model: str, *, reasoning_effort: str | None = None,
         "stream_usage": True,
         "callbacks": [StreamingCallback(default_model=model, default_node=node, default_run=run_id)],
         # Scalar, not httpx.Timeout: see _http_timeout.
-        "timeout": _READ_TIMEOUT_S,
+        "timeout": timeout_s,
         "max_retries": _MAX_RETRIES,
         # Output is billed per token generated, not per token allowed, so a
         # generous cap costs nothing until it is used — but hitting it costs
@@ -283,7 +297,7 @@ def _make_anthropic(model: str, *, reasoning_effort: str | None = None,
         # rather than left to be rediscovered a third time — the ceiling is
         # free until a call reaches it, and a call that reaches it loses
         # everything it wrote.
-        "max_tokens": 32000,
+        "max_tokens": max_tokens,
     }
 
     adaptive = _anthropic_matches(model, _ANTHROPIC_ADAPTIVE_EFFORT)
@@ -645,6 +659,8 @@ def make_chat_model(
         "temperature": temp,
         "node": agent,
         "run_id": config.get("run_id"),
+        "timeout_s": float(config.get("request_timeout_s") or _READ_TIMEOUT_S),
+        "max_tokens": int(config.get("max_output_tokens") or 12000),
     }
     # Only the OpenAI factory takes a gateway base_url (see `openai_base_url`
     # in default_config); OpenRouter's is fixed and Anthropic has none.

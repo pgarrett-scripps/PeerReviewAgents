@@ -11,15 +11,14 @@ from langgraph.graph import END, START, StateGraph
 
 from .. import rounds as rounds_mod
 from ..agents.auditors import get_auditor_nodes
-from ..agents.author import rebuttal as author_rebuttal
 from ..agents.author import response_verifier
 from ..agents.debate import advocate, skeptic
 from ..agents.editor import desk_screen, editor_in_chief
 from ..agents.journal_recommender import recommender as journal_recommender
 from ..agents.reviewers import get_reviewer_nodes
-from ..agents.synthesis import gap_finder, meta_reviewer
 from ..agents.utils.agent_states import ReviewState
 from ..article_types import article_type_block, normalize_article_type
+from ..checkpoints import checkpointed
 from ..default_config import get_config
 from ..ingest.loader import load_manuscript, load_manuscript_record
 from ..journals import load_journal
@@ -78,6 +77,9 @@ def selected_reviewers(config: dict) -> list[str]:
 def build_graph(config: dict):
     g = StateGraph(ReviewState)
 
+    def add_node(name: str, fn, **kwargs) -> None:
+        g.add_node(name, checkpointed(name, fn, config), **kwargs)
+
     revision = is_revision(config)
     # The author's response letter is adjudicated BEFORE the fan-out, because
     # its only sanctioned route to a reviewer is the verifier's pointer list.
@@ -88,11 +90,11 @@ def build_graph(config: dict):
     chosen = set(selected_reviewers(config))
     reviewer_nodes = [(n, fn) for n, fn in get_reviewer_nodes() if n in chosen]
     for name, fn in reviewer_nodes:
-        g.add_node(f"reviewer_{name}", fn)
+        add_node(f"reviewer_{name}", fn)
 
     # Editorial audit lane: factual-checklist auditors that fan out alongside
     # the reviewers but route their reports straight to the editor (not into
-    # the scored panel, debate, or meta-review). A revision round adds the
+    # the scored panel or debate). A revision round adds the
     # compliance auditor to this lane — it checks the previous letter's
     # required revisions against the new draft, which is a factual checklist
     # of exactly the kind the lane exists for, and like the others it feeds
@@ -104,45 +106,22 @@ def build_graph(config: dict):
     # way — it is blind to the round in both modes.
     auditor_nodes = get_auditor_nodes(revision=revision and not is_correction(config))
     for name, fn in auditor_nodes:
-        g.add_node(f"audit_{name}", fn)
+        add_node(f"audit_{name}", fn)
 
     # The advocate/skeptic debate is on by default; `enable_debate=False`
-    # ablates it (reviewers fan straight into the meta-reviewer), which is
-    # how the eval harness measures the debate's contribution.
+    # sends the completed panel straight to the editor.
     debate_enabled = bool(config.get("enable_debate", True))
     if debate_enabled:
-        g.add_node("advocate", advocate.node)
-        g.add_node("skeptic", skeptic.node)
-    # The gap finder sits between the panel and whatever consumes it. The
-    # three technical reviewers read the manuscript independently and never
-    # see each other, so a weakness can fall between all of them with
-    # nothing in the run looking for it. This stage is the only one that
-    # audits their reports against the manuscript for what they missed. On
-    # by default; `enable_gap_finder=False` ablates it.
-    gap_finder_enabled = bool(config.get("enable_gap_finder", True))
-    if gap_finder_enabled:
-        g.add_node("gap_finder", gap_finder.node)
-    g.add_node("meta_reviewer", meta_reviewer.node)
-    # Author rebuttal sits between meta-reviewer and editor so the editor sees
-    # both the panel's verdict and the author's defense. It is SKIPPED when
-    # the real authors supplied a response letter: simulating their defense
-    # while holding the genuine article would be strictly worse, and the
-    # verifier has already turned that letter into checked claims.
-    if not verify_response:
-        g.add_node("author_rebuttal", author_rebuttal.node)
-    # `defer=True` is load-bearing: the editor joins two lanes of different
-    # depths — the short audit lane (START -> audit -> editor) and the long
-    # rebuttal chain (reviewers -> debate -> meta -> rebuttal -> editor).
-    # LangGraph only barriers edges that settle in the SAME superstep, so a
-    # plain node would fire once when the auditors finish (meta-review,
-    # rebuttal, and scores still empty -> a junk decision letter) and again
-    # after the rebuttal chain. Deferring makes the editor run once, after
-    # every upstream task has drained.
-    g.add_node("editor", editor_in_chief.node, defer=True)
+        add_node("advocate", advocate.node)
+        add_node("skeptic", skeptic.node)
+    # One synthesis layer. The editor reads the primary reports, debate and
+    # audits directly; no intermediate model can omit a finding while
+    # compressing the panel for it.
+    add_node("editor", editor_in_chief.node)
     # Journal recommender runs after the editor so it can condition its
     # venue suggestions on the final accept/minor/major/reject verdict
     # and the required-revisions list in the decision letter.
-    g.add_node("journal_recommender", journal_recommender.node)
+    add_node("journal_recommender", journal_recommender.node)
 
     # The desk node: conversion gate + optional triage gate.
     # Triage modes (see desk_screen.screen_mode): "gate" enforces desk-reject
@@ -163,17 +142,42 @@ def build_graph(config: dict):
         *[f"audit_{name}" for name, _ in auditor_nodes],
     ]
 
+    expected_reviewers = {name for name, _ in reviewer_nodes}
+    expected_auditors = {name for name, _ in auditor_nodes}
+
+    def panel_gate(state: ReviewState) -> dict:
+        """Stop an incomplete fan-out before synthesis can invent a verdict."""
+        got_reviewers = {r.get("reviewer") for r in state.get("reports", [])}
+        got_auditors = {a.get("auditor") for a in state.get("audits", [])}
+        missing_reviewers = sorted(expected_reviewers - got_reviewers)
+        missing_auditors = sorted(expected_auditors - got_auditors)
+        if not missing_reviewers and not missing_auditors:
+            return {"panel_complete": True, "run_status": "panel_complete"}
+        missing = []
+        if missing_reviewers:
+            missing.append("reviewers: " + ", ".join(missing_reviewers))
+        if missing_auditors:
+            missing.append("auditors: " + ", ".join(missing_auditors))
+        return {
+            "panel_complete": False,
+            "run_status": "panel_incomplete",
+            "publication_ready": False,
+            "errors": ["incomplete panel (" + "; ".join(missing) + ")"],
+        }
+
+    g.add_node("panel_gate", panel_gate)
+
     # Gates that must run, in order, before the fan-out. Each one's output is
     # something every downstream agent reads, so they are serial by nature.
     if verify_response:
-        g.add_node("response_verifier", response_verifier.node)
+        add_node("response_verifier", response_verifier.node)
 
     # The desk node's successor is the verifier when there is one, else the
     # fan-out itself.
     after_desk = ["response_verifier"] if verify_response else fan_out
 
     if desk_screen_enabled:
-        g.add_node("desk_screen", desk_screen.node)
+        add_node("desk_screen", desk_screen.node)
         g.add_edge(START, "desk_screen")
         g.add_conditional_edges(
             "desk_screen", make_desk_route(after_desk), [END, *after_desk],
@@ -185,46 +189,47 @@ def build_graph(config: dict):
         for target in fan_out:
             g.add_edge("response_verifier", target)
 
-    # With debate on, reviewers feed the advocate; with debate ablated, they
-    # fan straight into the meta-reviewer.
-    consumer = "advocate" if debate_enabled else "meta_reviewer"
-    # Reviewers converge on the cross-examiner, which then feeds the consumer,
-    # so everything downstream sees the joined findings alongside the reports
-    # they were drawn from.
-    reviewer_sink = "gap_finder" if gap_finder_enabled else consumer
+    reviewer_sink = "advocate" if debate_enabled else "editor"
     # True when nothing precedes the fan-out, so START feeds it directly.
     fan_out_from_start = not desk_screen_enabled and not verify_response
     for name, _ in reviewer_nodes:
         if fan_out_from_start:
             g.add_edge(START, f"reviewer_{name}")
-        g.add_edge(f"reviewer_{name}", reviewer_sink)
+        g.add_edge(f"reviewer_{name}", "panel_gate")
 
-    # Audit lane fans out in parallel and converges on the editor, which is a
-    # deferred node (see above) so it waits for both the rebuttal chain and
-    # every auditor before it runs. On a desk-reject, the audits never fire.
+    # Audit lane joins the reviewers at the deterministic panel gate. On a
+    # desk-reject, neither lane fires.
     for name, _ in auditor_nodes:
         if fan_out_from_start:
             g.add_edge(START, f"audit_{name}")
-        g.add_edge(f"audit_{name}", "editor")
+        g.add_edge(f"audit_{name}", "panel_gate")
 
-    if gap_finder_enabled:
-        g.add_edge("gap_finder", consumer)
+    g.add_conditional_edges(
+        "panel_gate",
+        lambda state: reviewer_sink if state.get("panel_complete") else END,
+        [reviewer_sink, END],
+    )
 
-    # Debate loop: advocate -> skeptic -> (loop | meta_reviewer). Skipped
+    # Debate loop: advocate -> skeptic -> (loop | editor). Skipped
     # entirely when debate is ablated.
     if debate_enabled:
         g.add_edge("advocate", "skeptic")
-        g.add_conditional_edges("skeptic", should_continue_debate, ["advocate", "meta_reviewer"])
+        g.add_conditional_edges("skeptic", should_continue_debate, ["advocate", "editor"])
 
-    # meta_reviewer -> author_rebuttal -> editor -> journal_recommender (linear),
-    # with the rebuttal hop dropped when the real letter replaced it.
-    if verify_response:
-        g.add_edge("meta_reviewer", "editor")
+    def finalize(state: ReviewState) -> dict:
+        ready = bool(state.get("panel_complete") and state.get("decision"))
+        return {
+            "publication_ready": ready,
+            "run_status": "publishable" if ready else "synthesis_incomplete",
+        }
+
+    g.add_node("finalize", finalize)
+    if config.get("enable_journal_recommender", True):
+        g.add_edge("editor", "journal_recommender")
+        g.add_edge("journal_recommender", "finalize")
     else:
-        g.add_edge("meta_reviewer", "author_rebuttal")
-        g.add_edge("author_rebuttal", "editor")
-    g.add_edge("editor", "journal_recommender")
-    g.add_edge("journal_recommender", END)
+        g.add_edge("editor", "finalize")
+    g.add_edge("finalize", END)
 
     return g.compile()
 
@@ -274,6 +279,9 @@ class PeerReviewGraph:
             response_verification="",
             verified_claims_block="",
             desk_rejected=False,
+            panel_complete=False,
+            run_status="running",
+            publication_ready=False,
             reports=self._carried_reports(prior),
             audits=[],
             debate=[],

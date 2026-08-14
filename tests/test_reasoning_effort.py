@@ -99,15 +99,11 @@ def test_an_agent_with_no_effort_anywhere_does_not_think():
     assert not getattr(llm, "thinking", None)
 
 
-def test_thinking_never_lowers_the_output_ceiling():
-    """The adaptive-thinking path used to re-set max_tokens to 16000 — the
-    very ceiling the factory's own comment records truncating the rigor
-    reviewer mid-schema, twice — while the agents that think (meta-reviewer,
-    editor) write the longest answers and pay for thinking inside the same
-    cap. Never below the documented-safe 32000."""
+def test_thinking_respects_the_configured_output_budget():
+    """Thinking must not silently override the explicit output-token budget."""
     cfg = {"provider": "anthropic", "reasoning_model": "claude-opus-5"}
     thinking = make_chat_model(cfg, agent="editor", default_tag="synthesis",
                                reasoning_effort="high")
     plain = make_chat_model(cfg, agent="reviewer_rigor", default_tag="reviewer")
-    assert thinking.max_tokens >= 32000
-    assert thinking.max_tokens >= plain.max_tokens
+    assert thinking.max_tokens == 12000
+    assert thinking.max_tokens == plain.max_tokens

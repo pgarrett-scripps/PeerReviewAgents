@@ -440,4 +440,7 @@ def test_every_provider_sets_a_request_deadline(monkeypatch, provider, model, en
     read = getattr(timeout, "read", timeout)
     assert read is not None and 0 < float(read) < 600
 
-    assert getattr(llm, "max_retries", 0) >= 1, f"{provider} would not retry a drop"
+    # Retries happen in structured._invoke_with_retries, where transport
+    # failures can be distinguished from schema failures. Enabling the client
+    # retry loop too multiplies attempts and can outlive the enclosing job.
+    assert getattr(llm, "max_retries", 0) == 0

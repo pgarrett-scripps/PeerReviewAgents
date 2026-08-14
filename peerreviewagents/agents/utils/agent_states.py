@@ -139,6 +139,16 @@ class ReviewState(TypedDict, total=False):
     # --- reviewer pass (parallel writers, hence reducers) ---
     reports: Annotated[list[ReviewReport], operator.add]
 
+    # Set only after every reviewer and auditor in the fan-out has returned.
+    # False is terminal: synthesis and the editor must not issue a decision
+    # from an accidental subset of the requested panel.
+    panel_complete: bool
+    # Explicit lifecycle: running -> panel_complete -> publishable, or a
+    # terminal incomplete state. Optional enrichment failures may coexist
+    # with publication_ready=True.
+    run_status: str
+    publication_ready: bool
+
     # --- editorial compliance audit lane (parallel, feeds only the editor) ---
     # Auditors fan out alongside the reviewers but their output bypasses the
     # debate/meta-review and lands directly in the editor's prompt. Separate

@@ -29,8 +29,6 @@ _NODE_LABELS = {
     "audit_citation_integrity": "Citation-integrity audit",
     "advocate": "Advocate argues",
     "skeptic": "Skeptic responds",
-    "meta_reviewer": "Area Chair synthesizes",
-    "author_rebuttal": "Author rebuts",
     "desk_screen": "Editor screens the submission at the desk",
     "editor": "Editor-in-Chief decides",
     "journal_recommender": "Journal Scout suggests venues",
@@ -41,8 +39,7 @@ _VALID_DECISIONS = {"accept", "minor", "major", "reject"}
 
 # State keys whose presence makes a failed run worth writing to disk anyway.
 _SALVAGEABLE_KEYS = (
-    "reports", "audits", "debate", "meta_review", "desk_screen",
-    "author_rebuttal", "decision_letter",
+    "reports", "audits", "debate", "desk_screen", "decision_letter",
 )
 
 
@@ -234,6 +231,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--output-dir", dest="output_dir")
     p.add_argument(
+        "--checkpoint-dir", dest="checkpoint_dir",
+        help="Directory for atomic per-agent checkpoints (runs resume automatically).",
+    )
+    p.add_argument(
+        "--no-resume", dest="resume", action="store_false", default=None,
+        help="Ignore existing agent checkpoints for this run.",
+    )
+    p.add_argument(
         "--si",
         dest="supplement_path",
         help="Optional supplementary-information file (pdf/md/tex/txt). Passed "
@@ -268,7 +273,7 @@ def build_parser() -> argparse.ArgumentParser:
 def config_from_args(args) -> dict:
     overrides = {}
     for key in ("provider", "reasoning_model", "max_debate_rounds",
-                "output_dir", "cache_dir", "target_journal", "article_type",
+                "output_dir", "checkpoint_dir", "resume", "cache_dir", "target_journal", "article_type",
                 "review_strictness", "desk_screen", "revision_of", "author_statement_path", "revision_mode",
                 "supplement_path", "temperature",
                 "caveman", "single_model"):

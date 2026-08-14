@@ -375,11 +375,11 @@ def _capture_editor(monkeypatch) -> dict:
 def _editor_state(prior=None, **over):
     state = {
         "config": get_config(),
+        "manuscript_md": "# A Lightweight Method\n\nWe evaluate WidgetNet on one cluster.",
+        "sections": [],
+        "ingest": {},
         "reports": _reports(),
         "audits": [],
-        "meta_review": "Panel split.",
-        "draft_recommendation": "major",
-        "author_rebuttal": "We disagree about scope.",
         "prior_round": prior,
     }
     state.update(over)
@@ -442,20 +442,19 @@ def test_the_editor_is_forbidden_from_escalating_over_an_unchanged_draft():
     assert "lands at the PRIOR DECISION" in sys_prompt
 
 
-def test_verified_response_replaces_the_simulated_rebuttal(monkeypatch):
+def test_verified_response_is_the_only_author_voice(monkeypatch):
     seen = _capture_editor(monkeypatch)
     editor_in_chief.node(
         _editor_state(prior=_prior(), response_verification="# Author Response — Verification")
     )
     assert "adjudicated by the response verifier" in seen["user"]
-    # The invented defense must not sit beside the real one.
-    assert "We disagree about scope." not in seen["user"]
+    assert "simulated rebuttal" not in seen["user"].lower()
 
 
-def test_rebuttal_is_used_when_no_letter_was_verified(monkeypatch):
+def test_no_author_position_is_invented_without_a_verified_letter(monkeypatch):
     seen = _capture_editor(monkeypatch)
     editor_in_chief.node(_editor_state(prior=_prior()))
-    assert "Author rebuttal:\nWe disagree about scope." in seen["user"]
+    assert "(no author response was supplied)" in seen["user"]
 
 
 def test_editor_still_returns_the_structured_asks(monkeypatch):
@@ -497,17 +496,21 @@ def test_malformed_prior_round_errors_rather_than_escaping(monkeypatch):
     assert out["errors"]
 
 
-def test_cached_prefix_stays_directives_only(monkeypatch):
-    """The editor decides on the synthesis; the manuscript must not ride along."""
+def test_cached_prefix_contains_the_primary_source(monkeypatch):
+    """The editor must decide from the manuscript, not a lossy synthesis."""
     seen = _capture_editor(monkeypatch)
     editor_in_chief.node(
         _editor_state(prior=_prior(), journal_block="=== JOURNAL ===\nNature")
     )
-    assert seen["cached_prefix"] == "=== JOURNAL ===\nNature"
+    prefix = "\n".join(seen["cached_prefix"])
+    assert "A Lightweight Method" in prefix
+    assert "=== JOURNAL ===\nNature" in prefix
 
 
 @pytest.mark.parametrize("prior", [None, "record"])
 def test_node_never_raises_on_a_bare_state(monkeypatch, prior):
     _capture_editor(monkeypatch)
     state = {"config": get_config(), "prior_round": _prior() if prior else None}
-    assert editor_in_chief.node(state)["decision"] == "major"
+    out = editor_in_chief.node(state)
+    assert out["decision"] == ""
+    assert out["errors"]

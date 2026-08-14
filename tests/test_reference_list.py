@@ -88,15 +88,24 @@ def test_a_pathological_bibliography_is_capped_and_says_so():
 def _captured_prefix(monkeypatch, node_module, node, state):
     """Run one agent node against the fake LLM, returning its cached prefix."""
     seen: dict = {}
-    real = node_module.invoke_structured
-
-    def fake_invoke(llm, schema, config, system, user, *, cached_prefix=None, **kw):
-        seen["prefix"] = cached_prefix
-        seen["user"] = user
-        return real(llm, schema, config, system, user, cached_prefix=cached_prefix, **kw)
-
     _patch_llms(monkeypatch)
-    monkeypatch.setattr(node_module, "invoke_structured", fake_invoke)
+    for helper_name in ("invoke_structured", "invoke_structured_after_tools"):
+        if not hasattr(node_module, helper_name):
+            continue
+        real = getattr(node_module, helper_name)
+
+        def fake_invoke(
+            llm, schema, config, system, user, *args, cached_prefix=None,
+            _real=real, **kw,
+        ):
+            seen["prefix"] = cached_prefix
+            seen["user"] = user
+            return _real(
+                llm, schema, config, system, user, *args,
+                cached_prefix=cached_prefix, **kw,
+            )
+
+        monkeypatch.setattr(node_module, helper_name, fake_invoke)
     result = node(state)
     assert not result.get("errors"), result.get("errors")
     return seen

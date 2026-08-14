@@ -478,11 +478,14 @@ def _nodes(**kw):
     return set(build_graph(get_config(**kw)).get_graph().nodes)
 
 
-def test_first_round_graph_is_unchanged():
+def test_first_round_graph_has_one_synthesis_layer():
     nodes = _nodes()
     assert "audit_revision_compliance" not in nodes
     assert "response_verifier" not in nodes
-    assert "author_rebuttal" in nodes
+    assert "author_rebuttal" not in nodes
+    assert "meta_reviewer" not in nodes
+    assert "gap_finder" not in nodes
+    assert "editor" in nodes
     assert not is_revision(get_config())
 
 
@@ -490,10 +493,9 @@ def test_revision_adds_the_compliance_auditor():
     assert "audit_revision_compliance" in _nodes(revision_of="j1")
 
 
-def test_author_statement_swaps_rebuttal_for_the_verifier():
+def test_author_statement_adds_the_verifier_without_a_simulated_rebuttal():
     nodes = _nodes(revision_of="j1", author_statement_path="letter.md")
     assert "response_verifier" in nodes
-    # The simulated rebuttal gives way to the real letter.
     assert "author_rebuttal" not in nodes
 
 

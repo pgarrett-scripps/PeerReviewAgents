@@ -361,12 +361,15 @@ def test_a_stopped_run_is_not_a_rejection():
     assert issubclass(loader.ManuscriptUnreadable, RuntimeError)
 
 
-def test_degraded_passes_the_default_gate():
+def test_degraded_stops_at_the_default_gate():
+    import pytest
+
     from peerreviewagents.ingest import loader
 
     record = _ingest(_DEGRADED)
     assert prose.verdict_of(record) == prose.DEGRADED
-    loader.require_readable(record, {})  # does not raise
+    with pytest.raises(loader.ManuscriptUnreadable):
+        loader.require_readable(record, {})
 
 
 def test_the_gate_can_be_tightened_to_degraded():
@@ -396,8 +399,8 @@ def test_an_unmeasured_manuscript_passes():
 def test_a_nonsense_gate_value_falls_back_to_the_default():
     from peerreviewagents.ingest import loader
 
-    assert loader.conversion_gate({"conversion_gate": "yes please"}) == "broken"
-    assert loader.conversion_gate(None) == "broken"
+    assert loader.conversion_gate({"conversion_gate": "yes please"}) == "degraded"
+    assert loader.conversion_gate(None) == "degraded"
 
 
 # --- the advisory: damage short of the gate is named to the panel ----------

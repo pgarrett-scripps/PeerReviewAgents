@@ -11,7 +11,7 @@ from __future__ import annotations
 from ...observability import node_context
 from ..schemas import DebateOutput
 from ..utils.agent_states import ReviewState
-from ..utils.agent_utils import manuscript_block
+from ..utils.agent_utils import context_block
 from ..utils.llm import make_llm
 from ..utils.structured import invoke_structured
 
@@ -78,19 +78,16 @@ def make_debate_node(role: str, stance: str):
                 f"Make your argument for this round (round {rnd})."
             )
             try:
-                # Manuscript goes as cached_prefix — the bare block, identical
-                # across every debate turn and shared with the rebuttal and
-                # the scout, so a turn lands a prompt-cache hit rather than
-                # paying full input-token price. (The reviewers' prefix leads
-                # with the journal/strictness directives, so it is a separate
-                # cache entry.)
+                # Use the exact manuscript + directive prefix already warmed
+                # by the desk and panel. A bare-manuscript variant creates a
+                # second large cache entry for no semantic benefit.
                 result = invoke_structured(
                     llm,
                     DebateOutput,
                     config,
                     system,
                     user,
-                    cached_prefix=manuscript_block(state),
+                    cached_prefix=context_block(state),
                 )
             except Exception as exc:  # noqa: BLE001
                 update: dict = {"errors": [f"{role} failed: {exc}"]}

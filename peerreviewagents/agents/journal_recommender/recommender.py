@@ -1,7 +1,7 @@
 """Journal recommender node.
 
-Takes the manuscript title/abstract, the panel's verdict, the meta-review,
-and the editor's required revisions; returns a tiered set of venue
+Takes the manuscript, the panel's verdict, and the editor's required
+revisions; returns a tiered set of venue
 suggestions (as-is / after-revision / alternative) via the structured-output
 path. LLM knowledge only — no literature search — so this adds one LLM
 call and no external API dependencies.
@@ -12,7 +12,7 @@ from __future__ import annotations
 from ...observability import node_context
 from ..schemas import JournalRecommendationsOutput
 from ..utils.agent_states import ReviewState
-from ..utils.agent_utils import manuscript_block, score_summary
+from ..utils.agent_utils import context_block, score_summary
 from ..utils.llm import make_llm
 from ..utils.structured import invoke_structured
 
@@ -44,7 +44,6 @@ def _run(state: ReviewState) -> dict:
     reviewer_names = ", ".join(r.get("reviewer", "?") for r in state.get("reports") or [])
     decision = state.get("decision") or "(no decision)"
     decision_letter = state.get("decision_letter") or "(no decision letter)"
-    meta_review = state.get("meta_review") or "(no meta-review)"
 
     journal = (state.get("journal_block") or "").strip()
     target_block = (
@@ -63,7 +62,6 @@ def _run(state: ReviewState) -> dict:
         f"Numerical signal:\n{score_summary(state)}\n\n"
         f"Editor's final decision: {decision}\n\n"
         f"Editor's decision letter:\n{decision_letter}\n\n"
-        f"Meta-review (synthesis):\n{meta_review}\n\n"
         "Produce three buckets of venue suggestions:\n"
         "  - as_is: where this paper is realistic at its current quality (matching "
         "the editor's verdict). If the verdict is 'reject', leave this empty.\n"
@@ -75,18 +73,14 @@ def _run(state: ReviewState) -> dict:
         "be candid about acceptance odds at that venue given the verdict."
     )
     try:
-        # Full manuscript as the cached prefix — byte-identical to the
-        # debate/rebuttal block, so it can land a prompt-cache hit. The
-        # scout's own target-venue framing lives in the user prompt, so we
-        # send the bare manuscript here (not context_block) to avoid
-        # duplicating the journal directive.
+        # Reuse the exact prefix already warmed by the desk, panel and debate.
         result = invoke_structured(
             llm,
             JournalRecommendationsOutput,
             config,
             _SYS,
             user,
-            cached_prefix=manuscript_block(state),
+            cached_prefix=context_block(state),
         )
     except Exception as exc:  # noqa: BLE001
         return {

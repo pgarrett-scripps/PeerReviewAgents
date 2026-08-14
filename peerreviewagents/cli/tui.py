@@ -115,8 +115,6 @@ class ReviewApp(App):
         ),
         ("advocate", "Debate · Advocate"),
         ("skeptic", "Debate · Skeptic"),
-        ("meta_reviewer", "Meta-reviewer"),
-        ("author_rebuttal", "Author rebuttal"),
         ("editor", "Editor-in-Chief"),
         ("journal_recommender", "Journal Scout"),
     )

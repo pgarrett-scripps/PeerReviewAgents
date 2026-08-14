@@ -565,8 +565,6 @@ Each run writes to `reports/<timestamp>-<slug>/`:
 - `audit_revision_compliance.md`: per-item required-revision compliance (revision rounds)
 - `author_response_verification.md`: adjudicated author letter (when one was supplied)
 - `debate_transcript.md`: full advocate/skeptic transcript
-- `meta_review.md`: Area Chair synthesis
-- `author_rebuttal.md`: author's defense
 - `decision_letter.md`: Editor-in-Chief verdict + required revisions
 - `journal_recommendations.md`: tiered venue suggestions (as-is / after-revision / alternative)
 - `summary.md`: one-page roll-up with the verdict badge + target venue + per-reviewer scores + cost

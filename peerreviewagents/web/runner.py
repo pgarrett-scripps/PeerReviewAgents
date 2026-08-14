@@ -33,8 +33,7 @@ _VALID_DECISIONS = {"accept", "minor", "major", "reject"}
 # hours of finished per-agent work used to be discarded because the crash
 # came after the panel but before a valid decision.
 _SALVAGEABLE_KEYS = (
-    "reports", "audits", "debate", "meta_review", "desk_screen",
-    "author_rebuttal", "decision_letter",
+    "reports", "audits", "debate", "desk_screen", "decision_letter",
 )
 
 
@@ -65,8 +64,6 @@ _NODE_PHASE = {
     "desk_screen": "decision",
     "advocate": "debate",
     "skeptic": "debate",
-    "meta_reviewer": "synthesis",
-    "author_rebuttal": "synthesis",
     "editor": "decision",
     "journal_recommender": "recommend",
 }
@@ -320,7 +317,7 @@ def _agent_from_error(err: str) -> str | None:
     """Map an accumulated error string back to a sprite/agent name.
 
     Agents format their failures as ``"<who> failed: <exc>"`` where ``<who>``
-    is either a layout node name (``meta_reviewer``, ``editor``, ``advocate``…)
+    is either a layout node name (``editor``, ``advocate``…)
     or ``"<name> reviewer"`` for the specialist fan-out. Returns ``None`` for
     anything we can't confidently attribute (e.g. pipeline-level crashes).
     """
@@ -394,11 +391,6 @@ def _finished_body(job: JobState, agent: str) -> tuple[str | None, dict[str, Any
         return body, {"rounds": len(turns)}
     if agent == "desk_screen":
         return _desk_screen_body(state)
-    if agent == "meta_reviewer":
-        body = state.get("meta_review")
-        return body, {"draft_recommendation": state.get("draft_recommendation")}
-    if agent == "author_rebuttal":
-        return state.get("author_rebuttal"), None
     if agent == "editor":
         return state.get("decision_letter"), {"decision": state.get("decision")}
     if agent == "journal_recommender":

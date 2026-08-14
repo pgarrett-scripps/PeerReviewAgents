@@ -15,7 +15,7 @@ from peerreviewagents.observability import (
     node_usage,
     reset_cache_totals,
 )
-from peerreviewagents.reports import _usage_table
+from peerreviewagents.reports import _cache_line, _usage_table
 
 RUN = "test-run-usage"
 
@@ -108,6 +108,20 @@ def test_totals_sum_the_rows():
     )
     assert "| 40 |" in total and "| 4 |" in total and "0.3000" in total
     assert "| 50% |" in total
+
+
+def test_summary_cache_rate_uses_total_input_as_its_denominator():
+    usage("a", input_tokens=80, cache_read_tokens=20)
+    usage("b", input_tokens=20)
+    line = _cache_line({"config": {"run_id": RUN}})
+    assert "20% of 100 input tokens served from cache" in line
+
+
+def test_missing_cache_write_telemetry_does_not_claim_a_full_hit():
+    usage("a", input_tokens=100, cache_read_tokens=39, cache_write_tokens=0)
+    line = _cache_line({"config": {"run_id": RUN}})
+    assert "39%" in line
+    assert "100%" not in line
 
 
 # --- attribution ------------------------------------------------------------

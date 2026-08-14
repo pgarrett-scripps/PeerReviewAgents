@@ -159,15 +159,13 @@ class ManuscriptUnreadable(RuntimeError):
 def conversion_gate(config: dict | None = None) -> str:
     """Resolve the conversion-health gate: ``"broken"`` | ``"degraded"`` | ``"off"``.
 
-    Default ``"broken"``. The calibration corpus found no middle ground —
-    healthy conversions score 0.0 fused tokens per 1000 words and broken ones
-    score 22.8 — so stopping at ``broken`` costs nothing on a readable paper
-    and saves a full panel on an unreadable one. ``degraded`` is for callers
-    who would rather resubmit than read around damage; ``off`` restores the
-    prior behaviour of reviewing whatever arrives.
+    Default ``"degraded"``: a review is not publishable when section or
+    bibliography loss makes the panel's source unreliable. ``off`` is the
+    explicit override for callers that have inspected the conversion and
+    intentionally want the panel to read it anyway.
     """
-    raw = str((config or {}).get("conversion_gate") or "broken").lower().strip()
-    return raw if raw in ("broken", "degraded", "off") else "broken"
+    raw = str((config or {}).get("conversion_gate") or "degraded").lower().strip()
+    return raw if raw in ("broken", "degraded", "off") else "degraded"
 
 
 def require_readable(ingest: dict | None, config: dict | None = None) -> None:

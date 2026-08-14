@@ -7,7 +7,7 @@ import os
 import re
 
 from .agents.utils.agent_states import ReviewState
-from .observability import cache_totals, node_usage
+from .observability import node_usage
 
 _VERDICT_LABEL = {
     "accept": "Accept",
@@ -55,12 +55,6 @@ def write_reports(state: ReviewState) -> str:
         _write(run_dir, "author_response_verification.md", state["response_verification"])
     if state.get("desk_screen"):
         _write(run_dir, "desk_screen.md", state["desk_screen"])
-    if state.get("panel_gaps"):
-        _write(run_dir, "panel_gaps.md", state["panel_gaps"])
-    if state.get("meta_review"):
-        _write(run_dir, "meta_review.md", state["meta_review"])
-    if state.get("author_rebuttal"):
-        _write(run_dir, "author_rebuttal.md", state["author_rebuttal"])
     if state.get("decision_letter"):
         _write(run_dir, "decision_letter.md", state["decision_letter"])
     if state.get("journal_recommendations"):
@@ -422,13 +416,19 @@ def _cache_line(state: ReviewState) -> str:
     same. Reported as tokens rather than dollars because the panel spans model
     tiers and a token count is the thing you can compare across runs.
     """
-    read, written = cache_totals(state["config"].get("run_id", ""))
-    if not read and not written:
+    rows = node_usage(state["config"].get("run_id", ""))
+    input_tokens = sum(row[0] for row in rows.values())
+    read = sum(row[2] for row in rows.values())
+    written = sum(row[3] for row in rows.values())
+    if not input_tokens and not read and not written:
         return ""
-    total = read + written
+    # Cache writes are a subset of input tokens, not the denominator. Some
+    # providers report reads but no writes; read/(read+write) then lies and
+    # prints 100% even when most input was billed uncached.
+    hit_rate = read / input_tokens if input_tokens else 0.0
     return (
         f"**Prompt cache:** {read:,} tokens read, {written:,} written "
-        f"({read / total:.0%} served from cache)"
+        f"({hit_rate:.0%} of {input_tokens:,} input tokens served from cache)"
     )
 
 

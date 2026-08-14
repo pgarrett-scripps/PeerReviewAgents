@@ -26,7 +26,7 @@ def make_desk_route(targets: list[str]):
 
 
 def should_continue_debate(state: ReviewState) -> str:
-    """After the skeptic closes a round, loop or move to synthesis."""
+    """After the skeptic closes a round, loop or move to the editor."""
     rounds_done = state.get("debate_round", 0)
     max_rounds = state["config"].get("max_debate_rounds", 2)
-    return "advocate" if rounds_done < max_rounds else "meta_reviewer"
+    return "advocate" if rounds_done < max_rounds else "editor"

@@ -92,8 +92,6 @@ const BLURBS = {
     audit_citation_integrity:  'Do the citations resolve and support their claims?',
     advocate:                  'Argues the strongest case for acceptance.',
     skeptic:                   'Tests whether the flaws are fatal or fixable.',
-    meta_reviewer:             'Synthesises the panel + debate into one call.',
-    author_rebuttal:           'Plays author; fixable vs. disputable critiques.',
     editor:                    'Weighs it all; writes the decision letter.',
     journal_recommender:       'Recommends tiered venues for the verdict.',
 };
