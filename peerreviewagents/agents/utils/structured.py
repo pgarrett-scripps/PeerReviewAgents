@@ -51,6 +51,17 @@ from .agent_utils import (
 _MAX_PROVIDER_ATTEMPTS = 3
 _RETRY_BACKOFF_S = 2.0
 
+# How many times to ask a model to fix an answer the schema rejected. This is
+# a different failure from the transport retries above: the call succeeded and
+# the content was wrong.
+#
+# Three, because the failure is stochastic rather than deterministic — the same
+# manuscript on the same model lost two reviewers on one run and none on the
+# next — and because the cost is lopsided. A repair round is a fraction of a
+# cent; the alternative is a verdict decided by seven reviewers with no note of
+# which one is missing.
+_MAX_REPAIR_ROUNDS = 3
+
 
 @dataclass(frozen=True)
 class StructuredResult:
@@ -212,46 +223,64 @@ def _try_structured(
     if parsed is not None:
         return StructuredResult(instance=parsed, cost=cost)
 
-    # Retry once with a sharper prompt; some models miss the schema on
-    # the first try when the user prompt is long.
+    # Ask again quoting the validator's own complaint, and keep asking, up to
+    # _MAX_REPAIR_ROUNDS times.
     #
-    # The retry quotes the validator's own complaint. Saying only "that was
-    # not valid" asks the model to guess which of a dozen fields was wrong,
-    # and on a semantic constraint it cannot guess: a reviewer that returns a
-    # null score with no reason reads "strictly matching the schema" as a
-    # formatting note, returns the same null, and its entire review — summary,
-    # strengths, weaknesses, questions, already written and paid for — is
-    # thrown away. Observed live on three of eight reviewers in one run.
-    retry_msg = HumanMessage(content=(
-        f"Your previous response did not produce a valid {schema.__name__}. "
-        f"The validation error was:\n\n{_parsing_error(result)}\n\n"
-        "Respond again with the whole object, fixing exactly that. Keep the "
-        "rest of your answer as it was. No prose, no extra fields."
-    ))
-    # "Keep the rest of your answer as it was" is only satisfiable if the
-    # model can see what it was. The retry used to send the original
-    # conversation with the correction alone appended — no rejected turn in
-    # it — so "your previous response" pointed at nothing and every retry was
-    # a blind full regeneration of an answer already written and paid for.
-    result2 = _invoke_with_retries(
-        structured, messages + _rejected_turn(result) + [retry_msg]
-    )
-    parsed2, cost2 = _unpack(result2)
-    if parsed2 is not None:
-        return StructuredResult(instance=parsed2, cost=cost + cost2)
-
-    repaired = _repair_abstention(llm, schema, result2)
-    if repaired is not None:
-        return StructuredResult(
-            instance=repaired.instance, cost=cost + cost2 + repaired.cost
+    # Quoting the error is what makes the ask answerable. "That was not valid"
+    # asks the model to guess which of a dozen fields was wrong, and on a
+    # semantic constraint it cannot guess: a reviewer that returns a null score
+    # with no reason reads "strictly matching the schema" as a formatting note,
+    # returns the same null, and its entire review — summary, strengths,
+    # weaknesses, questions, already written and paid for — is thrown away.
+    # Observed live on three of eight reviewers in one run.
+    #
+    # Asking more than once is what makes it reliable. This failure is
+    # stochastic, not deterministic: the same manuscript, on the same model,
+    # on the same code, lost data_analysis and methodology on one run and kept
+    # all eight reviewers on the next. Meeting a coin flip with a single
+    # re-ask leaves a quarter of the bad flips unrecovered, and the cost is
+    # asymmetric — a repair round is a fraction of a cent, while the failure
+    # decides the paper on seven reviewers and never says which one is absent
+    # from its reasoning.
+    #
+    # Bounded, because a model that cannot satisfy a constraint in three tries
+    # will not satisfy it in ten; the abstention repair and the salvage below
+    # are the honest fallbacks for that case.
+    total = cost
+    for _ in range(_MAX_REPAIR_ROUNDS):
+        retry_msg = HumanMessage(content=(
+            f"Your previous response did not produce a valid {schema.__name__}. "
+            f"The validation error was:\n\n{_parsing_error(result)}\n\n"
+            "Respond again with the whole object, fixing exactly that. Keep the "
+            "rest of your answer as it was. No prose, no extra fields."
+        ))
+        # "Keep the rest of your answer as it was" is only satisfiable if the
+        # model can see what it was. The retry used to send the original
+        # conversation with the correction alone appended — no rejected turn in
+        # it — so "your previous response" pointed at nothing and every retry
+        # was a blind full regeneration of an answer already written and paid
+        # for. Each round replays the most recent rejection, not the first.
+        result = _invoke_with_retries(
+            structured, messages + _rejected_turn(result) + [retry_msg]
         )
+        parsed, round_cost = _unpack(result)
+        total += round_cost
+        if parsed is not None:
+            return StructuredResult(instance=parsed, cost=total)
 
-    salvaged = _salvage(schema, result2)
+    repaired = _repair_abstention(llm, schema, result)
+    if repaired is not None:
+        return StructuredResult(instance=repaired.instance, cost=total + repaired.cost)
+
+    salvaged = _salvage(schema, result)
     if salvaged is not None:
-        return StructuredResult(instance=salvaged, cost=cost + cost2)
+        return StructuredResult(instance=salvaged, cost=total)
 
-    err = _parsing_error(result2)
-    raise ValueError(f"structured-output validation failed after retry: {err}")
+    err = _parsing_error(result)
+    raise ValueError(
+        f"structured-output validation failed after {_MAX_REPAIR_ROUNDS} "
+        f"repair attempts: {err}"
+    )
 
 
 def _rejected_turn(result: Any) -> list:

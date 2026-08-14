@@ -144,7 +144,14 @@ class _Chain:
 
     def invoke(self, messages, **_kwargs):
         self.invocations.append(list(messages))
-        return self._scripted.pop(0)
+        # Once the script runs out, keep returning its last line. The repair
+        # loop asks up to _MAX_REPAIR_ROUNDS times, and a test that scripts two
+        # failures is describing a model that keeps failing — not one that runs
+        # out of opinions on the third ask. Popping past the end raised
+        # IndexError, turning "this input is unrecoverable" into a crash.
+        if len(self._scripted) > 1:
+            return self._scripted.pop(0)
+        return self._scripted[0]
 
 
 def _ok(instance):
@@ -176,7 +183,7 @@ def test_invoke_structured_retry_then_success():
 
 def test_invoke_structured_double_failure_raises():
     llm = _StubLLM([_fail("bad json"), _fail("still bad")])
-    with pytest.raises(ValueError, match="validation failed after retry"):
+    with pytest.raises(ValueError, match="validation failed after 3 repair attempts"):
         invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
 
 
@@ -240,15 +247,15 @@ def test_truncated_response_still_raises():
     """Half a review is not a review — the fix for that one is the token cap."""
     cut = AIMessage(content='{"confidence": 4, "summary": "The manuscri')
     llm = _StubLLM([_fail_with(cut), _fail_with(cut)])
-    with pytest.raises(ValueError, match="validation failed after retry"):
+    with pytest.raises(ValueError, match="validation failed after 3 repair attempts"):
         invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
 
 
 def test_salvage_does_not_touch_a_scored_review():
     """Rejected for some other reason; not ours to second-guess."""
     scored = dict(_ABSTAINED, score=9)
-    llm = _StubLLM([_fail_with(_tool_call(scored)), _fail_with(_tool_call(scored))])
-    with pytest.raises(ValueError, match="validation failed after retry"):
+    llm = _StubLLM([_fail_with(_tool_call(scored))] * 4)
+    with pytest.raises(ValueError, match="validation failed after 3 repair attempts"):
         invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
 
 
@@ -267,6 +274,8 @@ def test_repair_recovers_the_score_the_review_implies():
     from peerreviewagents.agents.utils.structured import _ScoreRepair
 
     llm = _StubLLM([
+        _fail_with(_tool_call(_ABSTAINED)),
+        _fail_with(_tool_call(_ABSTAINED)),
         _fail_with(_tool_call(_ABSTAINED)),
         _fail_with(_tool_call(_ABSTAINED)),
         _ok(_ScoreRepair(score=2)),
@@ -290,6 +299,8 @@ def test_repair_accepts_a_reason_instead_of_a_score():
     llm = _StubLLM([
         _fail_with(_tool_call(_ABSTAINED)),
         _fail_with(_tool_call(_ABSTAINED)),
+        _fail_with(_tool_call(_ABSTAINED)),
+        _fail_with(_tool_call(_ABSTAINED)),
         _ok(_ScoreRepair(not_applicable_reason=reason)),
     ])
     result = invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
@@ -305,6 +316,8 @@ def test_failed_repair_falls_back_to_the_unexplained_abstention():
     llm = _StubLLM([
         _fail_with(_tool_call(_ABSTAINED)),
         _fail_with(_tool_call(_ABSTAINED)),
+        _fail_with(_tool_call(_ABSTAINED)),
+        _fail_with(_tool_call(_ABSTAINED)),
         _ok(_ScoreRepair()),
     ])
     result = invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
@@ -316,6 +329,8 @@ def test_repair_call_error_falls_back_to_the_unexplained_abstention():
     # Queue holds only the two failed reviews; the repair's own invoke hits an
     # empty script and raises. A repair that fails must cost the run nothing.
     llm = _StubLLM([
+        _fail_with(_tool_call(_ABSTAINED)),
+        _fail_with(_tool_call(_ABSTAINED)),
         _fail_with(_tool_call(_ABSTAINED)),
         _fail_with(_tool_call(_ABSTAINED)),
     ])
@@ -522,3 +537,56 @@ def test_call_budget_cap_answers_every_pending_tool_call():
         if isinstance(m, ToolMessage) and "not executed" in str(m.content)
     ]
     assert len(stubs) == model.per_round
+
+
+# ---------------------------------------------------------------------------
+# The repair loop asks more than once.
+#
+# The failure it exists for is stochastic, not deterministic: the same
+# manuscript on the same model lost data_analysis and methodology on one run
+# and kept all eight reviewers on the next. Meeting a coin flip with a single
+# re-ask leaves a quarter of the bad flips unrecovered, and each unrecovered
+# one is a verdict decided by seven reviewers with no note of which is absent.
+# ---------------------------------------------------------------------------
+
+
+def test_a_reviewer_recovered_on_the_third_ask_is_not_lost():
+    inst = ReviewerOutput(
+        score=3, confidence=3,
+        summary="The evaluation is thin but the design is sound.",
+    )
+    llm = _StubLLM([
+        _fail("bad json"),
+        _fail("still bad"),
+        _fail("bad again"),
+        _ok(inst),
+    ])
+    result = invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
+    assert result.instance is inst
+
+
+def test_each_repair_round_quotes_the_latest_error():
+    """The ask names what was wrong *this* time. A round that replays the
+    first rejection asks the model to fix something it already changed."""
+    inst = ReviewerOutput(
+        score=3, confidence=3,
+        summary="The evaluation is thin but the design is sound.",
+    )
+    llm = _StubLLM([_fail("first problem"), _fail("second problem"), _ok(inst)])
+    invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
+
+    asks = [
+        m[-1].content for m in llm.chain.invocations[1:]
+        if "did not produce a valid" in str(m[-1].content)
+    ]
+    assert "first problem" in asks[0]
+    assert "second problem" in asks[1]
+
+
+def test_the_repair_budget_is_bounded():
+    """A model that cannot satisfy the schema must not be asked forever."""
+    llm = _StubLLM([_fail("hopeless")])
+    with pytest.raises(ValueError, match="after 3 repair attempts"):
+        invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
+    # initial call + 3 repair rounds, and nothing more
+    assert len(llm.chain.invocations) == 4
