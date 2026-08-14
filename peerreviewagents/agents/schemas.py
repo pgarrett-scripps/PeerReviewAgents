@@ -939,16 +939,44 @@ class EditorDecisionOutput(BaseModel):
     decision: Verdict
     summary_of_evaluation: str = Field(
         ...,
-        description="Editor's synthesis of meta-review + rebuttal + numerical signal.",
+        description="Editor's synthesis of the reviewer reports, audits, "
+                    "debate, and numerical signal.",
     )
     required_revisions: list[str] = Field(
         default_factory=list,
-        description="Numbered, prioritized, actionable revision requirements.",
+        description="Numbered, prioritized, actionable revision requirements. "
+                    "Required (non-empty) whenever the decision is minor or "
+                    "major: each item one concrete, checkable demand.",
     )
     minor_suggestions: list[str] = Field(
         default_factory=list,
         description="Optional minor suggestions for the authors.",
     )
+
+    @model_validator(mode="after")
+    def _revision_verdicts_must_demand_something(self) -> "EditorDecisionOutput":
+        """A verdict that invites revision must say what the revision is.
+
+        The field description alone did not hold. Observed on a V4 Flash
+        batch: four of ten majors arrived with every demand folded into
+        summary_of_evaluation as prose and required_revisions empty. The
+        letter validated, the page published a five-line stub, and — the
+        real damage — round.json carried no asks, so a later revision round
+        would have had nothing for the compliance auditor to check the new
+        draft against. Rejecting the output makes the structured-output
+        layer ask again, which costs one retry and turns the instruction
+        into a constraint. Accept and reject legitimately carry no list:
+        one demands nothing, the other invites nothing.
+        """
+        if self.decision in ("minor", "major") and not self.required_revisions:
+            raise ValueError(
+                f"decision is {self.decision} but required_revisions is empty. "
+                "A minor or major verdict invites a revision, so the letter "
+                "must say what that revision is: pull every concrete demand "
+                "out of summary_of_evaluation into required_revisions, one "
+                "numbered, checkable item per demand, ordered by importance."
+            )
+        return self
 
     def to_markdown(self) -> str:
         parts: list[str] = [

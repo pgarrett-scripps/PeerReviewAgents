@@ -231,3 +231,28 @@ def test_same_second_same_title_runs_get_distinct_dirs(tmp_path, monkeypatch):
         assert rounds.resolve_run_dir(
             os.path.basename(d), {"output_dir": str(out_dir)}
         ) == d
+
+
+# --- a revision verdict must carry its demands --------------------------------
+
+
+def test_editor_schema_rejects_a_major_with_no_required_revisions():
+    """Observed on a V4 Flash batch: four of ten majors folded every demand
+    into summary prose and left required_revisions empty. The letter published
+    as a stub and round.json carried no asks for a later compliance audit.
+    The schema now rejects it so the structured-output layer asks again."""
+    with pytest.raises(ValueError, match="required_revisions is empty"):
+        EditorDecisionOutput(
+            decision="major",
+            summary_of_evaluation="Needs work, all described here in prose.",
+            required_revisions=[],
+        )
+
+
+def test_editor_schema_allows_accept_and_reject_without_revisions():
+    for verdict in ("accept", "reject"):
+        out = EditorDecisionOutput(
+            decision=verdict,
+            summary_of_evaluation="Settled either way.",
+        )
+        assert out.required_revisions == []
