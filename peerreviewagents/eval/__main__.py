@@ -10,6 +10,9 @@ Typical pilot (10 papers for agreement, 3 of them re-run for consistency):
     python -m peerreviewagents.eval run     --dir data/eval --repeats 1
     python -m peerreviewagents.eval run     --dir data/eval --repeats 3 --only ID1,ID2,ID3
     python -m peerreviewagents.eval metrics --dir data/eval
+
+For a publication comparison, see ``docs/EVALUATION.md`` and use ``compare``
+after running the same frozen corpus in ``system`` and ``single-llm`` modes.
 """
 
 from __future__ import annotations
@@ -31,7 +34,9 @@ def _runs_path(d: str) -> str:
 
 
 def _build_config(args) -> dict:
-    overrides: dict = {}
+    # Venue recommendation occurs after the decision and cannot affect any
+    # evaluation endpoint. Excluding it makes cost/latency comparisons honest.
+    overrides: dict = {"enable_journal_recommender": False}
     if getattr(args, "provider", None):
         overrides["provider"] = args.provider
     if getattr(args, "model", None):
@@ -48,6 +53,10 @@ def _build_config(args) -> dict:
         overrides["enable_debate"] = False
     if getattr(args, "debate_rounds", None) is not None:
         overrides["max_debate_rounds"] = args.debate_rounds
+    if getattr(args, "single_model", False):
+        overrides["single_model"] = True
+    if getattr(args, "offline", False):
+        overrides["research_enabled"] = False
     return get_config(config_path=getattr(args, "config", None), **overrides)
 
 
@@ -76,6 +85,85 @@ def cmd_fetch(args) -> int:
         scan_cap=scan_cap,
     )
     return 0 if items else 1
+
+
+def cmd_freeze(args) -> int:
+    from .corpus import verify_corpus_manifest, write_corpus_manifest
+
+    corpus_path = _corpus_path(args.dir)
+    if not os.path.exists(corpus_path):
+        print(f"No corpus at {corpus_path} — run `fetch` first.", file=sys.stderr)
+        return 1
+    manifest = write_corpus_manifest(
+        corpus_path,
+        frozen_manually=True,
+        leakage_note=args.leakage_note,
+    )
+    verified = verify_corpus_manifest(corpus_path)
+    print(f"Wrote and verified {manifest} ({verified['n_papers']} papers).")
+    return 0
+
+
+def cmd_plan(args) -> int:
+    """Preselect the repeatability subset before any model results exist."""
+    import json
+    import random
+
+    from .corpus import load_corpus, verify_corpus_manifest
+
+    corpus_path = _corpus_path(args.dir)
+    manifest = verify_corpus_manifest(corpus_path)
+    if manifest is None:
+        print("Corpus is not frozen — run `freeze` first.", file=sys.stderr)
+        return 1
+    corpus = load_corpus(corpus_path)
+    by_class = {
+        label: sorted(c.id for c in corpus if c.human_decision == label)
+        for label in ("accept", "reject")
+    }
+    n_accept = (args.repeat_papers + 1) // 2
+    n_reject = args.repeat_papers // 2
+    if len(by_class["accept"]) < n_accept or len(by_class["reject"]) < n_reject:
+        print("Not enough papers in both classes for the requested repeat subset.", file=sys.stderr)
+        return 1
+    rng = random.Random(args.seed)
+    repeat_ids = sorted(
+        rng.sample(by_class["accept"], n_accept) + rng.sample(by_class["reject"], n_reject)
+    )
+    protocol = {
+        "schema_version": 1,
+        "corpus_sha256": manifest["corpus_sha256"],
+        "primary_endpoint": "Spearman correlation with mean human rating",
+        "secondary_endpoints": [
+            "balanced accept/reject accuracy",
+            "Cohen's kappa",
+            "completion rate",
+            "cost and latency",
+            "repeat-run verdict agreement and score dispersion",
+        ],
+        "comparison": "full PeerReviewAgents vs single-LLM practical baseline",
+        "comparison_caveat": "not compute-matched and not a causal architecture ablation",
+        "bootstrap_samples": 2000,
+        "bootstrap_seed": 20260815,
+        "repeatability": {
+            "seed": args.seed,
+            "papers": repeat_ids,
+            "runs_per_paper": args.repeats,
+        },
+        "required_controls": [
+            "same provider and reasoning model",
+            "single_model=true",
+            "research_enabled=false",
+            "journal recommender disabled",
+            "one venue and pinned OpenReview rating field",
+        ],
+    }
+    out = args.out or os.path.join(args.dir, "protocol.json")
+    with open(out, "w", encoding="utf-8") as fh:
+        json.dump(protocol, fh, indent=2)
+    print(f"Wrote {out}")
+    print("Repeat subset for --only: " + ",".join(repeat_ids))
+    return 0
 
 
 def cmd_run(args) -> int:
@@ -168,6 +256,17 @@ def cmd_metrics(args) -> int:
     return 0
 
 
+def cmd_compare(args) -> int:
+    from .comparison import build_comparison, render_markdown, write_comparison
+
+    report = build_comparison(_corpus_path(args.dir), args.system_runs, args.baseline_runs)
+    print(render_markdown(report))
+    out = args.out or os.path.join(args.dir, "comparison")
+    json_path, md_path = write_comparison(report, out)
+    print(f"\nWrote {md_path} and {json_path}")
+    return 0
+
+
 def cmd_sweep(args) -> int:
     """Tabulate one metric across several runs files, one column per label.
 
@@ -245,12 +344,18 @@ def _add_config_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--desk-screen", action="store_true", dest="desk_screen",
                    help="enable the desk-screen triage gate")
     p.add_argument("--no-debate", action="store_true", dest="no_debate",
-                   help="ablate the advocate/skeptic debate (reviewers feed the "
-                        "meta-reviewer directly)")
+                   help="omit advocate/skeptic deliberation; the completed panel "
+                        "feeds the Editor-in-Chief directly")
     p.add_argument("--debate-rounds", type=int, dest="debate_rounds",
                    help="override max debate rounds (default 2)")
     p.add_argument("--leakage-note", default="",
                    help="free-text note stamped on every run's manifest")
+    p.add_argument("--single-model", action="store_true",
+                   help="force every full-workflow role to use reasoning_model; "
+                        "recommended for a controlled baseline comparison")
+    p.add_argument("--offline", action="store_true",
+                   help="disable literature-search tools; recommended to reduce "
+                        "outcome leakage during evaluation")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -272,13 +377,29 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument("--leakage-note", default="")
     f.set_defaults(func=cmd_fetch)
 
+    fr = sub.add_parser("freeze", help="fingerprint an existing corpus and every PDF")
+    fr.add_argument("--dir", default="data/eval", help="dir holding corpus.jsonl + pdfs/")
+    fr.add_argument("--leakage-note", default="",
+                    help="study-specific leakage assessment recorded in the manifest")
+    fr.set_defaults(func=cmd_freeze)
+
+    pl = sub.add_parser("plan", help="freeze endpoints and select a repeatability subset")
+    pl.add_argument("--dir", default="data/eval", help="dir holding a frozen corpus")
+    pl.add_argument("--repeat-papers", type=int, default=6,
+                    help="balanced number of papers to repeat (default 6)")
+    pl.add_argument("--repeats", type=int, default=3,
+                    help="total full-PRA runs per selected paper (default 3)")
+    pl.add_argument("--seed", type=int, default=20260815)
+    pl.add_argument("--out", help="protocol JSON path (default <dir>/protocol.json)")
+    pl.set_defaults(func=cmd_plan)
+
     r = sub.add_parser("run", help="review corpus papers into runs.jsonl (resumable)")
     r.add_argument("--dir", default="data/eval", help="dir holding corpus.jsonl")
     r.add_argument("--repeats", type=int, default=1, help="runs per paper to ensure exist")
     r.add_argument("--only", help="comma-separated paper ids to restrict to")
     r.add_argument("--mode", choices=("system", "single-llm"), default="system",
                    help="'system' = full pipeline (default); 'single-llm' = the "
-                        "one-call baseline ablation (one reviewer, no debate/rebuttal).")
+                        "one-call practical baseline (not compute-matched).")
     r.add_argument("--runs-out", dest="runs_out",
                    help="override the runs output path (single-llm defaults to a "
                         "model-namespaced runs_baseline_<model>.jsonl).")
@@ -291,6 +412,15 @@ def build_parser() -> argparse.ArgumentParser:
                                   "a runs_baseline_*.jsonl to score the baseline).")
     m.add_argument("--out", help="report path prefix (default <dir>/report)")
     m.set_defaults(func=cmd_metrics)
+
+    c = sub.add_parser("compare", help="paired full-PRA vs single-LLM report")
+    c.add_argument("--dir", default="data/eval", help="dir holding corpus.jsonl")
+    c.add_argument("--system-runs", required=True,
+                   help="full-workflow runs JSONL")
+    c.add_argument("--baseline-runs", required=True,
+                   help="single-LLM runs JSONL")
+    c.add_argument("--out", help="output prefix (default <dir>/comparison)")
+    c.set_defaults(func=cmd_compare)
 
     g = sub.add_parser("figure", help="render the agreement + consistency figure (SVG+PNG)")
     g.add_argument("--dir", default="data/eval", help="dir holding corpus.jsonl + runs.jsonl")

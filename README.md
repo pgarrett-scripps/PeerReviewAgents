@@ -631,6 +631,11 @@ A manuscript describing the system is in preparation, in a private companion
 repository alongside the evaluation analysis. It will be linked here on
 submission.
 
+The reproducible OpenReview comparison workflow, including corpus freezing,
+single-model/offline controls, a one-call practical baseline, bootstrap
+intervals, and paired reporting, is documented in
+[`docs/EVALUATION.md`](docs/EVALUATION.md).
+
 ## License
 
 MIT. See [`LICENSE`](LICENSE). Contributions are accepted under the same terms.

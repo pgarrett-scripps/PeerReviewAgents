@@ -9,9 +9,13 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from peerreviewagents.eval import corpus as C
 from peerreviewagents.eval import metrics as M
-from peerreviewagents.eval.runner import weighted_score
+from peerreviewagents.eval.comparison import build_comparison
+from peerreviewagents.eval.comparison import render_markdown as render_comparison
+from peerreviewagents.eval.runner import existing_keys, weighted_score
 from peerreviewagents.eval.schema import CorpusItem, RunRecord, config_digest
 
 # ---------- corpus extraction ----------------------------------------------
@@ -256,6 +260,73 @@ def test_config_digest_stable_and_selective():
     assert config_digest(a) != config_digest(c)   # provider matters
 
 
+def test_config_digest_includes_evaluation_controls():
+    base = {"provider": "openrouter", "reasoning_model": "m"}
+    assert config_digest(base) != config_digest({**base, "single_model": True})
+    assert config_digest(base) != config_digest({**base, "research_enabled": False})
+    assert config_digest(base) != config_digest({**base, "enable_journal_recommender": False})
+
+
+def test_resume_refuses_changed_config_or_mode(tmp_path):
+    runs = tmp_path / "runs.jsonl"
+    config = {"provider": "p", "reasoning_model": "m", "research_enabled": False}
+    _write_runs(runs, [
+        RunRecord("p1", 0, True, "accept", 4, manifest={
+            "config_digest": config_digest(config), "mode": "system",
+        }),
+    ])
+    assert existing_keys(str(runs), config=config, mode="system") == {("p1", 0)}
+    with pytest.raises(ValueError, match="requested config"):
+        existing_keys(str(runs), config={**config, "research_enabled": True}, mode="system")
+    with pytest.raises(ValueError, match="not single-llm"):
+        existing_keys(str(runs), config=config, mode="single-llm")
+
+    # Failed attempts remain in the report, so they must not come from another
+    # configuration either.
+    _write_runs(runs, [
+        RunRecord("p1", 0, False, None, None, manifest={
+            "config_digest": "other", "mode": "system",
+        }),
+    ])
+    with pytest.raises(ValueError, match="requested config"):
+        existing_keys(str(runs), config=config, mode="system")
+
+
+def test_resume_refuses_changed_frozen_corpus(tmp_path):
+    runs = tmp_path / "runs.jsonl"
+    config = {"provider": "p", "reasoning_model": "m"}
+    _write_runs(runs, [
+        RunRecord("p1", 0, True, "accept", 4, manifest={
+            "config_digest": config_digest(config),
+            "mode": "system",
+            "corpus_sha256": "old-corpus",
+        }),
+    ])
+    with pytest.raises(ValueError, match="currently frozen corpus"):
+        existing_keys(
+            str(runs), config=config, mode="system", corpus_sha256="new-corpus",
+        )
+
+
+def test_corpus_manifest_detects_pdf_and_label_drift(tmp_path):
+    pdf_dir = tmp_path / "pdfs"
+    pdf_dir.mkdir()
+    pdf = pdf_dir / "p1.pdf"
+    pdf.write_bytes(b"fake-pdf-v1")
+    corpus_path = tmp_path / "corpus.jsonl"
+    _write_corpus(corpus_path, [
+        CorpusItem(id="p1", title="A", pdf_path="pdfs/p1.pdf",
+                   human_mean=8.0, human_decision="accept"),
+    ])
+    manifest = C.write_corpus_manifest(str(corpus_path), venue="test")
+    assert manifest.endswith("corpus_manifest.json")
+    assert C.verify_corpus_manifest(str(corpus_path))["n_papers"] == 1
+
+    pdf.write_bytes(b"fake-pdf-v2")
+    with pytest.raises(RuntimeError, match="PDF changed"):
+        C.verify_corpus_manifest(str(corpus_path))
+
+
 # ---------- report assembly (synthetic corpus + runs) ------------------------
 
 
@@ -300,7 +371,9 @@ def test_agreement_and_consistency_end_to_end(tmp_path):
     assert agr["n_scored_papers"] == 3
     assert agr["score_spearman"] == 1.0
     assert agr["decision_accuracy"] == 1.0
+    assert agr["decision_balanced_accuracy"] == 1.0
     assert agr["decision_cohen_kappa"] == 1.0
+    assert agr["confidence_intervals"]["decision_accuracy"] == [1.0, 1.0]
 
     # only p1 has multiple runs; not unanimous (accept,accept,minor)
     assert con["n_papers_multi_run"] == 1
@@ -363,6 +436,64 @@ def test_mixed_config_pooling_gets_a_loud_warning(tmp_path):
     ])
     md = M.render_markdown(M.build_report(str(corpus_path), str(runs_path)))
     assert "MIXED CONFIGS" not in md
+
+
+def test_per_run_manifest_timestamps_do_not_create_fake_mixed_configs(tmp_path):
+    corpus_path = tmp_path / "corpus.jsonl"
+    runs_path = tmp_path / "runs.jsonl"
+    _write_corpus(corpus_path, [
+        CorpusItem(id="p1", title="A", pdf_path="x", human_mean=8, human_decision="accept"),
+        CorpusItem(id="p2", title="B", pdf_path="x", human_mean=2, human_decision="reject"),
+    ])
+    common = {"config_digest": "same", "provider": "p", "model": "m", "mode": "system"}
+    _write_runs(runs_path, [
+        RunRecord("p1", 0, True, "accept", 4, manifest={**common, "created_at": 1.0}),
+        RunRecord("p2", 0, True, "reject", 2, manifest={**common, "created_at": 2.0}),
+    ])
+    assert M.build_report(str(corpus_path), str(runs_path))["distinct_configs"] == 1
+
+
+def test_paired_comparison_reports_delta_and_compute_caveat(tmp_path):
+    corpus_path = tmp_path / "corpus.jsonl"
+    system_path = tmp_path / "system.jsonl"
+    baseline_path = tmp_path / "baseline.jsonl"
+    _write_corpus(corpus_path, [
+        CorpusItem(id="p1", title="A", pdf_path="x", human_mean=8, human_decision="accept"),
+        CorpusItem(id="p2", title="B", pdf_path="x", human_mean=7, human_decision="accept"),
+        CorpusItem(id="p3", title="C", pdf_path="x", human_mean=3, human_decision="reject"),
+        CorpusItem(id="p4", title="D", pdf_path="x", human_mean=2, human_decision="reject"),
+    ])
+    system_manifest = {"model": "m", "provider": "p", "config_digest": "x", "mode": "system"}
+    baseline_manifest = {
+        "model": "m", "provider": "p", "config_digest": "x", "mode": "single-llm",
+    }
+    _write_runs(system_path, [
+        RunRecord("p1", 0, True, "accept", 5, cost_usd=2, latency_s=20,
+                  manifest=system_manifest),
+        RunRecord("p2", 0, True, "minor", 4, cost_usd=2, latency_s=20,
+                  manifest=system_manifest),
+        RunRecord("p3", 0, True, "major", 2, cost_usd=2, latency_s=20,
+                  manifest=system_manifest),
+        RunRecord("p4", 0, True, "reject", 1, cost_usd=2, latency_s=20,
+                  manifest=system_manifest),
+    ])
+    _write_runs(baseline_path, [
+        RunRecord("p1", 0, True, "accept", 4, cost_usd=.1, latency_s=2,
+                  manifest=baseline_manifest),
+        RunRecord("p2", 0, True, "reject", 2, cost_usd=.1, latency_s=2,
+                  manifest=baseline_manifest),
+        RunRecord("p3", 0, True, "minor", 4, cost_usd=.1, latency_s=2,
+                  manifest=baseline_manifest),
+        RunRecord("p4", 0, True, "reject", 1, cost_usd=.1, latency_s=2,
+                  manifest=baseline_manifest),
+    ])
+    with pytest.warns(UserWarning, match="No corpus_manifest"):
+        report = build_comparison(str(corpus_path), str(system_path), str(baseline_path))
+    assert report["n_common_papers"] == 4
+    assert report["paired_deltas_system_minus_single_llm"]["decision_accuracy"]["estimate"] > 0
+    md = render_comparison(report)
+    assert "not compute-matched causal ablation" in md
+    assert "Mean cost" in md
 
 
 # ---------- runner bookkeeping (fake graph, no LLM) ---------------------------
@@ -439,7 +570,6 @@ def test_old_run_records_without_weakness_fields_still_load():
 
 
 def test_figure_renders_svg_and_png(tmp_path):
-    import pytest
     pytest.importorskip("matplotlib")
     from peerreviewagents.eval.figure import make_figure
 

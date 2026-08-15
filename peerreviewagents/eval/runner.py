@@ -15,7 +15,7 @@ from typing import Any
 
 from ..graph.review_graph import PeerReviewGraph
 from .corpus import load_corpus
-from .schema import RunRecord, append_jsonl, build_manifest, read_jsonl
+from .schema import RunRecord, append_jsonl, build_manifest, config_digest, read_jsonl
 
 
 def weighted_score(reports: list[dict[str, Any]]) -> float | None:
@@ -35,7 +35,13 @@ def weighted_score(reports: list[dict[str, Any]]) -> float | None:
     return round(sum(r["score"] * r["confidence"] for r in scored) / total_w, 4)
 
 
-def existing_keys(runs_path: str) -> set[tuple[str, int]]:
+def existing_keys(
+    runs_path: str,
+    *,
+    config: dict[str, Any] | None = None,
+    mode: str | None = None,
+    corpus_sha256: str | None = None,
+) -> set[tuple[str, int]]:
     """(paper_id, repeat) pairs that already SUCCEEDED.
 
     Only ``ok`` runs count as done, so a transient failure (provider error,
@@ -43,7 +49,28 @@ def existing_keys(runs_path: str) -> set[tuple[str, int]]:
     that slot. Failed records stay in the file as a trail but are ignored here.
     """
     keys: set[tuple[str, int]] = set()
+    expected_digest = config_digest(config) if config is not None else None
     for d in read_jsonl(runs_path):
+        manifest = d.get("manifest") or {}
+        found_digest = manifest.get("config_digest")
+        found_mode = manifest.get("mode")
+        found_corpus = manifest.get("corpus_sha256")
+        if expected_digest is not None and found_digest != expected_digest:
+            raise ValueError(
+                f"{runs_path} already contains records for config "
+                f"{found_digest or 'unknown'}, not requested config {expected_digest}; "
+                "use a separate --runs-out file"
+            )
+        if mode is not None and found_mode != mode:
+            raise ValueError(
+                f"{runs_path} contains mode {found_mode or 'unknown'}, not {mode}; "
+                "use a separate --runs-out file"
+            )
+        if corpus_sha256 is not None and found_corpus != corpus_sha256:
+            raise ValueError(
+                f"{runs_path} contains corpus {found_corpus or 'unknown'}, not the "
+                f"currently frozen corpus {corpus_sha256}; use a separate --runs-out file"
+            )
         if d.get("ok"):
             keys.add((d.get("paper_id"), int(d.get("repeat", 0))))
     return keys
@@ -64,6 +91,10 @@ def run_batch(
     Returns the number of new runs performed. ``only`` restricts to a subset of
     paper ids (used for the consistency phase).
     """
+    from .corpus import verify_corpus_manifest
+
+    corpus_manifest = verify_corpus_manifest(corpus_path, warn_missing=True)
+    corpus_sha256 = corpus_manifest.get("corpus_sha256") if corpus_manifest else ""
     corpus = load_corpus(corpus_path)
     if only:
         wanted = set(only)
@@ -72,7 +103,9 @@ def run_batch(
         print("No corpus papers selected; nothing to do.")
         return 0
 
-    done = existing_keys(runs_path)
+    done = existing_keys(
+        runs_path, config=config, mode="system", corpus_sha256=corpus_sha256 or None,
+    )
     todo = [
         (item, rep)
         for item in corpus
@@ -90,7 +123,7 @@ def run_batch(
     for item, rep in todo:
         if verbose:
             print(f"\n→ {item.id} repeat {rep}: {item.title[:70]}")
-        record = _run_one(item, rep, config, leakage_note)
+        record = _run_one(item, rep, config, leakage_note, corpus_sha256=corpus_sha256)
         append_jsonl(runs_path, record.to_json())
         performed += 1
         if verbose:
@@ -101,8 +134,18 @@ def run_batch(
     return performed
 
 
-def _run_one(item, rep: int, config: dict[str, Any], leakage_note: str) -> RunRecord:
+def _run_one(
+    item,
+    rep: int,
+    config: dict[str, Any],
+    leakage_note: str,
+    *,
+    corpus_sha256: str = "",
+) -> RunRecord:
     manifest = build_manifest(config, venue=item.venue, leakage_note=leakage_note)
+    manifest_dict = manifest.to_dict()
+    manifest_dict["mode"] = "system"
+    manifest_dict["corpus_sha256"] = corpus_sha256
     t0 = time.time()
     try:
         state = PeerReviewGraph(config).review(item.pdf_path)
@@ -112,7 +155,7 @@ def _run_one(item, rep: int, config: dict[str, Any], leakage_note: str) -> RunRe
             system_decision=None, system_weighted_score=None,
             errors=[f"pipeline crashed: {exc}"],
             latency_s=round(time.time() - t0, 1),
-            manifest=manifest.to_dict(),
+            manifest=manifest_dict,
         )
 
     # Bookkeeping failures are recorded like graph failures, not raised: one
@@ -144,7 +187,7 @@ def _run_one(item, rep: int, config: dict[str, Any], leakage_note: str) -> RunRe
             cost_usd=round(float(state.get("total_cost") or 0.0), 4),
             latency_s=round(time.time() - t0, 1),
             errors=list(state.get("errors") or []),
-            manifest=manifest.to_dict(),
+            manifest=manifest_dict,
         )
     except Exception as exc:  # noqa: BLE001
         return RunRecord(
@@ -152,5 +195,5 @@ def _run_one(item, rep: int, config: dict[str, Any], leakage_note: str) -> RunRe
             system_decision=None, system_weighted_score=None,
             errors=[f"post-run bookkeeping failed: {exc}"],
             latency_s=round(time.time() - t0, 1),
-            manifest=manifest.to_dict(),
+            manifest=manifest_dict,
         )

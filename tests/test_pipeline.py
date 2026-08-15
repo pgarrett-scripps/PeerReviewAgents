@@ -106,7 +106,13 @@ _CANNED: dict[type, object] = {
     ),
     EditorDecisionOutput: EditorDecisionOutput(
         decision="major",
-        summary_of_evaluation="Strong methodology, weak generalization claim.",
+        summary_of_evaluation=(
+            "The panel agrees the methodology is sound and the measurements "
+            "carefully made, but the generalization claim reaches past the "
+            "single cluster the experiments cover. The skeptic's objection on "
+            "scope stands unanswered, and closing it needs either a narrowed "
+            "claim or a second cluster, so the verdict is major."
+        ),
         required_revisions=["Narrow the generalization claim or add a second cluster."],
         minor_suggestions=["Tighten the abstract."],
     ),

@@ -30,12 +30,18 @@ _DIGEST_KEYS = (
     "reasoning_model",
     "fast_model",
     "model",
+    "models",
+    "agent_models",
+    "single_model",
     "review_strictness",
     "article_type",
     "target_journal",
     "max_debate_rounds",
     "enable_debate",
+    "enable_journal_recommender",
     "desk_screen",
+    "research_enabled",
+    "temperature",
     "manuscript_char_budget",
 )
 

@@ -93,7 +93,12 @@ _CANNED: dict[type, object] = {
     ),
     EditorDecisionOutput: EditorDecisionOutput(
         decision="major",
-        summary_of_evaluation="Strong method, weak generalization.",
+        summary_of_evaluation=(
+            "The panel agrees the method is sound but the "
+            "generalization claim reaches past the evidence shown. The "
+            "scope objection stands unanswered, and closing it needs a "
+            "narrowed claim, so the verdict is major."
+        ),
         required_revisions=["Narrow the claim."],
     ),
     JournalRecommendationsOutput: JournalRecommendationsOutput(

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import statistics
 from collections import Counter
 from typing import Any
@@ -104,6 +105,48 @@ def confusion(pred: list[str], truth: list[str]) -> dict[str, int]:
     return out
 
 
+def balanced_accuracy(pred: list[str], truth: list[str]) -> float | None:
+    """Mean recall over accept and reject, undefined if either class is absent."""
+    recalls = []
+    for label in ("accept", "reject"):
+        idx = [i for i, value in enumerate(truth) if value == label]
+        if not idx:
+            return None
+        recalls.append(sum(pred[i] == label for i in idx) / len(idx))
+    return round(sum(recalls) / len(recalls), 4)
+
+
+def _percentile_interval(values: list[float], confidence: float = 0.95) -> list[float] | None:
+    if not values:
+        return None
+    values = sorted(values)
+    tail = (1.0 - confidence) / 2.0
+    lo = values[round(tail * (len(values) - 1))]
+    hi = values[round((1.0 - tail) * (len(values) - 1))]
+    return [round(lo, 4), round(hi, 4)]
+
+
+def _paired_bootstrap(
+    xs: list[Any],
+    ys: list[Any],
+    metric,
+    *,
+    samples: int,
+    seed: int,
+) -> list[float] | None:
+    """Deterministic nonparametric interval over paired paper-level records."""
+    if not xs or len(xs) != len(ys) or samples <= 0:
+        return None
+    rng = random.Random(seed)
+    values = []
+    for _ in range(samples):
+        idx = [rng.randrange(len(xs)) for _ in xs]
+        value = metric([xs[i] for i in idx], [ys[i] for i in idx])
+        if value is not None:
+            values.append(float(value))
+    return _percentile_interval(values)
+
+
 # ---------------------------------------------------------------------------
 # Report assembly
 # ---------------------------------------------------------------------------
@@ -111,6 +154,14 @@ def confusion(pred: list[str], truth: list[str]) -> dict[str, int]:
 
 def _records(runs_path: str) -> list[RunRecord]:
     return [RunRecord.from_dict(d) for d in read_jsonl(runs_path)]
+
+
+def _manifest_config_key(manifest: dict[str, Any]) -> tuple[Any, ...]:
+    """Result-affecting identity, excluding per-run timestamps and notes."""
+    return tuple(
+        manifest.get(key)
+        for key in ("config_digest", "provider", "model", "mode")
+    )
 
 
 def _first_ok_per_paper(records: list[RunRecord]) -> dict[str, RunRecord]:
@@ -129,7 +180,13 @@ def _ok_runs_per_paper(records: list[RunRecord]) -> dict[str, list[RunRecord]]:
     return out
 
 
-def compute_agreement(corpus_path: str, records: list[RunRecord]) -> dict[str, Any]:
+def compute_agreement(
+    corpus_path: str,
+    records: list[RunRecord],
+    *,
+    bootstrap_samples: int = 2000,
+    bootstrap_seed: int = 20260815,
+) -> dict[str, Any]:
     corpus = {c.id: c for c in load_corpus(corpus_path)}
     first = _first_ok_per_paper(records)
 
@@ -150,14 +207,39 @@ def compute_agreement(corpus_path: str, records: list[RunRecord]) -> dict[str, A
             truth.append(hb)
 
     acc = round(sum(1 for p, t in zip(pred, truth) if p == t) / len(pred), 4) if pred else None
+    bacc = balanced_accuracy(pred, truth)
+    intervals = {
+        "score_spearman": _paired_bootstrap(
+            sys_scores, hum_means, spearman,
+            samples=bootstrap_samples, seed=bootstrap_seed,
+        ),
+        "decision_accuracy": _paired_bootstrap(
+            pred, truth,
+            lambda p, t: sum(x == y for x, y in zip(p, t)) / len(p),
+            samples=bootstrap_samples, seed=bootstrap_seed + 1,
+        ),
+        "decision_balanced_accuracy": _paired_bootstrap(
+            pred, truth, balanced_accuracy,
+            samples=bootstrap_samples, seed=bootstrap_seed + 2,
+        ),
+        "decision_cohen_kappa": _paired_bootstrap(
+            pred, truth, cohen_kappa,
+            samples=bootstrap_samples, seed=bootstrap_seed + 3,
+        ),
+    }
     return {
         "n_scored_papers": len(sys_scores),
         "score_spearman": spearman(sys_scores, hum_means),
         "score_pearson": pearson(sys_scores, hum_means),
         "n_decision_papers": len(pred),
         "decision_accuracy": acc,
+        "decision_balanced_accuracy": bacc,
         "decision_cohen_kappa": cohen_kappa(pred, truth),
         "confusion": confusion(pred, truth),
+        "confidence_level": 0.95,
+        "bootstrap_samples": bootstrap_samples,
+        "bootstrap_seed": bootstrap_seed,
+        "confidence_intervals": intervals,
     }
 
 
@@ -196,14 +278,17 @@ def run_health(records: list[RunRecord]) -> dict[str, Any]:
         "ok_runs": len(ok),
         "failed_runs": len(records) - len(ok),
         "degraded_runs": len(degraded),
+        "success_fraction": round(len(ok) / len(records), 4) if records else None,
         "total_cost_usd": round(sum(r.cost_usd for r in records), 4),
         "mean_latency_s": round(statistics.mean([r.latency_s for r in records]), 1) if records else 0,
+        "mean_cost_per_ok_run_usd": round(statistics.mean([r.cost_usd for r in ok]), 4) if ok else None,
+        "mean_latency_per_ok_run_s": round(statistics.mean([r.latency_s for r in ok]), 1) if ok else None,
     }
 
 
 def build_report(corpus_path: str, runs_path: str) -> dict[str, Any]:
     records = _records(runs_path)
-    manifests = {tuple(sorted(r.manifest.items())) for r in records if r.manifest}
+    manifests = {_manifest_config_key(r.manifest) for r in records if r.manifest}
     return {
         "health": run_health(records),
         "agreement": compute_agreement(corpus_path, records),
@@ -223,6 +308,13 @@ def render_markdown(report: dict[str, Any]) -> str:
     h, a, c = report["health"], report["agreement"], report["consistency"]
     m = report.get("sample_manifest", {})
     cf = a["confusion"]
+    ci = a.get("confidence_intervals", {})
+
+    def estimate(name: str, value: Any) -> str:
+        interval = ci.get(name)
+        suffix = f" (95% CI {interval[0]}–{interval[1]})" if interval else ""
+        return f"{_fmt(value)}{suffix}"
+
     lines = [
         "# Evaluation Report",
         "",
@@ -247,14 +339,20 @@ def render_markdown(report: dict[str, Any]) -> str:
         "## Run health",
         f"- Total runs: {h['total_runs']}  (ok {h['ok_runs']}, failed {h['failed_runs']}, "
         f"degraded {h['degraded_runs']})",
+        f"- Successful-run fraction: {_fmt(h['success_fraction'])}",
         f"- Total cost: ${h['total_cost_usd']}  ·  mean latency: {h['mean_latency_s']}s",
+        f"- Per successful run: mean cost ${_fmt(h['mean_cost_per_ok_run_usd'])}  ·  "
+        f"mean latency {_fmt(h['mean_latency_per_ok_run_s'])}s",
         "",
         "## Agreement with human reviewers",
         f"- Scored papers: {a['n_scored_papers']}",
-        f"- Score correlation: Spearman ρ = {a['score_spearman']}, Pearson r = {a['score_pearson']}",
+        f"- Score correlation: Spearman ρ = {estimate('score_spearman', a['score_spearman'])}, "
+        f"Pearson r = {a['score_pearson']}",
         f"- Decision papers: {a['n_decision_papers']}",
-        f"- Decision accuracy: {_fmt(a['decision_accuracy'])}  ·  "
-        f"Cohen's κ = {_fmt(a['decision_cohen_kappa'])}",
+        f"- Decision accuracy: {estimate('decision_accuracy', a['decision_accuracy'])}",
+        f"- Balanced accuracy: "
+        f"{estimate('decision_balanced_accuracy', a['decision_balanced_accuracy'])}",
+        f"- Cohen's κ = {estimate('decision_cohen_kappa', a['decision_cohen_kappa'])}",
         f"- Confusion (pred__truth): "
         f"accept→accept {cf['accept__accept']}, accept→reject {cf['accept__reject']}, "
         f"reject→accept {cf['reject__accept']}, reject→reject {cf['reject__reject']}",

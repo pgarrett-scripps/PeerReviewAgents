@@ -1,17 +1,18 @@
-"""Single-LLM baseline: the degenerate one-call ablation of the full board.
+"""Single-LLM practical baseline for comparison with the full board.
 
-The whole thesis of PeerReviewAgents is that *structure* (a fan-out panel,
-a debate, a rebuttal, an editor) beats a single "review this paper" call.
-This module makes that comparison measurable: it reviews each corpus paper
+This module characterizes how the complete workflow differs from a common,
+low-cost alternative: one holistic "review this paper" call. It reviews each corpus paper
 with exactly one LLM call that collapses the panel + editor into a single
 holistic verdict — one reviewer, zero debate rounds, no rebuttal — and
 writes the same :class:`RunRecord` shape the full pipeline does, so the
 existing ``metrics`` / ``figure`` harness scores it unchanged.
 
-It is *not* a strawman: the single call sees the identical manuscript and
+The single call sees the identical manuscript and
 the identical venue / article-type / strictness conditioning the panel
-gets (via :func:`context_block` over the same initial state), so the only
-variable removed is the multi-agent structure itself.
+gets (via :func:`context_block` over the same initial state). It is not a
+compute-matched causal ablation: the full workflow uses more calls, tokens,
+roles, and synthesis. Reports must therefore present quality, cost, and latency
+together and describe this as a practical baseline comparison.
 
 Runs land in a separate, model-namespaced file (``runs_baseline_<model>.jsonl``)
 so several models can be benchmarked side by side without colliding on the
@@ -91,11 +92,19 @@ def baseline_runs_path(eval_dir: str, config: dict[str, Any]) -> str:
     return os.path.join(eval_dir, f"runs_baseline_{_model_slug(config)}.jsonl")
 
 
-def single_llm_review(item, rep: int, config: dict[str, Any], leakage_note: str) -> RunRecord:
+def single_llm_review(
+    item,
+    rep: int,
+    config: dict[str, Any],
+    leakage_note: str,
+    *,
+    corpus_sha256: str = "",
+) -> RunRecord:
     """One LLM call over one paper, returned as a pipeline-comparable RunRecord."""
     manifest = build_manifest(config, venue=item.venue, leakage_note=leakage_note)
     md = manifest.to_dict()
     md["mode"] = "single-llm"  # so a run file is never mistaken for a full-system one
+    md["corpus_sha256"] = corpus_sha256
     t0 = time.time()
     try:
         # Reuse the pipeline's own ingestion + conditioning so the single call
@@ -153,6 +162,10 @@ def run_baseline_batch(
     Mirrors :func:`peerreviewagents.eval.runner.run_batch` (same resume
     semantics) but swaps the full graph for one LLM call.
     """
+    from .corpus import verify_corpus_manifest
+
+    corpus_manifest = verify_corpus_manifest(corpus_path, warn_missing=True)
+    corpus_sha256 = corpus_manifest.get("corpus_sha256") if corpus_manifest else ""
     corpus = load_corpus(corpus_path)
     if only:
         wanted = set(only)
@@ -161,7 +174,12 @@ def run_baseline_batch(
         print("No corpus papers selected; nothing to do.")
         return 0
 
-    done = existing_keys(runs_path)
+    done = existing_keys(
+        runs_path,
+        config=config,
+        mode="single-llm",
+        corpus_sha256=corpus_sha256 or None,
+    )
     todo = [
         (item, rep)
         for item in corpus
@@ -180,7 +198,9 @@ def run_baseline_batch(
     for item, rep in todo:
         if verbose:
             print(f"\n→ {item.id} repeat {rep}: {item.title[:70]}")
-        record = single_llm_review(item, rep, config, leakage_note)
+        record = single_llm_review(
+            item, rep, config, leakage_note, corpus_sha256=corpus_sha256,
+        )
         append_jsonl(runs_path, record.to_json())
         performed += 1
         if verbose:

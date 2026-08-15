@@ -45,6 +45,11 @@ _PLACEHOLDER_WORDS = {"tbd", "todo", "n/a", "na", "none", "nil", "unknown", "xxx
 # characters.
 _MIN_SUMMARY_CHARS = 25
 
+# The editor's own floor, far above a reviewer's: see
+# EditorDecisionOutput._summary_must_be_a_synthesis. Junk summaries measured
+# 3-44 characters, the shortest real one 1253, so this sits in empty space.
+_MIN_EDITOR_SUMMARY_CHARS = 200
+
 
 def _is_placeholder(text: str) -> bool:
     stripped = text.strip()
@@ -952,6 +957,37 @@ class EditorDecisionOutput(BaseModel):
         default_factory=list,
         description="Optional minor suggestions for the authors.",
     )
+
+    @model_validator(mode="after")
+    def _summary_must_be_a_synthesis(self) -> "EditorDecisionOutput":
+        """The letter's reasoning cannot be a placeholder.
+
+        ReviewerOutput has guarded this since a run where four reviewers
+        returned "..." as an entire review; the editor never got the same
+        check, and the same failure arrived here. Observed on a V4 Flash
+        batch: four letters published "..." as their whole Summary of
+        Evaluation and a fifth published "overwritten from prior — write
+        visible text", the model narrating an instruction to itself. Each
+        carried a real verdict and a full revision list, so nothing else in
+        the run looked wrong — the published page simply had no reasoning in
+        it, which is the one thing a decision letter exists to show.
+
+        The floor sits in a wide empty gap rather than at a guessed value:
+        across the corpus the junk summaries measured 3 to 44 characters and
+        the shortest genuine synthesis 1253. A reviewer may legitimately be
+        terse (see _MIN_SUMMARY_CHARS), but the editor is summarizing eight
+        reports, two audits and a debate, so there is no honest two-sentence
+        form of this field.
+        """
+        text = self.summary_of_evaluation.strip()
+        if _is_placeholder(text) or len(text) < _MIN_EDITOR_SUMMARY_CHARS:
+            raise ValueError(
+                f"summary_of_evaluation is {len(text)} characters and says "
+                "nothing. It is the reasoning the authors and readers see: "
+                "state what the panel found, which findings you weighed "
+                "against each other, and why they lead to this verdict."
+            )
+        return self
 
     @model_validator(mode="after")
     def _revision_verdicts_must_demand_something(self) -> "EditorDecisionOutput":

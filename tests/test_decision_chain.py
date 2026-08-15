@@ -244,7 +244,12 @@ def test_editor_schema_rejects_a_major_with_no_required_revisions():
     with pytest.raises(ValueError, match="required_revisions is empty"):
         EditorDecisionOutput(
             decision="major",
-            summary_of_evaluation="Needs work, all described here in prose.",
+            summary_of_evaluation=(
+                "The panel found the analysis sound but the headline claim "
+                "unsupported by the reported statistics, and the debate did "
+                "not resolve it. Every demand is described here in prose "
+                "rather than listed, which is the defect under test."
+            ),
             required_revisions=[],
         )
 
@@ -253,7 +258,12 @@ def test_editor_schema_allows_accept_and_reject_without_revisions():
     for verdict in ("accept", "reject"):
         out = EditorDecisionOutput(
             decision=verdict,
-            summary_of_evaluation="Settled either way.",
+            summary_of_evaluation=(
+                "The panel is unanimous and the debate surfaced nothing "
+                "unresolved, so the verdict follows directly from the "
+                "reports and needs no revision list to explain it. Settled "
+                "either way, with no outstanding asks for the authors."
+            ),
         )
         assert out.required_revisions == []
 
@@ -268,3 +278,32 @@ def test_editor_prompt_defines_the_minor_major_boundary():
     assert "what the revision REQUIRES" in sys
     assert "new experiments, new data, or a reanalysis" in sys
     assert "however numerous" in sys
+
+
+def test_editor_schema_rejects_a_placeholder_summary():
+    """Four letters published "..." as their entire Summary of Evaluation and
+    a fifth "overwritten from prior — write visible text". Each carried a real
+    verdict and revision list, so nothing else in the run looked wrong."""
+    for junk in ("...", "-", "overwritten from prior — write visible text."):
+        with pytest.raises(ValueError, match="says nothing"):
+            EditorDecisionOutput(
+                decision="major",
+                summary_of_evaluation=junk,
+                required_revisions=["Do the thing."],
+            )
+
+
+def test_editor_schema_accepts_a_real_synthesis():
+    out = EditorDecisionOutput(
+        decision="major",
+        summary_of_evaluation=(
+            "The panel converges on a technically sound dataset whose headline "
+            "mechanistic claim outruns the evidence. Two reviewers flagged the "
+            "absent multiple-comparisons correction as load-bearing, and the "
+            "skeptic's reading of the confound is decisive. Because fixing it "
+            "requires a reanalysis whose outcome could change a conclusion, the "
+            "verdict is major rather than minor."
+        ),
+        required_revisions=["Apply an FDR correction and report what survives."],
+    )
+    assert out.decision == "major"

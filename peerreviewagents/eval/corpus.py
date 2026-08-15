@@ -12,8 +12,12 @@ the package doesn't depend on ``openreview-py``.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
+import warnings
+from pathlib import Path
 from typing import Any
 
 from .schema import CorpusItem
@@ -24,6 +28,81 @@ _RATING_FIELDS = ("rating", "overall_assessment", "recommendation", "final_ratin
 _DECISION_FIELDS = ("decision", "recommendation", "final_decision")
 
 _API2_BASE = "https://api2.openreview.net"
+_CORPUS_MANIFEST = "corpus_manifest.json"
+
+
+def _sha256(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_corpus_manifest(corpus_path: str, **metadata: Any) -> str:
+    """Fingerprint the selected labels and PDFs after sampling.
+
+    Every batch run verifies these hashes before spending model tokens, so an
+    overwritten PDF or re-fetched label set cannot be silently pooled with
+    earlier results.
+    """
+    corpus_file = Path(corpus_path).resolve()
+    items = load_corpus(str(corpus_file))
+    pdfs = {}
+    for item in items:
+        pdf = Path(item.pdf_path)
+        if not pdf.is_file():
+            raise FileNotFoundError(f"corpus PDF is missing: {item.pdf_path}")
+        pdfs[item.id] = {
+            "path": os.path.relpath(pdf, corpus_file.parent),
+            "sha256": _sha256(pdf),
+        }
+    doc = {
+        "schema_version": 1,
+        "corpus_file": corpus_file.name,
+        "corpus_sha256": _sha256(corpus_file),
+        "n_papers": len(items),
+        "class_counts": {
+            label: sum(item.human_decision == label for item in items)
+            for label in ("accept", "reject")
+        },
+        "papers": pdfs,
+        "sampling": metadata,
+    }
+    out = corpus_file.parent / _CORPUS_MANIFEST
+    out.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return str(out)
+
+
+def verify_corpus_manifest(
+    corpus_path: str, *, warn_missing: bool = False
+) -> dict[str, Any] | None:
+    """Verify a frozen corpus, returning its manifest or raising on drift."""
+    corpus_file = Path(corpus_path).resolve()
+    manifest_path = corpus_file.parent / _CORPUS_MANIFEST
+    if not manifest_path.is_file():
+        if warn_missing:
+            warnings.warn(
+                f"No {_CORPUS_MANIFEST} beside {corpus_file.name}; run "
+                "`python -m peerreviewagents.eval freeze --dir ...` before a "
+                "publication run.",
+                UserWarning,
+                stacklevel=2,
+            )
+        return None
+    doc = json.loads(manifest_path.read_text(encoding="utf-8"))
+    errors = []
+    if doc.get("corpus_sha256") != _sha256(corpus_file):
+        errors.append(f"{corpus_file.name} changed after the corpus was frozen")
+    for paper_id, rec in (doc.get("papers") or {}).items():
+        pdf = (corpus_file.parent / rec["path"]).resolve()
+        if not pdf.is_file():
+            errors.append(f"{paper_id}: missing PDF {rec['path']}")
+        elif rec.get("sha256") != _sha256(pdf):
+            errors.append(f"{paper_id}: PDF changed after the corpus was frozen")
+    if errors:
+        raise RuntimeError("Corpus manifest verification failed:\n- " + "\n- ".join(errors))
+    return doc
 
 
 # ---------------------------------------------------------------------------
@@ -368,7 +447,7 @@ def fetch_corpus(
             continue
 
         buckets[decision].append(CorpusItem(
-            id=sub.id, title=title, pdf_path=pdf_path,
+            id=sub.id, title=title, pdf_path=os.path.relpath(pdf_path, out_dir),
             human_scores=scores,
             human_mean=round(sum(scores) / len(scores), 3),
             human_decision=decision, human_decision_raw=decision_raw,
@@ -390,6 +469,16 @@ def fetch_corpus(
     items = items[:limit]
 
     _write_corpus(out_dir, items)
+    write_corpus_manifest(
+        os.path.join(out_dir, "corpus.jsonl"),
+        venue=venue,
+        requested_limit=limit,
+        scan_cap=scan_cap,
+        balance=balance,
+        rating_fields=list(rating_fields),
+        decision_fields=list(decision_fields),
+        leakage_note=leakage_note,
+    )
     print(f"\nWrote {len(items)} papers to {os.path.join(out_dir, 'corpus.jsonl')} "
           f"(accept={len(buckets['accept'])}, reject={len(buckets['reject'])}; "
           f"scanned {scanned}).")
@@ -435,4 +524,16 @@ def _write_corpus(out_dir: str, items: list[CorpusItem]) -> None:
 def load_corpus(path: str) -> list[CorpusItem]:
     from .schema import read_jsonl
 
-    return [CorpusItem.from_dict(d) for d in read_jsonl(path)]
+    base = Path(path).resolve().parent
+    items = [CorpusItem.from_dict(d) for d in read_jsonl(path)]
+    for item in items:
+        pdf = Path(item.pdf_path)
+        if pdf.is_absolute():
+            continue
+        # New corpora store paths relative to corpus.jsonl. Preserve support
+        # for older files that stored a path relative to the process cwd.
+        if pdf.is_file():
+            item.pdf_path = str(pdf.resolve())
+        else:
+            item.pdf_path = str((base / pdf).resolve())
+    return items
