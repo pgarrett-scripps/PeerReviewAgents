@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
+import re
+
 from ...observability import node_context
 from ..debate.base import _debate_so_far, _reports_digest
-from ..schemas import EditorDecisionOutput, Verdict
 from ..utils.agent_states import ReviewState
-from ..utils.agent_utils import audit_digest, context_block, score_summary
+from ..utils.agent_utils import audit_digest, context_block, run_agent, score_summary
 from ..utils.llm import make_llm
 from ..utils.round_delta import round_delta
-from ..utils.structured import invoke_structured
-
-_VALID_VERDICTS = ("accept", "minor", "major", "reject")
 
 _SYS = (
     "You are the Editor-in-Chief. Read the specialist reports and editorial "
@@ -52,7 +50,11 @@ _SYS = (
     "(a minor-revision decision must not read like a rejection). Let the "
     "verdict track the evidence rather than the raw average; if you depart "
     "materially from the panel's numerical signal, give the reasoning in "
-    "summary_of_evaluation. Return the structured EditorDecisionOutput schema."
+    "decision letter. Write ordinary Markdown, never JSON. Put `VERDICT: "
+    "accept|minor|major|reject` at the top, followed by a substantive "
+    "`## Summary of Evaluation`. For minor or major decisions include a "
+    "`## Required Revisions` numbered list; optionally include "
+    "`## Minor Suggestions`."
 )
 
 # A revision round asks a different question, so it gets a different prompt
@@ -146,9 +148,18 @@ _REVISION_SYS = (
     "further revision round is available, decide accept or reject on what is "
     "in front of you — asking for a revision the process cannot grant is not "
     "a decision. If you depart materially from the panel's numerical signal, give the "
-    "reasoning in summary_of_evaluation. Return the structured "
-    "EditorDecisionOutput schema."
+    "reasoning in the Summary of Evaluation. Write ordinary Markdown, never "
+    "JSON. Put `VERDICT: accept|minor|major|reject` at the top, then include "
+    "`## Summary of Evaluation`, a numbered `## Required Revisions` list for "
+    "minor or major decisions, and optional `## Minor Suggestions`."
 )
+
+_VERDICT_LINE = re.compile(
+    r"(?im)^\s*(?:[-*#>]\s*)*(?:\*\*)?"
+    r"(?:verdict|decision|recommendation)(?:\*\*)?\s*[:=-]\s*(?:\*\*)?\s*"
+    r"(accept|minor(?:\s+revision)?|major(?:\s+revision)?|reject)\b"
+)
+_MIN_DECISION_LETTER_CHARS = 100
 
 
 def node(state: ReviewState) -> dict:
@@ -214,7 +225,9 @@ def _revision_user(state: ReviewState) -> str:
 
 def _run(state: ReviewState) -> dict:
     config = state["config"]
-    llm = make_llm(config, agent="editor", default_tag="synthesis", reasoning_effort="medium")
+    llm = make_llm(config, agent="editor", default_tag="synthesis")
+    prose = ""
+    prose_cost = 0.0
     try:
         # The presence of a prior round is what switches the editor's
         # question; nothing about the first-round path changes when it is
@@ -225,38 +238,158 @@ def _run(state: ReviewState) -> dict:
             system_prompt, user = _REVISION_SYS, _revision_user(state)
         else:
             system_prompt, user = _SYS, _first_round_user(state)
-        # The manuscript is a cached prefix so the editor can verify disputed
-        # reviewer/debate claims without another lossy synthesis layer.
-        result = invoke_structured(
-            llm,
-            EditorDecisionOutput,
-            config,
-            system_prompt,
-            user,
-            cached_prefix=context_block(state),
+        # The decision letter itself is the durable artifact. A tolerant
+        # parser reads its explicit verdict and section bullets; a malformed
+        # heading cannot erase the letter or the decision.
+        first_error = ""
+        try:
+            free = run_agent(
+                llm,
+                system_prompt,
+                user,
+                [],
+                cached_prefix=context_block(state),
+                cache_ttl=config.get("cache_ttl") or "1h",
+            )
+            prose = (free.text or "").strip()
+            prose_cost = free.cost
+        except Exception as exc:  # noqa: BLE001
+            first_error = f"{type(exc).__name__}: {exc}"
+            prose = ""
+        markdown = _editor_from_markdown(prose)
+        if markdown is not None and len(prose) >= _MIN_DECISION_LETTER_CHARS:
+            decision, revisions, suggestions, letter, warnings = markdown
+            out = {
+                "decision": decision,
+                "decision_letter": letter,
+                "required_revisions": revisions,
+                "minor_suggestions": suggestions,
+                "total_cost": prose_cost,
+            }
+            if warnings:
+                out["errors"] = [f"editor degraded: {warning}" for warning in warnings]
+            return out
+
+        # Retry the same substantive task as prose. The completed first letter
+        # is quoted when it exists so the editor can make its already-rendered
+        # verdict explicit without a schema regenerating the scientific
+        # judgment from scratch.
+        retry_user = user + (
+            "\n\nThe previous decision-letter attempt was unusable because it "
+            + (
+                f"failed ({first_error})."
+                if first_error else
+                "did not contain a recognizable accept/minor/major/reject verdict."
+            )
+            + " Write the complete decision letter again as ordinary Markdown. "
+            "State the verdict explicitly in the text; do not return JSON."
         )
+        if prose:
+            retry_user += "\n\nPrevious letter to preserve and clarify:\n\n" + prose
+        retry = run_agent(
+            llm,
+            system_prompt,
+            retry_user,
+            [],
+            cached_prefix=context_block(state),
+            cache_ttl=config.get("cache_ttl") or "1h",
+        )
+        prose_cost += retry.cost
+        retry_prose = (retry.text or "").strip()
+        retry_markdown = _editor_from_markdown(retry_prose)
+        if retry_markdown is not None and len(retry_prose) >= _MIN_DECISION_LETTER_CHARS:
+            decision, revisions, suggestions, letter, warnings = retry_markdown
+            errors = [
+                "editor degraded: initial prose decision was unusable; "
+                "retained the successful schema-free prose retry"
+            ]
+            errors.extend(f"editor degraded: {warning}" for warning in warnings)
+            return {
+                "decision": decision,
+                "decision_letter": letter,
+                "required_revisions": revisions,
+                "minor_suggestions": suggestions,
+                "total_cost": prose_cost,
+                "errors": errors,
+            }
+        # Both prose attempts are retained for diagnosis, but no other agent
+        # is allowed to invent a verdict the editor did not communicate.
+        prose = retry_prose or prose
+        raise ValueError("two Markdown decision letters contained no usable verdict")
     except Exception as exc:  # noqa: BLE001
         # Do NOT fabricate a verdict on failure — leave decision empty so
         # the caller knows the editor never rendered one.
-        return {"errors": [f"editor failed: {exc}"], "decision": "", "decision_letter": ""}
-
-    output: EditorDecisionOutput = result.instance  # type: ignore[assignment]
-    decision: Verdict | str = output.decision
-    # Schema constrains decision to the Verdict literal, but a non-conforming
-    # model can slip past. Refuse rather than substitute another agent's
-    # opinion: a decision the editor never rendered surfaces as no decision.
-    if decision not in _VALID_VERDICTS:
         return {
-            "errors": [f"editor failed: non-verdict decision {decision!r}"],
+            "errors": [f"editor failed: {exc}"],
             "decision": "",
-            "decision_letter": output.to_markdown(),
+            # A missing verdict is fatal, but completed prose is still useful
+            # evidence and must not disappear from the run bundle.
+            "decision_letter": (
+                prose if len(prose) >= _MIN_DECISION_LETTER_CHARS else ""
+            ),
+            "total_cost": prose_cost,
         }
-    return {
-        "decision": decision,
-        "decision_letter": output.to_markdown(),
-        # Structured asks travel alongside the rendered letter so the round
-        # record can id them for a later revision round to check off.
-        "required_revisions": list(output.required_revisions),
-        "minor_suggestions": list(output.minor_suggestions),
-        "total_cost": result.cost,
+
+def _editor_from_markdown(
+    text: str,
+) -> tuple[str, list[str], list[str], str, list[str]] | None:
+    """Tolerantly parse a decision letter while preserving its exact prose."""
+    match = _VERDICT_LINE.search(text)
+    raw = re.sub(r"\s+", " ", match.group(1).strip().lower()) if match else ""
+    if not raw:
+        inline = re.search(
+            r"(?i)\b(?:I\s+)?(?:recommend|decision\s+is|verdict\s+is)\s+"
+            r"(accept|minor(?:\s+revision)?|major(?:\s+revision)?|reject)\b",
+            text,
+        )
+        if not inline:
+            return None
+        raw = re.sub(r"\s+", " ", inline.group(1).strip().lower())
+    decision = {
+        "accept": "accept",
+        "minor": "minor",
+        "minor revision": "minor",
+        "major": "major",
+        "major revision": "major",
+        "reject": "reject",
+    }[raw]
+    sections = _decision_sections(text)
+    revisions = sections.get("required_revisions", [])
+    suggestions = sections.get("minor_suggestions", [])
+    warnings: list[str] = []
+    if decision in {"minor", "major"} and not revisions:
+        warnings.append(
+            f"{decision} verdict was preserved, but no required-revision bullets "
+            "could be extracted from the Markdown letter"
+        )
+    letter = text if text.lstrip().startswith("#") else f"# Decision Letter\n\n{text}"
+    return decision, revisions, suggestions, letter, warnings
+
+
+def _decision_sections(text: str) -> dict[str, list[str]]:
+    aliases = {
+        "required_revisions": {
+            "required revision", "required revisions", "major revisions",
+        },
+        "minor_suggestions": {
+            "minor suggestion", "minor suggestions", "optional suggestions",
+        },
     }
+    found = {key: [] for key in aliases}
+    current = ""
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        label = re.sub(r"^[#>*\s-]+|[*:#\s-]+$", "", stripped).lower()
+        new = next((key for key, names in aliases.items() if label in names), "")
+        if new:
+            current = new
+            continue
+        if current and stripped:
+            if stripped.startswith("#"):
+                current = ""
+                continue
+            if re.match(r"^\s*(?:[-*+] |\d+[.)]\s*)", raw):
+                item = re.sub(r"^\s*(?:[-*+] |\d+[.)]\s*)", "", raw).strip()
+                if item:
+                    found[current].append(item)
+    return found

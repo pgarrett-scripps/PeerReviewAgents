@@ -59,6 +59,13 @@ def test_openrouter_passes_reasoning_effort(monkeypatch):
     assert extra.get("usage", {}).get("include") is True
 
 
+def test_openrouter_disables_implicit_reasoning_for_ordinary_agents(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "stub-key")
+    llm = make_chat_model(_cfg("openrouter", "deepseek/deepseek-v4-flash-0731"))
+    reasoning = (getattr(llm, "extra_body", None) or {}).get("reasoning", {})
+    assert reasoning == {"effort": "none", "exclude": True}
+
+
 def test_openai_direct_factory(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "stub-key")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
@@ -393,6 +400,45 @@ def test_a_costless_chunk_is_left_alone(monkeypatch):
     chunk = {"choices": [{"delta": {"content": "hi"}, "finish_reason": None, "index": 0}]}
     gen = llm._convert_chunk_to_generation_chunk(chunk, AIMessageChunk, None)
     assert "token_usage" not in gen.message.response_metadata
+
+
+def test_openrouter_reasoning_delta_survives_for_empty_response_diagnostics(monkeypatch):
+    from langchain_core.messages import AIMessageChunk
+
+    llm = _openrouter_llm(monkeypatch)
+    chunk = {
+        "choices": [{
+            "delta": {
+                "content": "",
+                "reasoning": "private chain that must not become the review",
+                "reasoning_details": [{"type": "reasoning.text", "text": "private"}],
+            },
+            "finish_reason": None,
+            "index": 0,
+        }]
+    }
+    gen = llm._convert_chunk_to_generation_chunk(chunk, AIMessageChunk, None)
+    assert gen.message.content == ""
+    assert gen.message.additional_kwargs["openrouter_reasoning"].startswith("private")
+    assert len(gen.message.additional_kwargs["openrouter_reasoning_details"]) == 1
+
+
+def test_openrouter_stream_error_is_not_silently_converted_to_empty_text(monkeypatch):
+    from langchain_core.messages import AIMessageChunk
+
+    from peerreviewagents.runtime.providers import OpenRouterStreamError
+
+    llm = _openrouter_llm(monkeypatch)
+    chunk = {
+        "choices": [{"delta": {"content": ""}, "finish_reason": "error", "index": 0}],
+        "error": {
+            "code": 502,
+            "message": "upstream provider disconnected",
+            "metadata": {"provider_name": "ExampleProvider"},
+        },
+    }
+    with pytest.raises(OpenRouterStreamError, match="ExampleProvider.*disconnected"):
+        llm._convert_chunk_to_generation_chunk(chunk, AIMessageChunk, None)
 
 
 def test_the_subclass_still_reads_as_an_openrouter_chat_model(monkeypatch):

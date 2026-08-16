@@ -123,6 +123,16 @@ class ProviderSpec:
 _CHAT_OPENROUTER_CLS: Any = None
 
 
+class OpenRouterStreamError(RuntimeError):
+    """An error OpenRouter delivered inside an otherwise-valid SSE stream.
+
+    OpenRouter can return HTTP 200, begin streaming, and then put the provider
+    failure in a later JSON chunk.  ``langchain-openai`` ignores that
+    non-OpenAI field, which previously turned the failure into an unexplained
+    empty assistant message.
+    """
+
+
 def _chat_openrouter_class() -> Any:
     """``ChatOpenAI`` subclass that keeps OpenRouter's reported ``usage.cost``.
 
@@ -152,9 +162,47 @@ def _chat_openrouter_class() -> Any:
             self, chunk: dict, default_chunk_class: type,
             base_generation_info: dict | None,
         ) -> Any:
+            error = chunk.get("error") if isinstance(chunk, dict) else None
+            choices = chunk.get("choices") if isinstance(chunk, dict) else None
+            choice = choices[0] if isinstance(choices, list) and choices else {}
+            if error or (isinstance(choice, dict) and choice.get("finish_reason") == "error"):
+                if isinstance(error, dict):
+                    message = error.get("message") or str(error)
+                    code = error.get("code")
+                    metadata = error.get("metadata") or {}
+                    provider = metadata.get("provider_name") or metadata.get("provider")
+                else:
+                    message, code, provider = str(error or "stream ended with error"), None, None
+                details = ", ".join(
+                    part for part in (
+                        f"code={code}" if code is not None else "",
+                        f"provider={provider}" if provider else "",
+                    ) if part
+                )
+                raise OpenRouterStreamError(
+                    f"OpenRouter stream error{f' ({details})' if details else ''}: {message}"
+                )
+
             generation_chunk = super()._convert_chunk_to_generation_chunk(
                 chunk, default_chunk_class, base_generation_info
             )
+            # OpenRouter's reasoning fields are not part of the OpenAI delta
+            # shape understood by langchain-openai. Preserve them as metadata
+            # so an answer that spends its entire budget reasoning can be
+            # diagnosed as such. The reasoning itself is never substituted
+            # for the requested review or exposed in an error message.
+            delta = choice.get("delta") if isinstance(choice, dict) else None
+            if generation_chunk is not None and isinstance(delta, dict):
+                reasoning = delta.get("reasoning") or delta.get("reasoning_content")
+                if reasoning:
+                    generation_chunk.message.additional_kwargs["openrouter_reasoning"] = str(
+                        reasoning
+                    )
+                reasoning_details = delta.get("reasoning_details")
+                if reasoning_details:
+                    generation_chunk.message.additional_kwargs[
+                        "openrouter_reasoning_details"
+                    ] = reasoning_details
             usage = chunk.get("usage") if isinstance(chunk, dict) else None
             if (
                 generation_chunk is not None
@@ -183,6 +231,13 @@ def _make_openrouter(model: str, *, reasoning_effort: str | None = None,
     extra_body: dict[str, Any] = {"usage": {"include": True}}
     if reasoning_effort:
         extra_body["reasoning"] = {"effort": reasoning_effort}
+    else:
+        # OpenRouter enables reasoning by default for models that support it.
+        # Prose agents do not need a separately streamed hidden-reasoning
+        # channel: it consumes the completion budget and, if no final content
+        # follows, used to leave us with an empty review. Explicitly disable it
+        # unless a role deliberately requested a reasoning effort.
+        extra_body["reasoning"] = {"effort": "none", "exclude": True}
 
     kwargs: dict[str, Any] = {
         "model": model,

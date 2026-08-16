@@ -110,6 +110,7 @@ def cmd_plan(args) -> int:
     import random
 
     from .corpus import load_corpus, verify_corpus_manifest
+    from .schema import config_digest, source_fingerprint
 
     corpus_path = _corpus_path(args.dir)
     manifest = verify_corpus_manifest(corpus_path)
@@ -117,6 +118,7 @@ def cmd_plan(args) -> int:
         print("Corpus is not frozen — run `freeze` first.", file=sys.stderr)
         return 1
     corpus = load_corpus(corpus_path)
+    config = _build_config(args)
     by_class = {
         label: sorted(c.id for c in corpus if c.human_decision == label)
         for label in ("accept", "reject")
@@ -133,11 +135,30 @@ def cmd_plan(args) -> int:
     protocol = {
         "schema_version": 1,
         "corpus_sha256": manifest["corpus_sha256"],
+        "n_papers": len(corpus),
+        "class_counts": manifest.get("class_counts", {}),
+        "config_digest": config_digest(config),
+        "source_fingerprint": source_fingerprint(),
+        "run_config": {
+            "provider": config.get("provider"),
+            "reasoning_model": config.get("reasoning_model"),
+            "single_model": config.get("single_model"),
+            "research_enabled": config.get("research_enabled"),
+            "target_journal": config.get("target_journal"),
+            "article_type": config.get("article_type"),
+            "review_strictness": config.get("review_strictness"),
+            "enable_debate": config.get("enable_debate"),
+            "max_debate_rounds": config.get("max_debate_rounds"),
+            "panel_quorum_fraction": config.get("panel_quorum_fraction"),
+            "markdown_attempts": config.get("markdown_attempts"),
+        },
         "primary_endpoint": "Spearman correlation with mean human rating",
         "secondary_endpoints": [
             "balanced accept/reject accuracy",
             "Cohen's kappa",
-            "completion rate",
+            "full-panel completion rate",
+            "artifact-integrity pass rate",
+            "successful-run recovery-warning rate",
             "cost and latency",
             "repeat-run verdict agreement and score dispersion",
         ],
@@ -156,6 +177,8 @@ def cmd_plan(args) -> int:
             "research_enabled=false",
             "journal recommender disabled",
             "one venue and pinned OpenReview rating field",
+            "eight named reviewers and two named auditors required for a successful full-PRA run",
+            "blank, truncated, duplicated, or prompt-echoed artifacts count as failed runs",
         ],
     }
     out = args.out or os.path.join(args.dir, "protocol.json")
@@ -391,6 +414,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="total full-PRA runs per selected paper (default 3)")
     pl.add_argument("--seed", type=int, default=20260815)
     pl.add_argument("--out", help="protocol JSON path (default <dir>/protocol.json)")
+    _add_config_flags(pl)
     pl.set_defaults(func=cmd_plan)
 
     r = sub.add_parser("run", help="review corpus papers into runs.jsonl (resumable)")

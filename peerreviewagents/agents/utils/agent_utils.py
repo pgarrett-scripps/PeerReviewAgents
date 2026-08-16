@@ -92,6 +92,14 @@ class RunResult:
     cost: float
 
 
+class EmptyModelResponse(RuntimeError):
+    """The provider completed a model turn without publishable content."""
+
+    def __init__(self, message: str, *, cost: float = 0.0):
+        super().__init__(message)
+        self.cost = cost
+
+
 # ---------------------------------------------------------------------------
 # Core tool loop
 # ---------------------------------------------------------------------------
@@ -185,7 +193,38 @@ def run_agent(
         )
         cost_total += _call_cost(final_resp, cache_ttl)
 
-    return RunResult(text=_text(final_resp.content), cost=cost_total)
+    text = _text(final_resp.content)
+    if not text.strip():
+        raise EmptyModelResponse(
+            "model returned empty content; " + _empty_response_diagnostics(final_resp),
+            cost=cost_total,
+        )
+    return RunResult(text=text, cost=cost_total)
+
+
+def _empty_response_diagnostics(resp: AIMessage) -> str:
+    """Describe an empty response without revealing hidden reasoning text."""
+    meta = getattr(resp, "response_metadata", None) or {}
+    extra = getattr(resp, "additional_kwargs", None) or {}
+    usage = getattr(resp, "usage_metadata", None) or {}
+    raw_usage = meta.get("token_usage") or meta.get("usage") or {}
+    reasoning = extra.get("openrouter_reasoning") or ""
+    reasoning_details = extra.get("openrouter_reasoning_details") or []
+    output_details = usage.get("output_token_details") or {}
+    reasoning_tokens = (
+        output_details.get("reasoning")
+        or (raw_usage.get("completion_tokens_details") or {}).get("reasoning_tokens")
+        or 0
+    )
+    facts = [
+        f"finish_reason={meta.get('finish_reason') or meta.get('stop_reason') or 'unknown'}",
+        f"model={meta.get('model_name') or meta.get('model') or 'unknown'}",
+        f"output_tokens={usage.get('output_tokens') or raw_usage.get('completion_tokens') or 0}",
+        f"reasoning_tokens={reasoning_tokens}",
+        f"reasoning_chars={len(str(reasoning))}",
+        f"reasoning_details={len(reasoning_details) if isinstance(reasoning_details, list) else 1}",
+    ]
+    return ", ".join(facts)
 
 
 def _run_one(call: dict, tool_map: dict) -> tuple[str, str]:
@@ -405,6 +444,8 @@ def cache_tokens(resp: AIMessage) -> tuple[int, int]:
 
 
 def _text(content) -> str:
+    if content is None:
+        return ""
     if isinstance(content, list):
         return "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in content)
     return str(content)
@@ -838,9 +879,10 @@ def audit_digest(state: ReviewState) -> str:
         return "(no editorial audits were produced)"
     parts: list[str] = []
     for a in audits:
-        parts.append(
-            f"### {a.get('title', a.get('auditor', 'Audit'))} "
-            f"— HARD gaps: {a.get('hard_gaps', 0)}, SOFT gaps: {a.get('soft_gaps', 0)}"
-        )
+        heading = f"### {a.get('title', a.get('auditor', 'Audit'))}"
+        hard, soft = a.get("hard_gaps"), a.get("soft_gaps")
+        if isinstance(hard, int) and isinstance(soft, int):
+            heading += f" — HARD gaps: {hard}, SOFT gaps: {soft}"
+        parts.append(heading)
         parts.append((a.get("body") or "").strip())
     return "\n\n".join(parts)

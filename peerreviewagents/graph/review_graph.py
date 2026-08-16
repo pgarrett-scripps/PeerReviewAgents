@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import uuid
 from functools import lru_cache
@@ -144,6 +145,13 @@ def build_graph(config: dict):
 
     expected_reviewers = {name for name, _ in reviewer_nodes}
     expected_auditors = {name for name, _ in auditor_nodes}
+    try:
+        quorum_fraction = float(config.get("panel_quorum_fraction", 1.0))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("panel_quorum_fraction must be a number in (0, 1]") from exc
+    if not 0 < quorum_fraction <= 1:
+        raise ValueError("panel_quorum_fraction must be in (0, 1]")
+    reviewer_quorum = math.ceil(len(expected_reviewers) * quorum_fraction)
 
     def panel_gate(state: ReviewState) -> dict:
         """Stop an incomplete fan-out before synthesis can invent a verdict."""
@@ -152,14 +160,32 @@ def build_graph(config: dict):
         missing_reviewers = sorted(expected_reviewers - got_reviewers)
         missing_auditors = sorted(expected_auditors - got_auditors)
         if not missing_reviewers and not missing_auditors:
-            return {"panel_complete": True, "run_status": "panel_complete"}
+            return {
+                "panel_complete": True,
+                "panel_degraded": False,
+                "run_status": "panel_complete",
+            }
         missing = []
         if missing_reviewers:
             missing.append("reviewers: " + ", ".join(missing_reviewers))
         if missing_auditors:
             missing.append("auditors: " + ", ".join(missing_auditors))
+        # An auditor is a load-bearing factual gate and remains mandatory. A
+        # partial reviewer panel proceeds only when the caller explicitly
+        # opted into a quorum below 1.0; score_summary() prints the missing
+        # specialty into the editor's evidence and the result stays degraded.
+        has_quorum = len(got_reviewers & expected_reviewers) >= reviewer_quorum
+        if has_quorum and not missing_auditors:
+            return {
+                "panel_complete": True,
+                "panel_degraded": True,
+                "run_status": "panel_degraded",
+                "publication_ready": False,
+                "errors": ["degraded panel (" + "; ".join(missing) + ")"],
+            }
         return {
             "panel_complete": False,
+            "panel_degraded": False,
             "run_status": "panel_incomplete",
             "publication_ready": False,
             "errors": ["incomplete panel (" + "; ".join(missing) + ")"],
@@ -218,9 +244,14 @@ def build_graph(config: dict):
 
     def finalize(state: ReviewState) -> dict:
         ready = bool(state.get("panel_complete") and state.get("decision"))
+        degraded = bool(state.get("panel_degraded"))
         return {
-            "publication_ready": ready,
-            "run_status": "publishable" if ready else "synthesis_incomplete",
+            "publication_ready": ready and not degraded,
+            "run_status": (
+                "degraded" if ready and degraded
+                else "publishable" if ready
+                else "synthesis_incomplete"
+            ),
         }
 
     g.add_node("finalize", finalize)
@@ -280,6 +311,7 @@ class PeerReviewGraph:
             verified_claims_block="",
             desk_rejected=False,
             panel_complete=False,
+            panel_degraded=False,
             run_status="running",
             publication_ready=False,
             reports=self._carried_reports(prior),

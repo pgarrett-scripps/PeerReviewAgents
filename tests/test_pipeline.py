@@ -211,7 +211,64 @@ class FakeLLM:
     def bind_tools(self, _tools=None, **_kwargs):
         return self
 
-    def invoke(self, _messages, **_kwargs):
+    def invoke(self, messages, **_kwargs):
+        prompt = "\n".join(str(getattr(m, "content", "")) for m in messages)
+        if "verification officer" in prompt:
+            return AIMessage(content=_CANNED[ResponseVerificationOutput].to_markdown())
+        if "revision-compliance auditor" in prompt:
+            return AIMessage(content=_CANNED[RevisionComplianceOutput].to_markdown())
+        if "DESK DECISION" in prompt:
+            canned = _CANNED[DeskScreenOutput]
+            decision = "reject" if canned.desk_reject else "proceed"
+            return AIMessage(content=(
+                f"DESK DECISION: {decision}\n\n{canned.rationale} "
+                + " ".join(canned.reasons)
+            ))
+        if "specialist reviewer" in prompt or "SCORE: <1-5" in prompt:
+            return AIMessage(content=(
+                "SCORE: 3\nCONFIDENCE: 4\n\n## Assessment\nThe paper proposes "
+                "a useful method, but the evidence does not yet establish the broad "
+                "generalization claim. The implementation is described clearly and "
+                "the main comparison is relevant, although it covers only one cluster.\n\n"
+                "## Strengths\n- Clear motivation.\n- Simple approach.\n\n## Weaknesses\n"
+                "- Single cluster limits generalization.\n- The broad claim outruns "
+                "the evidence shown.\n\n## Questions\n- How were the baselines tuned?\n\n"
+                "A broader evaluation or a narrower claim would address the central "
+                "concern without requiring a different method. The remaining reporting "
+                "issues are straightforward to correct in revision."
+            ))
+        if "compliance auditor" in prompt:
+            return AIMessage(content=(
+                "The manuscript documents the main workflow but omits several details "
+                "needed for exact repetition. [HARD, missing] Random seed: training is "
+                "described without a seed or seed-averaging statement. [SOFT, missing] "
+                "Code availability: no availability statement is supplied. The dataset "
+                "and principal analysis category were checked; no accept or reject "
+                "recommendation is made by this factual audit."
+            ))
+        if "Editor-in-Chief" in prompt:
+            return AIMessage(content=_CANNED[EditorDecisionOutput].to_markdown())
+        if "editorial debate" in prompt or "Make your argument" in prompt:
+            return AIMessage(content=(
+                "The contribution is incremental but the empirical signal is clean. "
+                "The strongest concern is the unsupported breadth of the generalization "
+                "claim; the implementation and comparisons otherwise provide a useful "
+                "basis for revision. The other side should distinguish a fixable scope "
+                "problem from a fundamental defect in the method."
+            ))
+        if "which venues to submit" in prompt:
+            return AIMessage(content=(
+                "# Journal Recommendations\n\n## After revision\n- **Specialty "
+                "Journal X** — direct topic fit and realistic after the claim is "
+                "narrowed.\n\n## Alternatives\n- **arXiv cs.LG** — immediate preprint "
+                "dissemination while the additional comparison is prepared."
+            ))
+        if "what they missed" in prompt:
+            return AIMessage(content=_CANNED[PanelGapOutput].to_markdown())
+        if "Area Chair" in prompt:
+            return AIMessage(content=_CANNED[MetaReviewOutput].to_markdown())
+        if "author of the manuscript responding" in prompt:
+            return AIMessage(content=_CANNED[AuthorRebuttalOutput].to_markdown())
         return AIMessage(content="canned free-text")
 
     def with_structured_output(self, schema, **kwargs):
@@ -284,8 +341,40 @@ def test_full_pipeline(monkeypatch, tmp_path):
     )
 
 
-def test_incomplete_panel_stops_before_synthesis(monkeypatch, tmp_path):
-    """One missing specialist must produce no editorial decision."""
+def test_one_missing_specialist_proceeds_only_with_opted_in_quorum(monkeypatch, tmp_path):
+    """A partial verdict remains available, but is not the default contract."""
+    _patch_llms(monkeypatch)
+    import peerreviewagents.graph.review_graph as review_graph_mod
+
+    real_nodes = review_graph_mod.get_reviewer_nodes()
+
+    def failed(_state):
+        return {"errors": ["methodology reviewer failed: provider down"]}
+
+    monkeypatch.setattr(
+        review_graph_mod,
+        "get_reviewer_nodes",
+        lambda: [
+            (name, failed if name == "methodology" else node)
+            for name, node in real_nodes
+        ],
+    )
+
+    state = PeerReviewGraph(get_config(
+        output_dir=str(tmp_path), panel_quorum_fraction=0.75,
+    )).review(SAMPLE)
+
+    assert state["panel_complete"] is True
+    assert state["panel_degraded"] is True
+    assert len(state["reports"]) == len(REVIEWER_NAMES) - 1
+    assert state["decision"] == "major"
+    assert state.get("debate")
+    assert state["publication_ready"] is False
+    assert state["run_status"] == "degraded"
+    assert any("degraded panel" in error for error in state["errors"])
+
+
+def test_one_missing_specialist_fails_closed_by_default(monkeypatch, tmp_path):
     _patch_llms(monkeypatch)
     import peerreviewagents.graph.review_graph as review_graph_mod
 
@@ -306,10 +395,38 @@ def test_incomplete_panel_stops_before_synthesis(monkeypatch, tmp_path):
     state = PeerReviewGraph(get_config(output_dir=str(tmp_path))).review(SAMPLE)
 
     assert state["panel_complete"] is False
-    assert len(state["reports"]) == len(REVIEWER_NAMES) - 1
+    assert state["panel_degraded"] is False
     assert "decision" not in state
-    assert not state.get("meta_review")
     assert not state.get("debate")
+    assert state["publication_ready"] is False
+    assert state["run_status"] == "panel_incomplete"
+    assert any("incomplete panel" in error for error in state["errors"])
+
+
+def test_below_quorum_still_stops_before_synthesis(monkeypatch, tmp_path):
+    """The quorum is a bounded degradation policy, not permission for a stub panel."""
+    _patch_llms(monkeypatch)
+    import peerreviewagents.graph.review_graph as review_graph_mod
+
+    real_nodes = review_graph_mod.get_reviewer_nodes()
+    failed_names = {"methodology", "rigor", "data_analysis"}
+
+    def failed(_state):
+        return {"errors": ["reviewer failed: provider down"]}
+
+    monkeypatch.setattr(
+        review_graph_mod,
+        "get_reviewer_nodes",
+        lambda: [
+            (name, failed if name in failed_names else node)
+            for name, node in real_nodes
+        ],
+    )
+
+    state = PeerReviewGraph(get_config(output_dir=str(tmp_path))).review(SAMPLE)
+    assert state["panel_complete"] is False
+    assert len(state["reports"]) == len(REVIEWER_NAMES) - len(failed_names)
+    assert "decision" not in state
     assert any("incomplete panel" in error for error in state["errors"])
 
 

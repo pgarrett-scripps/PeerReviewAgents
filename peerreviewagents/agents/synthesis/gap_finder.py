@@ -26,11 +26,10 @@ the correct one.
 from __future__ import annotations
 
 from ...observability import node_context
-from ..schemas import PanelGapOutput
 from ..utils.agent_states import ReviewState
 from ..utils.agent_utils import context_block
 from ..utils.llm import make_llm
-from ..utils.structured import invoke_structured
+from ..utils.structured import invoke_markdown
 
 # The evidence-facing lane. Deliberately not the whole panel: clarity, ethics,
 # literature, novelty and reproducibility answer different questions, and
@@ -68,7 +67,8 @@ _SYS = (
     "even loosely, it is not a gap.\n\n"
     "Most well-reviewed papers will leave one or two real gaps, and some none "
     "at all. Reporting nothing, with a sentence on what you checked, is a "
-    "better answer than padding. Return the structured PanelGapOutput schema."
+    "better answer than padding. Write ordinary Markdown; no JSON or fixed "
+    "headings are required."
 )
 
 
@@ -112,9 +112,8 @@ def _run(state: ReviewState) -> dict:
         # additive: a run without it is the run the pipeline produced before
         # it existed, so nothing here should be able to take a review down.
         llm = make_llm(config, agent="gap_finder", default_tag="synthesis")
-        result = invoke_structured(
+        result = invoke_markdown(
             llm,
-            PanelGapOutput,
             config,
             _SYS,
             user,
@@ -122,12 +121,12 @@ def _run(state: ReviewState) -> dict:
             # this call shares their cache entry rather than writing a second
             # copy of the manuscript.
             cached_prefix=context_block(state),
+            min_chars=100,
         )
     except Exception as exc:  # noqa: BLE001
         return {"errors": [f"gap_finder failed: {exc}"], "panel_gaps": ""}
 
-    output: PanelGapOutput = result.instance  # type: ignore[assignment]
     return {
-        "panel_gaps": output.to_markdown(),
+        "panel_gaps": result.text,
         "total_cost": result.cost,
     }

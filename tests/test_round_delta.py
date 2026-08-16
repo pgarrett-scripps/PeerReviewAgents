@@ -24,6 +24,7 @@ from peerreviewagents.agents.schemas import (
     EditorDecisionOutput,
     RevisionComplianceOutput,
 )
+from peerreviewagents.agents.utils.agent_utils import RunResult
 from peerreviewagents.agents.utils.round_delta import round_delta
 from peerreviewagents.default_config import get_config
 
@@ -359,16 +360,17 @@ def test_malformed_compliance_body_yields_no_counts():
 
 def _capture_editor(monkeypatch) -> dict:
     """Record the prompt the editor actually sends, without an LLM."""
-    from peerreviewagents.agents.utils.structured import StructuredResult
-
     seen: dict = {}
 
-    def fake(llm, schema, config, system, user, *, cached_prefix=None):
+    def fake(llm, system, user, tools, *, cached_prefix=None, **_kwargs):
         seen.update(system=system, user=user, cached_prefix=cached_prefix)
-        return StructuredResult(instance=_CANNED[EditorDecisionOutput], cost=0.0)
+        return RunResult(
+            text=_CANNED[EditorDecisionOutput].to_markdown(),
+            cost=0.0,
+        )
 
     _patch_llms(monkeypatch)
-    monkeypatch.setattr(editor_in_chief, "invoke_structured", fake)
+    monkeypatch.setattr(editor_in_chief, "run_agent", fake)
     return seen
 
 
@@ -457,7 +459,7 @@ def test_no_author_position_is_invented_without_a_verified_letter(monkeypatch):
     assert "(no author response was supplied)" in seen["user"]
 
 
-def test_editor_still_returns_the_structured_asks(monkeypatch):
+def test_editor_derives_revision_indexes_without_replacing_the_letter(monkeypatch):
     _capture_editor(monkeypatch)
     for prior in (None, _prior()):
         out = editor_in_chief.node(_editor_state(prior=prior))
@@ -476,7 +478,7 @@ def test_editor_does_not_fabricate_a_verdict_on_failure(monkeypatch):
     def boom(*_a, **_kw):
         raise RuntimeError("provider down")
 
-    monkeypatch.setattr(editor_in_chief, "invoke_structured", boom)
+    monkeypatch.setattr(editor_in_chief, "run_agent", boom)
     out = editor_in_chief.node(_editor_state(prior=_prior()))
     assert out["decision"] == ""
     assert out["decision_letter"] == ""

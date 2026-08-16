@@ -113,6 +113,18 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # Post-decision venue suggestions are optional enrichment and never part
     # of the publication contract.
     "enable_journal_recommender": True,
+    # Require the complete requested specialist panel by default. A missing
+    # reviewer is a failed run, not evidence that the absent specialty found
+    # no problem, and publication evaluations must not count a partial panel
+    # as successful. Deployments that prefer an explicitly labelled partial
+    # decision can lower this value, but that is now an opt-in degradation
+    # policy. Auditors remain mandatory at every setting.
+    "panel_quorum_fraction": 1.0,
+    # Complete prose is retried without a schema when a provider returns an
+    # empty, interrupted, or refusal-like answer. Three bounded attempts are
+    # cheap compared with dropping a reviewer; a live DeepSeek smoke run had
+    # one role return empty content three consecutive times.
+    "markdown_attempts": 3,
     # Optional editorial desk-screen gate. When True, a triage node runs once
     # before the reviewer fan-out and may desk-reject the manuscript (scope /
     # completeness / fatal-flaw / below-venue-bar), short-circuiting the run

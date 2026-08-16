@@ -11,11 +11,21 @@ dying on a single upstream blip.
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from typing import Any
 
 from ..graph.review_graph import PeerReviewGraph
 from .corpus import load_corpus
-from .schema import RunRecord, append_jsonl, build_manifest, config_digest, read_jsonl
+from .integrity import inspect_run_artifacts
+from .schema import (
+    RunRecord,
+    append_jsonl,
+    build_manifest,
+    config_digest,
+    read_jsonl,
+    source_fingerprint,
+    verify_protocol,
+)
 
 
 def weighted_score(reports: list[dict[str, Any]]) -> float | None:
@@ -50,11 +60,13 @@ def existing_keys(
     """
     keys: set[tuple[str, int]] = set()
     expected_digest = config_digest(config) if config is not None else None
+    expected_source = source_fingerprint() if config is not None else None
     for d in read_jsonl(runs_path):
         manifest = d.get("manifest") or {}
         found_digest = manifest.get("config_digest")
         found_mode = manifest.get("mode")
         found_corpus = manifest.get("corpus_sha256")
+        found_source = manifest.get("source_fingerprint")
         if expected_digest is not None and found_digest != expected_digest:
             raise ValueError(
                 f"{runs_path} already contains records for config "
@@ -70,6 +82,11 @@ def existing_keys(
             raise ValueError(
                 f"{runs_path} contains corpus {found_corpus or 'unknown'}, not the "
                 f"currently frozen corpus {corpus_sha256}; use a separate --runs-out file"
+            )
+        if expected_source is not None and found_source != expected_source:
+            raise ValueError(
+                f"{runs_path} contains source {found_source or 'unknown'}, not current "
+                f"source {expected_source}; use a separate --runs-out file"
             )
         if d.get("ok"):
             keys.add((d.get("paper_id"), int(d.get("repeat", 0))))
@@ -94,6 +111,7 @@ def run_batch(
     from .corpus import verify_corpus_manifest
 
     corpus_manifest = verify_corpus_manifest(corpus_path, warn_missing=True)
+    verify_protocol(corpus_path, config)
     corpus_sha256 = corpus_manifest.get("corpus_sha256") if corpus_manifest else ""
     corpus = load_corpus(corpus_path)
     if only:
@@ -127,7 +145,8 @@ def run_batch(
         append_jsonl(runs_path, record.to_json())
         performed += 1
         if verbose:
-            status = "ok" if record.ok else f"FAILED ({'; '.join(record.errors) or 'no decision'})"
+            failures = [*record.errors, *record.artifact_integrity_errors]
+            status = "ok" if record.ok else f"FAILED ({'; '.join(failures) or 'no decision'})"
             print(f"  {status} — decision={record.system_decision} "
                   f"score={record.system_weighted_score} "
                   f"cost=${record.cost_usd:.4f} {record.latency_s:.0f}s")
@@ -173,21 +192,47 @@ def _run_one(
                 # and it cannot be recomputed from a score after the fact.
                 "weaknesses": list(r.get("weaknesses") or []),
                 "not_applicable_reason": r.get("not_applicable_reason") or "",
+                "score_source": r.get("score_source") or "legacy",
+                # Source of truth for qualitative comparison. Empty derived
+                # weakness metadata must never be mistaken for an empty review.
+                "markdown": r.get("body") or "",
             }
             for r in reports
         ]
         decision = state.get("decision") or None
-        return RunRecord(
+        record = RunRecord(
             paper_id=item.id, repeat=rep,
-            ok=bool(decision),
+            # A decision produced under an explicitly enabled quorum policy is
+            # still useful operational output, but it is not a successful
+            # experimental completion. Counting it as ``ok`` inflated the
+            # reliability endpoint by treating absent reviewers as success.
+            ok=bool(decision) and bool(state.get("panel_complete", True))
+            and not bool(state.get("panel_degraded")),
             system_decision=decision,
             system_weighted_score=weighted_score(reports),
             per_reviewer=per_reviewer,
+            decision_letter=state.get("decision_letter") or "",
+            debate_markdown=[dict(turn) for turn in (state.get("debate") or [])],
+            audit_markdown=[
+                {
+                    "auditor": audit.get("auditor"),
+                    "title": audit.get("title"),
+                    "markdown": audit.get("body") or "",
+                }
+                for audit in (state.get("audits") or [])
+            ],
             n_reviewers=len(reports),
             cost_usd=round(float(state.get("total_cost") or 0.0), 4),
             latency_s=round(time.time() - t0, 1),
             errors=list(state.get("errors") or []),
             manifest=manifest_dict,
+        )
+        integrity_errors = inspect_run_artifacts(record)
+        return replace(
+            record,
+            ok=record.ok and not integrity_errors,
+            artifact_integrity_ok=not integrity_errors,
+            artifact_integrity_errors=integrity_errors,
         )
     except Exception as exc:  # noqa: BLE001
         return RunRecord(

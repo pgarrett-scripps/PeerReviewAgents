@@ -1,19 +1,16 @@
 """Builder for debate nodes (Advocate / Skeptic).
 
-Each debater emits a :class:`DebateOutput` (focused argument + 2-5 key
-points); the rendered markdown stored on the DebateTurn ``content`` field
-is produced by ``DebateOutput.to_markdown()`` so structured fields are
-the source of truth and the on-disk transcript stays human-readable.
+Each debater emits ordinary Markdown. That exact response is stored on the
+DebateTurn ``content`` field and passed to the next debater and editor.
 """
 
 from __future__ import annotations
 
 from ...observability import node_context
-from ..schemas import DebateOutput
 from ..utils.agent_states import ReviewState
 from ..utils.agent_utils import context_block
 from ..utils.llm import make_llm
-from ..utils.structured import invoke_structured
+from ..utils.structured import invoke_markdown
 
 
 def _reports_digest(state: ReviewState) -> str:
@@ -69,8 +66,8 @@ def make_debate_node(role: str, stance: str):
                 "Engage directly with the other side's MOST RECENT argument rather than "
                 "restating your own opening, and concede any point they have genuinely "
                 "established — in a debate, credibility comes from picking real battles, "
-                "not from defending the indefensible. "
-                "Return your turn as the structured DebateOutput schema."
+                "not from defending the indefensible. Write your complete turn "
+                "as ordinary Markdown; no JSON or fixed headings are required."
             )
             user = (
                 f"Reviewer findings:\n{_reports_digest(state)}\n\n"
@@ -81,13 +78,13 @@ def make_debate_node(role: str, stance: str):
                 # Use the exact manuscript + directive prefix already warmed
                 # by the desk and panel. A bare-manuscript variant creates a
                 # second large cache entry for no semantic benefit.
-                result = invoke_structured(
+                result = invoke_markdown(
                     llm,
-                    DebateOutput,
                     config,
                     system,
                     user,
                     cached_prefix=context_block(state),
+                    min_chars=80,
                 )
             except Exception as exc:  # noqa: BLE001
                 update: dict = {"errors": [f"{role} failed: {exc}"]}
@@ -97,9 +94,8 @@ def make_debate_node(role: str, stance: str):
                     update["debate_round"] = state.get("debate_round", 0) + 1
                 return update
 
-            turn_md = result.instance.to_markdown()  # type: ignore[union-attr]
             update = {
-                "debate": [{"role": role, "round": rnd, "content": turn_md}],
+                "debate": [{"role": role, "round": rnd, "content": result.text}],
                 "total_cost": result.cost,
             }
             if role == "skeptic":  # skeptic closes a round

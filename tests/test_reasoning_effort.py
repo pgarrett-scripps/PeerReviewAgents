@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import inspect
 
-from peerreviewagents.agents.author import rebuttal
+from peerreviewagents.agents.author import rebuttal, response_verifier
 from peerreviewagents.agents.editor import editor_in_chief
 from peerreviewagents.agents.journal_recommender import recommender
 from peerreviewagents.agents.synthesis import meta_reviewer
+from peerreviewagents.eval import baseline
 from peerreviewagents.runtime.providers import make_chat_model
 
 
@@ -23,16 +24,23 @@ def calls_with_effort(module) -> bool:
     return 'reasoning_effort="' in inspect.getsource(module)
 
 
-def test_only_the_editor_thinks_by_default():
-    """One agent issues the verdict, and it is the one that sees everything —
-    the panel, the debate, the meta-review, the audits and the rebuttal. That
-    is the call worth deliberating over.
+def test_no_agent_forces_hidden_reasoning_by_default():
+    """Hidden reasoning is configuration-only.
 
-    The area chair used to think too. It synthesises rather than decides, and
-    the editor re-reads its output downstream, so the deliberation was being
-    paid for twice at the most expensive rate in the run."""
-    assert calls_with_effort(editor_in_chief)
-    assert not calls_with_effort(meta_reviewer)
+    DeepSeek exhausted all 12,000 output tokens as hidden reasoning on three
+    consecutive baseline attempts and returned no review. A call-site default
+    bypasses the run configuration and can therefore make an otherwise valid
+    Markdown pipeline fail before any artifact exists.
+    """
+    for module in (
+        editor_in_chief,
+        meta_reviewer,
+        response_verifier,
+        rebuttal,
+        recommender,
+        baseline,
+    ):
+        assert not calls_with_effort(module)
 
 
 def test_the_agents_that_decide_nothing_do_not():

@@ -129,8 +129,13 @@ class FakeLLM:
     def bind(self, **_kwargs):
         return self
 
-    def invoke(self, _messages, **_kwargs):
-        return AIMessage(content="canned free-text")
+    def invoke(self, messages, **_kwargs):
+        # Keep the web integration aligned with the end-to-end fake: active
+        # agents now consume prose, while revision/security boundaries may
+        # still request the canned structured instances below.
+        from test_pipeline import FakeLLM as PipelineFakeLLM
+
+        return PipelineFakeLLM().invoke(messages, **_kwargs)
 
     def with_structured_output(self, schema, **kwargs):
         return _FakeStructuredChain(schema, kwargs.get("include_raw", False))

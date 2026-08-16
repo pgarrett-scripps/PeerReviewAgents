@@ -92,7 +92,7 @@ def test_enabled_reject_short_circuits(monkeypatch, tmp_path):
     assert not state.get("reports")
     assert not state.get("debate")
     assert not state.get("meta_review")
-    assert state["decision_letter"].startswith("# Editorial Desk Screen")
+    assert "DESK DECISION: reject" in state["decision_letter"]
     # A desk reject is a valid terminal outcome, not a failed run.
     assert _run_failed(state) is None
 

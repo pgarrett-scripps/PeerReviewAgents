@@ -13,13 +13,13 @@ from __future__ import annotations
 import datetime as _dt
 import os
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from peerreviewagents.agents.editor import editor_in_chief
 from peerreviewagents.agents.schemas import EditorDecisionOutput
 from peerreviewagents.agents.synthesis import meta_reviewer
+from peerreviewagents.agents.utils.agent_utils import RunResult
 from peerreviewagents.reports import write_reports
 
 
@@ -51,7 +51,7 @@ def test_meta_failure_emits_no_recommendation(monkeypatch):
     def _boom(*_a, **_k):
         raise RuntimeError("rate limited")
 
-    monkeypatch.setattr(meta_reviewer, "invoke_structured", _boom)
+    monkeypatch.setattr(meta_reviewer, "invoke_markdown", _boom)
 
     out = meta_reviewer.node(_panel_state())
     assert out["draft_recommendation"] == ""
@@ -75,24 +75,25 @@ def test_editor_does_not_adopt_the_draft_for_a_nonverdict(monkeypatch):
     """A malformed editor output must surface as no decision — not silently
     become whatever the draft recommendation happened to be, which can itself
     have come from a failure path."""
-    bad = EditorDecisionOutput.model_construct(
-        decision="revise-ish",
-        summary_of_evaluation="confused",
-        required_revisions=[],
-        minor_suggestions=[],
-    )
     monkeypatch.setattr(editor_in_chief, "make_llm", lambda config, **_k: object())
+    prose = (
+        "The panel identified several concerns, and the manuscript should be "
+        "changed before publication. This letter deliberately refuses to say "
+        "whether that means accept, minor, major, or reject, even after being "
+        "asked a second time. It is long enough to be substantive but contains "
+        "no decision that the pipeline may safely invent from another agent."
+    )
     monkeypatch.setattr(
         editor_in_chief,
-        "invoke_structured",
-        lambda *_a, **_k: SimpleNamespace(instance=bad, cost=0.0),
+        "run_agent",
+        lambda *_a, **_k: RunResult(text=prose, cost=0.0),
     )
 
     out = editor_in_chief.node(_panel_state(draft_recommendation="major"))
     assert out["decision"] == ""
     assert any("editor failed" in e for e in out["errors"])
     # The letter body is real editor prose and stays on the record.
-    assert "confused" in out["decision_letter"]
+    assert prose in out["decision_letter"]
 
 
 def test_editor_exception_still_means_no_decision(monkeypatch):
@@ -101,9 +102,64 @@ def test_editor_exception_still_means_no_decision(monkeypatch):
     def _boom(*_a, **_k):
         raise RuntimeError("overloaded")
 
-    monkeypatch.setattr(editor_in_chief, "invoke_structured", _boom)
+    monkeypatch.setattr(editor_in_chief, "run_agent", _boom)
     out = editor_in_chief.node(_panel_state(draft_recommendation="major"))
     assert out["decision"] == ""
+
+
+def test_editor_accepts_markdown_without_a_structured_response(monkeypatch):
+    letter = """\
+I recommend major revision because the central performance claim lacks its
+necessary control, although the software and workflow are otherwise sound.
+
+## Summary of Evaluation
+The panel converges on one load-bearing evidentiary gap. The missing control
+prevents the comparative result from supporting the headline claim, while the
+remaining comments concern reporting and presentation.
+
+## Required Revisions
+1. Run the existing benchmark with the necessary control and report the same metrics.
+2. Requalify the headline claim if that comparison does not support it.
+
+## Minor Suggestions
+- State the software versions and random seed used for the example.
+"""
+    monkeypatch.setattr(editor_in_chief, "make_llm", lambda config, **_k: object())
+    monkeypatch.setattr(
+        editor_in_chief,
+        "run_agent",
+        lambda *_a, **_k: RunResult(text=letter, cost=0.25),
+    )
+
+    out = editor_in_chief.node(_panel_state())
+
+    assert out["decision"] == "major"
+    assert len(out["required_revisions"]) == 2
+    assert "I recommend major revision" in out["decision_letter"]
+    assert out["total_cost"] == pytest.approx(0.25)
+
+
+def test_editor_preserves_verdict_when_revision_list_format_is_unparseable(monkeypatch):
+    letter = (
+        "VERDICT: minor\n\nThe evidence supports the claims, but the authors "
+        "should state the dependency versions and clarify the caption before "
+        "publication. Those are text-only corrections and do not require new "
+        "analysis. This deliberately ordinary paragraph has no special section "
+        "headings or numbered list, and that formatting choice must not erase "
+        "the editor's actual decision."
+    )
+    monkeypatch.setattr(editor_in_chief, "make_llm", lambda config, **_k: object())
+    monkeypatch.setattr(
+        editor_in_chief,
+        "run_agent",
+        lambda *_a, **_k: RunResult(text=letter, cost=0.0),
+    )
+    out = editor_in_chief.node(_panel_state())
+
+    assert out["decision"] == "minor"
+    assert out["required_revisions"] == []
+    assert letter in out["decision_letter"]
+    assert any("editor degraded" in error for error in out["errors"])
 
 
 # --- salvage of incomplete runs ----------------------------------------------
@@ -307,3 +363,15 @@ def test_editor_schema_accepts_a_real_synthesis():
         required_revisions=["Apply an FDR correction and report what survives."],
     )
     assert out.decision == "major"
+
+
+def test_editor_schema_rejects_a_summary_that_is_a_whole_review():
+    """One letter published a 37,275-character summary that had swallowed a
+    reviewer report and its numbered questions, while required_revisions held
+    its own copy of the asks. Field confusion, not verbosity."""
+    with pytest.raises(ValueError, match="review rather than a synthesis"):
+        EditorDecisionOutput(
+            decision="major",
+            summary_of_evaluation="The panel found problems. " * 2000,
+            required_revisions=["Do the thing."],
+        )

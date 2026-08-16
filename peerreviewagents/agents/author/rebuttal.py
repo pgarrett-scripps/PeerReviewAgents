@@ -4,20 +4,18 @@ Real peer review has an author-response phase, and without one every
 reviewer critique looks equally fatal: there's nothing distinguishing
 "fixable in revision" from "the reviewer misread the paper" from
 "actual blocker." This node closes that gap with a single LLM call:
-the model plays the author, reads the panel's critiques, and emits a
-structured :class:`AuthorRebuttalOutput` (concessions, disagreements,
-load-bearing critiques) that the editor consumes alongside the meta-review.
+the model plays the author, reads the panel's critiques, and emits Markdown
+that the editor consumes alongside the meta-review.
 """
 
 from __future__ import annotations
 
 from ...observability import node_context
 from ..debate.base import _debate_so_far, _reports_digest
-from ..schemas import AuthorRebuttalOutput
 from ..utils.agent_states import ReviewState
 from ..utils.agent_utils import manuscript_block, score_summary
 from ..utils.llm import make_llm
-from ..utils.structured import invoke_structured
+from ..utils.structured import invoke_markdown
 
 _SYS = (
     "You are the author of the manuscript responding to a panel of "
@@ -33,7 +31,7 @@ _SYS = (
     "everything — no concessions and no load-bearing critiques — reads as bad "
     "faith and the editor will discount the whole rebuttal. The editor values "
     "an author who can tell fixable from fundamental more than one who defends "
-    "everything. Return the structured AuthorRebuttalOutput schema."
+    "everything. Write ordinary Markdown; no JSON or fixed schema is required."
 )
 
 
@@ -58,22 +56,21 @@ def _run(state: ReviewState) -> dict:
         # debate and the scout send, so those share a cache entry. (The
         # reviewers' prefix puts the journal/strictness directives ahead of
         # the manuscript, which makes it a different entry.)
-        result = invoke_structured(
+        result = invoke_markdown(
             llm,
-            AuthorRebuttalOutput,
             config,
             _SYS,
             user,
             cached_prefix=manuscript_block(state),
+            min_chars=100,
         )
     except Exception as exc:  # noqa: BLE001
         return {
             "errors": [f"author_rebuttal failed: {exc}"],
             "author_rebuttal": "",
         }
-    output: AuthorRebuttalOutput = result.instance  # type: ignore[assignment]
     return {
-        "author_rebuttal": output.to_markdown(),
+        "author_rebuttal": result.text,
         "total_cost": result.cost,
     }
 

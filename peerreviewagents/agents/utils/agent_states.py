@@ -19,12 +19,15 @@ class ReviewReport(TypedDict):
     # 1 (reject) .. 5 (accept), per-reviewer confidence-weighted score
     score: float
     confidence: float
-    # Promoted alongside the scalars so the round record can id each weakness
-    # without parsing it out of the rendered body — that is how the editor's
-    # numbered asks get attributed to the reviewer who raised them.
+    # Optional derived indexes. They may be empty even when body contains a
+    # complete review; no editorial agent treats them as the source of truth.
     weaknesses: list[str]
     questions: list[str]
     body: str
+    # explicit | normalized | unavailable | structured_fallback. Recording
+    # provenance prevents an inferred scalar from masquerading as one the
+    # reviewer actually printed.
+    score_source: str
 
 
 class AuditReport(TypedDict):
@@ -41,8 +44,8 @@ class AuditReport(TypedDict):
     """
     auditor: str        # "methods_completeness" | "citation_integrity"
     title: str          # human-facing title for rendering
-    hard_gaps: int
-    soft_gaps: int
+    hard_gaps: int | None
+    soft_gaps: int | None
     # Revision-compliance auditor only: one entry per required revision, as
     # ``{id, status, blocking}``. The editor's round-delta needs per-item
     # outcomes, and recovering them by parsing the rendered body would put
@@ -143,6 +146,10 @@ class ReviewState(TypedDict, total=False):
     # False is terminal: synthesis and the editor must not issue a decision
     # from an accidental subset of the requested panel.
     panel_complete: bool
+    # True when synthesis proceeded under the configured quorum rather than
+    # with every requested specialist. Such a run may have a useful verdict,
+    # but is explicitly not publication-ready and is counted as degraded.
+    panel_degraded: bool
     # Explicit lifecycle: running -> panel_complete -> publishable, or a
     # terminal incomplete state. Optional enrichment failures may coexist
     # with publication_ready=True.

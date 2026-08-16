@@ -6,10 +6,9 @@ reasoning-effort mapping live there. This module exists so call sites
 don't reach into runtime/ directly and so the historic ``make_llm``
 signature stays stable.
 
-The synthesis-heavy agents (meta-reviewer and editor) pass
-``reasoning_effort="high"`` to spend more deliberation tokens on the
-calls that actually need it; the parallel specialists run at the
-default effort.
+Hidden reasoning is opt-in through model-tag configuration. Call sites do not
+force it: a provider can otherwise consume the entire completion budget as
+hidden reasoning and return no review at all.
 """
 
 from __future__ import annotations

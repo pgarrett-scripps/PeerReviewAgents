@@ -21,6 +21,7 @@ from peerreviewagents.agents.utils.agent_utils import RunResult, run_agent
 from peerreviewagents.agents.utils.structured import (
     StructuredResult,
     invoke_structured,
+    invoke_structured_after_tools,
 )
 
 # ---------- schema construction + render ------------------------------------
@@ -224,10 +225,26 @@ def _tool_call(args: dict) -> AIMessage:
     )
 
 
+def _wire_tool_call(args: dict) -> AIMessage:
+    """OpenAI-compatible wire shape used when normalized calls are absent."""
+    return AIMessage(
+        content="",
+        additional_kwargs={"tool_calls": [{
+            "id": "wire-1",
+            "type": "function",
+            "function": {
+                "name": "ReviewerOutput",
+                "arguments": json.dumps(args),
+            },
+        }]},
+    )
+
+
 @pytest.mark.parametrize(
     "raw",
     [
         _tool_call(_ABSTAINED),
+        _wire_tool_call(_ABSTAINED),
         # The same object written into content instead of a tool call. Models
         # pick either and the choice is not ours; looking only at tool calls is
         # what let a literature reviewer be discarded after the salvage path
@@ -235,7 +252,7 @@ def _tool_call(args: dict) -> AIMessage:
         AIMessage(content=json.dumps(_ABSTAINED)),
         AIMessage(content="Here you go:\n" + json.dumps(_ABSTAINED) + "\nDone."),
     ],
-    ids=["tool_call", "content_json", "content_json_with_prose"],
+    ids=["tool_call", "wire_tool_call", "content_json", "content_json_with_prose"],
 )
 def test_unscored_review_is_kept_not_discarded(raw):
     llm = _StubLLM([_fail_with(raw), _fail_with(raw)])
@@ -262,6 +279,19 @@ def test_salvage_does_not_touch_a_scored_review():
     llm = _StubLLM([_fail_with(_tool_call(scored))] * 4)
     with pytest.raises(ValueError, match="validation failed after 3 repair attempts"):
         invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
+
+
+def test_validation_error_input_is_recoverable_when_raw_message_lost_payload():
+    """LangChain may retain only Pydantic's input_value on failed parsing."""
+    try:
+        ReviewerOutput(**_ABSTAINED)
+    except ValidationError as error:
+        failed = {"raw": AIMessage(content=""), "parsed": None, "parsing_error": error}
+    llm = _StubLLM([failed] * 5)
+    result = invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
+    assert result.instance.summary == _ABSTAINED["summary"]
+    assert result.instance.score is None
+    assert "did not say why" in result.instance.not_applicable_reason
 
 
 # ---------- the score-repair ask before an unexplained abstention -----------
@@ -328,6 +358,50 @@ def test_failed_repair_falls_back_to_the_unexplained_abstention():
     result = invoke_structured(llm, ReviewerOutput, _cfg(), "sys", "user")
     assert result.instance.score is None
     assert "did not say why" in result.instance.not_applicable_reason
+
+
+# ---------- repair only a broken editor summary -----------------------------
+
+
+_BAD_EDITOR = {
+    "decision": "major",
+    "summary_of_evaluation": "...",
+    "required_revisions": [
+        "Report the missing ablation and reconcile it with the central claim.",
+        "Narrow the generalization claim to the evaluated datasets.",
+    ],
+    "minor_suggestions": ["Clarify Figure 2."],
+}
+
+
+def test_editor_summary_is_repaired_without_changing_verdict_or_revisions():
+    from peerreviewagents.agents.utils.structured import _EditorSummaryRepair
+
+    good_summary = (
+        "The panel found the core method plausible, but the central empirical "
+        "claim depends on an ablation that is not reported. That gap and the "
+        "unsupported generalization outweigh the otherwise clear presentation, "
+        "so a major revision is required before the claim can be assessed."
+    )
+    bad = _fail_with(_tool_call(_BAD_EDITOR))
+    llm = _StubLLM([bad] * 4 + [
+        _ok(_EditorSummaryRepair(summary_of_evaluation=good_summary)),
+    ])
+    result = invoke_structured(llm, EditorDecisionOutput, _cfg(), "sys", "panel evidence")
+    assert result.instance.decision == "major"
+    assert result.instance.required_revisions == _BAD_EDITOR["required_revisions"]
+    assert result.instance.summary_of_evaluation == good_summary
+    assert not result.warnings
+
+
+def test_editor_verdict_survives_when_summary_micro_repair_also_fails():
+    bad = _fail_with(_tool_call(_BAD_EDITOR))
+    llm = _StubLLM([bad])
+    result = invoke_structured(llm, EditorDecisionOutput, _cfg(), "sys", "panel evidence")
+    assert result.instance.decision == "major"
+    assert result.instance.required_revisions == _BAD_EDITOR["required_revisions"]
+    assert "original narrative synthesis was unusable" in result.instance.summary_of_evaluation
+    assert result.warnings
 
 
 def test_repair_call_error_falls_back_to_the_unexplained_abstention():
@@ -459,22 +533,29 @@ def test_an_empty_rejected_response_is_not_replayed():
 # ---------- the discarded tool loop is still billed ---------------------------
 
 
-def test_short_text_fallback_still_counts_the_tool_loop_cost(monkeypatch):
+def test_short_text_retry_still_counts_the_first_prose_cost(monkeypatch):
     """A tool loop whose answer is too short to keep was still run — every
     lookup invoiced — and the fallback used to report only its own cost,
     undercounting the agent by exactly its most expensive calls."""
     import peerreviewagents.agents.utils.structured as s
-    monkeypatch.setattr(
-        s, "run_agent",
-        lambda *a, **k: RunResult(text="Let me verify a few more citations.", cost=0.42),
-    )
-    inst = ReviewerOutput(score=3, confidence=3, summary="The design is sound but the evaluation is thin.")
-    llm = _StubLLM([_ok(inst)])
+    calls = 0
+
+    def _prose(*_a, **_k):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return RunResult(text="Let me verify a few more citations.", cost=0.42)
+        return RunResult(text=_MARKDOWN_REVIEW, cost=0.21)
+
+    monkeypatch.setattr(s, "run_agent", _prose)
+    llm = _StubLLM([_fail("a schema must never be requested")])
     result = s.invoke_structured_after_tools(
         llm, ReviewerOutput, _cfg(), "sys", "user", [],
     )
-    assert result.instance is inst
-    assert result.cost == pytest.approx(0.42)
+    assert result.instance.score == 4
+    assert result.raw_text == _MARKDOWN_REVIEW.strip()
+    assert result.cost == pytest.approx(0.63)
+    assert llm.chain is None
 
 
 # ---------- the tool loop's call budget ---------------------------------------
@@ -485,6 +566,33 @@ class _Lookup:
 
     def invoke(self, args):
         return f"- one result for {args.get('query', '')}"
+
+
+class _EmptyResponseModel:
+    def invoke(self, _messages):
+        return AIMessage(
+            content="",
+            additional_kwargs={"openrouter_reasoning": "hidden work"},
+            response_metadata={"finish_reason": "length", "model_name": "deepseek/test"},
+            usage_metadata={
+                "input_tokens": 100,
+                "output_tokens": 500,
+                "total_tokens": 600,
+                "output_token_details": {"reasoning": 500},
+            },
+        )
+
+
+def test_run_agent_raises_diagnostic_error_instead_of_returning_empty_review():
+    from peerreviewagents.agents.utils.agent_utils import EmptyModelResponse
+
+    with pytest.raises(EmptyModelResponse) as caught:
+        run_agent(_EmptyResponseModel(), "sys", "user")
+    message = str(caught.value)
+    assert "finish_reason=length" in message
+    assert "reasoning_tokens=500" in message
+    assert "reasoning_chars=11" in message
+    assert "hidden work" not in message
 
 
 class _ToolHungryModel:
@@ -664,3 +772,167 @@ def test_the_extraction_sees_only_the_prose():
     assert len(extraction) == 2
     assert _PROSE in str(extraction[-1].content)
     assert "MANUSCRIPT-BODY" not in str(extraction)
+
+
+# ---------------------------------------------------------------------------
+# Markdown-first reviewer output.
+# ---------------------------------------------------------------------------
+
+
+class _MarkdownOnlyLLM:
+    """Produces a complete review and refuses every structured-output call."""
+
+    def __init__(self, text: str):
+        self.text = text
+        self.structured_calls = 0
+
+    def invoke(self, _messages, **_kwargs):
+        return AIMessage(content=self.text)
+
+    def with_structured_output(self, *_args, **_kwargs):
+        self.structured_calls += 1
+        raise AssertionError("explicit Markdown metadata must not need a schema")
+
+
+_MARKDOWN_REVIEW = """\
+**Score:** 4/5
+**Confidence:** 3/5
+
+## Overall Assessment
+The method is useful and the main conclusion follows from the reported results,
+although one robustness check should be added before publication. The scope is
+well defined and the manuscript is otherwise clear enough to reproduce.
+
+## Strengths
+- The workflow is described with concrete parameters and released code.
+- The example exercises the complete analysis rather than a toy fragment.
+
+## Weaknesses
+- The sensitivity of the result to the threshold is not reported.
+- Runtime is discussed qualitatively but not measured on the example input.
+
+## Questions for the Authors
+- Does the conclusion change under the neighboring threshold values?
+
+The requested robustness check is small and does not change the underlying
+method, so a minor revision is proportionate. This final paragraph makes the
+review intentionally long enough to represent an actual model response.
+"""
+
+
+def test_reviewer_markdown_is_the_durable_output_without_schema_extraction():
+    llm = _MarkdownOnlyLLM(_MARKDOWN_REVIEW)
+    result = invoke_structured_after_tools(
+        llm, ReviewerOutput, _cfg(), "sys", "user", [],
+    )
+
+    assert result.raw_text == _MARKDOWN_REVIEW.strip()
+    assert result.instance.score == 4
+    assert result.instance.confidence == 3
+    assert result.instance.weaknesses[0].startswith("The sensitivity")
+    assert result.score_source == "explicit"
+    assert llm.structured_calls == 0
+
+
+def test_placeholder_question_does_not_discard_complete_markdown_review():
+    review = _MARKDOWN_REVIEW.replace(
+        "- Does the conclusion change under the neighboring threshold values?",
+        "- None.",
+    )
+    llm = _MarkdownOnlyLLM(review)
+    result = invoke_structured_after_tools(
+        llm, ReviewerOutput, _cfg(), "sys", "user", [],
+    )
+
+    assert result.raw_text == review.strip()
+    assert result.instance.score == 4
+    assert result.instance.questions == []
+    assert llm.structured_calls == 0
+
+
+def test_reviewer_score_can_be_natural_prose_instead_of_formatted_fields():
+    prose = (
+        "I recommend major revision, because the central comparison omits a "
+        "necessary control. My confidence is 4 out of 5 because the relevant "
+        "methods and results are explicit. The implementation itself appears "
+        "sound, and the released workflow is useful, but the omitted control "
+        "means the central performance claim is not established. Adding that "
+        "single comparison would directly resolve the concern. The manuscript "
+        "should also identify the software versions and random seed used for "
+        "the reported example. These comments are based on the methods and "
+        "results as supplied, rather than on assumptions about undocumented "
+        "experiments. No special headings or machine-readable wrapper are "
+        "needed for this review to remain usable downstream."
+    )
+    llm = _MarkdownOnlyLLM(prose)
+    result = invoke_structured_after_tools(
+        llm, ReviewerOutput, _cfg(), "sys", "user", [],
+    )
+
+    assert result.instance.score == 3
+    assert result.instance.confidence == 4
+    assert result.raw_text == prose
+    assert result.score_source == "explicit"
+    assert llm.structured_calls == 0
+
+
+def test_reviewer_prompt_echo_is_rejected_and_retried_as_plain_markdown(monkeypatch):
+    """A long prompt dump is not a substantive review merely because it is long."""
+    import peerreviewagents.agents.utils.structured as s
+
+    prompt = "Instructions\n=== MANUSCRIPT ===\nA manuscript body\n=== END MANUSCRIPT ==="
+    echoed = (
+        "I will reproduce the request.\n=== MANUSCRIPT ===\nA manuscript body\n"
+        "This copied material continues for long enough to pass the old length floor. " * 10
+    )
+    calls = 0
+
+    def _prose(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return RunResult(text=echoed if calls == 1 else _MARKDOWN_REVIEW, cost=0.1)
+
+    monkeypatch.setattr(s, "run_agent", _prose)
+    result = s.invoke_structured_after_tools(
+        llm=None,
+        schema=ReviewerOutput,
+        config={"markdown_attempts": 2},
+        system_prompt="sys",
+        user_prompt=prompt,
+        tools=[],
+    )
+
+    assert calls == 2
+    assert result.raw_text == _MARKDOWN_REVIEW.strip()
+    assert result.instance.score == 4
+    assert any("echoed internal prompt boundary" in warning for warning in result.warnings)
+
+
+def test_prompt_echo_from_cached_prefix_is_also_rejected(monkeypatch):
+    """Cached manuscript boundaries are input even when absent from the role prompt."""
+    import peerreviewagents.agents.utils.structured as s
+
+    calls = 0
+
+    def _prose(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return RunResult(
+                text="=== MANUSCRIPT ===\n" + "copied manuscript material " * 20,
+                cost=0.1,
+            )
+        return RunResult(text=_MARKDOWN_REVIEW, cost=0.1)
+
+    monkeypatch.setattr(s, "run_agent", _prose)
+    result = s.invoke_markdown(
+        llm=None,
+        config={"markdown_attempts": 2},
+        system_prompt="sys",
+        user_prompt="Write the citation audit.",
+        cached_prefix="=== MANUSCRIPT ===\nprivate paper",
+    )
+
+    assert calls == 2
+    assert result.text == _MARKDOWN_REVIEW.strip()
+    assert any("echoed internal prompt boundary" in warning for warning in result.warnings)

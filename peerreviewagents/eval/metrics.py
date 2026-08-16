@@ -24,6 +24,7 @@ from collections import Counter
 from typing import Any
 
 from .corpus import load_corpus
+from .integrity import inspect_run_artifacts
 from .schema import RunRecord, read_jsonl
 
 # System verdict -> binary, to compare against accept/reject ground truth.
@@ -160,7 +161,7 @@ def _manifest_config_key(manifest: dict[str, Any]) -> tuple[Any, ...]:
     """Result-affecting identity, excluding per-run timestamps and notes."""
     return tuple(
         manifest.get(key)
-        for key in ("config_digest", "provider", "model", "mode")
+        for key in ("config_digest", "provider", "model", "mode", "source_fingerprint")
     )
 
 
@@ -273,11 +274,21 @@ def compute_consistency(records: list[RunRecord]) -> dict[str, Any]:
 def run_health(records: list[RunRecord]) -> dict[str, Any]:
     ok = [r for r in records if r.ok]
     degraded = [r for r in ok if r.errors]      # produced a decision but logged errors
+    completed = [r for r in records if r.system_decision]
+    integrity_failures = [r for r in completed if inspect_run_artifacts(r)]
+    recovered = [r for r in ok if r.errors]
     return {
         "total_runs": len(records),
         "ok_runs": len(ok),
         "failed_runs": len(records) - len(ok),
         "degraded_runs": len(degraded),
+        "artifact_complete_runs": len(completed) - len(integrity_failures),
+        "artifact_integrity_failures": len(integrity_failures),
+        "artifact_integrity_fraction": round(
+            (len(completed) - len(integrity_failures)) / len(completed), 4
+        ) if completed else None,
+        "recovered_runs": len(recovered),
+        "recovery_warning_fraction": round(len(recovered) / len(ok), 4) if ok else None,
         "success_fraction": round(len(ok) / len(records), 4) if records else None,
         "total_cost_usd": round(sum(r.cost_usd for r in records), 4),
         "mean_latency_s": round(statistics.mean([r.latency_s for r in records]), 1) if records else 0,
@@ -340,6 +351,10 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Total runs: {h['total_runs']}  (ok {h['ok_runs']}, failed {h['failed_runs']}, "
         f"degraded {h['degraded_runs']})",
         f"- Successful-run fraction: {_fmt(h['success_fraction'])}",
+        f"- Artifact integrity: {h['artifact_complete_runs']}/{h['artifact_complete_runs'] + h['artifact_integrity_failures']} "
+        f"({_fmt(h['artifact_integrity_fraction'])}); failures {h['artifact_integrity_failures']}",
+        f"- Successful runs carrying recovery warnings: {h['recovered_runs']} "
+        f"({_fmt(h['recovery_warning_fraction'])})",
         f"- Total cost: ${h['total_cost_usd']}  ·  mean latency: {h['mean_latency_s']}s",
         f"- Per successful run: mean cost ${_fmt(h['mean_cost_per_ok_run_usd'])}  ·  "
         f"mean latency {_fmt(h['mean_latency_per_ok_run_s'])}s",

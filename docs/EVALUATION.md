@@ -8,12 +8,14 @@ not compute-matched: report performance, cost, and latency together.
 ## Design
 
 - Use one fully decided OpenReview conference and pin its actual rating field.
-- Fetch 30 papers, balanced 15 accepted and 15 rejected.
+- Fetch 20 papers, balanced 10 accepted and 10 rejected.
 - Run the full workflow and single-LLM baseline once on every paper.
-- Run the full workflow three times total on six papers selected before results.
+- Run the full workflow three times total on four papers selected before results.
 - Primary endpoint: Spearman correlation with mean human rating.
 - Secondary endpoints: balanced decision accuracy, Cohen's kappa, completion,
-  cost, latency, and repeat-run stability.
+  saved-artifact integrity, recovery warnings, cost, latency, and repeat-run
+  stability. A run fails if any of the eight reviews or two audits is missing,
+  blank/truncated, duplicated, or contains an internal prompt boundary.
 - Use one provider/model for every role and disable research tools to reduce
   leakage. Record the remaining training-data leakage risk in the manifest.
 - Do not tune strictness, thresholds, prompts, or sampling after inspecting the
@@ -38,7 +40,7 @@ snapshot predates the venue decisions when possible.
 python -m peerreviewagents.eval fetch \
   --venue ICLR.cc/2026/Conference \
   --rating-field rating \
-  --limit 30 \
+  --limit 20 \
   --out data/eval/iclr-2026 \
   --leakage-note 'Model snapshot and conference-decision timing assessed before running.'
 ```
@@ -55,12 +57,15 @@ Freeze endpoints and deterministically select the repeatability subset:
 
 ```bash
 python -m peerreviewagents.eval plan --dir data/eval/iclr-2026 \
-  --repeat-papers 6 --repeats 3 --seed 20260815
+  --repeat-papers 4 --repeats 3 --seed 20260815 \
+  --provider openrouter --model VENDOR/MODEL --single-model --offline \
+  --journal ml-conference --article-type conference-paper --strictness 3
 ```
 
 Commit `corpus.jsonl`, `corpus_manifest.json`, and `protocol.json` before model
-runs. PDF redistribution must follow the source venue's terms; hashes and source
-URLs can be archived even when PDFs cannot be redistributed.
+runs. The runner refuses a configuration whose digest differs from the frozen
+protocol. PDF redistribution must follow the source venue's terms; hashes and
+source URLs can be archived even when PDFs cannot be redistributed.
 
 ## Run both conditions
 
@@ -81,13 +86,13 @@ python -m peerreviewagents.eval run --dir data/eval/iclr-2026 \
   --journal ml-conference --article-type conference-paper --strictness 3
 ```
 
-For repeatability, rerun only the six IDs printed by `plan`, increasing the full
+For repeatability, rerun only the four IDs printed by `plan`, increasing the full
 workflow file to three runs per selected paper:
 
 ```bash
 python -m peerreviewagents.eval run --dir data/eval/iclr-2026 \
   --mode system --runs-out data/eval/iclr-2026/runs_system.jsonl \
-  --repeats 3 --only ID1,ID2,ID3,ID4,ID5,ID6 \
+  --repeats 3 --only ID1,ID2,ID3,ID4 \
   --provider openrouter --model VENDOR/MODEL --single-model --offline \
   --journal ml-conference --article-type conference-paper --strictness 3
 ```

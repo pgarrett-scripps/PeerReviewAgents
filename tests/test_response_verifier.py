@@ -143,6 +143,10 @@ class _Recorder(FakeLLM):
 
         return _Wrapped()
 
+    def invoke(self, messages, **kwargs):
+        self.messages.append(messages)
+        return super().invoke(messages, **kwargs)
+
     def system_text(self) -> str:
         return _content(self.messages[0][0])
 
@@ -268,7 +272,7 @@ def test_letter_is_fenced_and_kept_out_of_the_cached_prefix(monkeypatch, tmp_pat
     assert "respectfully believe" in user
     assert user.index(response_verifier._OPEN) < user.index("respectfully believe")
     assert user.index("respectfully believe") < user.index(response_verifier._CLOSE)
-    assert user.rstrip().endswith("ResponseVerificationOutput schema.")
+    assert user.rstrip().endswith("verification report as Markdown.")
     # The system prompt names the same fence it tells the model to distrust.
     assert response_verifier._OPEN in system and response_verifier._CLOSE in system
 
@@ -320,7 +324,7 @@ def test_verification_failure_leaves_the_panel_block_empty(monkeypatch, tmp_path
     assert "total_cost" not in out
 
 
-def test_structured_failure_also_yields_nothing(monkeypatch, tmp_path):
+def test_metadata_failure_preserves_verification_but_forwards_nothing(monkeypatch, tmp_path):
     class _Failing(FakeLLM):
         def with_structured_output(self, schema, **kwargs):
             class _Chain:
@@ -336,7 +340,7 @@ def test_structured_failure_also_yields_nothing(monkeypatch, tmp_path):
     out = response_verifier.node(_state(tmp_path))
 
     assert out["verified_claims_block"] == ""
-    assert out["response_verification"] == ""
+    assert out["response_verification"].startswith("# Author Response — Verification")
     assert out["errors"]
 
 

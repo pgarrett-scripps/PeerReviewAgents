@@ -116,6 +116,10 @@ class _RecordingLLM(FakeLLM):
         chain.invoke = invoke
         return chain
 
+    def invoke(self, messages, **kwargs):
+        self._sink.append(_flatten(messages))
+        return super().invoke(messages, **kwargs)
+
 
 def _flatten(messages) -> str:
     parts: list[str] = []
@@ -143,15 +147,15 @@ def _record_reviewer_prompts(monkeypatch) -> list[str]:
 def _record_editor_prompt(monkeypatch) -> dict:
     """Capture the editor's system and user turns without an LLM."""
     from peerreviewagents.agents.schemas import EditorDecisionOutput
-    from peerreviewagents.agents.utils.structured import StructuredResult
+    from peerreviewagents.agents.utils.agent_utils import RunResult
 
     seen: dict = {}
 
-    def fake(llm, schema, config, system, user, *, cached_prefix=None):
+    def fake(llm, system, user, tools, *, cached_prefix=None, **_kwargs):
         seen.update(system=system, user=user)
-        return StructuredResult(instance=_CANNED[EditorDecisionOutput], cost=0.0)
+        return RunResult(text=_CANNED[EditorDecisionOutput].to_markdown(), cost=0.0)
 
-    monkeypatch.setattr(editor_in_chief, "invoke_structured", fake)
+    monkeypatch.setattr(editor_in_chief, "run_agent", fake)
     return seen
 
 

@@ -89,21 +89,35 @@ def _captured_prefix(monkeypatch, node_module, node, state):
     """Run one agent node against the fake LLM, returning its cached prefix."""
     seen: dict = {}
     _patch_llms(monkeypatch)
-    for helper_name in ("invoke_structured", "invoke_structured_after_tools"):
+    for helper_name in (
+        "invoke_structured", "invoke_structured_after_tools", "invoke_markdown",
+    ):
         if not hasattr(node_module, helper_name):
             continue
         real = getattr(node_module, helper_name)
 
-        def fake_invoke(
-            llm, schema, config, system, user, *args, cached_prefix=None,
-            _real=real, **kw,
-        ):
-            seen["prefix"] = cached_prefix
-            seen["user"] = user
-            return _real(
-                llm, schema, config, system, user, *args,
-                cached_prefix=cached_prefix, **kw,
-            )
+        if helper_name == "invoke_markdown":
+            def fake_invoke(
+                llm, config, system, user, *args, cached_prefix=None,
+                _real=real, **kw,
+            ):
+                seen["prefix"] = cached_prefix
+                seen["user"] = user
+                return _real(
+                    llm, config, system, user, *args,
+                    cached_prefix=cached_prefix, **kw,
+                )
+        else:
+            def fake_invoke(
+                llm, schema, config, system, user, *args, cached_prefix=None,
+                _real=real, **kw,
+            ):
+                seen["prefix"] = cached_prefix
+                seen["user"] = user
+                return _real(
+                    llm, schema, config, system, user, *args,
+                    cached_prefix=cached_prefix, **kw,
+                )
 
         monkeypatch.setattr(node_module, helper_name, fake_invoke)
     result = node(state)

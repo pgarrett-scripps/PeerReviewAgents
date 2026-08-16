@@ -11,12 +11,24 @@ from types import SimpleNamespace
 
 import pytest
 
+from peerreviewagents.eval import baseline as B
 from peerreviewagents.eval import corpus as C
 from peerreviewagents.eval import metrics as M
 from peerreviewagents.eval.comparison import build_comparison
 from peerreviewagents.eval.comparison import render_markdown as render_comparison
+from peerreviewagents.eval.integrity import (
+    EXPECTED_AUDITORS,
+    EXPECTED_REVIEWERS,
+    inspect_run_artifacts,
+)
 from peerreviewagents.eval.runner import existing_keys, weighted_score
-from peerreviewagents.eval.schema import CorpusItem, RunRecord, config_digest
+from peerreviewagents.eval.schema import (
+    CorpusItem,
+    RunRecord,
+    config_digest,
+    source_fingerprint,
+    verify_protocol,
+)
 
 # ---------- corpus extraction ----------------------------------------------
 
@@ -244,12 +256,73 @@ def test_run_record_roundtrip():
         system_decision="minor", system_weighted_score=3.5,
         per_reviewer=[{"name": "rigor", "score": 4, "confidence": 3}],
         n_reviewers=1, cost_usd=0.12, latency_s=42.0, errors=[],
+        artifact_integrity_ok=True,
         manifest={"model": "x"},
     )
     back = RunRecord.from_dict(json.loads(rec.to_json()))
     assert back.key == ("p1", 0)
     assert back.system_decision == "minor"
     assert back.manifest["model"] == "x"
+    assert back.artifact_integrity_ok is True
+
+
+def _complete_system_record() -> RunRecord:
+    prose = "A specific, substantive evaluation of the manuscript. " * 3
+    return RunRecord(
+        paper_id="p1",
+        repeat=0,
+        ok=True,
+        system_decision="major",
+        system_weighted_score=3.0,
+        per_reviewer=[
+            {"name": name, "score": 3, "confidence": 4, "markdown": prose}
+            for name in sorted(EXPECTED_REVIEWERS)
+        ],
+        decision_letter=prose,
+        audit_markdown=[
+            {"auditor": name, "markdown": prose}
+            for name in sorted(EXPECTED_AUDITORS)
+        ],
+        n_reviewers=8,
+        manifest={"mode": "system"},
+    )
+
+
+def test_artifact_integrity_accepts_complete_prose_panel():
+    assert inspect_run_artifacts(_complete_system_record()) == []
+
+
+def test_artifact_integrity_rejects_prompt_echo_and_missing_reviewer():
+    rec = _complete_system_record()
+    rec.per_reviewer.pop()
+    rec.n_reviewers = 7
+    rec.decision_letter += "\n=== MANUSCRIPT ===\n"
+    problems = inspect_run_artifacts(rec)
+    assert any("missing reviewers" in problem for problem in problems)
+    assert any("expected 8" in problem for problem in problems)
+    assert any("internal prompt marker" in problem for problem in problems)
+
+
+def test_artifact_integrity_accepts_schema_free_single_llm_markdown():
+    rec = RunRecord(
+        paper_id="p1", repeat=0, ok=True,
+        system_decision="minor", system_weighted_score=4.0,
+        per_reviewer=[{
+            "name": "single_llm", "score": 4, "confidence": 5,
+            "markdown": "SCORE: 4\nVERDICT: minor\n\n" + "Substantive assessment. " * 5,
+        }],
+        n_reviewers=1,
+        manifest={"mode": "single-llm"},
+    )
+    assert inspect_run_artifacts(rec) == []
+
+
+def test_baseline_score_deterministically_defines_decision():
+    score, decision, cost, warnings = B._parse_metadata(
+        None, {}, "SCORE: 4\nVERDICT: accept\n\n" + "Substantive review. " * 20,
+    )
+    assert (score, decision, cost) == (4, "minor", 0.0)
+    assert any("conflicted" in warning for warning in warnings)
 
 
 def test_config_digest_stable_and_selective():
@@ -267,12 +340,31 @@ def test_config_digest_includes_evaluation_controls():
     assert config_digest(base) != config_digest({**base, "enable_journal_recommender": False})
 
 
+def test_frozen_protocol_rejects_changed_run_config(tmp_path):
+    corpus_path = tmp_path / "corpus.jsonl"
+    corpus_path.write_text("", encoding="utf-8")
+    config = {"provider": "openrouter", "reasoning_model": "model-a"}
+    (tmp_path / "protocol.json").write_text(
+        json.dumps({"config_digest": config_digest(config)}), encoding="utf-8"
+    )
+    assert verify_protocol(str(corpus_path), config) is not None
+    with pytest.raises(ValueError, match="differs from frozen protocol"):
+        verify_protocol(str(corpus_path), {**config, "reasoning_model": "model-b"})
+
+
+def test_source_fingerprint_is_stable_and_present():
+    first = source_fingerprint()
+    assert len(first) == 16
+    assert first == source_fingerprint()
+
+
 def test_resume_refuses_changed_config_or_mode(tmp_path):
     runs = tmp_path / "runs.jsonl"
     config = {"provider": "p", "reasoning_model": "m", "research_enabled": False}
     _write_runs(runs, [
         RunRecord("p1", 0, True, "accept", 4, manifest={
             "config_digest": config_digest(config), "mode": "system",
+            "source_fingerprint": source_fingerprint(),
         }),
     ])
     assert existing_keys(str(runs), config=config, mode="system") == {("p1", 0)}
@@ -286,6 +378,7 @@ def test_resume_refuses_changed_config_or_mode(tmp_path):
     _write_runs(runs, [
         RunRecord("p1", 0, False, None, None, manifest={
             "config_digest": "other", "mode": "system",
+            "source_fingerprint": source_fingerprint(),
         }),
     ])
     with pytest.raises(ValueError, match="requested config"):
@@ -300,6 +393,7 @@ def test_resume_refuses_changed_frozen_corpus(tmp_path):
             "config_digest": config_digest(config),
             "mode": "system",
             "corpus_sha256": "old-corpus",
+            "source_fingerprint": source_fingerprint(),
         }),
     ])
     with pytest.raises(ValueError, match="currently frozen corpus"):
@@ -510,6 +604,23 @@ def _run_one_with_state(monkeypatch, state):
             return state
 
     monkeypatch.setattr(R, "PeerReviewGraph", FakeGraph)
+    prose = "A complete and substantive saved evaluation artifact. " * 3
+    reports = state.get("reports") or []
+    present = {report.get("reviewer") for report in reports}
+    for report in reports:
+        report.setdefault("body", prose)
+    for name in sorted(EXPECTED_REVIEWERS - present):
+        reports.append({
+            "reviewer": name, "score": None, "confidence": 3.0,
+            "not_applicable_reason": "synthetic test abstention", "body": prose,
+        })
+    state["reports"] = reports
+    state.setdefault("decision_letter", prose)
+    state.setdefault("audits", [
+        {"auditor": name, "body": prose} for name in sorted(EXPECTED_AUDITORS)
+    ])
+    state.setdefault("panel_complete", True)
+    state.setdefault("panel_degraded", False)
     item = SimpleNamespace(id="p1", title="T", venue="V", pdf_path="x.pdf")
     return R._run_one(item, 0, {"provider": "test"}, "")
 
@@ -546,6 +657,19 @@ def test_run_record_keeps_reviewer_weaknesses(monkeypatch):
     })
     back = RunRecord.from_dict(json.loads(rec.to_json()))
     assert back.per_reviewer[0]["weaknesses"] == ["unblinded raters", "n too small"]
+
+
+def test_run_one_rejects_decision_with_corrupted_artifact(monkeypatch):
+    rec = _run_one_with_state(monkeypatch, {
+        "reports": [{
+            "reviewer": "rigor", "score": 3.0, "confidence": 4.0,
+            "body": "=== MANUSCRIPT ===\n" + "echoed prompt material " * 8,
+        }],
+        "decision": "major",
+    })
+    assert not rec.ok
+    assert rec.artifact_integrity_ok is False
+    assert any("internal prompt marker" in e for e in rec.artifact_integrity_errors)
 
 
 def test_run_one_records_bookkeeping_failure_instead_of_crashing(monkeypatch):

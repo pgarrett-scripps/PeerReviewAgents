@@ -23,36 +23,31 @@ from __future__ import annotations
 
 import re
 import time
+from dataclasses import replace
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-from ..agents.schemas import Verdict
 from ..agents.utils.agent_utils import context_block
 from ..agents.utils.llm import make_llm
-from ..agents.utils.structured import invoke_structured
+from ..agents.utils.structured import extract_structured_metadata, invoke_markdown
 from ..graph.review_graph import PeerReviewGraph
+from ..ingest.loader import require_readable
 from .corpus import load_corpus
+from .integrity import inspect_run_artifacts
 from .runner import existing_keys
-from .schema import RunRecord, append_jsonl, build_manifest
+from .schema import RunRecord, append_jsonl, build_manifest, verify_protocol
 
 _VALID_VERDICTS = ("accept", "minor", "major", "reject")
+_DECISION_FOR_SCORE = {1: "reject", 2: "reject", 3: "major", 4: "minor", 5: "accept"}
+_SCORE_FOR_DECISION = {"reject": 1, "major": 3, "minor": 4, "accept": 5}
 
 
-class BaselineReviewOutput(BaseModel):
-    """One holistic single-LLM verdict — the panel and editor collapsed into one."""
+class BaselineMetadata(BaseModel):
+    """Tiny sidecar recovered only when explicit Markdown labels are absent."""
 
-    score: int = Field(
-        ..., ge=1, le=5,
-        description="1=reject, 2=major-reject, 3=major-revision, "
-                    "4=minor-revision, 5=accept.",
-    )
-    decision: Verdict = Field(
-        ..., description="Final verdict: accept | minor | major | reject.",
-    )
-    rationale: str = Field(
-        ..., description="One-paragraph holistic justification for the score and verdict.",
-    )
+    score: int
+    decision: str
 
 
 _SYS = (
@@ -60,10 +55,54 @@ _SYS = (
     "panel, no debate, no author rebuttal, and no separate editor: you read "
     "the manuscript once and render the final verdict yourself. If a target "
     "venue, manuscript type, or review-strictness standard is described in the "
-    "context above, judge the manuscript against it. Return the structured "
-    "BaselineReviewOutput schema (an integer 1-5 score, a final verdict, and a "
-    "brief rationale)."
+    "context above, judge the manuscript against it. Write a substantive "
+    "Markdown review. Put `SCORE: <1-5>` and `VERDICT: "
+    "accept|minor|major|reject` at the top when possible; ordinary Markdown "
+    "is the source of truth and must never be replaced by JSON."
 )
+
+_SCORE_LINE = re.compile(r"(?im)^\s*(?:\*\*)?score(?:\*\*)?\s*:\s*([1-5])\b")
+_VERDICT_LINE = re.compile(
+    r"(?im)^\s*(?:\*\*)?(?:verdict|decision)(?:\*\*)?\s*:\s*"
+    r"(accept|minor(?:\s+revision)?|major(?:\s+revision)?|reject)\b"
+)
+
+
+def _parse_metadata(llm, config: dict[str, Any], markdown: str) -> tuple[int, str, float, list[str]]:
+    score_match = _SCORE_LINE.search(markdown)
+    verdict_match = _VERDICT_LINE.search(markdown)
+    if score_match:
+        score = int(score_match.group(1))
+        decision = _DECISION_FOR_SCORE[score]
+        warnings = []
+        if verdict_match and verdict_match.group(1).lower().split()[0] != decision:
+            warnings.append("baseline verdict label conflicted with score; used frozen score mapping")
+        return score, decision, 0.0, warnings
+    if verdict_match:
+        decision = verdict_match.group(1).lower().split()[0]
+        return _SCORE_FOR_DECISION[decision], decision, 0.0, [
+            "baseline score derived from explicit verdict using frozen mapping"
+        ]
+
+    normalized = extract_structured_metadata(llm, BaselineMetadata, config, markdown)
+    if normalized is None:
+        raise ValueError("baseline Markdown omitted a recoverable score or verdict")
+    raw_score = getattr(normalized.instance, "score", None)
+    raw_verdict = str(getattr(normalized.instance, "decision", "")).lower().split()[0]
+    score = int(raw_score) if isinstance(raw_score, (int, float)) else None
+    if score in range(1, 6):
+        return score, _DECISION_FOR_SCORE[score], normalized.cost, [
+            "baseline metadata normalized from Markdown; verdict derived from frozen score mapping"
+        ]
+    if raw_verdict in _VALID_VERDICTS:
+        return _SCORE_FOR_DECISION[raw_verdict], raw_verdict, normalized.cost, [
+            "baseline metadata normalized from Markdown; score derived from frozen verdict mapping"
+        ]
+    raise ValueError(
+        f"baseline Markdown contained no recoverable score or verdict: "
+        f"score={raw_score!r}, verdict={raw_verdict!r}"
+    )
+
 
 _USER = (
     "Manuscript title: {title}\n\n"
@@ -111,14 +150,18 @@ def single_llm_review(
         # sees exactly what the panel would: same parsed manuscript, same
         # journal / article-type / strictness prompt blocks.
         state = PeerReviewGraph(config).initial_state(item.pdf_path)
-        llm = make_llm(config, agent="baseline", default_tag="synthesis", reasoning_effort="high")
-        result = invoke_structured(
+        require_readable(state.get("ingest"), config)
+        llm = make_llm(config, agent="baseline", default_tag="synthesis")
+        result = invoke_markdown(
             llm,
-            BaselineReviewOutput,
             config,
             _SYS,
             _USER.format(title=state.get("manuscript_title", "Untitled")),
             cached_prefix=context_block(state),
+            min_chars=200,
+        )
+        score, decision, metadata_cost, warnings = _parse_metadata(
+            llm, config, result.text,
         )
     except Exception as exc:  # noqa: BLE001
         return RunRecord(
@@ -128,22 +171,34 @@ def single_llm_review(
             latency_s=round(time.time() - t0, 1), manifest=md,
         )
 
-    out: BaselineReviewOutput = result.instance  # type: ignore[assignment]
-    decision = out.decision if out.decision in _VALID_VERDICTS else None
-    return RunRecord(
+    record = RunRecord(
         paper_id=item.id, repeat=rep,
         ok=bool(decision),
         system_decision=decision,
         # The "weighted score" of a one-reviewer panel is just its score; this
         # keeps the field identical in meaning to the full system's so metrics
         # (Spearman/Pearson vs human ratings) compares like with like.
-        system_weighted_score=float(out.score),
-        per_reviewer=[{"name": "single_llm", "score": out.score, "confidence": 5}],
+        system_weighted_score=float(score),
+        per_reviewer=[{
+            "name": "single_llm",
+            "score": score,
+            "confidence": 5,
+            "markdown": result.text,
+            "score_source": "explicit" if not warnings else "normalized",
+        }],
+        decision_letter=result.text,
         n_reviewers=1,
-        cost_usd=round(float(result.cost), 4),
+        cost_usd=round(float(result.cost + metadata_cost), 4),
         latency_s=round(time.time() - t0, 1),
-        errors=[],
+        errors=warnings,
         manifest=md,
+    )
+    integrity_errors = inspect_run_artifacts(record)
+    return replace(
+        record,
+        ok=record.ok and not integrity_errors,
+        artifact_integrity_ok=not integrity_errors,
+        artifact_integrity_errors=integrity_errors,
     )
 
 
@@ -165,6 +220,7 @@ def run_baseline_batch(
     from .corpus import verify_corpus_manifest
 
     corpus_manifest = verify_corpus_manifest(corpus_path, warn_missing=True)
+    verify_protocol(corpus_path, config)
     corpus_sha256 = corpus_manifest.get("corpus_sha256") if corpus_manifest else ""
     corpus = load_corpus(corpus_path)
     if only:
@@ -204,7 +260,8 @@ def run_baseline_batch(
         append_jsonl(runs_path, record.to_json())
         performed += 1
         if verbose:
-            status = "ok" if record.ok else f"FAILED ({'; '.join(record.errors) or 'no decision'})"
+            failures = [*record.errors, *record.artifact_integrity_errors]
+            status = "ok" if record.ok else f"FAILED ({'; '.join(failures) or 'no decision'})"
             print(f"  {status} — decision={record.system_decision} "
                   f"score={record.system_weighted_score} "
                   f"cost=${record.cost_usd:.4f} {record.latency_s:.0f}s")

@@ -2,19 +2,18 @@
 
 Takes the manuscript, the panel's verdict, and the editor's required
 revisions; returns a tiered set of venue
-suggestions (as-is / after-revision / alternative) via the structured-output
-path. LLM knowledge only — no literature search — so this adds one LLM
+suggestions (as-is / after-revision / alternative) as Markdown. LLM knowledge
+only — no literature search — so this adds one LLM
 call and no external API dependencies.
 """
 
 from __future__ import annotations
 
 from ...observability import node_context
-from ..schemas import JournalRecommendationsOutput
 from ..utils.agent_states import ReviewState
 from ..utils.agent_utils import context_block, score_summary
 from ..utils.llm import make_llm
-from ..utils.structured import invoke_structured
+from ..utils.structured import invoke_markdown
 
 _SYS = (
     "You are advising a manuscript's authors on which venues to submit to, "
@@ -26,9 +25,8 @@ _SYS = (
     "outlets and flag any fit uncertainty in `notes` rather than inventing a "
     "precise match or a venue that may not exist. Use venue names exactly as "
     "authors would write them (e.g. 'Nature Methods', 'JMLR', 'Bioinformatics'). "
-    "Return the structured JournalRecommendationsOutput schema with at "
-    "most 3 venues per bucket; fewer is fine when you don't have good "
-    "candidates."
+    "Write ordinary Markdown with at most 3 venues per bucket; fewer is fine "
+    "when you don't have good candidates. No JSON or fixed schema is required."
 )
 
 
@@ -74,13 +72,13 @@ def _run(state: ReviewState) -> dict:
     )
     try:
         # Reuse the exact prefix already warmed by the desk, panel and debate.
-        result = invoke_structured(
+        result = invoke_markdown(
             llm,
-            JournalRecommendationsOutput,
             config,
             _SYS,
             user,
             cached_prefix=context_block(state),
+            min_chars=100,
         )
     except Exception as exc:  # noqa: BLE001
         return {
@@ -88,9 +86,8 @@ def _run(state: ReviewState) -> dict:
             "journal_recommendations": "",
         }
 
-    output: JournalRecommendationsOutput = result.instance  # type: ignore[assignment]
     return {
-        "journal_recommendations": output.to_markdown(),
+        "journal_recommendations": result.text,
         "total_cost": result.cost,
     }
 

@@ -20,7 +20,9 @@ import hashlib
 import json
 import subprocess
 import time
+import warnings
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 
 # Config keys that actually change a result; the manifest digests exactly
@@ -39,6 +41,8 @@ _DIGEST_KEYS = (
     "max_debate_rounds",
     "enable_debate",
     "enable_journal_recommender",
+    "panel_quorum_fraction",
+    "markdown_attempts",
     "desk_screen",
     "research_enabled",
     "temperature",
@@ -81,6 +85,7 @@ class Manifest:
     created_at: float
     venue: str = ""
     leakage_note: str = ""
+    source_fingerprint: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -96,6 +101,13 @@ class RunRecord:
     system_decision: str | None
     system_weighted_score: float | None
     per_reviewer: list[dict[str, Any]] = field(default_factory=list)
+    # Durable prose artifacts. Derived scores and weakness lists are useful
+    # indexes, but the complete Markdown is what future evaluators must judge.
+    decision_letter: str = ""
+    debate_markdown: list[dict[str, Any]] = field(default_factory=list)
+    audit_markdown: list[dict[str, Any]] = field(default_factory=list)
+    artifact_integrity_ok: bool | None = None
+    artifact_integrity_errors: list[str] = field(default_factory=list)
     n_reviewers: int = 0
     cost_usd: float = 0.0
     latency_s: float = 0.0
@@ -148,6 +160,19 @@ def config_digest(config: dict[str, Any]) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
 
 
+def source_fingerprint() -> str:
+    """Hash the executable package sources used by an evaluation run."""
+    root = Path(__file__).resolve().parents[2]
+    paths = sorted((root / "peerreviewagents").rglob("*.py"))
+    paths.extend(path for path in (root / "pyproject.toml",) if path.is_file())
+    digest = hashlib.sha256()
+    for path in paths:
+        digest.update(str(path.relative_to(root)).encode("utf-8") + b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()[:16]
+
+
 def build_manifest(config: dict[str, Any], *, venue: str = "", leakage_note: str = "") -> Manifest:
     model = (
         config.get("reasoning_model")
@@ -163,7 +188,44 @@ def build_manifest(config: dict[str, Any], *, venue: str = "", leakage_note: str
         created_at=time.time(),
         venue=venue,
         leakage_note=leakage_note,
+        source_fingerprint=source_fingerprint(),
     )
+
+
+def verify_protocol(corpus_path: str, config: dict[str, Any]) -> dict[str, Any] | None:
+    """Refuse a publication run whose config differs from ``protocol.json``.
+
+    Older smoke directories may not have a protocol, or may predate the
+    config-digest field.  They remain runnable with a warning; a newly planned
+    study is fail-closed once its digest is present.
+    """
+    from pathlib import Path
+
+    path = Path(corpus_path).resolve().parent / "protocol.json"
+    if not path.is_file():
+        warnings.warn(
+            f"No protocol.json beside {Path(corpus_path).name}; run `eval plan` "
+            "before a publication batch.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return None
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    expected = doc.get("config_digest")
+    found = config_digest(config)
+    if expected and expected != found:
+        raise ValueError(
+            f"run config {found} differs from frozen protocol config {expected}; "
+            "use the protocol's run flags or create a new study directory"
+        )
+    expected_source = doc.get("source_fingerprint")
+    found_source = source_fingerprint()
+    if expected_source and expected_source != found_source:
+        raise ValueError(
+            f"source code {found_source} differs from frozen protocol source "
+            f"{expected_source}; create a new study phase after code changes"
+        )
+    return doc
 
 
 def read_jsonl(path: str) -> list[dict[str, Any]]:

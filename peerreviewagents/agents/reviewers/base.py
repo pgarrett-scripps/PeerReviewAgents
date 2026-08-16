@@ -1,11 +1,9 @@
 """Builder for specialist reviewer nodes.
 
 A reviewer reads the manuscript, optionally consults research tools, and
-returns a :class:`ReviewerOutput` (score, confidence, summary, strengths,
-weaknesses, questions). The rendered markdown body that lands on disk
-is produced by ``ReviewerOutput.to_markdown(role)`` — so the structured
-fields are the single source of truth and nothing parses YAML
-frontmatter back out of the body.
+returns Markdown with an explicit score and confidence. The Markdown itself
+is the durable source of truth; tolerant extraction promotes the few scalars
+and lists downstream stages need, but formatting cannot discard the review.
 
 The manuscript block is sent with prompt-cache markup (on providers
 that support it) so the parallel reviewer fan-out shares one
@@ -142,35 +140,38 @@ _INSTRUCTIONS = (
     "over-length, too many display items) where relevant to your specialty. "
     "If a review strictness standard is described above, calibrate your score "
     "and how heavily you weigh weaknesses to that standard.\n\n"
-    "Return a structured review with the following fields:\n"
-    "  - score (int 1-5, or null): 1=reject, 3=major revision, "
+    "Write ordinary Markdown. Put these two lines at the TOP of the final "
+    "answer so they survive truncation, then write the review under whatever "
+    "clear Markdown headings fit the substance:\n\n"
+    "SCORE: <1-5 or N/A>\n"
+    "CONFIDENCE: <1-5>\n\n"
+    "The score scale is 1=reject, 3=major revision, "
     "4=minor revision, 5=accept.\n"
-    "    Return null ONLY if this manuscript contains nothing your dimension "
+    "Return N/A ONLY if this manuscript contains nothing your dimension "
     "covers — a data-analysis review of a paper with no quantitative analysis "
-    "in it, say. Then set not_applicable_reason and still write the summary: "
+    "in it, say. Then add `N/A REASON:` and still write the assessment: "
     "'this paper has no statistics to check' is useful to a reader.\n"
-    "    Null is NOT for work you judge harshly. Thin, unclear, missing what "
+    "N/A is NOT for work you judge harshly. Thin, unclear, missing what "
     "you expected, or evidence you cannot verify are all LOW SCORES, not "
     "N/A. If you can form any view of this paper on your dimension, give a "
     "number. Do not use a high score to mean 'nothing here concerned me "
     "because there was nothing here' — that inflates the panel and is exactly "
-    "what null exists to prevent.\n"
-    "  - not_applicable_reason: required when score is null, one sentence "
-    "naming what is absent that puts this paper outside your dimension\n"
-    "  - confidence (int 1-5): certainty in your score — 5=squarely your "
+    "what N/A exists to prevent.\n"
+    "Confidence is certainty in your score — 5=squarely your "
     "expertise with clear manuscript evidence; 3=reasonable read but some "
     "ambiguity; 1-2=outside your subarea or the manuscript is too unclear to "
     "judge. Lower your confidence rather than guessing.\n"
-    "  - summary: your overall take from your specialty, 4 sentences at most. "
+    "Include your overall take from your specialty, 4 sentences at most. "
     "Lead with the verdict, not with what the paper is about.\n"
-    "  - strengths: at most 3, one sentence each. A strength is something the "
+    "Include at most 3 strengths, one sentence each. A strength is something the "
     "authors did well, not a description of what they did.\n"
-    "  - weaknesses: the load-bearing ones first at full length, then the "
+    "Put weaknesses with the load-bearing ones first at full length, then the "
     "sweep at one sentence each. Each carries its manuscript evidence.\n"
-    "  - questions: only what you actually need answered, one line each. Do "
+    "Ask only what you actually need answered, one line each. Do "
     "not restate a weakness as a question — the HARD ones are already paired, "
     "and anything else repeated here is the same point billed twice.\n\n"
-    "Focus strictly on your specialty. Do not rehash unrelated aspects."
+    "Focus strictly on your specialty. Do not rehash unrelated aspects. "
+    "Return Markdown prose, never JSON or a tool call."
 )
 
 _SYSTEM = (
@@ -292,9 +293,17 @@ def _review(
         # them out of `body` would mean parsing markdown.
         "weaknesses": list(output.weaknesses),
         "questions": list(output.questions),
-        "body": output.to_markdown(role=role),
+        "body": (
+            result.raw_text
+            if result.raw_text.lstrip().startswith("#")
+            else f"# {role}\n\n{result.raw_text}"
+        ) if result.raw_text else output.to_markdown(role=role),
+        "score_source": result.score_source or "structured_fallback",
     }
-    return {"reports": [report], "total_cost": result.cost}
+    update: dict = {"reports": [report], "total_cost": result.cost}
+    if result.warnings:
+        update["errors"] = [f"{name} reviewer degraded: {w}" for w in result.warnings]
+    return update
 
 
 def _call_model(
@@ -307,12 +316,13 @@ def _call_model(
     tool_names: list[str],
     cached_prefix: str,
 ) -> StructuredResult:
-    """Write prose once, then extract the report schema from that prose.
+    """Write prose once, then recover only the metadata used downstream.
 
     Keeping the manuscript-reading call free of the large ReviewerOutput tool
     contract prevents a missing scalar near the end from discarding and
-    regenerating the entire review. Schema repair sees only the completed
-    prose, so retries are small and cannot rewrite the scientific assessment.
+    regenerating the entire review. Explicit Markdown metadata is parsed
+    directly; a tiny normalizer is used only when those scalar labels are
+    missing, and cannot rewrite the scientific assessment.
     """
     tools = []
     if tool_names and config.get("research_enabled", True):

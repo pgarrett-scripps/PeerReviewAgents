@@ -56,7 +56,7 @@ from ..utils.agent_states import AuditReport, ReviewState
 from ..utils.agent_utils import context_block
 from ..utils.llm import make_llm
 from ..utils.round_delta import is_byte_identical_resubmission
-from ..utils.structured import invoke_structured
+from ..utils.structured import extract_structured_metadata, invoke_markdown
 
 AUDITOR_NAME = "revision_compliance"
 AUDITOR_TITLE = "Revision Compliance"
@@ -111,7 +111,8 @@ _SYS = (
     "and give a defensible reason, that is 'rebutted' — a real outcome, not a "
     "failure. Never fold disagreement into 'not_addressed': the editor has to "
     "be able to tell 'they made their case' from 'they ignored us'.\n\n"
-    "Return the structured RevisionComplianceOutput schema."
+    "Write the item-by-item compliance audit as ordinary Markdown. No JSON "
+    "or fixed headings are required."
 )
 
 # Framing for the response letter. It is quoted between markers and read after
@@ -257,9 +258,8 @@ def _run(state: ReviewState) -> dict:
     config = state["config"]
     llm = make_llm(config, agent=f"audit_{AUDITOR_NAME}", default_tag="audit")
     try:
-        result = invoke_structured(
+        result = invoke_markdown(
             llm,
-            RevisionComplianceOutput,
             config,
             _SYS,
             _user_prompt(state),
@@ -268,11 +268,32 @@ def _run(state: ReviewState) -> dict:
             # shares byte-for-byte, and perturbing it would cost every other
             # agent its cache hit.
             cached_prefix=context_block(state),
+            min_chars=120,
         )
     except Exception as exc:  # noqa: BLE001
         return {"errors": [f"{AUDITOR_NAME} auditor failed: {exc}"]}
 
-    output: RevisionComplianceOutput = result.instance  # type: ignore[assignment]
+    extracted = extract_structured_metadata(
+        llm, RevisionComplianceOutput, config, result.text
+    )
+    if extracted is None:
+        report: AuditReport = {
+            "auditor": AUDITOR_NAME,
+            "title": AUDITOR_TITLE,
+            "hard_gaps": None,
+            "soft_gaps": None,
+            "findings": [],
+            "body": result.text,
+        }
+        return {
+            "audits": [report],
+            "total_cost": result.cost,
+            "errors": [
+                f"{AUDITOR_NAME} auditor degraded: Markdown was preserved, "
+                "but per-item compliance metadata could not be extracted"
+            ],
+        }
+    output: RevisionComplianceOutput = extracted.instance  # type: ignore[assignment]
     _verify_quotes(output, state.get("manuscript_md") or "")
     report: AuditReport = {
         "auditor": AUDITOR_NAME,
@@ -289,9 +310,13 @@ def _run(state: ReviewState) -> dict:
             {"id": f.id, "status": f.status, "blocking": f.blocking}
             for f in output.findings
         ],
-        "body": output.to_markdown(title=AUDITOR_TITLE),
+        "body": (
+            result.text
+            + "\n\n---\n\n## Verified compliance sidecar\n\n"
+            + output.to_markdown(title=AUDITOR_TITLE)
+        ),
     }
-    return {"audits": [report], "total_cost": result.cost}
+    return {"audits": [report], "total_cost": result.cost + extracted.cost}
 
 
 def soft_gaps(output: RevisionComplianceOutput) -> list:

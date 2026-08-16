@@ -35,11 +35,10 @@ from __future__ import annotations
 
 from ...ingest.loader import conversion_gate, require_readable
 from ...observability import node_context
-from ..schemas import DeskScreenOutput
 from ..utils.agent_states import ReviewState
 from ..utils.agent_utils import context_block
 from ..utils.llm import make_llm
-from ..utils.structured import invoke_structured
+from ..utils.structured import invoke_markdown
 
 _SYS = (
     "You are the handling Editor performing an initial desk screen, before "
@@ -51,15 +50,14 @@ _SYS = (
     "When in doubt, do NOT desk-reject — send it to the panel. If a target "
     "journal is described in the context above, screen against that venue's "
     "scope and bar; if a review strictness standard is described above, apply "
-    "it to how readily you desk-reject. Return the structured DeskScreenOutput "
-    "schema."
+    "it to how readily you desk-reject. Write ordinary Markdown and state "
+    "`DESK DECISION: proceed` or `DESK DECISION: reject` plainly."
 )
 
 _USER = (
-    "Perform the desk screen on the manuscript above. Set desk_reject=true "
-    "only if it should not be sent for full review, and give the authors a "
-    "brief, professional rationale. If it should proceed, set "
-    "desk_reject=false with an empty reasons list."
+    "Perform the desk screen on the manuscript above. Reject only if it should "
+    "not be sent for full review, and give the authors a brief, professional "
+    "rationale. Otherwise state that it should proceed."
 )
 
 
@@ -116,15 +114,15 @@ def _run(state: ReviewState) -> dict:
         # Use the reviewers' model/tag, not a separate "screen" model, so the
         # cache this warms is the one the panel reads (caches are per-model).
         llm = make_llm(config, agent="desk_screen", default_tag="reviewer")
-        result = invoke_structured(
+        result = invoke_markdown(
             llm,
-            DeskScreenOutput,
             config,
             _SYS,
             _USER,
             # The manuscript block the whole panel shares. Perturbing it would
             # miss the cache for every later agent.
             cached_prefix=context_block(state),
+            min_chars=40,
         )
     except Exception as exc:  # noqa: BLE001
         # Fail open: never block a manuscript at the desk on an error.
@@ -133,11 +131,11 @@ def _run(state: ReviewState) -> dict:
             "desk_rejected": False,
         }
 
-    output: DeskScreenOutput = result.instance  # type: ignore[assignment]
-    body = output.to_markdown()
+    body = result.text
+    decision = _desk_decision(body)
     # In "warm" mode we ran only to prime the cache — never short-circuit,
     # regardless of the verdict.
-    if output.desk_reject and screen_mode(config) == "gate":
+    if decision == "reject" and screen_mode(config) == "gate":
         return {
             "desk_rejected": True,
             "decision": "reject",
@@ -150,3 +148,20 @@ def _run(state: ReviewState) -> dict:
         "desk_screen": body,
         "total_cost": result.cost,
     }
+
+
+def _desk_decision(text: str) -> str:
+    """Read a desk decision without requiring a particular Markdown shape."""
+    import re
+
+    explicit = re.search(
+        r"(?i)\bdesk\s+decision\s*[:=-]\s*(proceed|reject)\b", text
+    )
+    if explicit:
+        return explicit.group(1).lower()
+    if re.search(r"(?i)\b(?:recommend|should be)\s+desk[- ]reject(?:ed|ion)?\b", text):
+        return "reject"
+    if re.search(r"(?i)\b(?:send|proceed)\s+(?:it\s+)?(?:to|with)\s+(?:full\s+)?review\b", text):
+        return "proceed"
+    # Triage is fail-open: ambiguous prose cannot block a submission.
+    return "proceed"

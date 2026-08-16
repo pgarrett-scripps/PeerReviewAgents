@@ -50,6 +50,16 @@ _MIN_SUMMARY_CHARS = 25
 # 3-44 characters, the shortest real one 1253, so this sits in empty space.
 _MIN_EDITOR_SUMMARY_CHARS = 200
 
+# And a ceiling, for the opposite failure. One letter arrived with a 37,275
+# character summary that had swallowed a whole reviewer report — mid-sentence
+# fragments ("dependency: D: The central claim is..."), then numbered
+# questions to the authors — while required_revisions held its own copy of
+# the asks. This is field confusion, not verbosity: the model wrote a review
+# where a synthesis belongs. Genuine summaries across the corpus ran 1,105 to
+# 3,923 characters, so the cap sits far above any real one and far below the
+# degenerate case.
+_MAX_EDITOR_SUMMARY_CHARS = 12000
+
 
 def _is_placeholder(text: str) -> bool:
     stripped = text.strip()
@@ -986,6 +996,14 @@ class EditorDecisionOutput(BaseModel):
                 "nothing. It is the reasoning the authors and readers see: "
                 "state what the panel found, which findings you weighed "
                 "against each other, and why they lead to this verdict."
+            )
+        if len(text) > _MAX_EDITOR_SUMMARY_CHARS:
+            raise ValueError(
+                f"summary_of_evaluation is {len(text)} characters, which is a "
+                "review rather than a synthesis. Write the editor's reasoning "
+                "only — what the panel found, what you weighed, why this "
+                "verdict — and put every demand in required_revisions and "
+                "every question to the authors in minor_suggestions."
             )
         return self
 

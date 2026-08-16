@@ -635,13 +635,15 @@ def test_round_material_stays_out_of_the_shared_cached_prefix(monkeypatch):
     """Perturbing the prefix would cost every other fan-out agent its cache."""
     seen = {}
 
-    def fake_invoke(llm, schema, config, system, user, *, cached_prefix=None):
+    def fake_invoke(llm, config, system, user, *, cached_prefix=None, **_kwargs):
         seen["prefix"] = cached_prefix
         seen["user"] = user
-        return type("R", (), {"instance": _output(), "cost": 0.25})()
+        return type("R", (), {
+            "text": _output().to_markdown(), "cost": 0.25, "warnings": (),
+        })()
 
     _patch(monkeypatch)
-    monkeypatch.setattr(rc, "invoke_structured", fake_invoke)
+    monkeypatch.setattr(rc, "invoke_markdown", fake_invoke)
     state = _state()
     result = rc.node(state)
 
@@ -653,7 +655,7 @@ def test_round_material_stays_out_of_the_shared_cached_prefix(monkeypatch):
 
 def test_failure_becomes_an_error_entry_not_an_exception(monkeypatch):
     _patch(monkeypatch)
-    monkeypatch.setattr(rc, "invoke_structured", _boom)
+    monkeypatch.setattr(rc, "invoke_markdown", _boom)
     result = rc.node(_state())
     assert not result.get("audits")
     assert result["errors"] == ["revision_compliance auditor failed: provider down"]

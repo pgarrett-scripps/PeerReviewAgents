@@ -30,7 +30,6 @@ from test_pipeline import _CANNED, FakeLLM
 
 from peerreviewagents import rounds
 from peerreviewagents.agents.reviewers import literature, methodology
-from peerreviewagents.agents.schemas import ReviewerOutput
 from peerreviewagents.default_config import get_config
 
 # --- fake LLM --------------------------------------------------------------
@@ -68,6 +67,12 @@ class _RecordingLLM(FakeLLM):
 
     def with_structured_output(self, schema, **kwargs):
         return _RecordingChain(self, schema, kwargs.get("include_raw", False))
+
+    def invoke(self, messages, **kwargs):
+        self.prompts.append(_flatten(messages))
+        if self.fail:
+            raise RuntimeError("provider exploded")
+        return super().invoke(messages, **kwargs)
 
 
 def _flatten(messages) -> str:
@@ -151,12 +156,12 @@ def _prompt(monkeypatch, state, module=methodology) -> str:
 # --- one schema, one path --------------------------------------------------
 
 
-def test_a_revision_round_still_emits_the_first_round_schema(monkeypatch, prior_round):
+def test_a_revision_round_still_emits_the_same_markdown_contract(monkeypatch, prior_round):
     llm = _RecordingLLM()
     _patch(monkeypatch, llm)
     out = methodology.node(_state(prior_round))
 
-    assert llm.schemas == [ReviewerOutput]
+    assert llm.schemas == []
     report = out["reports"][0]
     assert report["reviewer"] == "methodology"
     assert report["body"].startswith("# Methodology Reviewer")
@@ -181,7 +186,7 @@ def test_tool_using_reviewer_is_blind_too(monkeypatch, prior_round):
     _patch(monkeypatch, llm, module=literature)
     out = literature.node(_state(prior_round))
 
-    assert llm.schemas == [ReviewerOutput]
+    assert llm.schemas == []
     assert "Revision Review" not in out["reports"][0]["body"]
     assert not out.get("errors")
 
@@ -192,7 +197,7 @@ def test_a_failed_call_is_an_error_entry_not_an_exception(monkeypatch, prior_rou
     out = methodology.node(_state(prior_round))
 
     assert not out.get("reports")
-    assert out["errors"] == ["methodology reviewer failed: provider exploded"]
+    assert "Markdown generation failed after 3 prose attempts" in out["errors"][0]
 
 
 # --- the blinding ----------------------------------------------------------

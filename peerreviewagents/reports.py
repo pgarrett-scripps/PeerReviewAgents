@@ -228,10 +228,13 @@ def _summary(state: ReviewState) -> str:
     if audits:
         lines += ["", "## Editorial Audits"]
         for a in audits:
-            lines.append(
-                f"- **{a.get('title', a['auditor'])}** — "
-                f"{a.get('hard_gaps', 0)} HARD gap(s), {a.get('soft_gaps', 0)} SOFT gap(s)"
+            hard, soft = a.get("hard_gaps"), a.get("soft_gaps")
+            counts = (
+                f" — {hard} HARD gap(s), {soft} SOFT gap(s)"
+                if isinstance(hard, int) and isinstance(soft, int)
+                else " — see full Markdown audit"
             )
+            lines.append(f"- **{a.get('title', a['auditor'])}**{counts}")
     cost = state.get("total_cost")
     if cost is not None and cost > 0:
         lines.append("")

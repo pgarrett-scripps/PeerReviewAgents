@@ -24,6 +24,7 @@ Two entry points:
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -70,6 +71,112 @@ class StructuredResult:
 
     instance: BaseModel
     cost: float
+    warnings: tuple[str, ...] = ()
+    raw_text: str = ""
+    score_source: str = ""
+
+
+@dataclass(frozen=True)
+class MarkdownResult:
+    """A durable prose response and the cost of every attempt that produced it."""
+
+    text: str
+    cost: float
+    warnings: tuple[str, ...] = ()
+
+
+# Boundaries and orchestration labels occur in agent inputs, but have no place
+# in an authored review. Their reappearance means the model copied its prompt
+# or the manuscript wrapper instead of completing the task. This deliberately
+# checks content integrity, not headings or review style.
+_INTERNAL_ECHO_MARKERS = (
+    "=== MANUSCRIPT ===",
+    "=== END MANUSCRIPT ===",
+    "=== BEGIN OUTPUT ===",
+    "=== BEGIN CRITIQUE ===",
+    "### FORM REQUIREMENTS:",
+)
+
+
+def _markdown_problem(text: str, _user_prompt: str, min_chars: int) -> str:
+    """Return why prose is unusable, or ``""`` when it can be retained."""
+    if len(text) < min_chars:
+        return "returned no text" if not text else f"returned only {len(text)} characters"
+    # These are private orchestration boundaries and are never legitimate
+    # authored output. Some live echoes copied them from `cached_prefix`, not
+    # from `user_prompt`, so conditioning the check on one prompt component
+    # let a 60k-character manuscript dump through the generation boundary.
+    echoed = [marker for marker in _INTERNAL_ECHO_MARKERS if marker in text]
+    if echoed:
+        return "echoed internal prompt boundary " + repr(echoed[0])
+    return ""
+
+
+def invoke_markdown(
+    llm,
+    config: dict,
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    tools: list | None = None,
+    cached_prefix: str | Sequence[str] | None = None,
+    min_chars: int = 80,
+) -> MarkdownResult:
+    """Generate ordinary Markdown with bounded retries and no output schema.
+
+    This is the default boundary for substantive agents. The first complete
+    prose response is the artifact; no parser or validator can replace it.
+    A blank, refusal-like, or interrupted response gets fresh prose retries.
+    If every attempt is unusable, the node fails honestly instead of asking
+    for a large structured object whose formatting can erase the work.
+    """
+    total = 0.0
+    warnings: list[str] = []
+    last_text = ""
+    last_error = ""
+    try:
+        attempts = max(1, int(config.get("markdown_attempts") or 3))
+    except (TypeError, ValueError):
+        attempts = 3
+    for attempt in range(attempts):
+        retry_user = user_prompt
+        retry_tools = tools or []
+        if attempt:
+            retry_tools = []
+            retry_user = (
+                user_prompt
+                + "\n\nYour previous response was missing, interrupted, or too short "
+                "to contain the requested work. Write the complete substantive "
+                "answer now as ordinary Markdown. Do not return JSON or call a tool."
+            )
+        try:
+            result = run_agent(
+                llm,
+                system_prompt,
+                retry_user,
+                retry_tools,
+                cached_prefix=cached_prefix,
+                cache_ttl=config.get("cache_ttl") or DEFAULT_CACHE_TTL,
+            )
+            total += result.cost
+            last_text = (result.text or "").strip()
+            problem = _markdown_problem(last_text, user_prompt, min_chars)
+            if not problem:
+                if attempt:
+                    warnings.append(
+                        "initial Markdown generation was unusable; retained the "
+                        "successful schema-free prose retry"
+                    )
+                return MarkdownResult(last_text, total, tuple(warnings))
+            last_error = problem
+        except Exception as exc:  # noqa: BLE001
+            total += float(getattr(exc, "cost", 0.0) or 0.0)
+            last_error = f"failed with {type(exc).__name__}: {exc}"
+        if not attempt:
+            warnings.append(f"initial Markdown generation {last_error}")
+    raise ValueError(
+        f"Markdown generation failed after {attempts} prose attempts; " + last_error
+    )
 
 
 def invoke_structured(
@@ -93,6 +200,31 @@ def invoke_structured(
         cache_ttl=config.get("cache_ttl") or DEFAULT_CACHE_TTL,
     )
     return _try_structured(llm, schema, messages, config=config)
+
+
+def extract_structured_metadata(
+    llm,
+    schema: type[BaseModel],
+    config: dict,
+    markdown: str,
+) -> StructuredResult | None:
+    """Best-effort sidecar extraction from an already-durable prose artifact.
+
+    Failure returns ``None`` rather than invalidating ``markdown``. Use this
+    only for machine indexes or security-filtered derivatives, never as the
+    source of the substantive report.
+    """
+    messages = [
+        SystemMessage(content=(
+            "Extract the requested metadata exactly from the supplied Markdown. "
+            "Do not reassess, add, soften, or remove substantive claims."
+        )),
+        HumanMessage(content=markdown),
+    ]
+    try:
+        return _try_structured(llm, schema, messages, config=config)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # Shortest plausible agent answer. A real review runs to thousands of
@@ -161,6 +293,28 @@ def invoke_structured_after_tools(
         # indistinguishable from one that kept it: same verdict shape, same
         # cost band, no missing file, nothing for a reader to notice.
         emit(AgentEvent(kind="tool", node=current_node(), tool_error=reason))
+        if schema.__name__ == "ReviewerOutput":
+            fallback = invoke_markdown(
+                llm,
+                config,
+                system_prompt,
+                user_prompt,
+                tools=[],
+                cached_prefix=cached_prefix,
+                min_chars=MIN_AGENT_TEXT_CHARS,
+            )
+            parsed = _reviewer_from_markdown(llm, schema, fallback.text)
+            return StructuredResult(
+                instance=parsed.instance,
+                cost=sunk_cost + fallback.cost + parsed.cost,
+                warnings=tuple(dict.fromkeys((
+                    reason,
+                    *fallback.warnings,
+                    *parsed.warnings,
+                ))),
+                raw_text=fallback.text,
+                score_source=parsed.score_source,
+            )
         fallback = invoke_structured(
             llm, schema, config, system_prompt, user_prompt, cached_prefix=cached_prefix
         )
@@ -179,19 +333,36 @@ def invoke_structured_after_tools(
             cache_ttl=config.get("cache_ttl") or DEFAULT_CACHE_TTL,
         )
     except Exception as exc:  # noqa: BLE001
-        return _without_tools(f"tool loop failed ({type(exc).__name__})")
+        return _without_tools(
+            f"tool loop failed ({type(exc).__name__}: {exc})",
+            sunk_cost=float(getattr(exc, "cost", 0.0) or 0.0),
+        )
 
     text = (free.text or "").strip()
-    if len(text) < MIN_AGENT_TEXT_CHARS:
+    problem = _markdown_problem(text, user_prompt, MIN_AGENT_TEXT_CHARS)
+    if problem:
         # Not just empty. "Let me verify a few more key citations before
         # finalizing my audit." is 68 characters, and the emptiness test
         # accepted it as a completed audit — see the forced-final note in
         # agent_utils. Anything this short is a model that was interrupted or
         # refused, not a review, and it takes the same fallback as a blank.
         return _without_tools(
-            "tool loop returned no text" if not text
-            else f"tool loop returned only {len(text)} characters",
+            "tool loop " + problem,
             sunk_cost=free.cost,
+        )
+
+    # Reviewer prose is the durable artifact. Do not send a complete review
+    # through another large all-or-nothing schema merely to recover three
+    # scalar fields: accept ordinary Markdown, parse explicit metadata
+    # deterministically, and use a tiny normalizer only when necessary.
+    if schema.__name__ == "ReviewerOutput":
+        markdown = _reviewer_from_markdown(llm, schema, text)
+        return StructuredResult(
+            instance=markdown.instance,
+            cost=free.cost + markdown.cost,
+            warnings=markdown.warnings,
+            raw_text=text,
+            score_source=markdown.score_source,
         )
 
     extraction_sys = (
@@ -273,9 +444,24 @@ def _try_structured(
     if repaired is not None:
         return StructuredResult(instance=repaired.instance, cost=total + repaired.cost)
 
+    repaired = _repair_editor_summary(llm, schema, result, messages)
+    if repaired is not None:
+        return StructuredResult(instance=repaired.instance, cost=total + repaired.cost)
+
     salvaged = _salvage(schema, result)
     if salvaged is not None:
         return StructuredResult(instance=salvaged, cost=total)
+
+    salvaged_editor = _salvage_editor_decision(schema, result)
+    if salvaged_editor is not None:
+        return StructuredResult(
+            instance=salvaged_editor,
+            cost=total,
+            warnings=(
+                "editor summary was reconstructed from the editor's verdict "
+                "and required revisions after structured-output repair failed",
+            ),
+        )
 
     prose = _via_prose(llm, schema, messages, spec)
     if prose is not None:
@@ -404,6 +590,246 @@ class _ScoreRepair(BaseModel):
     not_applicable_reason: str = ""
 
 
+class _EditorSummaryRepair(BaseModel):
+    """The one editor field whose failure must not discard a real verdict."""
+
+    summary_of_evaluation: str
+
+
+class _ReviewMetadata(BaseModel):
+    """Small normalization boundary for an already-written prose review."""
+
+    score: int | None = Field(None, ge=1, le=5)
+    confidence: int | None = Field(None, ge=1, le=5)
+    not_applicable_reason: str = ""
+
+
+_SCORE_LINE = re.compile(
+    r"(?im)^\s*(?:[-*#>]\s*)*(?:\*\*)?"
+    r"(?:score|rating|recommendation)(?:\*\*)?\s*[:=-]?\s*(?:\*\*)?\s*"
+    r"(n\s*/?\s*a|null|[1-5](?:\.0)?(?:\s*/\s*5)?|"
+    r"accept|minor(?:\s+revision)?|major(?:\s+revision)?|reject)\b"
+)
+_CONFIDENCE_LINE = re.compile(
+    r"(?im)^\s*(?:[-*#>]\s*)*(?:\*\*)?confidence(?:\*\*)?"
+    r"\s*[:=-]?\s*(?:\*\*)?\s*([1-5](?:\.0)?)(?:\s*/\s*5)?\b"
+)
+_NA_REASON_LINE = re.compile(
+    r"(?im)^\s*(?:[-*#>]\s*)*(?:\*\*)?"
+    r"(?:not[_ -]?applicable[_ -]?reason|n\s*/?\s*a\s+reason)"
+    r"(?:\*\*)?\s*[:=-]\s*(?:\*\*)?\s*(.+)$"
+)
+
+
+def _reviewer_from_markdown(llm, schema: type[BaseModel], text: str) -> StructuredResult:
+    """Build reviewer metadata without making Markdown formatting load-bearing."""
+    score, explicit_na = _explicit_score(text)
+    confidence = _explicit_confidence(text)
+    reason_match = _NA_REASON_LINE.search(text)
+    reason = reason_match.group(1).strip() if reason_match else ""
+    source = "explicit" if score is not None or explicit_na else ""
+    cost = 0.0
+
+    score_was_missing = score is None and not explicit_na
+    if score_was_missing or confidence is None:
+        normalized = _normalize_review_metadata(llm, text)
+        if normalized is not None:
+            fixed, cost = normalized
+            if score_was_missing:
+                score = fixed.score
+                reason = reason or fixed.not_applicable_reason.strip()
+            if confidence is None:
+                confidence = fixed.confidence
+            if score_was_missing and fixed.score is not None:
+                source = "normalized"
+
+    warnings: list[str] = []
+    if score is None:
+        reason = reason or NO_SCORE_NO_REASON
+        source = source or "unavailable"
+        if reason == NO_SCORE_NO_REASON:
+            warnings.append(
+                "review Markdown was preserved, but no score could be extracted"
+            )
+    if confidence is None:
+        # Confidence only weights a numeric score. One is conservative and
+        # prevents missing metadata from amplifying an inferred judgment.
+        confidence = 1
+        warnings.append(
+            "review Markdown was preserved, but no confidence could be extracted; using 1"
+        )
+
+    sections = _markdown_review_sections(text)
+    summary = sections["summary"] or _markdown_summary(text)
+    if _review_item_is_placeholder(summary) or len(summary.strip()) < 25:
+        summary = _markdown_summary(text)
+    payload = {
+        "score": score,
+        "not_applicable_reason": reason,
+        "confidence": confidence,
+        "summary": summary,
+        "strengths": _clean_review_items(sections["strengths"]),
+        "weaknesses": _clean_review_items(sections["weaknesses"]),
+        "questions": _clean_review_items(sections["questions"]),
+    }
+    # The complete Markdown has already cleared the substantive artifact
+    # checks. These fields are a lossy convenience index, not an agent output
+    # contract, so ReviewerOutput's structured-generation validators must not
+    # be allowed to discard the prose. In particular, a perfectly ordinary
+    # `Questions: None.` used to validate as the placeholder list ["None."],
+    # erase an otherwise complete ethics review, and fail the whole panel.
+    # Constructing the typed carrier without validation keeps downstream field
+    # access while making the saved Markdown—not a section parser—authoritative.
+    instance = schema.model_construct(**payload)
+    return StructuredResult(
+        instance=instance,
+        cost=cost,
+        warnings=tuple(dict.fromkeys(warnings)),
+        raw_text=text,
+        score_source=source,
+    )
+
+
+def _review_item_is_placeholder(value: str) -> bool:
+    stripped = re.sub(r"^[\s>*#`_\-]+|[\s.*`_\-]+$", "", str(value or "")).lower()
+    return not stripped or stripped in {
+        "n/a", "na", "none", "nil", "no questions", "not applicable", "tbd", "todo",
+    }
+
+
+def _clean_review_items(items: list[str]) -> list[str]:
+    """Drop empty/placeholder section bullets from the lossy metadata index."""
+    return [str(item).strip() for item in items if not _review_item_is_placeholder(item)]
+
+
+def _normalize_review_metadata(llm, text: str) -> tuple[_ReviewMetadata, float] | None:
+    """Extract three scalars from prose; never regenerate or rejudge the review."""
+    ask = [
+        SystemMessage(content=(
+            "Extract metadata from the review exactly as written. Do not "
+            "reassess the manuscript. If the reviewer states no score, leave "
+            "score null; infer a score only when an explicit categorical "
+            "recommendation (accept/minor/major/reject) is present."
+        )),
+        HumanMessage(content=text),
+    ]
+    spec = spec_for_llm(llm)
+    try:
+        result = _invoke_with_retries(
+            _bind(llm, _ReviewMetadata, spec.structured_method), ask
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    parsed, cost = _unpack(result)
+    return (parsed, cost) if isinstance(parsed, _ReviewMetadata) else None
+
+
+def _explicit_score(text: str) -> tuple[int | None, bool]:
+    match = _SCORE_LINE.search(text)
+    if not match:
+        numeric = re.search(
+            r"(?i)\b(?:score|rating)\s+(?:of\s+|is\s+)?([1-5])"
+            r"(?:\.0)?(?:\s*/\s*5|\s+out\s+of\s+5)?\b",
+            text,
+        )
+        if numeric:
+            return int(numeric.group(1)), False
+        categorical = re.search(
+            r"(?i)\b(?:recommend|recommendation\s+is|verdict\s+is)\s+"
+            r"(accept|minor\s+revision|major\s+revision|reject)\b",
+            text,
+        )
+        if not categorical:
+            return None, False
+        match_value = categorical.group(1).lower()
+        return {
+            "accept": 5,
+            "minor revision": 4,
+            "major revision": 3,
+            "reject": 1,
+        }[match_value], False
+    value = re.sub(r"\s+", " ", match.group(1).strip().lower())
+    if value in {"n/a", "n / a", "na", "null"}:
+        return None, True
+    mapping = {
+        "accept": 5,
+        "minor": 4,
+        "minor revision": 4,
+        "major": 3,
+        "major revision": 3,
+        "reject": 1,
+    }
+    if value in mapping:
+        return mapping[value], False
+    number = re.match(r"[1-5]", value)
+    return (int(number.group(0)), False) if number else (None, False)
+
+
+def _explicit_confidence(text: str) -> int | None:
+    match = _CONFIDENCE_LINE.search(text)
+    if match:
+        return int(float(match.group(1)))
+    inline = re.search(
+        r"(?i)\bconfidence\s+(?:of\s+|is\s+)?([1-5])"
+        r"(?:\.0)?(?:\s*/\s*5|\s+out\s+of\s+5)?\b",
+        text,
+    )
+    return int(inline.group(1)) if inline else None
+
+
+def _markdown_review_sections(text: str) -> dict[str, Any]:
+    """Best-effort section extraction; absent headings are fully acceptable."""
+    aliases = {
+        "summary": {"summary", "assessment", "overall assessment"},
+        "strengths": {"strength", "strengths"},
+        "weaknesses": {"weakness", "weaknesses", "concerns", "major concerns"},
+        "questions": {"question", "questions", "questions for the authors"},
+    }
+    found: dict[str, list[str]] = {key: [] for key in aliases}
+    current = ""
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        label = re.sub(r"^[#>*\s-]+|[*:#\s-]+$", "", stripped).lower()
+        new = next((key for key, names in aliases.items() if label in names), "")
+        if new:
+            current = new
+            continue
+        if stripped.startswith("#"):
+            current = ""
+            continue
+        if current and stripped and not _SCORE_LINE.match(raw) and not _CONFIDENCE_LINE.match(raw):
+            found[current].append(stripped)
+
+    def items(lines: list[str]) -> list[str]:
+        if not lines:
+            return []
+        bullets = [
+            re.sub(r"^\s*(?:[-*+] |\d+[.)]\s*)", "", line).strip()
+            for line in lines
+            if re.match(r"^\s*(?:[-*+] |\d+[.)]\s*)", line)
+        ]
+        if bullets:
+            return [x for x in bullets if x]
+        paragraph = " ".join(lines).strip()
+        return [paragraph] if paragraph else []
+
+    return {
+        "summary": " ".join(found["summary"]).strip(),
+        "strengths": items(found["strengths"]),
+        "weaknesses": items(found["weaknesses"]),
+        "questions": items(found["questions"]),
+    }
+
+
+def _markdown_summary(text: str) -> str:
+    cleaned = _SCORE_LINE.sub("", text)
+    cleaned = _CONFIDENCE_LINE.sub("", cleaned)
+    cleaned = _NA_REASON_LINE.sub("", cleaned)
+    cleaned = re.sub(r"(?m)^\s*#{1,6}\s+.*$", "", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:2000]
+
+
 def _repair_abstention(llm, schema: type[BaseModel], result: Any) -> StructuredResult | None:
     """One targeted ask before an unexplained abstention is published.
 
@@ -461,6 +887,61 @@ def _repair_abstention(llm, schema: type[BaseModel], result: Any) -> StructuredR
         return None
 
 
+def _repair_editor_summary(
+    llm,
+    schema: type[BaseModel],
+    result: Any,
+    messages: list,
+) -> StructuredResult | None:
+    """Regenerate only a defective editor synthesis and keep its other fields.
+
+    Some models repeatedly return a real verdict and actionable revision list
+    with ``summary_of_evaluation='...'``. Re-running the whole editor object
+    lets already-correct fields drift and still often reproduces the same
+    placeholder. A one-field schema makes the actual missing task explicit.
+    The original editor context remains in ``messages``, so the repair can
+    synthesize the panel rather than inventing from the malformed payload.
+    """
+    payload = _tool_args(result)
+    if not isinstance(payload, dict) or not payload:
+        return None
+    if "summary_of_evaluation" not in schema.model_fields:
+        return None
+    existing = str(payload.get("summary_of_evaluation") or "").strip()
+    try:
+        schema.model_validate(payload)
+        return None
+    except Exception as exc:  # noqa: BLE001
+        if "summary_of_evaluation" not in str(exc):
+            return None
+
+    ask = HumanMessage(content=(
+        "Keep the editor's decision, required revisions, and minor suggestions "
+        "unchanged. Return only a replacement summary_of_evaluation that "
+        "synthesizes the panel evidence, explains the tradeoff, and states why "
+        f"it leads to the verdict. The prior summary was {existing!r} and was "
+        "rejected as non-substantive. Write at least 200 characters."
+    ))
+    spec = spec_for_llm(llm)
+    structured = _bind(llm, _EditorSummaryRepair, spec.structured_method)
+    total = 0.0
+    for _ in range(2):
+        try:
+            repair_result = _invoke_with_retries(structured, messages + [ask])
+        except Exception:  # noqa: BLE001
+            return None
+        fixed, cost = _unpack(repair_result)
+        total += cost
+        if fixed is None:
+            continue
+        try:
+            merged = {**payload, "summary_of_evaluation": fixed.summary_of_evaluation}
+            return StructuredResult(instance=schema.model_validate(merged), cost=total)
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
 def _review_quote(payload: dict) -> str:
     """The review the model wrote, compact enough to quote back to it."""
     parts: list[str] = []
@@ -489,6 +970,41 @@ def _salvage(schema: type[BaseModel], result: Any) -> BaseModel | None:
         return None
 
 
+def _salvage_editor_decision(schema: type[BaseModel], result: Any) -> BaseModel | None:
+    """Keep a revision verdict when only its prose synthesis is unusable.
+
+    This is deliberately narrower than inventing an editorial opinion. It
+    works only for minor/major payloads that already contain concrete required
+    revisions, and states transparently that the original synthesis was not
+    usable. Every substantive item in the replacement is copied from the
+    editor's own structured payload.
+    """
+    payload = _tool_args(result)
+    if not isinstance(payload, dict) or "summary_of_evaluation" not in schema.model_fields:
+        return None
+    decision = str(payload.get("decision") or "").strip()
+    revisions = [
+        str(x).strip()
+        for x in (payload.get("required_revisions") or [])
+        if str(x).strip()
+    ]
+    if decision not in {"minor", "major"} or not revisions:
+        return None
+    joined = "; ".join(revisions)
+    summary = (
+        f"The editor returned a {decision} revision decision and identified "
+        f"the following requirements as load-bearing: {joined}. These items "
+        "must be resolved before the manuscript meets the stated review "
+        "standard. The editor's original narrative synthesis was unusable, "
+        "so this transparent fallback preserves only its verdict and explicit "
+        "requirements; it adds no new scientific findings."
+    )
+    try:
+        return schema.model_validate({**payload, "summary_of_evaluation": summary})
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _tool_args(result: Any) -> Any:
     """The object the model sent, when it parsed as JSON but not as the schema.
 
@@ -504,10 +1020,33 @@ def _tool_args(result: Any) -> Any:
     if not isinstance(result, dict):
         return None
     raw = result.get("raw")
-    calls = getattr(raw, "tool_calls", None) or []
-    if calls:
-        return calls[0].get("args")
-    return _json_object(getattr(raw, "content", None))
+    candidates: list[Any] = []
+
+    candidates += [c.get("args") for c in (getattr(raw, "tool_calls", None) or [])]
+    candidates += [
+        c.get("args") for c in (getattr(raw, "invalid_tool_calls", None) or [])
+    ]
+
+    extra = getattr(raw, "additional_kwargs", None) or {}
+    for call in extra.get("tool_calls") or []:
+        function = call.get("function") or {}
+        candidates.append(function.get("arguments"))
+
+    candidates.append(getattr(raw, "content", None))
+
+    error = result.get("parsing_error")
+    try:
+        candidates += [e.get("input") for e in error.errors(include_url=False)]
+    except (AttributeError, TypeError, ValueError):
+        pass
+
+    for candidate in candidates:
+        if isinstance(candidate, dict) and candidate:
+            return candidate
+        parsed = _json_object(candidate)
+        if parsed:
+            return parsed
+    return None
 
 
 def _json_object(content: Any) -> dict | None:

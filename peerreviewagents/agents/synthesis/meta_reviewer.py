@@ -4,11 +4,10 @@ from __future__ import annotations
 
 from ...observability import node_context
 from ..debate.base import _debate_so_far, _reports_digest, panel_gaps_block
-from ..schemas import MetaReviewOutput
 from ..utils.agent_states import ReviewState
 from ..utils.agent_utils import directives_block, score_summary
 from ..utils.llm import make_llm
-from ..utils.structured import invoke_structured
+from ..utils.structured import invoke_markdown
 
 _SYS = (
     "You are the Area Chair synthesizing a peer-review package. Weigh the "
@@ -24,7 +23,8 @@ _SYS = (
     "calibrate the recommendation to that venue's standards and scope. If a "
     "review strictness standard is described in the context above, calibrate "
     "the recommendation to it as well. "
-    "Return the structured MetaReviewOutput schema."
+    "Write an ordinary Markdown meta-review. State any draft recommendation "
+    "in prose, but do not return JSON or a fixed schema."
 )
 
 
@@ -61,13 +61,13 @@ def _run(state: ReviewState) -> dict:
         # manuscript invites it to become a 9th reviewer instead of weighing
         # the panel. Only the venue/strictness directives ride along as the
         # cached prefix so it can calibrate to the target venue's bar.
-        result = invoke_structured(
+        result = invoke_markdown(
             llm,
-            MetaReviewOutput,
             config,
             _SYS,
             user,
             cached_prefix=directives_block(state),
+            min_chars=100,
         )
     except Exception as exc:  # noqa: BLE001
         # No fabricated verdict on failure: a hardcoded "major" here reads
@@ -80,11 +80,12 @@ def _run(state: ReviewState) -> dict:
             "draft_recommendation": "",
         }
 
-    output: MetaReviewOutput = result.instance  # type: ignore[assignment]
     return {
-        "meta_review": output.to_markdown(),
-        "draft_recommendation": output.draft_recommendation,
+        "meta_review": result.text,
+        # This stage is advisory and inactive in the current graph. The editor
+        # reads the full prose if it is ever re-enabled; no scalar extracted
+        # from its formatting is allowed to become a shadow verdict.
+        "draft_recommendation": "",
         "total_cost": result.cost,
     }
-
 

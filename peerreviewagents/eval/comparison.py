@@ -102,7 +102,7 @@ def build_comparison(corpus_path: str, system_path: str, baseline_path: str) -> 
         raise ValueError(
             f"expected modes system and single-llm, found {modes[0]!r} and {modes[1]!r}"
         )
-    for key in ("config_digest", "provider", "model"):
+    for key in ("config_digest", "provider", "model", "source_fingerprint"):
         full_value = system_report["manifest"].get(key)
         baseline_value = baseline_report["manifest"].get(key)
         if full_value != baseline_value:

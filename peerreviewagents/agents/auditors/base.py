@@ -1,8 +1,7 @@
 """Builder for editorial compliance-auditor nodes.
 
 An auditor runs a specific, enumerable checklist against the manuscript and
-returns an :class:`~peerreviewagents.agents.schemas.AuditOutput` (summary,
-categories checked, per-item findings). Unlike a specialist reviewer it
+returns an ordinary Markdown checklist. Unlike a specialist reviewer it
 assigns **no score** and emits **no opinion** — it reports which required
 identifiers/details are present, missing, or unverifiable.
 
@@ -20,7 +19,6 @@ reviewer fan-out.
 from __future__ import annotations
 
 from ...observability import node_context
-from ..schemas import AuditOutput
 from ..utils.agent_states import AuditReport, ReviewState
 from ..utils.agent_utils import (
     REFERENCES_NOTE,
@@ -29,10 +27,7 @@ from ..utils.agent_utils import (
     supplement_block,
 )
 from ..utils.llm import make_llm
-from ..utils.structured import (
-    invoke_structured,
-    invoke_structured_after_tools,
-)
+from ..utils.structured import invoke_markdown
 
 _INSTRUCTIONS = (
     "Manuscript title: {title}\n\n"
@@ -51,9 +46,11 @@ _INSTRUCTIONS = (
     "confirm it from the manuscript alone, mark status=unverifiable (a "
     "question to the authors) — do NOT assume it passes, and do NOT mark it a "
     "HARD missing.\n\n"
-    "Return the structured AuditOutput schema: a factual summary, the "
-    "categories you detected, and one finding per checked item. You assign no "
-    "score and make no accept/reject judgment — that is the editor's job."
+    "Write a factual Markdown report naming the categories checked and each "
+    "finding with its HARD or SOFT severity and present, missing, or "
+    "unverifiable status. Use any clear organization; no JSON, schema, or "
+    "fixed headings are required. You assign no score and make no "
+    "accept/reject judgment — that is the editor's job."
 )
 
 # Appended to the instructions only when a supplement is actually present and
@@ -72,7 +69,7 @@ _SYSTEM = (
     "You run a specific, enumerable checklist and report which required "
     "identifiers and details are present, missing, or unverifiable, each "
     "grounded in manuscript evidence. Your specific remit is in the user "
-    "message; follow it strictly. Return the structured AuditOutput schema."
+    "message; follow it strictly. Return ordinary Markdown, never JSON."
 )
 
 
@@ -127,39 +124,38 @@ def make_auditor_node(
                     instructions = instructions + _SUPPLEMENT_NOTE
 
             try:
+                tools = []
                 if bound_tool_names and config.get("research_enabled", True):
                     from ...research.tools import get_tools_by_name
 
-                    result = invoke_structured_after_tools(
-                        llm,
-                        AuditOutput,
-                        config,
-                        _SYSTEM,
-                        instructions,
-                        get_tools_by_name(bound_tool_names, config),
-                        cached_prefix=cached_prefix,
-                    )
-                else:
-                    result = invoke_structured(
-                        llm,
-                        AuditOutput,
-                        config,
-                        _SYSTEM,
-                        instructions,
-                        cached_prefix=cached_prefix,
-                    )
+                    tools = get_tools_by_name(bound_tool_names, config)
+                result = invoke_markdown(
+                    llm,
+                    config,
+                    _SYSTEM,
+                    instructions,
+                    tools=tools,
+                    cached_prefix=cached_prefix,
+                    min_chars=160,
+                )
             except Exception as exc:  # noqa: BLE001
                 return {"errors": [f"{name} auditor failed: {exc}"]}
 
-            output: AuditOutput = result.instance  # type: ignore[assignment]
             report: AuditReport = {
                 "auditor": name,
                 "title": title,
-                "hard_gaps": output.hard_gaps(),
-                "soft_gaps": output.soft_gaps(),
-                "body": output.to_markdown(title=title),
+                # Counts are derived convenience metadata. Unknown is honest:
+                # the editor reads the full report and does not need a parser
+                # to decide whether a named gap matters.
+                "hard_gaps": None,
+                "soft_gaps": None,
+                "findings": [],
+                "body": result.text,
             }
-            return {"audits": [report], "total_cost": result.cost}
+            update: dict = {"audits": [report], "total_cost": result.cost}
+            if result.warnings:
+                update["errors"] = [f"{name} auditor degraded: {w}" for w in result.warnings]
+            return update
 
     node.__name__ = node_name
     return node
