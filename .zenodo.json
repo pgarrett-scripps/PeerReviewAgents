@@ -2,27 +2,28 @@
   "title": "PeerReviewAgents",
   "description": "<p>A multi-agent LLM peer-review framework that simulates a journal editorial board (eight specialist reviewers, an advocate/skeptic debate, an area-chair synthesis, an author rebuttal, and an editor-in-chief verdict) to produce an accept / minor / major / reject recommendation on a manuscript, with full reports at every stage.</p><p>Garrett, Navarro Garrido and Garcia-Carbonell contributed equally.</p>",
   "upload_type": "software",
-  "license": "MIT",
   "access_right": "open",
+  "license": "mit",
+  "language": "eng",
   "creators": [
     {
-      "name": "Garrett, Patrick",
-      "affiliation": "Scripps Research",
+      "name": "Garrett, Patrick T.",
+      "affiliation": "Scripps Research Institute",
       "orcid": "0000-0002-8434-9693"
     },
     {
       "name": "Navarro Garrido, Aleix",
-      "affiliation": "Scripps Research",
+      "affiliation": "Scripps Research Institute",
       "orcid": "0009-0002-7383-8771"
     },
     {
       "name": "Garcia-Carbonell, Ricard",
-      "affiliation": "Scripps Research",
+      "affiliation": "Scripps Research Institute",
       "orcid": "0000-0002-9936-6699"
     },
     {
-      "name": "Yates, John R., III",
-      "affiliation": "Scripps Research",
+      "name": "Yates III, John R.",
+      "affiliation": "Scripps Research Institute",
       "orcid": "0000-0001-5267-1672"
     }
   ],
@@ -38,6 +39,28 @@
       "identifier": "https://github.com/pgarrett-scripps/PeerReviewAgents",
       "relation": "isSupplementTo",
       "scheme": "url"
+    },
+    {
+      "identifier": "https://pypi.org/project/peerreviewagents/",
+      "relation": "isAlternateIdentifier",
+      "scheme": "url"
+    }
+  ],
+  "grants": [
+    {
+      "id": "10.13039/100000002::R01AG077046"
+    },
+    {
+      "id": "10.13039/100000002::R01MH132570"
+    },
+    {
+      "id": "10.13039/100000002::R01MH100175"
+    },
+    {
+      "id": "10.13039/100000002::R01HL165168"
+    },
+    {
+      "id": "10.13039/100000002::U01AG088679"
     }
   ]
 }
