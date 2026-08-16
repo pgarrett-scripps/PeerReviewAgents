@@ -375,3 +375,30 @@ def test_editor_schema_rejects_a_summary_that_is_a_whole_review():
             summary_of_evaluation="The panel found problems. " * 2000,
             required_revisions=["Do the thing."],
         )
+
+
+def test_editor_prose_path_rejects_a_letter_that_is_a_transcript(monkeypatch):
+    """The prose path preserves what the editor writes, which is right until
+    the editor stops writing a letter: one run emitted 55,670 characters
+    carrying the panel's own headings back verbatim. Over the cap it must ask
+    again rather than publish the transcript."""
+    dump = "# Decision Letter\n\n**Decision:** major\n\n## Merged Review\n" + ("x " * 30000)
+    good = (
+        "# Decision Letter\n\n**Decision:** major\n\n"
+        "## Summary of Evaluation\n\nThe panel's reports converge on an "
+        "unsupported central claim, and the debate did not resolve the "
+        "statistical objection. Fixing it needs a reanalysis whose outcome "
+        "could change a conclusion, so the verdict is major.\n\n"
+        "## Required Revisions\n\n1. Rerun the analysis with the correction.\n"
+    )
+    answers = iter([dump, good])
+    monkeypatch.setattr(editor_in_chief, "make_llm", lambda config, **_k: object())
+    monkeypatch.setattr(
+        editor_in_chief, "run_agent",
+        lambda *_a, **_k: RunResult(text=next(answers), cost=0.0),
+    )
+
+    out = editor_in_chief.node(_panel_state())
+    assert out["decision"] == "major"
+    assert "Merged Review" not in out["decision_letter"]
+    assert out["required_revisions"] == ["Rerun the analysis with the correction."]

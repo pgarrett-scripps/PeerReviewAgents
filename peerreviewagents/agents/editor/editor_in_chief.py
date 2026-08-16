@@ -160,6 +160,17 @@ _VERDICT_LINE = re.compile(
     r"(accept|minor(?:\s+revision)?|major(?:\s+revision)?|reject)\b"
 )
 _MIN_DECISION_LETTER_CHARS = 100
+# And a ceiling, for the failure at the other end. The prose path preserves
+# whatever the editor writes, which is right up to the point where the editor
+# stops writing a letter: one run emitted 55,670 characters carrying the
+# panel's own section headings back verbatim — "Merged Review", "Verified
+# claims", a per-reviewer "Executive Summary" — a transcript of the reports
+# rather than a decision on them. Real letters across the corpus ran 1,523 to
+# 12,674 characters. Over the cap the prose is not published: the node falls
+# through to the structured path below, whose schema has its own floor and
+# ceiling, so the outcome is a letter in the standard shape rather than no
+# letter at all.
+_MAX_DECISION_LETTER_CHARS = 25000
 
 
 def node(state: ReviewState) -> dict:
@@ -257,7 +268,10 @@ def _run(state: ReviewState) -> dict:
             first_error = f"{type(exc).__name__}: {exc}"
             prose = ""
         markdown = _editor_from_markdown(prose)
-        if markdown is not None and len(prose) >= _MIN_DECISION_LETTER_CHARS:
+        if (
+            markdown is not None
+            and _MIN_DECISION_LETTER_CHARS <= len(prose) <= _MAX_DECISION_LETTER_CHARS
+        ):
             decision, revisions, suggestions, letter, warnings = markdown
             out = {
                 "decision": decision,
