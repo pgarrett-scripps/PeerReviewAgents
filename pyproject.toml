@@ -9,8 +9,15 @@ description = "Multi-agent LLM peer-review framework (an editorial board for man
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
 license = "MIT"
+license-files = ["LICENSE"]
 authors = [
-    { name = "Patrick Garrett", email = "pgarrett@scripps.edu" },
+    { name = "Patrick T. Garrett", email = "pgarrett@scripps.edu" },
+    { name = "Aleix Navarro Garrido" },
+    { name = "Ricard Garcia-Carbonell" },
+    { name = "John R. Yates III", email = "jyates@scripps.edu" },
+]
+maintainers = [
+    { name = "Patrick T. Garrett", email = "pgarrett@scripps.edu" },
 ]
 keywords = [
     "peer-review",

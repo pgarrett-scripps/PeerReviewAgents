@@ -44,8 +44,9 @@ authors:
     affiliation: Scripps Research Institute
     orcid: "https://orcid.org/0000-0001-5267-1672"
 repository-code: "https://github.com/pgarrett-scripps/PeerReviewAgents"
+url: "https://github.com/pgarrett-scripps/PeerReviewAgents"
 license: MIT
-version: 0.4.0
+version: "0.4.0"
 date-released: "2026-08-13"
 keywords:
   - peer review
@@ -57,4 +58,4 @@ keywords:
 # per-release DOI for v0.2.0 is 10.5281/zenodo.21781896. Cite this one instead
 # so a citation does not pin readers to whichever version happened to be
 # current when it was written.
-doi: 10.5281/zenodo.21781895
+doi: "10.5281/zenodo.21781895"
