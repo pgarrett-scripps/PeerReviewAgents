@@ -42,7 +42,7 @@ keywords:
   - scholarly publishing
   - open science
 # The Zenodo *concept* DOI, which always resolves to the newest version. The
-# per-release DOI for v0.2.0 is 10.5281/zenodo.21781896; cite this one instead
+# per-release DOI for v0.2.0 is 10.5281/zenodo.21781896. Cite this one instead
 # so a citation does not pin readers to whichever version happened to be
 # current when it was written.
 doi: 10.5281/zenodo.21781895
