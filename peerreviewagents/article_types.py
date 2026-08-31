@@ -16,7 +16,7 @@ runtime. A journal that supplies no overrides still gets the general framing.
 A selected type is rendered to a prompt block via :func:`article_type_block`,
 stored once in the run state, and folded into the shared cached prefix by
 :func:`peerreviewagents.agents.utils.agent_utils.context_block`. That prefix is
-consumed by the evaluative agents (reviewers, meta-reviewer, editor), so naming
+consumed by the evaluative agents (reviewers, debate synthesizer, editor), so naming
 the manuscript type tells the panel what kind of work it is judging — a Letter
 or Review is not held to a research Article's bar for novel experimental data.
 

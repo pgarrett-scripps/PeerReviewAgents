@@ -5,7 +5,7 @@ reviewer critique looks equally fatal: there's nothing distinguishing
 "fixable in revision" from "the reviewer misread the paper" from
 "actual blocker." This node closes that gap with a single LLM call:
 the model plays the author, reads the panel's critiques, and emits Markdown
-that the editor consumes alongside the meta-review.
+that the editor consumes alongside the debate synthesis.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ def _run(state: ReviewState) -> dict:
     user = (
         f"Reviewer findings:\n{_reports_digest(state)}\n\n"
         f"Debate transcript:\n{_debate_so_far(state)}\n\n"
-        f"Meta-review draft:\n{state.get('meta_review', '')}\n\n"
+        f"Debate synthesis:\n{state.get('debate_synthesis', '')}\n\n"
         f"Numerical signal:\n{score_summary(state)}\n\n"
         "Compose your rebuttal."
     )

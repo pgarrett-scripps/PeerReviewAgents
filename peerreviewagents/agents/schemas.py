@@ -724,11 +724,14 @@ class DebateOutput(BaseModel):
         return "\n".join(parts)
 
 
-# --- Meta-reviewer ----------------------------------------------------------
+# --- Meta-reviewer (legacy) -------------------------------------------------
+# The pre-debate meta-reviewer stage was removed in 0.5.0 (the debate
+# synthesizer replaced it, and it emits free Markdown, not this schema). The
+# schema stays importable for old integrations and test fixtures.
 
 
 class MetaReviewOutput(BaseModel):
-    """Area Chair's synthesis of reviewer + debate signal."""
+    """Area Chair's synthesis of reviewer + debate signal (legacy stage)."""
 
     draft_recommendation: Verdict
     synthesis: str = Field(

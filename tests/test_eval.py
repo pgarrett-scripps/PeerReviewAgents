@@ -18,6 +18,7 @@ from peerreviewagents.eval.comparison import build_comparison
 from peerreviewagents.eval.comparison import render_markdown as render_comparison
 from peerreviewagents.eval.integrity import (
     EXPECTED_AUDITORS,
+    EXPECTED_CONDENSED_REVIEWERS,
     EXPECTED_REVIEWERS,
     inspect_run_artifacts,
 )
@@ -26,6 +27,7 @@ from peerreviewagents.eval.schema import (
     CorpusItem,
     RunRecord,
     config_digest,
+    require_source_fingerprint,
     source_fingerprint,
     verify_protocol,
 )
@@ -292,6 +294,37 @@ def test_artifact_integrity_accepts_complete_prose_panel():
     assert inspect_run_artifacts(_complete_system_record()) == []
 
 
+def test_artifact_integrity_accepts_condensed_panel_from_manifest():
+    rec = _complete_system_record()
+    rec.per_reviewer = [
+        {
+            "name": name,
+            "score": 3,
+            "confidence": 4,
+            "markdown": "A specific, substantive evaluation. " * 4,
+        }
+        for name in sorted(EXPECTED_CONDENSED_REVIEWERS)
+    ]
+    rec.n_reviewers = 5
+    rec.manifest["reviewer_panel"] = "condensed"
+    assert inspect_run_artifacts(rec) == []
+
+
+def test_artifact_integrity_infers_legacy_condensed_manifest():
+    rec = _complete_system_record()
+    rec.per_reviewer = [
+        {
+            "name": name,
+            "score": 3,
+            "confidence": 4,
+            "markdown": "A specific, substantive evaluation. " * 4,
+        }
+        for name in sorted(EXPECTED_CONDENSED_REVIEWERS)
+    ]
+    rec.n_reviewers = 5
+    assert inspect_run_artifacts(rec) == []
+
+
 def test_artifact_integrity_rejects_prompt_echo_and_missing_reviewer():
     rec = _complete_system_record()
     rec.per_reviewer.pop()
@@ -336,6 +369,7 @@ def test_config_digest_stable_and_selective():
 def test_config_digest_includes_evaluation_controls():
     base = {"provider": "openrouter", "reasoning_model": "m"}
     assert config_digest(base) != config_digest({**base, "single_model": True})
+    assert config_digest(base) != config_digest({**base, "synthesis_word_budget": 900})
     assert config_digest(base) != config_digest({**base, "research_enabled": False})
     assert config_digest(base) != config_digest({**base, "enable_journal_recommender": False})
 
@@ -356,6 +390,14 @@ def test_source_fingerprint_is_stable_and_present():
     first = source_fingerprint()
     assert len(first) == 16
     assert first == source_fingerprint()
+
+
+def test_source_fingerprint_guard_fails_closed(monkeypatch):
+    monkeypatch.setattr(
+        "peerreviewagents.eval.schema.source_fingerprint", lambda: "changed",
+    )
+    with pytest.raises(RuntimeError, match="no result was appended"):
+        require_source_fingerprint("frozen", context="after paper repeat 0")
 
 
 def test_resume_refuses_changed_config_or_mode(tmp_path):
@@ -609,7 +651,7 @@ def _run_one_with_state(monkeypatch, state):
     present = {report.get("reviewer") for report in reports}
     for report in reports:
         report.setdefault("body", prose)
-    for name in sorted(EXPECTED_REVIEWERS - present):
+    for name in sorted(EXPECTED_CONDENSED_REVIEWERS - present):
         reports.append({
             "reviewer": name, "score": None, "confidence": 3.0,
             "not_applicable_reason": "synthetic test abstention", "body": prose,
@@ -630,7 +672,7 @@ def test_run_one_survives_an_abstaining_reviewer(monkeypatch):
     the abstention is preserved in the record for later analysis."""
     rec = _run_one_with_state(monkeypatch, {
         "reports": [
-            {"reviewer": "rigor", "score": 4.0, "confidence": 5.0,
+            {"reviewer": "scientific_validity", "score": 4.0, "confidence": 5.0,
              "weaknesses": ["w1", "w2"], "not_applicable_reason": ""},
             {"reviewer": "ethics", "score": None, "confidence": 3.0,
              "weaknesses": [], "not_applicable_reason": "no human subjects"},

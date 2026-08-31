@@ -97,7 +97,7 @@ Wired into the pipeline via `peerreviewagents/journals/__init__.py`:
   `ReviewState["journal_block"]`. `context_block()` in
   `agents/utils/agent_utils.py` prepends it to the manuscript for the reviewers
   and auditors, so that whole fan-out shares one provider-side cache entry. The
-  meta-reviewer and editor get `directives_block()` — the same venue framing
+  debate synthesizer and editor get `directives_block()` — the same venue framing
   without the manuscript, since they judge the panel's reports rather than
   re-reading the paper. The journal recommender injects the venue into its own
   prompt to frame suggestions around the intended target. The chosen venue is

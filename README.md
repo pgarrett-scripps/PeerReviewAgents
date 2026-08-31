@@ -3,61 +3,48 @@
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21781895.svg)](https://doi.org/10.5281/zenodo.21781895)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A multi-agent LLM **peer-review** framework: an editorial board for manuscripts,
-modeled structurally on [TradingAgents](https://github.com/TauricResearch/TradingAgents).
-Where TradingAgents simulates a trading firm to produce a buy/sell/hold decision on a
-*ticker*, PeerReviewAgents simulates a journal editorial board to produce an
-**accept / minor / major / reject** decision on a *manuscript*, through specialist
-review, dialectical debate, synthesis, an author rebuttal, an editorial verdict,
-and tiered venue suggestions, with full reports at every stage.
+A multi-agent LLM **peer-review** framework that produces an **accept, minor
+revision, major revision, or reject** recommendation for a manuscript. The
+default combines five specialist reviews, two factual audits, a two-round
+parallel advocate and skeptic debate with a synthesized record, and a final
+editorial decision. Every stage leaves
+an inspectable Markdown artifact.
 
 ## Pipeline
 
-```
-                                ┌─ methodology
-                                ├─ data analysis
-   ingest      desk screen      ├─ novelty
-   (rustypaper─→ (conversion   ─→ ├─ clarity        (8 specialists, parallel)
-   →markdown)  gate + optional ┤  literature
-               triage)          ├─ rigor
-                   │            ├─ reproducibility
-                   ▼            └─ ethics
-             desk reject               │
-                                       ▼
-      advocate ⇄ skeptic  ◀──── debate loop  (up to max_debate_rounds)
-                                       │
-                                       ▼
-                                meta-reviewer   (Area Chair: draft recommendation)
-                                       │
-                                       ▼
-                              author rebuttal   (concessions / disagreements / load-bearing)
-                                       │
-                                       ▼
-                              Editor-in-Chief   (final decision + letter)
-                                       │
-                                       ▼
-                          Journal Scout         (tiered venue suggestions)
-                                       │
-                                       ▼
-                                    reports
+```text
+local ingest and conversion gate
+              |
+              +--> five specialist reviewers
+              |              |
+              |    advocate || skeptic (parallel rounds)
+              |              |
+              |     Sonnet debate synthesis
+              |              |
+              +--> two factual audits
+                             |
+                         Opus editor
+                             |
+                 optional Haiku venue scout
 ```
 
-Built on **LangGraph** (orchestration), with a **Textual** TUI, a headless Rich CLI,
-and a browser-based 2D "room" UI. Every agent emits a typed
-[pydantic schema](peerreviewagents/agents/schemas.py) via the provider's
-structured-output mode: no YAML-frontmatter parsing, no string-matching for
-verdicts. The 14 agents that read the manuscript send it as a
-`cache_control: ephemeral` prefix, so a run pays for those input tokens about
-once rather than once per agent. The meta-reviewer and the Editor-in-Chief
-never receive the manuscript at all: they judge the panel's reports, and giving
-them the primary text invites them to re-review instead of synthesize.
+The five default reviewers cover scientific validity, quantitative evidence,
+contribution and prior work, reporting and reproducibility, and ethics. The
+methods-completeness and citation-integrity auditors run in parallel and feed
+the editor directly. They assign no score and do not enter the debate.
+
+Built on **LangGraph**, with a **Textual** TUI, a headless Rich CLI, and a
+browser-based interface. Primary review artifacts are ordinary Markdown.
+Structured metadata such as scores, costs, verdicts, revision ids, and model
+assignments is parsed or produced separately and validated before publication.
+Agents that read the manuscript share it as a provider-side cached prefix.
 
 PDF ingest is fully local via `rustypaper`: no external API key needed. See
 [Manuscript ingest](#manuscript-ingest).
 
 Reviews can be **venue-specific**: point the run at a target journal and its
 scope, standards, and submission limits are threaded into the reviewer,
-meta-reviewer, editor, and Journal Scout prompts. See
+debate-synthesizer, editor, and Journal Scout prompts. See
 [Target journal](#target-journal).
 
 ## Providers
@@ -66,8 +53,8 @@ Three are wired up. Pick one with `--provider` or the `provider` TOML key.
 
 | Provider | Default | API key | Model id format |
 |---|---|---|---|
-| `openrouter` | ✅ | `OPENROUTER_API_KEY` | slug, e.g. `anthropic/claude-opus-5` |
-| `anthropic`  |    | `ANTHROPIC_API_KEY`  | model id, e.g. `claude-opus-5` |
+| `anthropic`  | yes | `ANTHROPIC_API_KEY`  | model id, e.g. `claude-opus-5` |
+| `openrouter` |     | `OPENROUTER_API_KEY` | slug, e.g. `anthropic/claude-opus-5` |
 | `openai`     |    | `OPENAI_API_KEY`     | model id, e.g. `gpt-4.1`, `o3` |
 
 Provider abstraction lives in [`peerreviewagents/runtime/providers.py`](peerreviewagents/runtime/providers.py).
@@ -77,23 +64,20 @@ rather than branching on the provider name directly.
 
 ## Agent roster
 
-16 agents run in a default review, all emitting structured outputs:
+The default model routing is deliberately graded:
 
-| Stage | Agent | Schema |
+| Stage | Agents | Default model |
 |---|---|---|
-| Reviewers (×8, parallel from START) | Methodology · Data Analysis · Novelty · Clarity · Literature · Rigor · Reproducibility · Ethics | `ReviewerOutput` |
-| Audit lane (×2, parallel) | Methods Completeness · Citation Integrity | `AuditOutput` |
-| Debate | Advocate, Skeptic (N rounds) | `DebateOutput` |
-| Synthesis | Area Chair / Meta-reviewer | `MetaReviewOutput` |
-| Author rebuttal | Plays the manuscript author | `AuthorRebuttalOutput` |
-| Final | Editor-in-Chief | `EditorDecisionOutput` |
-| Post-decision | Journal Scout (venue suggestions) | `JournalRecommendationsOutput` |
+| Reviewers | Scientific Validity, Quantitative Evidence, Contribution and Prior Work, Reporting and Reproducibility, Ethics | Haiku |
+| Audit lane | Methods Completeness, Citation Integrity | Haiku |
+| Debate | Advocate ∥ Skeptic, two parallel rounds | Sonnet |
+| Synthesis | Debate synthesizer | Sonnet |
+| Final | Editor-in-Chief | Opus |
+| Optional | Journal Scout | Haiku |
 
-Three more are conditional: the desk screen (`--desk-screen`,
-`DeskScreenOutput`), and on a revision round the revision-compliance auditor
-(`RevisionComplianceOutput`) and the author-response verifier
-(`ResponseVerificationOutput`). The eight reviewers emit `ReviewerOutput` in
-every round — they are not told which round it is.
+Three more are conditional: the desk screen, the revision-compliance auditor,
+and the author-response verifier. The five reviewers read each revision cold
+and are not told which round it is.
 
 The **audit lane** runs beside the reviewers but bypasses the debate: its two
 agents ([`agents/auditors/`](peerreviewagents/agents/auditors/)) produce factual
@@ -101,7 +85,7 @@ checklists: is every method actually described, does every citation support the
 claim attached to it: and route straight to the editor. They're deliberately
 not opinions, so there's nothing for the advocate and skeptic to argue about.
 
-The **Novelty** and **Literature** reviewers can call into a live research layer
+The **Contribution and Prior-Work** reviewer can call into a live research layer
 ([`peerreviewagents/research/`](peerreviewagents/research/)) backed by **arXiv**,
 **Semantic Scholar**, **PubMed** (NCBI E-utilities), and **bioRxiv/medRxiv**
 (via EuropePMC). Each reviewer declares the logical operations it wants
@@ -112,9 +96,10 @@ through to the next on rate-limit. The routing pattern mirrors TradingAgents'
 
 ### Scores
 
-Each reviewer returns a 1–5 score and a 1–5 confidence; the line the debate,
-meta-reviewer, rebuttal and editor all see is the confidence-weighted mean plus
-the verdict distribution.
+Each reviewer returns a 1 to 5 score and a 1 to 5 confidence. Scores are
+advisory metadata, not independent votes. The debate ranges over the full
+reports, and the editor judges the evidence rather than applying a score
+threshold.
 
 A reviewer may also decline to score, returning `score: null` with a
 one-sentence `not_applicable_reason`. Nulls are excluded from the mean rather
@@ -127,18 +112,14 @@ call on work that is thin or missing something it should have.
 
 ## What a run costs
 
-Reviewing one manuscript runs 16 agents, 14 of which read the whole paper. On
-the shipped default (Claude Opus for every agent) that is **roughly $2 to $4
-per manuscript**, and a revision round pays it again. There is no free tier
-here: you bring an API key and your provider bills you directly.
+Cost depends on manuscript length and provider pricing. The default uses Haiku
+for the parallel fan-out, Sonnet for the debate and its synthesis, and Opus only for the
+final editor. Every run writes its exact per-agent spend to `usage.md`.
 
 Two levers, both real:
 
-- **Split the panel by tier.** Put the eight-way reviewer fan-out and the
-  audits on a cheap model and keep the expensive one for the agents that
-  actually decide the verdict. See [Configuration](#configuration). This is the
-  largest saving available, and it ships off only because no single split is
-  right for everyone.
+- **Override the graded split.** Model tags and per-agent overrides can move a
+  stage to another model. See [Configuration](#configuration).
 - **Run it on a free model.** `--provider openrouter --reasoning-model
   <vendor/model:free>` puts every agent on one free-tier model. Slower, and the
   panel is only as good as that model, but the bill is zero.
@@ -232,11 +213,11 @@ Set one of the following in your shell or a `.env` file at the repo root,
 matching your `--provider` choice:
 
 ```bash
-# Default: OpenRouter, single key for any model on the platform
-export OPENROUTER_API_KEY=...
-
-# --provider anthropic
+# Default graded panel
 export ANTHROPIC_API_KEY=...
+
+# --provider openrouter
+export OPENROUTER_API_KEY=...
 
 # --provider openai
 export OPENAI_API_KEY=...
@@ -258,7 +239,8 @@ peerreview path/to/manuscript.pdf --no-tui
 peerreview paper.pdf --no-tui \
   --provider anthropic \
   --reasoning-model claude-opus-5 \
-  --debate-rounds 3
+  --single-model \
+  --debate-rounds 1
 
 # Review against a specific journal (see --list-journals for slugs)
 peerreview paper.pdf --no-tui --journal nature-methods
@@ -278,7 +260,7 @@ peerreview serve --host 0.0.0.0 --port 8080   # bind to all interfaces
 `--si` goes to the methods-completeness auditor and nowhere else, untruncated:
 reagent tables and full protocols usually live in the supplement, and that
 auditor is the one checking whether every method is actually described.
-`--offline` strips the research tools from the Novelty and Literature reviewers
+`--offline` strips the research tools from the Contribution and Prior-Work reviewer
 and the citation-integrity auditor, and makes the research router refuse: use
 it when a run has to be reproducible or provably leakage-free.
 
@@ -305,7 +287,7 @@ CLI-only.
 Profiles in [`peerreviewagents/journals/`](peerreviewagents/journals/) (one `.toml` per venue) describe a
 journal's scope, audience, impact factor, submission limits, and author/reviewer
 guidelines. Selecting one injects that context into the reviewers,
-meta-reviewer, editor, and Journal Scout, so the panel judges the manuscript
+debate synthesizer, editor, and Journal Scout, so the panel judges the manuscript
 against the standards of the venue it's actually headed for, and records the
 chosen venue in `summary.md`.
 
@@ -332,9 +314,9 @@ for the schema and details.
 ### Review strictness
 
 A 1–5 dial controls how easy or harsh the panel is. The level renders to a
-directive injected into the **reviewer**, **meta-reviewer**, and **editor**
+directive injected into the **reviewer**, **debate-synthesizer**, and **editor**
 prompts, so it changes how the manuscript is *judged* without touching the
-author rebuttal or the venue recommendations.
+venue recommendations.
 
 | Level | Meaning |
 |---|---|
@@ -359,7 +341,7 @@ Tell the panel what *kind* of submission it's reviewing. The taxonomy is
 venue-general: `article`, `letter`, `communication`, `perspective`, `review`,
 `technical-note`, `tutorial`, `conference-paper`, `grant-proposal`,
 `exploratory-grant`: and naming it injects a manuscript-type block into the
-reviewer/meta-reviewer/editor prompts so the work is judged appropriately (a
+reviewer/synthesizer/editor prompts so the work is judged appropriately (a
 Letter or Review isn't held to a research Article's bar for novel data; a grant
 proposal is judged on work not yet done). Any per-type word limits come from
 the **target journal's** profile, which may declare them per type (e.g. Journal
@@ -380,7 +362,7 @@ Real editorial flows screen submissions *before* assigning reviewers. Enabling
 the desk screen adds a triage node that runs once, ahead of the panel, and can
 **desk-reject** a manuscript (out of scope, incomplete, fatal flaw, or clearly
 below the venue's bar): short-circuiting the run to a reject without spending
-the 8-reviewer panel, the debate, or the editor. It screens against the target
+the 5-reviewer panel, the debate, or the editor. It screens against the target
 journal and the current strictness, and is **fail-open** (any error proceeds to
 the full review). Off by default, so a normal run is unchanged.
 
@@ -402,7 +384,7 @@ peerreview revised.pdf --revision-of 20260801-143022-widget-throughput
 peerreview revised.pdf --revision-of <job-id> --author-statement response.md
 ```
 
-The whole panel runs again: all 8 reviewers, debate, meta-review, editor. But
+The whole panel runs again: all 5 reviewers, debate, synthesis, editor. But
 only two agents are told this is a revision, and the reviewers are not among
 them.
 
@@ -469,11 +451,10 @@ encode a determinism the pipeline does not have.
 
 #### Author response letters
 
-`--author-statement` accepts the **real authors'** reply: the human
-scientists', not the simulated author-rebuttal agent (which is skipped when a
-real letter is present). It exists so a scientist can correct a review that
-is genuinely wrong. It is also the one input written by someone with a direct
-stake in the verdict, so it is treated as untrusted:
+`--author-statement` accepts the **real authors'** reply. It exists so a
+scientist can correct a review that is genuinely wrong. It is also the one
+input written by someone with a direct stake in the verdict, so it is treated
+as untrusted:
 
 > **Only the manuscript supplies evidence. The letter can only point at it.**
 

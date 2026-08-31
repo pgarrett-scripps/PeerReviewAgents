@@ -12,11 +12,15 @@ from ..utils.llm import make_llm
 from ..utils.round_delta import round_delta
 
 _SYS = (
-    "You are the Editor-in-Chief. Read the specialist reports and editorial "
-    "debate directly, then use the panel's numerical signal to make the FINAL decision "
+    "You are the Editor-in-Chief. Read the specialist reports directly, "
+    "together with a synthesized account of the advocate-skeptic debate, "
+    "then make the FINAL decision "
     "and write a professional, constructive decision letter to the "
-    "authors. The advocate supplies the strongest fair defense and the skeptic "
-    "must identify unresolved objections and collective panel blind spots. "
+    "authors. In the debate the advocate supplied the strongest fair defense "
+    "and the skeptic identified unresolved objections and collective panel "
+    "blind spots; the synthesis records where each issue landed, and issues "
+    "it marks unresolved or fatal-if-upheld deserve your closest reading "
+    "against the reports. "
     "You also receive "
     "one or more editorial compliance audits (e.g. methods completeness, "
     "citation integrity). These are factual checklists, NOT opinions or "
@@ -48,9 +52,9 @@ _SYS = (
     "concrete, checkable actions ordered by importance — not vague directives "
     "like 'improve rigor' — and keep the letter consistent with the verdict "
     "(a minor-revision decision must not read like a rejection). Let the "
-    "verdict track the evidence rather than the raw average; if you depart "
-    "materially from the panel's numerical signal, give the reasoning in "
-    "decision letter. Write ordinary Markdown, never JSON. Put `VERDICT: "
+    "verdict track the evidence rather than a raw average. Reviewer scores are "
+    "advisory and correlated agents are not independent votes. Write ordinary "
+    "Markdown, never JSON. Put `VERDICT: "
     "accept|minor|major|reject` at the top, followed by a substantive "
     "`## Summary of Evaluation`. For minor or major decisions include a "
     "`## Required Revisions` numbered list; optionally include "
@@ -171,6 +175,82 @@ _MIN_DECISION_LETTER_CHARS = 100
 # ceiling, so the outcome is a letter in the standard shape rather than no
 # letter at all.
 _MAX_DECISION_LETTER_CHARS = 25000
+_DECISION_TRANSCRIPT_MARKERS = (
+    "Specialist reports (primary panel evidence):",
+    "Debate synthesis (",
+    "Editorial debate (raw transcript",
+    "Editorial compliance audits (factual checklists",
+    "Produce the final decision letter.",
+    "=== Summary of reviewer scores ===",
+)
+
+_MAJOR_WORK_PATTERNS = (
+    re.compile(r"(?i)\b(?:conduct|perform|run|rerun|repeat)\b.{0,100}\b(?:experiment|simulation|study|control|baseline)\b"),
+    # ``add an experiment`` is major work; ``add an ethics statement for the
+    # human study`` is a reporting fix.  Match the requested object instead of
+    # scanning arbitrarily far ahead for a scientific noun.
+    re.compile(
+        r"(?i)\badd\s+(?:(?:an?|the|one|new|additional|second|further)\s+){0,3}"
+        r"(?:experiment|simulation|study|control|baseline)\b"
+    ),
+    re.compile(r"(?i)\b(?:collect|obtain|generate)\b.{0,80}\b(?:new|additional)\s+(?:data|samples|measurements)\b"),
+    re.compile(r"(?i)\b(?:provide|add|construct|complete|revise)\b.{0,100}\b(?:proof|derivation|theoretical argument|theorem)\b"),
+    re.compile(r"(?i)\b(?:modify|revise)\b.{0,100}\b(?:algorithm|selection rule|method)\b"),
+    re.compile(r"(?i)\b(?:at least|minimum of)\s+\d+\s+(?:independent\s+)?(?:seeds|runs|replicates)\b"),
+    re.compile(r"(?i)\b(?:reanaly[sz]e|reanalysis|rerun the analysis)\b"),
+)
+
+
+def _decision_letter_issue(text: str) -> str:
+    """Explain why prose is not safe to publish as a decision letter."""
+    if len(text) < _MIN_DECISION_LETTER_CHARS:
+        return f"contained only {len(text)} characters"
+    if len(text) > _MAX_DECISION_LETTER_CHARS:
+        return f"contained {len(text)} characters, above the letter limit"
+    folded = text.casefold()
+    for marker in _DECISION_TRANSCRIPT_MARKERS:
+        if marker.casefold() in folded:
+            return f"reproduced internal panel material marked {marker!r}"
+    return ""
+
+
+def _decision_semantic_issue(decision: str, revisions: list[str]) -> str:
+    """Return a verdict/work contradiction that requires a fresh editor pass."""
+    if decision == "accept" and revisions:
+        return "declared acceptance while listing required revisions"
+    if decision != "minor":
+        return ""
+    for revision in revisions:
+        if any(pattern.search(revision) for pattern in _MAJOR_WORK_PATTERNS):
+            return (
+                "called the decision minor while requiring new experiments, data, "
+                "proof, or outcome-changing reanalysis: " + revision[:180]
+            )
+    return ""
+
+
+def _debate_block(state: ReviewState) -> str:
+    """The editor's one view of the debate: the synthesis, or a fallback.
+
+    The raw transcript is published beside the brief but deliberately not
+    fed to the editor — except when the synthesizer failed, where reading
+    the transcript beats deciding blind to the debate.
+    """
+    if not state.get("debate"):
+        return "Editorial debate: (no debate was run for this manuscript)"
+    synthesis = (state.get("debate_synthesis") or "").strip()
+    failed = synthesis.startswith("(the debate synthesizer did not run")
+    if synthesis and not failed:
+        return (
+            "Debate synthesis (the condensed record of the advocate-skeptic "
+            "exchange; the raw transcript is published separately and is not "
+            "part of your record):\n" + synthesis
+        )
+    note = (synthesis + "\n\n") if synthesis else ""
+    return (
+        "Editorial debate (raw transcript — no usable synthesis was "
+        "produced):\n" + note + _debate_so_far(state)
+    )
 
 
 def node(state: ReviewState) -> dict:
@@ -179,16 +259,25 @@ def node(state: ReviewState) -> dict:
 
 
 def _first_round_user(state: ReviewState) -> str:
+    numerical = (
+        "Individual reviewer scores are advisory; no panel average is used "
+        "in this workflow."
+    )
     return (
-        f"Numerical signal:\n{score_summary(state)}\n\n"
+        f"Numerical signal:\n{numerical}\n\n"
         f"Specialist reports (primary panel evidence):\n{_reports_digest(state)}\n\n"
-        f"Editorial debate:\n{_debate_so_far(state)}\n\n"
+        f"{_debate_block(state)}\n\n"
         f"Editorial compliance audits (factual checklists — convert HARD gaps "
         f"to required revisions, SOFT/unverifiable to minor suggestions or "
-        f"questions):\n{audit_digest(state)}\n\n"
+        f"questions; an audit explicitly marked NOT PERFORMED or INGEST "
+        f"LIMITATION is pipeline provenance, not an author-facing criticism, "
+        f"and must not appear in either list):\n{audit_digest(state)}\n\n"
         "Produce the final decision letter. Resolve conflicts yourself from "
-        "the primary reports, debate and manuscript; no intermediate model's "
-        "summary is authoritative."
+        "the primary reports, the debate synthesis and the manuscript. The "
+        "synthesis condenses the debate but is not authoritative. Limit "
+        "required revisions to matters "
+        "that actually support the verdict; route desirable extensions to minor "
+        "suggestions."
     )
 
 
@@ -218,7 +307,7 @@ def _revision_user(state: ReviewState) -> str:
         f"Numerical signal for THIS round (a blind panel's independent "
         f"assessment of the manuscript as it stands):\n{score_summary(state)}\n\n"
         f"Specialist reports (primary panel evidence):\n{_reports_digest(state)}\n\n"
-        f"Editorial debate:\n{_debate_so_far(state)}\n\n"
+        f"{_debate_block(state)}\n\n"
         f"{_author_voice(state)}\n\n"
         f"Editorial compliance audits (factual checklists — the "
         f"revision-compliance audit is the record of what was actually done; "
@@ -268,10 +357,10 @@ def _run(state: ReviewState) -> dict:
             first_error = f"{type(exc).__name__}: {exc}"
             prose = ""
         markdown = _editor_from_markdown(prose)
-        if (
-            markdown is not None
-            and _MIN_DECISION_LETTER_CHARS <= len(prose) <= _MAX_DECISION_LETTER_CHARS
-        ):
+        first_issue = _decision_letter_issue(prose)
+        if markdown is not None and not first_issue:
+            first_issue = _decision_semantic_issue(markdown[0], markdown[1])
+        if markdown is not None and not first_issue:
             decision, revisions, suggestions, letter, warnings = markdown
             out = {
                 "decision": decision,
@@ -288,17 +377,25 @@ def _run(state: ReviewState) -> dict:
         # is quoted when it exists so the editor can make its already-rendered
         # verdict explicit without a schema regenerating the scientific
         # judgment from scratch.
-        retry_user = user + (
-            "\n\nThe previous decision-letter attempt was unusable because it "
-            + (
-                f"failed ({first_error})."
-                if first_error else
+        if first_error:
+            retry_reason = f"failed ({first_error})."
+        elif first_issue:
+            retry_reason = f"was unsafe to publish ({first_issue})."
+        else:
+            retry_reason = (
                 "did not contain a recognizable accept/minor/major/reject verdict."
             )
+        retry_user = (
+            user
+            + "\n\nThe previous decision-letter attempt was unusable because it "
+            + retry_reason
             + " Write the complete decision letter again as ordinary Markdown. "
-            "State the verdict explicitly in the text; do not return JSON."
+            "State the verdict explicitly in the text; do not return JSON, "
+            "repeat the panel transcript, or reproduce prompt instructions."
         )
-        if prose:
+        # A short malformed letter may be worth clarifying. A transcript or
+        # oversized generation must not be fed back and amplified on retry.
+        if prose and not first_issue:
             retry_user += "\n\nPrevious letter to preserve and clarify:\n\n" + prose
         retry = run_agent(
             llm,
@@ -311,7 +408,12 @@ def _run(state: ReviewState) -> dict:
         prose_cost += retry.cost
         retry_prose = (retry.text or "").strip()
         retry_markdown = _editor_from_markdown(retry_prose)
-        if retry_markdown is not None and len(retry_prose) >= _MIN_DECISION_LETTER_CHARS:
+        retry_issue = _decision_letter_issue(retry_prose)
+        if retry_markdown is not None and not retry_issue:
+            retry_issue = _decision_semantic_issue(
+                retry_markdown[0], retry_markdown[1],
+            )
+        if retry_markdown is not None and not retry_issue:
             decision, revisions, suggestions, letter, warnings = retry_markdown
             errors = [
                 "editor degraded: initial prose decision was unusable; "
@@ -329,7 +431,12 @@ def _run(state: ReviewState) -> dict:
         # Both prose attempts are retained for diagnosis, but no other agent
         # is allowed to invent a verdict the editor did not communicate.
         prose = retry_prose or prose
-        raise ValueError("two Markdown decision letters contained no usable verdict")
+        first_diagnostic = first_error or first_issue or "no recognizable verdict"
+        retry_diagnostic = retry_issue or "no recognizable verdict"
+        raise ValueError(
+            "two Markdown decision letters were unusable: "
+            f"first={first_diagnostic}; retry={retry_diagnostic}"
+        )
     except Exception as exc:  # noqa: BLE001
         # Do NOT fabricate a verdict on failure — leave decision empty so
         # the caller knows the editor never rendered one.
@@ -352,7 +459,8 @@ def _editor_from_markdown(
     raw = re.sub(r"\s+", " ", match.group(1).strip().lower()) if match else ""
     if not raw:
         inline = re.search(
-            r"(?i)\b(?:I\s+)?(?:recommend|decision\s+is|verdict\s+is)\s+"
+            r"(?i)\b(?:I\s+)?(?:recommend(?:ation)?(?:\s+is)?|"
+            r"decision\s*(?:is|[:=-])|verdict\s*(?:is|[:=-]))\s+"
             r"(accept|minor(?:\s+revision)?|major(?:\s+revision)?|reject)\b",
             text,
         )

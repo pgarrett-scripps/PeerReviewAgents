@@ -4,7 +4,7 @@ import os
 
 from langchain_core.messages import AIMessage
 
-from peerreviewagents.agents.reviewers import REVIEWER_NAMES
+from peerreviewagents.agents.reviewers import CONDENSED_REVIEWER_NAMES, REVIEWER_NAMES
 from peerreviewagents.agents.schemas import (
     AuditFinding,
     AuditOutput,
@@ -246,6 +246,8 @@ class FakeLLM:
                 "and principal analysis category were checked; no accept or reject "
                 "recommendation is made by this factual audit."
             ))
+        if "Area Chair" in prompt:
+            return AIMessage(content=_CANNED[MetaReviewOutput].to_markdown())
         if "Editor-in-Chief" in prompt:
             return AIMessage(content=_CANNED[EditorDecisionOutput].to_markdown())
         if "editorial debate" in prompt or "Make your argument" in prompt:
@@ -265,8 +267,6 @@ class FakeLLM:
             ))
         if "what they missed" in prompt:
             return AIMessage(content=_CANNED[PanelGapOutput].to_markdown())
-        if "Area Chair" in prompt:
-            return AIMessage(content=_CANNED[MetaReviewOutput].to_markdown())
         if "author of the manuscript responding" in prompt:
             return AIMessage(content=_CANNED[AuthorRebuttalOutput].to_markdown())
         return AIMessage(content="canned free-text")
@@ -281,7 +281,7 @@ def _patch_llms(monkeypatch):
         "peerreviewagents.agents.auditors.base",
         "peerreviewagents.agents.debate.base",
         "peerreviewagents.agents.synthesis.gap_finder",
-        "peerreviewagents.agents.synthesis.meta_reviewer",
+        "peerreviewagents.agents.synthesis.debate_synthesizer",
         "peerreviewagents.agents.author.rebuttal",
         "peerreviewagents.agents.editor.desk_screen",
         "peerreviewagents.agents.editor.editor_in_chief",
@@ -300,7 +300,11 @@ def _patch_llms(monkeypatch):
 
 def test_full_pipeline(monkeypatch, tmp_path):
     _patch_llms(monkeypatch)
-    cfg = get_config(max_debate_rounds=2, output_dir=str(tmp_path))
+    cfg = get_config(
+        max_debate_rounds=2,
+        enable_journal_recommender=True,
+        output_dir=str(tmp_path),
+    )
     graph = PeerReviewGraph(cfg)
     state = graph.review(SAMPLE)
 
@@ -313,12 +317,17 @@ def test_full_pipeline(monkeypatch, tmp_path):
         assert r["body"].startswith("# ")
         assert r["score"] == 3.0
         assert r["confidence"] == 4.0
-    # Debate ran the configured number of rounds (advocate+skeptic per round).
+    # Debate ran the configured number of PARALLEL rounds (advocate+skeptic
+    # per round), and the synthesizer condensed the finished exchange.
     assert state["debate_round"] == cfg["max_debate_rounds"]
     assert len(state["debate"]) == cfg["max_debate_rounds"] * 2
-    # There is no lossy intermediate synthesis or simulated author voice.
+    for rnd in range(1, cfg["max_debate_rounds"] + 1):
+        assert {t["role"] for t in state["debate"] if t["round"] == rnd} == {
+            "advocate", "skeptic",
+        }
+    assert len(state["debate_synthesis"]) >= 100
+    # There is no simulated author voice.
     assert not state.get("author_rebuttal")
-    assert not state.get("meta_review")
     # Editor's final decision came straight off the schema.
     assert state["decision"] == "major"
     # Decision letter is markdown rendered from the schema.
@@ -334,6 +343,7 @@ def test_full_pipeline(monkeypatch, tmp_path):
     assert os.path.exists(os.path.join(run_dir, "summary.md"))
     assert os.path.exists(os.path.join(run_dir, "decision_letter.md"))
     assert os.path.exists(os.path.join(run_dir, "debate_transcript.md"))
+    assert os.path.exists(os.path.join(run_dir, "debate_synthesis.md"))
     assert os.path.exists(os.path.join(run_dir, "journal_recommendations.md"))
     # No citations file should be produced — that pipeline was removed.
     assert not any(
@@ -341,21 +351,63 @@ def test_full_pipeline(monkeypatch, tmp_path):
     )
 
 
+def test_single_round_debate_is_one_parallel_exchange(
+    monkeypatch, tmp_path,
+):
+    _patch_llms(monkeypatch)
+    cfg = get_config(
+        max_debate_rounds=1,
+        enable_journal_recommender=False,
+        output_dir=str(tmp_path),
+    )
+    state = PeerReviewGraph(cfg).review(SAMPLE)
+
+    assert {r["reviewer"] for r in state["reports"]} == set(REVIEWER_NAMES)
+    assert len(state["debate"]) == 2
+    assert {t["round"] for t in state["debate"]} == {1}
+    assert len(state["debate_synthesis"]) >= 100
+    assert state["decision"] == "major"
+
+    run_dir = write_reports(state)
+    assert os.path.exists(os.path.join(run_dir, "debate_transcript.md"))
+    assert os.path.exists(os.path.join(run_dir, "debate_synthesis.md"))
+
+
+def test_default_config_runs_five_roles_two_rounds(
+    monkeypatch, tmp_path,
+):
+    _patch_llms(monkeypatch)
+    cfg = get_config(
+        enable_journal_recommender=False,
+        output_dir=str(tmp_path),
+    )
+    assert cfg["max_debate_rounds"] == 2
+    state = PeerReviewGraph(cfg).review(SAMPLE)
+
+    assert {r["reviewer"] for r in state["reports"]} == set(
+        CONDENSED_REVIEWER_NAMES
+    )
+    assert len(state["reports"]) == 5
+    assert len(state["debate"]) == 4
+    assert len(state["debate_synthesis"]) >= 100
+    assert state["decision"] == "major"
+
+
 def test_one_missing_specialist_proceeds_only_with_opted_in_quorum(monkeypatch, tmp_path):
     """A partial verdict remains available, but is not the default contract."""
     _patch_llms(monkeypatch)
     import peerreviewagents.graph.review_graph as review_graph_mod
 
-    real_nodes = review_graph_mod.get_reviewer_nodes()
+    real_nodes = review_graph_mod.get_reviewer_nodes({"reviewer_panel": "condensed"})
 
     def failed(_state):
-        return {"errors": ["methodology reviewer failed: provider down"]}
+        return {"errors": ["scientific validity reviewer failed: provider down"]}
 
     monkeypatch.setattr(
         review_graph_mod,
         "get_reviewer_nodes",
-        lambda: [
-            (name, failed if name == "methodology" else node)
+        lambda _config=None: [
+            (name, failed if name == "scientific_validity" else node)
             for name, node in real_nodes
         ],
     )
@@ -366,7 +418,7 @@ def test_one_missing_specialist_proceeds_only_with_opted_in_quorum(monkeypatch, 
 
     assert state["panel_complete"] is True
     assert state["panel_degraded"] is True
-    assert len(state["reports"]) == len(REVIEWER_NAMES) - 1
+    assert len(state["reports"]) == len(CONDENSED_REVIEWER_NAMES) - 1
     assert state["decision"] == "major"
     assert state.get("debate")
     assert state["publication_ready"] is False
@@ -378,16 +430,16 @@ def test_one_missing_specialist_fails_closed_by_default(monkeypatch, tmp_path):
     _patch_llms(monkeypatch)
     import peerreviewagents.graph.review_graph as review_graph_mod
 
-    real_nodes = review_graph_mod.get_reviewer_nodes()
+    real_nodes = review_graph_mod.get_reviewer_nodes({"reviewer_panel": "condensed"})
 
     def failed(_state):
-        return {"errors": ["methodology reviewer failed: provider down"]}
+        return {"errors": ["scientific validity reviewer failed: provider down"]}
 
     monkeypatch.setattr(
         review_graph_mod,
         "get_reviewer_nodes",
-        lambda: [
-            (name, failed if name == "methodology" else node)
+        lambda _config=None: [
+            (name, failed if name == "scientific_validity" else node)
             for name, node in real_nodes
         ],
     )
@@ -408,8 +460,8 @@ def test_below_quorum_still_stops_before_synthesis(monkeypatch, tmp_path):
     _patch_llms(monkeypatch)
     import peerreviewagents.graph.review_graph as review_graph_mod
 
-    real_nodes = review_graph_mod.get_reviewer_nodes()
-    failed_names = {"methodology", "rigor", "data_analysis"}
+    real_nodes = review_graph_mod.get_reviewer_nodes({"reviewer_panel": "condensed"})
+    failed_names = {"scientific_validity", "data_analysis"}
 
     def failed(_state):
         return {"errors": ["reviewer failed: provider down"]}
@@ -417,7 +469,7 @@ def test_below_quorum_still_stops_before_synthesis(monkeypatch, tmp_path):
     monkeypatch.setattr(
         review_graph_mod,
         "get_reviewer_nodes",
-        lambda: [
+        lambda _config=None: [
             (name, failed if name in failed_names else node)
             for name, node in real_nodes
         ],
@@ -425,7 +477,7 @@ def test_below_quorum_still_stops_before_synthesis(monkeypatch, tmp_path):
 
     state = PeerReviewGraph(get_config(output_dir=str(tmp_path))).review(SAMPLE)
     assert state["panel_complete"] is False
-    assert len(state["reports"]) == len(REVIEWER_NAMES) - len(failed_names)
+    assert len(state["reports"]) == len(CONDENSED_REVIEWER_NAMES) - len(failed_names)
     assert "decision" not in state
     assert any("incomplete panel" in error for error in state["errors"])
 

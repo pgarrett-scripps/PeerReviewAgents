@@ -5,14 +5,17 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from .observability import AgentEvent, emit
 
-
 _NON_SEMANTIC_CONFIG = {
-    "run_id", "output_dir", "cache_dir", "checkpoint_dir", "resume",
+    "run_id",
+    "output_dir",
+    "cache_dir",
+    "checkpoint_dir",
+    "resume",
 }
 
 

@@ -51,8 +51,8 @@ def test_show_panel_shows_the_tag_split_and_the_rate(capsys):
         "models": {"reviewer": {"model": "anthropic/claude-haiku-4.5"}},
     })
     rows = {line.split()[0]: line for line in _panel_lines(capsys)[1:]}
-    assert "claude-haiku-4.5" in rows["reviewer_rigor"]
-    assert "$1/$5 per Mtok" in rows["reviewer_rigor"]
+    assert "claude-haiku-4.5" in rows["reviewer_data_analysis"]
+    assert "$1/$5 per Mtok" in rows["reviewer_data_analysis"]
     assert "claude-opus-5" in rows["editor"]
     assert "$5/$25 per Mtok" in rows["editor"]
     # The editor's call-site default effort is visible, not a mystery.

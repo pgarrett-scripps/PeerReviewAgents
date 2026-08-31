@@ -1,14 +1,14 @@
 """Corrections: challenging the review rather than the manuscript.
 
 A correction is anchored to a prior round like a revision, but nothing about
-the draft has changed — the claim is that a reviewer got something wrong. Two
+the draft has changed. The claim is that a reviewer got something wrong. Two
 things follow, and both are load-bearing:
 
 * The compliance auditor must not run. Against an identical draft it would
   correctly report every required revision as undone, which would push the
   verdict *down* for an author who was right.
 * Re-running one reviewer must still yield a whole-panel score. The reviewers
-  left alone are carried forward, so the aggregate is over eight assessments
+  left alone are carried forward, so the aggregate is over five assessments
   and not over the one agent that happened to re-run.
 """
 
@@ -29,13 +29,10 @@ from peerreviewagents.graph.review_graph import (
 )
 
 PANEL = [
-    ("methodology", 2.0, 4.0),
+    ("scientific_validity", 2.0, 4.0),
     ("data_analysis", 3.0, 4.0),
-    ("novelty", 4.0, 3.0),
-    ("clarity", 4.0, 5.0),
-    ("literature", 3.0, 4.0),
-    ("rigor", 2.0, 4.0),
-    ("reproducibility", 3.0, 3.0),
+    ("contribution_context", 4.0, 3.0),
+    ("reporting_reproducibility", 3.0, 3.0),
     ("ethics", 5.0, 5.0),
 ]
 
@@ -99,13 +96,13 @@ def test_correction_mode_is_recognised(tmp_path):
 # --- reviewer selection -----------------------------------------------------
 
 
-def test_full_panel_by_default():
+def test_condensed_panel_by_default():
     assert selected_reviewers(get_config()) == list(REVIEWER_NAMES)
 
 
 def test_subset_is_honoured(tmp_path):
-    cfg = _cfg(tmp_path, only_reviewers=["methodology"])
-    assert selected_reviewers(cfg) == ["methodology"]
+    cfg = _cfg(tmp_path, only_reviewers=["scientific_validity"])
+    assert selected_reviewers(cfg) == ["scientific_validity"]
 
 
 def test_unknown_reviewer_is_an_error_not_a_silent_drop(tmp_path):
@@ -117,7 +114,7 @@ def test_unknown_reviewer_is_an_error_not_a_silent_drop(tmp_path):
 
 def test_subset_without_a_prior_round_is_refused():
     """Without a prior round there is nothing to carry the others forward from."""
-    cfg = get_config(only_reviewers=["methodology"])
+    cfg = get_config(only_reviewers=["scientific_validity"])
     with pytest.raises(ValueError, match="requires revision_of"):
         selected_reviewers(cfg)
 
@@ -126,30 +123,30 @@ def test_subset_without_a_prior_round_is_refused():
 
 
 def test_untouched_reviewers_are_carried_forward(tmp_path):
-    cfg = _cfg(tmp_path, revision_mode="correction", only_reviewers=["methodology"])
+    cfg = _cfg(tmp_path, revision_mode="correction", only_reviewers=["scientific_validity"])
     carried = PeerReviewGraph(cfg)._carried_reports(_prior_record())
 
     names = sorted(r["reviewer"] for r in carried)
-    assert "methodology" not in names, "the re-running reviewer must not be carried"
+    assert "scientific_validity" not in names, "the re-running reviewer must not be carried"
     assert len(carried) == len(PANEL) - 1, "every other reviewer must be carried"
 
     # The panel the editor sees is the carried set plus the one that re-runs:
-    # eight assessments, not one.
+    # five assessments, not one.
     assert len(carried) + 1 == len(PANEL)
 
 
 def test_carried_reports_keep_their_scores(tmp_path):
-    cfg = _cfg(tmp_path, revision_mode="correction", only_reviewers=["methodology"])
+    cfg = _cfg(tmp_path, revision_mode="correction", only_reviewers=["scientific_validity"])
     carried = PeerReviewGraph(cfg)._carried_reports(_prior_record())
     by_name = {r["reviewer"]: r for r in carried}
     assert by_name["ethics"]["score"] == 5.0
     assert by_name["ethics"]["confidence"] == 5.0
-    assert by_name["rigor"]["weaknesses"] == ["a weakness"]
+    assert by_name["data_analysis"]["weaknesses"] == ["a weakness"]
 
 
 def test_carried_reports_carry_their_prose(tmp_path):
     """The digest concatenates bodies; a carried report needs a real one."""
-    cfg = _cfg(tmp_path, revision_mode="correction", only_reviewers=["methodology"])
+    cfg = _cfg(tmp_path, revision_mode="correction", only_reviewers=["scientific_validity"])
     carried = PeerReviewGraph(cfg)._carried_reports(_prior_record())
     body = next(r["body"] for r in carried if r["reviewer"] == "ethics")
     assert "The original ethics report." in body
@@ -160,7 +157,9 @@ def test_missing_prior_body_degrades_rather_than_failing(tmp_path):
     run_dir = _prior_dir(tmp_path)
     os.remove(os.path.join(run_dir, "review_ethics.md"))
     cfg = get_config(
-        revision_of=run_dir, revision_mode="correction", only_reviewers=["methodology"]
+        revision_of=run_dir,
+        revision_mode="correction",
+        only_reviewers=["scientific_validity"],
     )
     carried = PeerReviewGraph(cfg)._carried_reports(_prior_record())
     body = next(r["body"] for r in carried if r["reviewer"] == "ethics")
@@ -198,7 +197,7 @@ def test_correction_still_builds_a_graph_with_the_chosen_reviewer(tmp_path):
     from peerreviewagents.graph.review_graph import build_graph
 
     nodes = build_graph(
-        _cfg(tmp_path, revision_mode="correction", only_reviewers=["methodology"])
+        _cfg(tmp_path, revision_mode="correction", only_reviewers=["scientific_validity"])
     ).nodes
-    assert "reviewer_methodology" in nodes
+    assert "reviewer_scientific_validity" in nodes
     assert "reviewer_ethics" not in nodes, "unselected reviewers must not run"

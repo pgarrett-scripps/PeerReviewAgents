@@ -25,8 +25,16 @@ def make_desk_route(targets: list[str]):
     return route
 
 
-def should_continue_debate(state: ReviewState) -> str:
-    """After the skeptic closes a round, loop or move to the editor."""
+def should_continue_debate(
+    state: ReviewState, final_target: str = "debate_synthesizer",
+) -> list[str] | str:
+    """After the join closes a round, fan out another round or move on.
+
+    Runs from the debate join node, which has already incremented
+    ``debate_round`` — both debaters of the next round launch in parallel.
+    """
     rounds_done = state.get("debate_round", 0)
     max_rounds = state["config"].get("max_debate_rounds", 2)
-    return "advocate" if rounds_done < max_rounds else "editor"
+    if rounds_done < max_rounds:
+        return ["advocate", "skeptic"]
+    return final_target

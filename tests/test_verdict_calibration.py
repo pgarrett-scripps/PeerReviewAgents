@@ -16,7 +16,7 @@ selection it already survived.
 
 from __future__ import annotations
 
-from peerreviewagents.agents.synthesis import meta_reviewer
+from peerreviewagents.agents.synthesis import debate_synthesizer
 from peerreviewagents.journals import JournalProfile
 
 
@@ -48,17 +48,19 @@ def test_a_profile_without_an_acceptance_rate_says_nothing_about_one():
     assert "base rate" not in text.lower()
 
 
-def test_the_meta_reviewer_must_ground_a_verdict_harsher_than_the_panel():
+def test_the_synthesizer_does_not_decide_and_does_not_double_count():
     import inspect
 
-    body = inspect.getsource(meta_reviewer)
-    assert "harsher than every reviewer" in body
+    body = inspect.getsource(debate_synthesizer)
+    assert "do not recommend a" in body and "verdict" in body
+    assert "not independent corroboration" in body
     # And specifically that venue selectivity is not the justification.
-    assert "selectivity is not a" in body
+    assert "selectivity is not a fresh argument" in body
+    assert "words or fewer" in body
 
 
 def test_the_panel_is_named_as_already_venue_aware():
     """The double-count in one sentence: the reviewers were handed the same
     venue description, so applying it again at synthesis is not new evidence."""
     import inspect
-    assert "given the same" in inspect.getsource(meta_reviewer)
+    assert "given the same" in inspect.getsource(debate_synthesizer)

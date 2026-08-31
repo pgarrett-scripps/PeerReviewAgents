@@ -6,7 +6,7 @@ Strictness is the evaluative analogue of the target-journal mechanism in
 shared cached prefix by
 :func:`peerreviewagents.agents.utils.agent_utils.context_block`. That prefix
 is consumed by exactly the evaluative agents — the reviewers, the
-meta-reviewer, and the editor — so the dial changes how the manuscript is
+debate synthesizer, and the editor — so the dial changes how the manuscript is
 *judged* without touching the author-rebuttal, the debaters, or the journal
 recommender.
 

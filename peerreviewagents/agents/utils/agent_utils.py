@@ -594,7 +594,7 @@ def _conversion_notice(state: ReviewState) -> str:
 def manuscript_block(state: ReviewState) -> str:
     """Return the cache-eligible manuscript block used by every agent that
     sends the manuscript text. Centralizing the wrapper format keeps the
-    block byte-identical across reviewers, debaters, meta-reviewer,
+    block byte-identical across reviewers, debaters, the synthesizer,
     author rebuttal, and editor so they all share the same provider-side
     cache entry.
 
@@ -693,11 +693,44 @@ def references_block(state: ReviewState) -> str:
     )
 
 
+def unreliable_reference_parse(state: ReviewState) -> str:
+    """Explain a demonstrably corrupt typed bibliography, or return ``""``.
+
+    This is deliberately narrow. A missing typed list is not enough: Markdown,
+    LaTeX and older converters legitimately provide no block model, while the
+    bibliography may still be readable in the manuscript text. The signal here
+    is a converter claiming to have isolated a substantial reference section
+    while typing only a handful of enormous "entries". In the live Jets PDF it
+    isolated 6,779 words as references but emitted four appendix-sized entries.
+    That is evidence about conversion, never evidence that the authors omitted
+    references.
+    """
+    ingest = state.get("ingest") or {}
+    counts = ((ingest.get("prose") or {}).get("counts") or {})
+    reference_words = counts.get("reference_words")
+    if not isinstance(reference_words, (int, float)) or reference_words < 500:
+        return ""
+
+    entries = state.get("references") or []
+    typed_count = len(entries)
+    if typed_count == 0:
+        return ""
+    words_per_entry = float(reference_words) / typed_count
+    if typed_count <= 10 and words_per_entry >= 250:
+        return (
+            "the PDF converter isolated approximately "
+            f"{int(reference_words):,} reference-section words but typed only "
+            f"{typed_count} entries (about {words_per_entry:,.0f} words per "
+            "entry), indicating that appendix/bibliography blocks were merged"
+        )
+    return ""
+
+
 def directives_block(state: ReviewState) -> str | None:
     """Run-wide framing directives only: journal + article-type + strictness,
     WITHOUT the manuscript text.
 
-    Used by synthesis-stage agents (meta-reviewer, editor) that judge the
+    Used by synthesis-stage agents (debate synthesizer, editor) that judge the
     distilled review/debate signal rather than re-reading the primary text:
     they still need to know the venue's bar and the configured strictness
     ("the context above" their system prompts reference), but feeding them
@@ -747,7 +780,7 @@ def context_block(state: ReviewState) -> list[str]:
 def score_summary(state: ReviewState) -> str:
     """Confidence-weighted reviewer score + verdict distribution.
 
-    Pipeline stages downstream of the reviewers (meta-reviewer, author
+    Pipeline stages downstream of the reviewers (debate synthesizer, author
     rebuttal, editor) work entirely in prose, which lets their verdicts
     drift from the panel's actual numbers. Injecting this single line
     into their prompts anchors the decision in the aggregated signal —
@@ -830,9 +863,12 @@ def _missing_reviewers_line(state: ReviewState, reports: list) -> str:
     the round would be worse — but the stage weighing it has to know, which is
     the difference between a smaller sample and a misrepresented one.
     """
-    from ...agents.reviewers import REVIEWER_NAMES
+    from ...agents.reviewers import get_reviewer_nodes
 
-    expected = list(state["config"].get("only_reviewers") or REVIEWER_NAMES)
+    expected = list(
+        state["config"].get("only_reviewers")
+        or (name for name, _node in get_reviewer_nodes(state["config"]))
+    )
     got = {r["reviewer"] for r in reports}
     missing = [name for name in expected if name not in got]
     if not missing:

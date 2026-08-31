@@ -18,14 +18,16 @@ for the model.
 
 from __future__ import annotations
 
+import pytest
 from test_pipeline import _patch_llms
 
 from peerreviewagents.agents.auditors import citation_integrity
-from peerreviewagents.agents.reviewers import literature
+from peerreviewagents.agents.reviewers import contribution_context
 from peerreviewagents.agents.utils.agent_utils import (
     context_block,
     manuscript_block,
     references_block,
+    unreliable_reference_parse,
 )
 
 ENTRIES = [
@@ -80,6 +82,29 @@ def test_a_pathological_bibliography_is_capped_and_says_so():
     block = references_block(_state(references=many))
     assert "=== REFERENCE LIST (1200 entries) ===" in block
     assert "200 further entries omitted" in block
+
+
+def test_merged_bibliography_blocks_are_detected_as_an_ingest_failure():
+    state = _state(
+        references=[{"label": str(i), "raw": "appendix fragment"} for i in range(4)],
+        ingest={
+            "prose": {
+                "counts": {"reference_words": 6779, "reference_entries": 4},
+            },
+        },
+    )
+    assert "typed only 4 entries" in unreliable_reference_parse(state)
+
+
+def test_normal_typed_bibliography_is_not_marked_unreliable():
+    state = _state(
+        ingest={
+            "prose": {
+                "counts": {"reference_words": 80, "reference_entries": 2},
+            },
+        },
+    )
+    assert unreliable_reference_parse(state) == ""
 
 
 # --- who receives it ----------------------------------------------------------
@@ -138,11 +163,36 @@ def test_the_citation_auditor_is_given_the_entries(monkeypatch):
     assert "never on its own evidence" in seen["user"]
 
 
-def test_the_literature_reviewer_is_given_the_entries(monkeypatch):
+def test_citation_audit_skips_a_demonstrably_corrupt_typed_bibliography(monkeypatch):
+    from peerreviewagents.agents.auditors import base
+
+    state = _state(
+        references=[{"label": str(i), "raw": "appendix fragment"} for i in range(4)],
+        ingest={
+            "prose": {
+                "counts": {"reference_words": 6779, "reference_entries": 4},
+            },
+        },
+    )
+    monkeypatch.setattr(
+        base,
+        "make_llm",
+        lambda *_a, **_k: pytest.fail("a corrupt bibliography must not reach an LLM"),
+    )
+
+    out = citation_integrity.node(state)
+
+    assert out["total_cost"] == 0.0
+    body = out["audits"][0]["body"]
+    assert "Citation Audit Not Performed" in body
+    assert "ingest limitation, not a manuscript finding" in body
+
+
+def test_the_contribution_reviewer_is_given_the_entries(monkeypatch):
     from peerreviewagents.agents.reviewers import base
 
     state = _state()
-    seen = _captured_prefix(monkeypatch, base, literature.node, state)
+    seen = _captured_prefix(monkeypatch, base, contribution_context.node, state)
     assert seen["prefix"][: len(context_block(state))] == context_block(state)
     assert seen["prefix"][-1] == references_block(state)
 
@@ -151,10 +201,10 @@ def test_the_shared_prefix_the_other_agents_send_is_untouched(monkeypatch):
     """The manuscript block is one provider-side cache entry across the whole
     fan-out. Mixing the reference list into it would fragment that entry for
     the benefit of two agents."""
-    from peerreviewagents.agents.reviewers import base, rigor
+    from peerreviewagents.agents.reviewers import base, scientific_validity
 
     state = _state()
-    seen = _captured_prefix(monkeypatch, base, rigor.node, state)
+    seen = _captured_prefix(monkeypatch, base, scientific_validity.node, state)
     assert seen["prefix"] == context_block(state)
     assert seen["prefix"][0] == manuscript_block(state)
     assert "REFERENCE LIST" not in "".join(seen["prefix"])

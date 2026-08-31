@@ -18,8 +18,9 @@ import pytest
 
 from peerreviewagents.agents.editor import editor_in_chief
 from peerreviewagents.agents.schemas import EditorDecisionOutput
-from peerreviewagents.agents.synthesis import meta_reviewer
+from peerreviewagents.agents.synthesis import debate_synthesizer
 from peerreviewagents.agents.utils.agent_utils import RunResult
+from peerreviewagents.agents.utils.structured import MarkdownResult
 from peerreviewagents.reports import write_reports
 
 
@@ -42,30 +43,120 @@ def _panel_state(**extra):
     return state
 
 
-# --- meta-reviewer failure ---------------------------------------------------
+# --- debate-synthesizer failure ----------------------------------------------
 
 
-def test_meta_failure_emits_no_recommendation(monkeypatch):
-    monkeypatch.setattr(meta_reviewer, "make_llm", lambda config, **_k: object())
+def test_synthesizer_failure_emits_marker_not_content(monkeypatch):
+    monkeypatch.setattr(debate_synthesizer, "make_llm", lambda config, **_k: object())
 
     def _boom(*_a, **_k):
         raise RuntimeError("rate limited")
 
-    monkeypatch.setattr(meta_reviewer, "invoke_markdown", _boom)
+    monkeypatch.setattr(debate_synthesizer, "invoke_markdown", _boom)
 
-    out = meta_reviewer.node(_panel_state())
-    assert out["draft_recommendation"] == ""
-    assert "did not run" in out["meta_review"]
-    assert "rate limited" in out["meta_review"]
-    assert any("meta_reviewer failed" in e for e in out["errors"])
+    out = debate_synthesizer.node(_panel_state())
+    assert "did not run" in out["debate_synthesis"]
+    assert "rate limited" in out["debate_synthesis"]
+    assert any("debate_synthesizer failed" in e for e in out["errors"])
 
 
-def test_editor_prompt_contains_primary_reports_without_meta_recommendation():
-    state = _panel_state(draft_recommendation="", meta_review="(the meta-reviewer did not run: x)")
-    user = editor_in_chief._first_round_user(state)
+def test_editor_prompt_contains_primary_reports():
+    user = editor_in_chief._first_round_user(_panel_state())
     assert "Specialist reports (primary panel evidence)" in user
     assert "# Methodology" in user
-    assert "meta-reviewer" not in user
+    assert "no debate was run" in user
+
+
+def test_editor_receives_synthesis_not_the_raw_transcript():
+    state = _panel_state(
+        debate=[{"role": "advocate", "round": 1, "content": "RAW TURN TEXT."}],
+        debate_synthesis="# Debate Synthesis\n\nThe theorem objection stands unresolved.",
+    )
+    user = editor_in_chief._first_round_user(state)
+    assert "Debate synthesis" in user
+    assert "theorem objection stands unresolved" in user
+    assert "RAW TURN TEXT" not in user
+    assert "no panel average is used" in user
+
+
+def test_editor_falls_back_to_the_transcript_when_synthesis_failed():
+    state = _panel_state(
+        debate=[{"role": "advocate", "round": 1, "content": "RAW TURN TEXT."}],
+        debate_synthesis="(the debate synthesizer did not run: rate limited)",
+    )
+    user = editor_in_chief._first_round_user(state)
+    assert "raw transcript" in user
+    assert "RAW TURN TEXT" in user
+
+
+def test_editor_forbids_turning_ingest_limitations_into_author_revisions():
+    user = editor_in_chief._first_round_user(_panel_state())
+    assert "INGEST LIMITATION" in user
+    assert "not an author-facing criticism" in user
+
+
+def test_synthesizer_reads_the_panel_and_transcript_under_the_word_budget(monkeypatch):
+    seen = {}
+    state = _panel_state(
+        debate=[
+            {"role": "skeptic", "round": 1, "content": "The proof objection."},
+            {"role": "advocate", "round": 1, "content": "The theorem holds."},
+        ],
+    )
+    monkeypatch.setattr(
+        debate_synthesizer, "make_llm", lambda *_a, **_k: object(),
+    )
+
+    def capture(_llm, _config, _system, user, **_kwargs):
+        seen["user"] = user
+        from peerreviewagents.agents.utils.structured import MarkdownResult
+        return MarkdownResult("## Issue 1\n\nUnresolved.", 0.0)
+
+    monkeypatch.setattr(debate_synthesizer, "invoke_markdown", capture)
+    out = debate_synthesizer.node(state)
+
+    assert "# Methodology" in seen["user"]
+    assert "The theorem holds." in seen["user"]
+    assert "The proof objection." in seen["user"]
+    assert "1200 words or fewer" in seen["user"]
+    assert "Unresolved." in out["debate_synthesis"]
+
+
+def test_minor_verdict_cannot_require_new_experiments_or_proofs():
+    issue = editor_in_chief._decision_semantic_issue(
+        "minor",
+        ["Report mean and standard deviation over at least 20 independent seeds."],
+    )
+    assert "called the decision minor" in issue
+    assert editor_in_chief._decision_semantic_issue(
+        "minor", ["Clarify the notation in Theorem 3."],
+    ) == ""
+    assert editor_in_chief._decision_semantic_issue(
+        "minor", ["Provide a detailed derivation of Equation 24."],
+    )
+
+
+def test_minor_reporting_fix_that_mentions_a_study_is_not_major_work():
+    assert editor_in_chief._decision_semantic_issue(
+        "minor",
+        ["Add an explicit ethics statement for the human study."],
+    ) == ""
+    assert editor_in_chief._decision_semantic_issue(
+        "minor",
+        ["Add an additional experiment comparing the two baselines."],
+    )
+
+
+def test_editor_recovers_explicit_verdict_after_provider_boolean_prefix():
+    letter = (
+        "false VERDICT: minor\n\n## Summary of Evaluation\n\n"
+        "The evidence supports the central claims after reporting corrections.\n\n"
+        "## Required Revisions\n\n1. Clarify the evaluation protocol."
+    )
+    parsed = editor_in_chief._editor_from_markdown(letter)
+    assert parsed is not None
+    assert parsed[0] == "minor"
+    assert parsed[1] == ["Clarify the evaluation protocol."]
 
 
 # --- editor refuses to repair a non-verdict ----------------------------------
@@ -89,7 +180,7 @@ def test_editor_does_not_adopt_the_draft_for_a_nonverdict(monkeypatch):
         lambda *_a, **_k: RunResult(text=prose, cost=0.0),
     )
 
-    out = editor_in_chief.node(_panel_state(draft_recommendation="major"))
+    out = editor_in_chief.node(_panel_state())
     assert out["decision"] == ""
     assert any("editor failed" in e for e in out["errors"])
     # The letter body is real editor prose and stays on the record.
@@ -103,7 +194,7 @@ def test_editor_exception_still_means_no_decision(monkeypatch):
         raise RuntimeError("overloaded")
 
     monkeypatch.setattr(editor_in_chief, "run_agent", _boom)
-    out = editor_in_chief.node(_panel_state(draft_recommendation="major"))
+    out = editor_in_chief.node(_panel_state())
     assert out["decision"] == ""
 
 
@@ -177,7 +268,7 @@ def _crashed_state(tmp_path):
                 "body": "# Methodology\n\nFine.",
             }
         ],
-        "meta_review": "# Meta review",
+        "debate_synthesis": "# Debate synthesis",
     }
 
 
@@ -202,7 +293,9 @@ def test_web_runner_salvages_partial_reports_on_pipeline_error(tmp_path):
     assert job.report_dir, "completed reviewer work should survive the crash"
     run_dir = Path(job.report_dir)
     assert (run_dir / "review_methodology.md").is_file()
-    assert not (run_dir / "meta_review.md").exists()
+    # Completed synthesis prose is real work and survives the crash, like
+    # the reviewer reports; only the verdict may not be fabricated.
+    assert (run_dir / "debate_synthesis.md").is_file()
     summary = (run_dir / "summary.md").read_text(encoding="utf-8")
     assert "FAILED" in summary
     assert "boom" in summary
@@ -402,3 +495,31 @@ def test_editor_prose_path_rejects_a_letter_that_is_a_transcript(monkeypatch):
     assert out["decision"] == "major"
     assert "Merged Review" not in out["decision_letter"]
     assert out["required_revisions"] == ["Rerun the analysis with the correction."]
+
+
+def test_editor_retry_does_not_echo_a_contaminated_attempt(monkeypatch):
+    """A sub-cap transcript must be discarded, not quoted into the retry."""
+    contaminated = (
+        "Accept\n\nA purported letter.\n\n"
+        "=== Summary of reviewer scores ===\n" + ("panel material " * 300)
+    )
+    good = (
+        "# Decision Letter\n\nVERDICT: major\n\n"
+        "## Summary of Evaluation\n\nThe evidence does not yet support the "
+        "central claim, and the missing control could change the conclusion.\n\n"
+        "## Required Revisions\n\n1. Add the missing control.\n"
+    )
+    prompts = []
+    answers = iter([contaminated, good])
+
+    def fake_run_agent(_llm, _system, user, *_args, **_kwargs):
+        prompts.append(user)
+        return RunResult(text=next(answers), cost=0.0)
+
+    monkeypatch.setattr(editor_in_chief, "make_llm", lambda config, **_k: object())
+    monkeypatch.setattr(editor_in_chief, "run_agent", fake_run_agent)
+
+    out = editor_in_chief.node(_panel_state())
+    assert out["decision"] == "major"
+    assert contaminated not in prompts[1]
+    assert "Summary of reviewer scores" not in out["decision_letter"]

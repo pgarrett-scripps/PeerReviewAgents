@@ -36,7 +36,14 @@ from ..ingest.loader import require_readable
 from .corpus import load_corpus
 from .integrity import inspect_run_artifacts
 from .runner import existing_keys
-from .schema import RunRecord, append_jsonl, build_manifest, verify_protocol
+from .schema import (
+    RunRecord,
+    append_jsonl,
+    build_manifest,
+    require_source_fingerprint,
+    source_fingerprint,
+    verify_protocol,
+)
 
 _VALID_VERDICTS = ("accept", "minor", "major", "reject")
 _DECISION_FOR_SCORE = {1: "reject", 2: "reject", 3: "major", 4: "minor", 5: "accept"}
@@ -221,6 +228,7 @@ def run_baseline_batch(
 
     corpus_manifest = verify_corpus_manifest(corpus_path, warn_missing=True)
     verify_protocol(corpus_path, config)
+    batch_source = source_fingerprint()
     corpus_sha256 = corpus_manifest.get("corpus_sha256") if corpus_manifest else ""
     corpus = load_corpus(corpus_path)
     if only:
@@ -252,10 +260,16 @@ def run_baseline_batch(
 
     performed = 0
     for item, rep in todo:
+        require_source_fingerprint(
+            batch_source, context=f"before baseline {item.id} repeat {rep}",
+        )
         if verbose:
             print(f"\n→ {item.id} repeat {rep}: {item.title[:70]}")
         record = single_llm_review(
             item, rep, config, leakage_note, corpus_sha256=corpus_sha256,
+        )
+        require_source_fingerprint(
+            batch_source, context=f"after baseline {item.id} repeat {rep}",
         )
         append_jsonl(runs_path, record.to_json())
         performed += 1

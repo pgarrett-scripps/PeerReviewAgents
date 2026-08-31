@@ -215,7 +215,7 @@ def make_reviewer_node(
     run time — currently only the clarity reviewer uses it, to receive the
     deterministic text statistics. It is appended to the *mandate*, which
     lives in the user turn, never in ``cached_prefix``: the prefix is the
-    shared manuscript block that all eight reviewers hit, and varying it per
+    shared manuscript block that all five reviewers hit, and varying it per
     reviewer would split one cache entry into eight.
 
     ``needs_references`` opts a reviewer into the converter's typed
@@ -225,7 +225,7 @@ def make_reviewer_node(
     the literature reviewer alone, whose lane is that list.
 
     The returned node runs the same way in every round: the graph wires the
-    same eight reviewers whether or not a prior round exists, and none of
+    same five reviewers whether or not a prior round exists, and none of
     them is told which it is.
     """
     node_name = f"reviewer_{name}"

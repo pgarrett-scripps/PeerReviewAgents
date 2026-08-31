@@ -149,7 +149,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=range(1, 6),
         metavar="{1-5}",
         help="How harsh the panel is: 1=very lenient, 3=balanced (default), "
-             "5=very strict. Calibrates the reviewer, meta-reviewer, and "
+             "5=very strict. Calibrates the reviewer, debate-synthesizer, and "
              "editor.",
     )
     p.add_argument(

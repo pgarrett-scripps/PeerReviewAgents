@@ -17,6 +17,7 @@ from ..agents.debate import advocate, skeptic
 from ..agents.editor import desk_screen, editor_in_chief
 from ..agents.journal_recommender import recommender as journal_recommender
 from ..agents.reviewers import get_reviewer_nodes
+from ..agents.synthesis import debate_synthesizer
 from ..agents.utils.agent_states import ReviewState
 from ..article_types import article_type_block, normalize_article_type
 from ..checkpoints import checkpointed
@@ -55,16 +56,18 @@ def selected_reviewers(config: dict) -> list[str]:
     that ran five reviewers when it was asked for six is not something the
     output makes obvious.
     """
-    from ..agents.reviewers import REVIEWER_NAMES
+    from ..agents.reviewers import get_reviewer_nodes
 
+    registry = get_reviewer_nodes(config)
+    available = [name for name, _ in registry]
     chosen = [str(n).strip() for n in (config.get("only_reviewers") or []) if str(n).strip()]
     if not chosen:
-        return list(REVIEWER_NAMES)
-    unknown = [n for n in chosen if n not in REVIEWER_NAMES]
+        return available
+    unknown = [n for n in chosen if n not in available]
     if unknown:
         raise ValueError(
             f"only_reviewers names no such reviewer: {', '.join(sorted(unknown))}. "
-            f"Available: {', '.join(REVIEWER_NAMES)}."
+            f"Available: {', '.join(available)}."
         )
     if not config.get("revision_of"):
         raise ValueError(
@@ -89,7 +92,8 @@ def build_graph(config: dict):
     verify_response = revision and bool(config.get("author_statement_path"))
 
     chosen = set(selected_reviewers(config))
-    reviewer_nodes = [(n, fn) for n, fn in get_reviewer_nodes() if n in chosen]
+    registry = get_reviewer_nodes(config)
+    reviewer_nodes = [(n, fn) for n, fn in registry if n in chosen]
     for name, fn in reviewer_nodes:
         add_node(f"reviewer_{name}", fn)
 
@@ -110,14 +114,20 @@ def build_graph(config: dict):
         add_node(f"audit_{name}", fn)
 
     # The advocate/skeptic debate is on by default; `enable_debate=False`
-    # sends the completed panel straight to the editor.
+    # sends the completed panel straight to the editor (and skips the debate
+    # synthesizer, which would have nothing to condense). The two debaters
+    # run in PARALLEL each round and meet at a join node that advances the
+    # round counter — see agents/debate/base.py for why neither debater may
+    # advance it itself.
     debate_enabled = bool(config.get("enable_debate", True))
     if debate_enabled:
         add_node("advocate", advocate.node)
         add_node("skeptic", skeptic.node)
-    # One synthesis layer. The editor reads the primary reports, debate and
-    # audits directly; no intermediate model can omit a finding while
-    # compressing the panel for it.
+        add_node("debate_synthesizer", debate_synthesizer.node)
+    # The editor reads the full specialist reports and audits directly, plus
+    # the synthesizer's condensed account of the debate — deliberately not
+    # the raw multi-round transcript, which is published but would grow the
+    # editor's context with every round.
     add_node("editor", editor_in_chief.node)
     # Journal recommender runs after the editor so it can condition its
     # venue suggestions on the final accept/minor/major/reject verdict
@@ -215,7 +225,7 @@ def build_graph(config: dict):
         for target in fan_out:
             g.add_edge("response_verifier", target)
 
-    reviewer_sink = "advocate" if debate_enabled else "editor"
+    debate_entry = ["advocate", "skeptic"] if debate_enabled else ["editor"]
     # True when nothing precedes the fan-out, so START feeds it directly.
     fan_out_from_start = not desk_screen_enabled and not verify_response
     for name, _ in reviewer_nodes:
@@ -232,15 +242,29 @@ def build_graph(config: dict):
 
     g.add_conditional_edges(
         "panel_gate",
-        lambda state: reviewer_sink if state.get("panel_complete") else END,
-        [reviewer_sink, END],
+        lambda state: list(debate_entry) if state.get("panel_complete") else END,
+        [*debate_entry, END],
     )
 
-    # Debate loop: advocate -> skeptic -> (loop | editor). Skipped
-    # entirely when debate is ablated.
+    # Debate rounds: (advocate ∥ skeptic) -> join -> (next round | synthesizer).
+    # The join is the barrier where the round closes: it runs once after both
+    # debaters return, advances the counter, and either fans the next round
+    # out or hands the transcript to the synthesizer. Skipped entirely when
+    # debate is ablated.
     if debate_enabled:
-        g.add_edge("advocate", "skeptic")
-        g.add_conditional_edges("skeptic", should_continue_debate, ["advocate", "editor"])
+
+        def debate_join(state: ReviewState) -> dict:
+            return {"debate_round": state.get("debate_round", 0) + 1}
+
+        g.add_node("debate_join", debate_join)
+        g.add_edge("advocate", "debate_join")
+        g.add_edge("skeptic", "debate_join")
+        g.add_conditional_edges(
+            "debate_join",
+            lambda state: should_continue_debate(state, "debate_synthesizer"),
+            ["advocate", "skeptic", "debate_synthesizer"],
+        )
+        g.add_edge("debate_synthesizer", "editor")
 
     def finalize(state: ReviewState) -> dict:
         ready = bool(state.get("panel_complete") and state.get("decision"))
@@ -318,6 +342,7 @@ class PeerReviewGraph:
             audits=[],
             debate=[],
             debate_round=0,
+            debate_synthesis="",
             errors=[],
             total_cost=0.0,
         )
@@ -326,7 +351,7 @@ class PeerReviewGraph:
         """Prior reports for the reviewers that are not re-running this round.
 
         With ``only_reviewers`` set, the panel that runs is a subset — but the
-        panel that was *assessed* is still all eight. Seeding the state with
+        panel that was *assessed* is still the complete selected panel. Seeding the state with
         the untouched reviewers' earlier reports is what keeps the weighted
         score, the debate digest and the editor's view over the whole panel
         instead of over whichever agent happened to re-run. Without this a

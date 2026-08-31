@@ -35,7 +35,7 @@ def _state(**over):
         "minor_suggestions": ["Define WidgetNet on first use."],
         "reports": [
             {
-                "reviewer": "methodology",
+                "reviewer": "scientific_validity",
                 "score": 3,
                 "confidence": 4,
                 "weaknesses": ["Only a single production cluster is used."],
@@ -43,7 +43,7 @@ def _state(**over):
                 "body": "",
             },
             {
-                "reviewer": "rigor",
+                "reviewer": "data_analysis",
                 "score": 2,
                 "confidence": 3,
                 "weaknesses": ["No random seed is reported for training."],
@@ -63,7 +63,7 @@ def test_build_assigns_stable_ids():
     rec = rounds.build_from_state(_state(), job_id="20260801-x")
     assert rec.round == 1
     assert [r.id for r in rec.required_revisions] == ["R1-01", "R1-02"]
-    assert [w.id for w in rec.reviewer_reports[0].weaknesses] == ["methodology-1"]
+    assert [w.id for w in rec.reviewer_reports[0].weaknesses] == ["scientific_validity-1"]
 
 
 def test_weighted_score_matches_confidence_weighting():
@@ -85,7 +85,7 @@ def test_round_increments_from_prior():
 def test_required_revision_attributed_to_its_reviewer():
     rec = rounds.build_from_state(_state(), job_id="j")
     seed_item = next(r for r in rec.required_revisions if "seed" in r.text)
-    assert seed_item.source_reviewer == "rigor"
+    assert seed_item.source_reviewer == "data_analysis"
 
 
 def test_attribution_left_empty_when_nothing_matches():
@@ -248,7 +248,7 @@ def _null_score_state():
     state = _state()
     state["reports"] = state["reports"] + [
         {
-            "reviewer": "data_analysis",
+            "reviewer": "ethics",
             "score": None,
             "not_applicable_reason": "No quantitative analysis in this paper.",
             "confidence": 5,
@@ -262,15 +262,15 @@ def _null_score_state():
 
 def test_null_score_survives_build_and_reload(tmp_path):
     rec = rounds.build_from_state(_null_score_state(), job_id="j")
-    assert rec.report_for("data_analysis").score is None
+    assert rec.report_for("ethics").score is None
     # The abstention leaves the weighted mean entirely — numerator and
     # denominator both.
     assert rec.weighted_score == pytest.approx(18 / 7, abs=1e-3)
 
     rounds.save(rec, str(tmp_path))
     loaded = rounds.load(str(tmp_path))
-    assert loaded.report_for("data_analysis").score is None
-    assert loaded.report_for("methodology").score == 3.0
+    assert loaded.report_for("ethics").score is None
+    assert loaded.report_for("scientific_validity").score == 3.0
 
 
 def test_write_reports_survives_a_null_score_panel(tmp_path):
@@ -283,7 +283,7 @@ def test_write_reports_survives_a_null_score_panel(tmp_path):
     run_dir = write_reports(state)
 
     loaded = rounds.load(run_dir)
-    assert loaded.report_for("data_analysis").score is None
+    assert loaded.report_for("ethics").score is None
     assert not state["errors"]
 
 
@@ -361,7 +361,7 @@ def test_future_record_fields_do_not_break_the_load(tmp_path):
 
     loaded = rounds.RoundRecord.from_dict(raw)
     assert loaded.required_revisions[0].id == "R1-01"
-    assert loaded.reviewer_reports[0].weaknesses[0].id == "methodology-1"
+    assert loaded.reviewer_reports[0].weaknesses[0].id == "scientific_validity-1"
 
 
 def test_carried_reports_compare_membership_not_size():
@@ -373,12 +373,13 @@ def test_carried_reports_compare_membership_not_size():
     """
     from peerreviewagents.graph.review_graph import PeerReviewGraph
 
-    prior = rounds.build_from_state(_state(), job_id="j1")  # methodology + rigor
+    prior = rounds.build_from_state(_state(), job_id="j1")  # sci-validity + data-analysis
     graph = PeerReviewGraph(get_config(
-        revision_of="j1", only_reviewers=["methodology", "clarity"],
+        revision_of="j1",
+        only_reviewers=["scientific_validity", "ethics"],
     ))
     carried = graph._carried_reports(prior)
-    assert [r["reviewer"] for r in carried] == ["rigor"]
+    assert [r["reviewer"] for r in carried] == ["data_analysis"]
 
 
 def test_missing_record_names_the_problem(tmp_path):
@@ -426,7 +427,7 @@ def test_required_revisions_block_lists_ids():
     rec = rounds.build_from_state(_state(), job_id="j")
     block = rec.required_revisions_block()
     assert "[R1-01]" in block and "[R1-02]" in block
-    assert "(raised by rigor)" in block
+    assert "(raised by data_analysis)" in block
 
 
 # --- the optional documents around the manuscript ----------------------------
@@ -483,10 +484,56 @@ def test_first_round_graph_has_one_synthesis_layer():
     assert "audit_revision_compliance" not in nodes
     assert "response_verifier" not in nodes
     assert "author_rebuttal" not in nodes
-    assert "meta_reviewer" not in nodes
     assert "gap_finder" not in nodes
+    assert "debate_synthesizer" in nodes
     assert "editor" in nodes
     assert not is_revision(get_config())
+
+
+def test_debate_rounds_are_parallel_with_a_join():
+    graph = build_graph(get_config(max_debate_rounds=2))
+    view = graph.get_graph()
+    nodes = set(view.nodes)
+    assert {"advocate", "skeptic", "debate_join", "debate_synthesizer"} <= nodes
+
+    edges = {(edge.source, edge.target) for edge in view.edges}
+    # Both debaters are entered from the panel gate in parallel, meet at the
+    # join, and the join either fans the next round out or hands off to the
+    # synthesizer — there is no advocate -> skeptic edge anywhere.
+    assert ("panel_gate", "advocate") in edges
+    assert ("panel_gate", "skeptic") in edges
+    assert ("advocate", "debate_join") in edges
+    assert ("skeptic", "debate_join") in edges
+    assert ("advocate", "skeptic") not in edges
+    assert ("skeptic", "advocate") not in edges
+    assert ("debate_join", "advocate") in edges
+    assert ("debate_join", "skeptic") in edges
+    assert ("debate_join", "debate_synthesizer") in edges
+    assert ("debate_synthesizer", "editor") in edges
+
+
+def test_the_panel_is_the_five_condensed_specialists():
+    graph = build_graph(get_config())
+    nodes = set(graph.get_graph().nodes)
+
+    assert {
+        "reviewer_scientific_validity",
+        "reviewer_data_analysis",
+        "reviewer_contribution_context",
+        "reviewer_reporting_reproducibility",
+        "reviewer_ethics",
+    } <= nodes
+    assert "reviewer_methodology" not in nodes
+    assert "reviewer_rigor" not in nodes
+    assert "reviewer_novelty" not in nodes
+    assert "reviewer_literature" not in nodes
+    assert "reviewer_clarity" not in nodes
+    assert "reviewer_reproducibility" not in nodes
+    assert "debate_synthesizer" in nodes
+    assert "advocate" in nodes
+    assert "skeptic" in nodes
+    assert "audit_methods_completeness" in nodes
+    assert "audit_citation_integrity" in nodes
 
 
 def test_revision_adds_the_compliance_auditor():
@@ -504,8 +551,8 @@ def test_verifier_precedes_the_panel():
     graph = build_graph(get_config(revision_of="j1", author_statement_path="l.md"))
     edges = graph.get_graph().edges
     targets = {e.target for e in edges if e.source == "response_verifier"}
-    assert "reviewer_methodology" in targets
-    sources = {e.source for e in edges if e.target == "reviewer_methodology"}
+    assert "reviewer_scientific_validity" in targets
+    sources = {e.source for e in edges if e.target == "reviewer_scientific_validity"}
     assert sources == {"response_verifier"}
 
 

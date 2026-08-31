@@ -478,78 +478,10 @@ def test_the_desk_node_is_wired_in_for_the_gate_alone():
     assert desk_screen.node_enabled({**bare, "conversion_gate": "off"}) is False
 
 
-# --- the one statistic that reaches a prompt --------------------------------
-
-
-def _clarity_note(text, sections=None, caveman=None):
-    from peerreviewagents.agents.reviewers import clarity
-
-    return clarity._stats_note({"ingest": _ingest(text, sections, caveman)})
-
-
-def test_clarity_receives_the_numbers_it_can_act_on():
-    note = _clarity_note(_CLEAN)
-    assert "median sentence length" in note
-    assert "passive constructions" in note
-
-
-def test_clarity_is_not_given_the_numbers_that_are_not_its_remit():
-    """Hedges and boosters are overclaiming, which is rigor's and novelty's
-    verdict. MATTR has no reference distribution, so a reviewer handed 0.47
-    would invent a comparison for it."""
-    note = _clarity_note(_CLEAN)
-    for term in ("hedg", "booster", "MATTR", "mattr", "p-value", "citation"):
-        assert term not in note, f"{term} should not reach the clarity prompt"
-
-
-def test_the_numbers_arrive_labelled_unreliable():
-    note = _clarity_note(_CLEAN)
-    assert "rough" in note.lower()
-    assert "conversion is imperfect" in note
-
-
-def test_the_note_forbids_reporting_a_statistic_as_a_finding():
-    """The framing is the guardrail. Without it an agent handed a number
-    writes a finding about the number."""
-    note = _clarity_note(_CLEAN)
-    assert "do not report a statistic as a finding" in note
-    assert "the page is right" in note
-    assert "is not a defect" in note
-
-
-def test_a_damaged_conversion_warns_harder():
-    clean, damaged = _clarity_note(_CLEAN), _clarity_note(_DEGRADED)
-    assert "worse than usual" in damaged
-    assert "worse than usual" not in clean
-
-
-def test_compression_withholds_the_note_entirely():
-    """The compressor strips the function words sentence length and passive
-    voice are measured on, so the numbers would describe it, not the author."""
-    assert _clarity_note(_CLEAN, caveman="hard") == ""
-
-
-def test_an_unmeasured_manuscript_gets_no_note():
-    from peerreviewagents.agents.reviewers import clarity
-
-    assert clarity._stats_note({"ingest": {}}) == ""
-    assert clarity._stats_note({}) == ""
-
-
-def test_only_clarity_gets_a_stats_note():
-    """Scoped to one reviewer. If this fails, someone wired the numbers into a
-    reviewer whose remit they do not describe."""
-    import inspect
-    import pathlib
-
-    from peerreviewagents.agents import reviewers
-
-    d = pathlib.Path(inspect.getfile(reviewers)).parent
-    wired = sorted(
-        f.stem for f in d.glob("*.py")
-        if f.stem not in ("base", "__init__") and "mandate_extra" in f.read_text()
-    )
-    assert wired == ["clarity"], f"stats reached {wired}"
+# --- the one statistic that used to reach a prompt ---------------------------
+# The clarity reviewer's _stats_note went with the eight-role panel. The
+# mandate_extra mechanism it rode on stays in reviewers/base.py, unused, and
+# the test below still pins how it must be wired if a reviewer adopts it.
 
 
 def test_the_note_rides_in_the_mandate_not_the_cached_prefix():

@@ -1,7 +1,7 @@
 {
   "title": "PeerReviewAgents",
   "version": "0.4.0",
-  "description": "<p>PeerReviewAgents is a multi-agent framework for structured manuscript review with large language models. A default run converts a PDF locally, applies an optional desk screen, and sends the manuscript to eight specialist reviewers covering methodology, data analysis, novelty, clarity, literature, rigor, reproducibility, and ethics. Two parallel auditors check methods completeness and citation support. An advocate and skeptic debate the reviews before an area chair prepares a synthesis, a simulated author responds, and an editor issues an accept, minor revision, major revision, or reject recommendation. A journal scout can then suggest publication venues. Agents return typed Pydantic outputs, and each run writes the individual reports, synthesis, decision letter, usage records, and configuration needed to inspect the process. The framework supports OpenRouter, Anthropic, and OpenAI providers, along with a terminal interface, headless command-line execution, and a web interface. Optional research tools query scholarly literature sources, while target-journal settings and revision rounds support venue-specific and follow-up review. The system is research software for review assistance and evaluation, not a substitute for accountable editorial judgment.</p><p>Garrett, Navarro Garrido and Garcia-Carbonell contributed equally.</p>",
+  "description": "<p>PeerReviewAgents is a multi-agent framework for structured manuscript review with large language models. A default run converts a PDF locally, applies an optional desk screen, and sends the manuscript to five specialist reviewers covering scientific validity, quantitative evidence, contribution and prior work, reporting and reproducibility, and ethics. Two parallel auditors check methods completeness and citation support. A meta-reviewer prepares a focused agenda, an advocate and skeptic debate it, and an editor issues an accept, minor revision, major revision, or reject recommendation. A journal scout can optionally suggest publication venues. Each run writes the individual reports, audits, debate, decision letter, usage records, and configuration needed to inspect the process. The framework uses graded Haiku, Sonnet, and Opus routing by default and also supports OpenRouter and OpenAI providers. Optional research tools query scholarly literature sources, while target journal settings and revision rounds support venue-specific and follow-up review. The system is research software for review assistance and evaluation, not a substitute for accountable editorial judgment.</p><p>Garrett, Navarro Garrido and Garcia-Carbonell contributed equally.</p>",
   "upload_type": "software",
   "access_right": "open",
   "license": "mit",
@@ -45,23 +45,6 @@
       "identifier": "https://pypi.org/project/peerreviewagents/",
       "relation": "isAlternateIdentifier",
       "scheme": "url"
-    }
-  ],
-  "grants": [
-    {
-      "id": "10.13039/100000002::R01AG077046"
-    },
-    {
-      "id": "10.13039/100000002::R01MH132570"
-    },
-    {
-      "id": "10.13039/100000002::R01MH100175"
-    },
-    {
-      "id": "10.13039/100000002::R01HL165168"
-    },
-    {
-      "id": "10.13039/100000002::U01AG088679"
     }
   ]
 }

@@ -29,7 +29,7 @@ from langchain_core.messages import AIMessage
 from test_pipeline import _CANNED, FakeLLM
 
 from peerreviewagents import rounds
-from peerreviewagents.agents.reviewers import literature, methodology
+from peerreviewagents.agents.reviewers import contribution_context, scientific_validity
 from peerreviewagents.default_config import get_config
 
 # --- fake LLM --------------------------------------------------------------
@@ -88,7 +88,7 @@ def _flatten(messages) -> str:
     return "\n".join(parts)
 
 
-def _patch(monkeypatch, llm, module=methodology):
+def _patch(monkeypatch, llm, module=scientific_validity):
     monkeypatch.setattr(
         "peerreviewagents.agents.reviewers.base.make_llm",
         lambda config, **_kwargs: llm,
@@ -110,7 +110,7 @@ def prior_round():
             "required_revisions": ["Report per-cluster results."],
             "reports": [
                 {
-                    "reviewer": "methodology",
+                    "reviewer": "scientific_validity",
                     "score": 3,
                     "confidence": 4,
                     "weaknesses": ["Only a single production cluster is used."],
@@ -118,7 +118,7 @@ def prior_round():
                     "body": "",
                 },
                 {
-                    "reviewer": "rigor",
+                    "reviewer": "data_analysis",
                     "score": 2,
                     "confidence": 3,
                     "weaknesses": ["No random seed is reported for training."],
@@ -146,7 +146,7 @@ def _state(prior_round=None, **over) -> dict:
     return state
 
 
-def _prompt(monkeypatch, state, module=methodology) -> str:
+def _prompt(monkeypatch, state, module=scientific_validity) -> str:
     llm = _RecordingLLM()
     _patch(monkeypatch, llm, module=module)
     module.node(state)
@@ -159,12 +159,12 @@ def _prompt(monkeypatch, state, module=methodology) -> str:
 def test_a_revision_round_still_emits_the_same_markdown_contract(monkeypatch, prior_round):
     llm = _RecordingLLM()
     _patch(monkeypatch, llm)
-    out = methodology.node(_state(prior_round))
+    out = scientific_validity.node(_state(prior_round))
 
     assert llm.schemas == []
     report = out["reports"][0]
-    assert report["reviewer"] == "methodology"
-    assert report["body"].startswith("# Methodology Reviewer")
+    assert report["reviewer"] == "scientific_validity"
+    assert report["body"].startswith("# Scientific Validity")
     assert "Revision Review" not in report["body"]
     assert not out.get("errors")
 
@@ -173,8 +173,8 @@ def test_the_report_shape_is_identical_in_both_rounds(monkeypatch, prior_round):
     """Downstream reads reports the same way whatever round produced them."""
     llm = _RecordingLLM()
     _patch(monkeypatch, llm)
-    first = methodology.node(_state(prior_round=None))["reports"][0]
-    second = methodology.node(_state(prior_round))["reports"][0]
+    first = scientific_validity.node(_state(prior_round=None))["reports"][0]
+    second = scientific_validity.node(_state(prior_round))["reports"][0]
 
     assert set(first) == set(second)
     assert first == second
@@ -183,8 +183,8 @@ def test_the_report_shape_is_identical_in_both_rounds(monkeypatch, prior_round):
 def test_tool_using_reviewer_is_blind_too(monkeypatch, prior_round):
     """The research-tool loop takes the same single path."""
     llm = _RecordingLLM()
-    _patch(monkeypatch, llm, module=literature)
-    out = literature.node(_state(prior_round))
+    _patch(monkeypatch, llm, module=contribution_context)
+    out = contribution_context.node(_state(prior_round))
 
     assert llm.schemas == []
     assert "Revision Review" not in out["reports"][0]["body"]
@@ -194,7 +194,7 @@ def test_tool_using_reviewer_is_blind_too(monkeypatch, prior_round):
 def test_a_failed_call_is_an_error_entry_not_an_exception(monkeypatch, prior_round):
     llm = _RecordingLLM(fail=True)
     _patch(monkeypatch, llm)
-    out = methodology.node(_state(prior_round))
+    out = scientific_validity.node(_state(prior_round))
 
     assert not out.get("reports")
     assert "Markdown generation failed after 3 prose attempts" in out["errors"][0]
@@ -219,12 +219,12 @@ def test_the_revision_prompt_is_identical_to_the_first_round_prompt(
 def test_no_prior_report_reaches_the_reviewer(monkeypatch, prior_round):
     prompt = _prompt(monkeypatch, _state(prior_round))
 
-    assert "methodology-1" not in prompt
+    assert "scientific_validity-1" not in prompt
     assert "Only a single production cluster" not in prompt
     assert "How were baselines tuned?" not in prompt
     # And still nothing from any other reviewer, which was true before and
     # must not become false now that there is one code path.
-    assert "rigor-1" not in prompt
+    assert "data_analysis-1" not in prompt
     assert "random seed" not in prompt.lower()
 
 

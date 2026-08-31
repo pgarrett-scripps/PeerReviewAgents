@@ -20,7 +20,7 @@ re-derives the names from source and fails if this file goes stale.
 from __future__ import annotations
 
 from .agents.auditors import ALL_AUDITOR_NAMES
-from .agents.reviewers import REVIEWER_NAMES
+from .agents.reviewers import ALL_REVIEWER_NAMES
 
 # Tags agents resolve through — the `default_tag=` values at the call sites.
 # "default" is make_chat_model's own signature fallback, reachable by any
@@ -39,10 +39,11 @@ KNOWN_TAGS: frozenset[str] = frozenset(
 PIPELINE_AGENTS: tuple[tuple[str, str, str | None], ...] = (
     ("desk_screen", "reviewer", None),
     ("response_verifier", "reviewer", "medium"),
-    *[(f"reviewer_{name}", "reviewer", None) for name in REVIEWER_NAMES],
+    *[(f"reviewer_{name}", "reviewer", None) for name in ALL_REVIEWER_NAMES],
     *[(f"audit_{name}", "audit", None) for name in ALL_AUDITOR_NAMES],
     ("debate_advocate", "debate", None),
     ("debate_skeptic", "debate", None),
+    ("debate_synthesizer", "synthesis", None),
     ("editor", "synthesis", "medium"),
     ("journal_recommender", "synthesis", None),
 )
@@ -52,7 +53,7 @@ PIPELINE_AGENTS: tuple[tuple[str, str, str | None], ...] = (
 # Legacy modules remain importable for old integrations, but are not graph
 # stages and therefore do not appear in PIPELINE_AGENTS / --show-panel.
 EXTRA_AGENTS: frozenset[str] = frozenset(
-    {"baseline", "gap_finder", "meta_reviewer", "author_rebuttal"}
+    {"baseline", "gap_finder", "author_rebuttal"}
 )
 
 KNOWN_AGENTS: frozenset[str] = (

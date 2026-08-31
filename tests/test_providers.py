@@ -22,9 +22,9 @@ def _cfg(provider: str, model: str = "test-model") -> dict:
     return {"provider": provider, "reasoning_model": model}
 
 
-def test_default_provider_is_openrouter():
+def test_default_provider_is_anthropic():
     spec = provider_spec({"reasoning_model": "x"})
-    assert spec.name == "openrouter"
+    assert spec.name == "anthropic"
 
 
 def test_unknown_provider_raises():

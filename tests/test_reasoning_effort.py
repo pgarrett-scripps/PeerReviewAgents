@@ -15,7 +15,7 @@ import inspect
 from peerreviewagents.agents.author import rebuttal, response_verifier
 from peerreviewagents.agents.editor import editor_in_chief
 from peerreviewagents.agents.journal_recommender import recommender
-from peerreviewagents.agents.synthesis import meta_reviewer
+from peerreviewagents.agents.synthesis import debate_synthesizer
 from peerreviewagents.eval import baseline
 from peerreviewagents.runtime.providers import make_chat_model
 
@@ -34,7 +34,7 @@ def test_no_agent_forces_hidden_reasoning_by_default():
     """
     for module in (
         editor_in_chief,
-        meta_reviewer,
+        debate_synthesizer,
         response_verifier,
         rebuttal,
         recommender,

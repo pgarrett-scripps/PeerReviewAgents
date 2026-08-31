@@ -133,7 +133,8 @@ class JournalProfile(BaseModel):
         if self.acceptance_rate:
             # The caveat is not padding. Rendered bare, this number gets used
             # as a post-review threshold: on a Nature submission the
-            # meta-reviewer read "~8%", wrote that the panel's 3.52/5 "would
+            # pre-debate meta-reviewer (a curator stage the pipeline had
+            # before 0.5.0) read "~8%", wrote that the panel's 3.52/5 "would
             # nominally suggest a major revision verdict, but for a target
             # venue with Nature's selectivity", and returned reject — over a
             # panel where four reviewers said minor, four said major, and none
