@@ -109,7 +109,6 @@ def test_synthesizer_reads_the_panel_and_transcript_under_the_word_budget(monkey
 
     def capture(_llm, _config, _system, user, **_kwargs):
         seen["user"] = user
-        from peerreviewagents.agents.utils.structured import MarkdownResult
         return MarkdownResult("## Issue 1\n\nUnresolved.", 0.0)
 
     monkeypatch.setattr(debate_synthesizer, "invoke_markdown", capture)
