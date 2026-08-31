@@ -20,6 +20,7 @@ import pytest
 import peerreviewagents
 from peerreviewagents.default_config import get_config
 from peerreviewagents.panel import KNOWN_AGENTS, KNOWN_TAGS, PIPELINE_AGENTS
+from peerreviewagents.runtime.providers import resolve_model
 
 
 @pytest.fixture(autouse=True)
@@ -36,6 +37,30 @@ def _toml(tmp_path: Path, text: str) -> Path:
     path = tmp_path / "case.toml"
     path.write_text(text)
     return path
+
+
+def test_default_is_the_graded_condensed_debate_pipeline():
+    cfg = get_config()
+    assert cfg["provider"] == "anthropic"
+    assert cfg["max_debate_rounds"] == 2
+    assert cfg["enable_debate"] is True
+    assert cfg["enable_journal_recommender"] is False
+
+    assert resolve_model(
+        cfg, agent="reviewer_scientific_validity", default_tag="reviewer",
+    ).model == "claude-haiku-4-5"
+    assert resolve_model(
+        cfg, agent="audit_methods_completeness", default_tag="audit",
+    ).model == "claude-haiku-4-5"
+    assert resolve_model(
+        cfg, agent="debate_synthesizer", default_tag="synthesis",
+    ).model == "claude-sonnet-5"
+    assert resolve_model(
+        cfg, agent="debate_advocate", default_tag="debate",
+    ).model == "claude-sonnet-5"
+    assert resolve_model(
+        cfg, agent="editor", default_tag="synthesis",
+    ).model == "claude-opus-5"
 
 
 # --- 1a: unknown [models.<tag>] ----------------------------------------------
@@ -218,9 +243,9 @@ def test_roster_covers_every_call_site():
     assert {f"debate_{r}" for r in debate_roles} <= KNOWN_AGENTS
 
     from peerreviewagents.agents.auditors import ALL_AUDITOR_NAMES
-    from peerreviewagents.agents.reviewers import REVIEWER_NAMES
+    from peerreviewagents.agents.reviewers import ALL_REVIEWER_NAMES
 
-    assert {f"reviewer_{n}" for n in REVIEWER_NAMES} <= KNOWN_AGENTS
+    assert {f"reviewer_{n}" for n in ALL_REVIEWER_NAMES} <= KNOWN_AGENTS
     assert {f"audit_{n}" for n in ALL_AUDITOR_NAMES} <= KNOWN_AGENTS
 
 

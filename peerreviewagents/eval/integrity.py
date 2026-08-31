@@ -26,6 +26,17 @@ EXPECTED_REVIEWERS = {
     "reproducibility",
     "rigor",
 }
+EXPECTED_CONDENSED_REVIEWERS = {
+    "contribution_context",
+    "data_analysis",
+    "ethics",
+    "reporting_reproducibility",
+    "scientific_validity",
+}
+EXPECTED_REVIEWER_PANELS = {
+    "full": EXPECTED_REVIEWERS,
+    "condensed": EXPECTED_CONDENSED_REVIEWERS,
+}
 EXPECTED_AUDITORS = {"citation_integrity", "methods_completeness"}
 
 # These strings are boundaries used by orchestration prompts.  Their presence
@@ -54,10 +65,10 @@ def _text_issues(label: str, text: str) -> list[str]:
 def inspect_run_artifacts(record: RunRecord) -> list[str]:
     """Return deterministic integrity failures for one stored run.
 
-    The full PRA condition has a frozen eight-reviewer/two-auditor contract.
-    The practical baseline has one holistic Markdown review.  Failed calls may
-    naturally have no artifacts; they remain failures without accumulating a
-    second, redundant list of integrity complaints.
+    Each PRA panel has a frozen reviewer roster and a shared two-auditor
+    contract.  The practical baseline has one holistic Markdown review.
+    Failed calls may naturally have no artifacts; they remain failures without
+    accumulating a second, redundant list of integrity complaints.
     """
     if not record.system_decision:
         return []
@@ -69,17 +80,30 @@ def inspect_run_artifacts(record: RunRecord) -> list[str]:
 
     if mode == "system":
         found = set(names)
-        missing = sorted(EXPECTED_REVIEWERS - found)
-        extra = sorted(found - EXPECTED_REVIEWERS)
+        panel = str((record.manifest or {}).get("reviewer_panel") or "").lower()
+        if panel not in EXPECTED_REVIEWER_PANELS:
+            # Backward compatibility for records written before panel identity
+            # was included in the manifest.  A condensed-only role is an
+            # unambiguous signature; otherwise preserve the historical full
+            # panel contract rather than guessing from a merely incomplete run.
+            panel = (
+                "condensed"
+                if found & (EXPECTED_CONDENSED_REVIEWERS - EXPECTED_REVIEWERS)
+                else "full"
+            )
+        expected_reviewers = EXPECTED_REVIEWER_PANELS[panel]
+        missing = sorted(expected_reviewers - found)
+        extra = sorted(found - expected_reviewers)
         if missing:
             issues.append("missing reviewers: " + ", ".join(missing))
         if extra:
             issues.append("unexpected reviewers: " + ", ".join(extra))
         if len(names) != len(set(names)):
             issues.append("duplicate reviewer artifacts")
-        if record.n_reviewers != len(EXPECTED_REVIEWERS):
+        if record.n_reviewers != len(expected_reviewers):
             issues.append(
-                f"reported {record.n_reviewers} reviewers; expected {len(EXPECTED_REVIEWERS)}"
+                f"reported {record.n_reviewers} reviewers; expected "
+                f"{len(expected_reviewers)} for {panel} panel"
             )
 
         audits = record.audit_markdown or []

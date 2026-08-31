@@ -1,7 +1,7 @@
 """LLM provider factory.
 
-Three providers wired up: ``openrouter`` (default — single API key for any
-model on the platform), ``anthropic`` (direct Anthropic API), and
+Three providers wired up: ``anthropic`` (default, direct Anthropic API),
+``openrouter`` (single API key for any model on the platform), and
 ``openai`` (direct OpenAI API). Each builds a streaming LangChain
 ``BaseChatModel`` with the observability callback attached so token /
 cost events flow back to the TUI exactly like before.
@@ -368,14 +368,14 @@ def _make_anthropic(model: str, *, reasoning_effort: str | None = None,
         # (the fixed `budget_tokens` budget was removed and now 400s). We
         # leave thinking OFF unless an effort is explicitly requested, so the
         # parallel specialist reviewers don't spend extra thinking tokens —
-        # only the synthesis agents (meta-reviewer, editor) pass an effort.
+        # only the editor and response verifier pass an effort.
         if reasoning_effort:
             kwargs["thinking"] = {"type": "adaptive"}
             kwargs["effort"] = reasoning_effort  # low | medium | high
             # No max_tokens override here: this path used to re-set 16000,
             # quietly lowering the cap back to the ceiling the block above
             # records truncating an agent mid-schema — and the agents that
-            # think (meta-reviewer, editor) write the longest answers and
+            # think (the editor above all) write the longest answers and
             # pay for their thinking inside the same cap. Never below the
             # documented-safe 32000 set with the base kwargs.
     elif reasoning_effort:
@@ -526,7 +526,7 @@ class ModelSpec:
 
 def spec_for_provider(name: str | None) -> ProviderSpec:
     """Return the :class:`ProviderSpec` for a provider name."""
-    key = (name or "openrouter").lower()
+    key = (name or "anthropic").lower()
     spec = PROVIDERS.get(key)
     if spec is None:
         raise ValueError(
@@ -599,7 +599,7 @@ def resolve_model(
     else:
         raw = (config.get("models") or {}).get(selection) or {}
 
-    provider = raw.get("provider") or config.get("provider") or "openrouter"
+    provider = raw.get("provider") or config.get("provider") or "anthropic"
     model = raw.get("model") or config.get("reasoning_model")
     if not model:
         raise ValueError("no model resolved: set reasoning_model or a model tag")

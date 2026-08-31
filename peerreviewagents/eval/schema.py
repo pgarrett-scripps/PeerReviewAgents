@@ -40,6 +40,7 @@ _DIGEST_KEYS = (
     "target_journal",
     "max_debate_rounds",
     "enable_debate",
+    "synthesis_word_budget",
     "enable_journal_recommender",
     "panel_quorum_fraction",
     "markdown_attempts",
@@ -86,6 +87,7 @@ class Manifest:
     venue: str = ""
     leakage_note: str = ""
     source_fingerprint: str = ""
+    reviewer_panel: str = "condensed"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -105,6 +107,11 @@ class RunRecord:
     # indexes, but the complete Markdown is what future evaluators must judge.
     decision_letter: str = ""
     debate_markdown: list[dict[str, Any]] = field(default_factory=list)
+    # The post-debate synthesizer's brief. Kept beside the historical
+    # ``debate_adjudication`` field so records written by either pipeline
+    # generation load without translation.
+    debate_synthesis: str = ""
+    debate_adjudication: str = ""
     audit_markdown: list[dict[str, Any]] = field(default_factory=list)
     artifact_integrity_ok: bool | None = None
     artifact_integrity_errors: list[str] = field(default_factory=list)
@@ -173,6 +180,16 @@ def source_fingerprint() -> str:
     return digest.hexdigest()[:16]
 
 
+def require_source_fingerprint(expected: str, *, context: str) -> None:
+    """Abort when package sources change after batch-level validation."""
+    found = source_fingerprint()
+    if found != expected:
+        raise RuntimeError(
+            f"source code changed during evaluation ({context}): expected "
+            f"{expected}, found {found}; no result was appended"
+        )
+
+
 def build_manifest(config: dict[str, Any], *, venue: str = "", leakage_note: str = "") -> Manifest:
     model = (
         config.get("reasoning_model")
@@ -189,6 +206,7 @@ def build_manifest(config: dict[str, Any], *, venue: str = "", leakage_note: str
         venue=venue,
         leakage_note=leakage_note,
         source_fingerprint=source_fingerprint(),
+        reviewer_panel="condensed",
     )
 
 

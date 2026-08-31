@@ -1,5 +1,12 @@
 # OpenReview comparison protocol
 
+> **Historical protocol.** This document describes the frozen retrospective
+> evaluation run on PeerReviewAgents 0.4.0, whose full workflow used the
+> original eight-role reviewer panel and a sequential single-round debate.
+> The 0.5.0 pipeline is different — five referees, parallel debate rounds, a
+> post-debate synthesizer — and is not what these numbers measured. The
+> protocol is preserved unchanged so the published results stay auditable.
+
 This protocol characterizes PeerReviewAgents against human OpenReview outcomes
 and a one-call practical baseline. It is a software validation study, not a
 claim that generated critiques are correct or human-equivalent. The baseline is

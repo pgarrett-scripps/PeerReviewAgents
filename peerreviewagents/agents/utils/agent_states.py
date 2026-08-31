@@ -37,7 +37,7 @@ class AuditReport(TypedDict):
     they are factual checklists (missing reagent IDs, unresolvable citations),
     not scientific-merit opinions, so they are kept out of ``reports`` and
     never enter the confidence-weighted score, the debate, or the
-    meta-review. ``body`` is the rendered markdown from
+    debate synthesis. ``body`` is the rendered markdown from
     :class:`~peerreviewagents.agents.schemas.AuditOutput`; ``hard_gaps`` /
     ``soft_gaps`` are promoted scalars so the editor prompt and summary can
     show counts without parsing the body.
@@ -158,7 +158,7 @@ class ReviewState(TypedDict, total=False):
 
     # --- editorial compliance audit lane (parallel, feeds only the editor) ---
     # Auditors fan out alongside the reviewers but their output bypasses the
-    # debate/meta-review and lands directly in the editor's prompt. Separate
+    # debate/synthesis and lands directly in the editor's prompt. Separate
     # channel so it stays out of score_summary() and the panel verdict.
     audits: Annotated[list[AuditReport], operator.add]
 
@@ -173,13 +173,16 @@ class ReviewState(TypedDict, total=False):
     panel_gaps: str
 
     # --- synthesis ---
-    meta_review: str
-    draft_recommendation: str
+    # The debate synthesizer's condensed account of the finished debate: the
+    # one version the editor reads (the raw transcript is published but not
+    # fed to the editor). Empty when debate is ablated; a failure marker
+    # when the synthesizer errored, in which case the editor falls back to
+    # the raw transcript.
+    debate_synthesis: str
 
     # --- author rebuttal ---
     # Free-text markdown the "author" agent writes to defend the
     # manuscript against the reviewer panel before the editor decides.
-    # Sits between the meta-review and the editor.
     author_rebuttal: str
 
     # --- final ---

@@ -8,7 +8,7 @@ identifiers/details are present, missing, or unverifiable.
 Auditors fan out in parallel with the reviewer panel but write to the
 separate ``audits`` state channel, which feeds only the Editor-in-Chief.
 They never enter the confidence-weighted panel score, the advocate/skeptic
-debate, or the meta-review — those reconcile scientific-merit opinions,
+debate, or the synthesis — those reconcile scientific-merit opinions,
 which a factual checklist is not.
 
 The manuscript block is sent with prompt-cache markup (on providers that
@@ -25,6 +25,7 @@ from ..utils.agent_utils import (
     context_block,
     references_block,
     supplement_block,
+    unreliable_reference_parse,
 )
 from ..utils.llm import make_llm
 from ..utils.structured import invoke_markdown
@@ -81,6 +82,7 @@ def make_auditor_node(
     tool_names: list[str] | None = None,
     needs_supplement: bool = False,
     needs_references: bool = False,
+    requires_reliable_references: bool = False,
 ):
     """Build a LangGraph node for one editorial auditor.
 
@@ -98,6 +100,30 @@ def make_auditor_node(
 
     def node(state: ReviewState) -> dict:
         with node_context(node_name, run_id=state["config"].get("run_id", "")):
+            if requires_reliable_references:
+                parse_problem = unreliable_reference_parse(state)
+                if parse_problem:
+                    body = (
+                        "# Citation Audit Not Performed\n\n"
+                        f"The typed bibliography is unreliable because {parse_problem}. "
+                        "This is an **ingest limitation, not a manuscript finding**. "
+                        "No missing-reference, incomplete-bibliography, or citation-"
+                        "resolvability criticism may be inferred from this audit or "
+                        "passed to the authors. Re-run the citation audit from a source "
+                        "file or corrected PDF conversion if citation integrity must be "
+                        "assessed."
+                    )
+                    return {
+                        "audits": [{
+                            "auditor": name,
+                            "title": title,
+                            "hard_gaps": None,
+                            "soft_gaps": None,
+                            "findings": [],
+                            "body": body,
+                        }],
+                        "total_cost": 0.0,
+                    }
             config = state["config"]
             llm = make_llm(config, agent=node_name, default_tag="audit")
             instructions = _INSTRUCTIONS.format(

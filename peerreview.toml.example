@@ -65,8 +65,8 @@ reasoning_model = "anthropic/claude-opus-5"
 # Advocate ⇄ Skeptic debate rounds.
 debate_rounds = 2
 
-# The debate itself. false ablates it — the reviewers feed the meta-reviewer
-# directly — which is how the eval harness measures what the debate adds.
+# The debate itself. false ablates it — the panel feeds the editor directly,
+# with no synthesizer — which is how the eval harness measures what the debate adds.
 # enable_debate = true
 
 # ---------------------------------------------------------------------------
@@ -75,7 +75,7 @@ debate_rounds = 2
 #
 # How easy or harsh the panel is, as an integer 1-5: 1=very lenient,
 # 3=balanced (default), 5=very strict. The level is rendered to a directive
-# injected into the reviewer, meta-reviewer, and editor prompts. Level 3
+# injected into the reviewer, debate-synthesizer, and editor prompts. Level 3
 # injects nothing, so a default run behaves exactly as before. Override
 # per-run with `--strictness <1-5>` (or PEERREVIEW_STRICTNESS).
 # strictness = 3
@@ -164,7 +164,7 @@ debate_rounds = 2
 # a bundled journal profile (the filename without .toml), e.g.
 # "nature-methods" or "bioinformatics". The selected journal's scope,
 # standards, and submission limits are injected into the reviewer,
-# meta-reviewer, editor, and recommender prompts. Override per-run with
+# debate-synthesizer, editor, and recommender prompts. Override per-run with
 # `--journal <slug>`; list options with `peerreview --list-journals`.
 #
 # Default is "general": a stand-in profile with sound, field-general
@@ -246,7 +246,7 @@ output_dir = "./reports"
 # an [agent_models] entry retargets a single agent and wins over its tag.
 # Tags: "reviewer" (the specialist panel, plus the desk screen and response
 # verifier, which share it so the prompt cache they warm is the one the panel
-# reads), "debate", "audit", "synthesis" (editor, meta-reviewer, rebuttal,
+# reads), "debate", "audit", "synthesis" (editor, debate synthesizer, rebuttal,
 # recommender). There is NO "screen" tag — a [models.screen] block is inert,
 # and get_config warns about it. Any field left out falls back to the
 # provider / reasoning_model above. Check the result with

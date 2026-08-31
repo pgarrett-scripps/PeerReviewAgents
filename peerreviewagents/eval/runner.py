@@ -23,6 +23,7 @@ from .schema import (
     build_manifest,
     config_digest,
     read_jsonl,
+    require_source_fingerprint,
     source_fingerprint,
     verify_protocol,
 )
@@ -112,6 +113,7 @@ def run_batch(
 
     corpus_manifest = verify_corpus_manifest(corpus_path, warn_missing=True)
     verify_protocol(corpus_path, config)
+    batch_source = source_fingerprint()
     corpus_sha256 = corpus_manifest.get("corpus_sha256") if corpus_manifest else ""
     corpus = load_corpus(corpus_path)
     if only:
@@ -139,9 +141,15 @@ def run_batch(
 
     performed = 0
     for item, rep in todo:
+        require_source_fingerprint(
+            batch_source, context=f"before {item.id} repeat {rep}",
+        )
         if verbose:
             print(f"\n→ {item.id} repeat {rep}: {item.title[:70]}")
         record = _run_one(item, rep, config, leakage_note, corpus_sha256=corpus_sha256)
+        require_source_fingerprint(
+            batch_source, context=f"after {item.id} repeat {rep}",
+        )
         append_jsonl(runs_path, record.to_json())
         performed += 1
         if verbose:
@@ -213,6 +221,7 @@ def _run_one(
             per_reviewer=per_reviewer,
             decision_letter=state.get("decision_letter") or "",
             debate_markdown=[dict(turn) for turn in (state.get("debate") or [])],
+            debate_synthesis=state.get("debate_synthesis") or "",
             audit_markdown=[
                 {
                     "auditor": audit.get("auditor"),

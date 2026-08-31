@@ -20,7 +20,7 @@ import pytest
 import uvicorn
 from langchain_core.messages import AIMessage
 
-from peerreviewagents.agents.reviewers import REVIEWER_NAMES
+from peerreviewagents.agents.reviewers import CONDENSED_REVIEWER_NAMES
 from peerreviewagents.agents.schemas import (
     AuditFinding,
     AuditOutput,
@@ -147,7 +147,6 @@ def patched_llms(monkeypatch):
         "peerreviewagents.agents.reviewers.base",
         "peerreviewagents.agents.auditors.base",
         "peerreviewagents.agents.debate.base",
-        "peerreviewagents.agents.synthesis.meta_reviewer",
         "peerreviewagents.agents.author.rebuttal",
         "peerreviewagents.agents.editor.editor_in_chief",
         "peerreviewagents.agents.journal_recommender.recommender",
@@ -231,7 +230,7 @@ def test_full_web_pipeline(monkeypatch, tmp_path, patched_llms):
         assert job["decision"] == "major"
 
         # Per-agent REST endpoint returns the finished body.
-        sample_reviewer = f"reviewer_{REVIEWER_NAMES[0]}"
+        sample_reviewer = f"reviewer_{CONDENSED_REVIEWER_NAMES[0]}"
         resp = httpx.get(f"{base}/jobs/{job_id}/agents/{sample_reviewer}")
         assert resp.status_code == 200
         payload = resp.json()

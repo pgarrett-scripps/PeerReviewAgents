@@ -21,7 +21,7 @@ from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import DataTable, Footer, Header, Log, Static
 
 from peerreviewagents.agents.auditors import AUDITOR_NAMES
-from peerreviewagents.agents.reviewers import REVIEWER_NAMES
+from peerreviewagents.agents.reviewers import get_reviewer_nodes
 from peerreviewagents.graph.review_graph import PeerReviewGraph
 from peerreviewagents.observability import (
     AgentEvent,
@@ -103,32 +103,41 @@ class ReviewApp(App):
     # Order matters: this is the order rows appear in the progress table.
     # Debate roles are listed once even though they run multiple rounds;
     # counters accumulate across rounds.
-    _STAGES: tuple[tuple[str, str], ...] = (
-        ("ingest", "Ingest"),
-        *tuple(
-            (f"reviewer_{n}", f"Reviewer · {n.replace('_', ' ').title()}")
-            for n in REVIEWER_NAMES
-        ),
-        *tuple(
-            (f"audit_{n}", f"Audit · {n.replace('_', ' ').title()}")
-            for n in AUDITOR_NAMES
-        ),
-        ("advocate", "Debate · Advocate"),
-        ("skeptic", "Debate · Skeptic"),
-        ("editor", "Editor-in-Chief"),
-        ("journal_recommender", "Journal Scout"),
-    )
-
     def __init__(self, manuscript: str, config: dict):
         super().__init__()
         self.manuscript = manuscript
         self.config = config
         self.final: dict = {}
 
+        reviewer_names = [name for name, _node in get_reviewer_nodes(config)]
+        debate_stages = (
+            (
+                ("advocate", "Debate · Advocate"),
+                ("skeptic", "Debate · Skeptic"),
+                ("debate_synthesizer", "Synthesis · Debate Synthesizer"),
+            )
+            if config.get("enable_debate", True)
+            else ()
+        )
+        self._stages: tuple[tuple[str, str], ...] = (
+            ("ingest", "Ingest"),
+            *tuple(
+                (f"reviewer_{n}", f"Reviewer · {n.replace('_', ' ').title()}")
+                for n in reviewer_names
+            ),
+            *tuple(
+                (f"audit_{n}", f"Audit · {n.replace('_', ' ').title()}")
+                for n in AUDITOR_NAMES
+            ),
+            *debate_stages,
+            ("editor", "Editor-in-Chief"),
+            ("journal_recommender", "Journal Scout"),
+        )
+
         self._events: Queue[AgentEvent] = Queue()
         self._start_time = 0.0
         self._stage_state: dict[str, dict] = {}
-        self._labels: dict[str, str] = {k: v for k, v in self._STAGES}
+        self._labels: dict[str, str] = {k: v for k, v in self._stages}
         self._known_keys: set[str] = set(self._labels)
         self._total_in = 0
         self._total_out = 0
@@ -173,7 +182,7 @@ class ReviewApp(App):
         # "pending".
         for col_key, label in _COLUMNS:
             table.add_column(label, key=col_key)
-        for key, label in self._STAGES:
+        for key, label in self._stages:
             self._stage_state[key] = {
                 "label": label,
                 "status": "pending",

@@ -19,6 +19,7 @@ PDF ingest is fully local (rustypaper) — no external API key required.
 
 from __future__ import annotations
 
+import copy
 import os
 import warnings
 from pathlib import Path
@@ -32,16 +33,15 @@ except ModuleNotFoundError:  # pragma: no cover
 
 DEFAULT_CONFIG: dict[str, Any] = {
     # --- Model ---
-    # Which provider to call. One of: "openrouter" (default), "anthropic",
+    # Which provider to call. One of: "openrouter", "anthropic" (default),
     # "openai". See peerreviewagents.runtime.providers.PROVIDERS.
-    "provider": "openrouter",
-    # Single text model used by every reviewer, debater, synthesizer,
-    # author rebuttal, editor, and journal recommender. The model string
-    # is interpreted by the active provider:
+    "provider": "anthropic",
+    # Fallback model for an agent not covered by the graded tables below. The
+    # model string is interpreted by the active provider:
     #   openrouter -> a slug like "anthropic/claude-opus-5"
     #   anthropic  -> a model id like "claude-opus-5" or "claude-sonnet-5"
     #   openai     -> a model id like "gpt-4.1" or "o3"
-    "reasoning_model": "anthropic/claude-opus-5",
+    "reasoning_model": "claude-sonnet-5",
 
     # Sampling temperature for every text agent. None = the provider default
     # (0.3). Set 0.0 for the most reproducible/defensible single run. NOTE:
@@ -64,7 +64,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # Named model "tags". Each maps a tag to {provider?, model?, effort?};
     # any field left out falls back to the global provider / reasoning_model
     # above. Example (TOML):
-    #     [models.synthesis]           # editor, meta-reviewer, rebuttal, recommender
+    #     [models.synthesis]           # editor and synthesis helpers
     #     provider = "anthropic"
     #     model = "claude-opus-5"
     #     effort = "high"
@@ -73,7 +73,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     #     model = "claude-sonnet-5"
     # Agents resolve their model through a code-declared default tag:
     #   reviewers -> "reviewer", debate -> "debate", auditors -> "audit",
-    #   and editor / meta-reviewer / author-rebuttal / journal-recommender ->
+    #   and editor / debate-synthesizer / journal-recommender ->
     #   "synthesis". There is deliberately NO "screen" tag: the desk screen
     #   (and the response verifier) share "reviewer", so the prompt cache
     #   they warm is the one the panel then reads — caches are per-model.
@@ -82,17 +82,25 @@ DEFAULT_CONFIG: dict[str, Any] = {
     #   warns on any tag no agent resolves through (see panel.KNOWN_TAGS).
     #   Defining a tag retargets that whole group; leaving "models" empty
     #   means every agent uses the global model.
-    "models": {},
+    "models": {
+        "reviewer": {"model": "claude-haiku-4-5"},
+        "audit": {"model": "claude-haiku-4-5"},
+        "debate": {"model": "claude-sonnet-5"},
+        "synthesis": {"model": "claude-opus-5"},
+    },
     # Per-agent override map: agent key -> tag name or an inline
     # {provider?, model?, effort?} spec. Wins over the agent's default tag.
-    # Agent keys: reviewer_<name> (e.g. reviewer_methodology), debate_advocate,
+    # Agent keys: reviewer_<name> (e.g. reviewer_data_analysis), debate_advocate,
     # debate_skeptic, audit_<name>, desk_screen, response_verifier,
     # editor and journal_recommender (the full roster lives in
     # peerreviewagents.panel). Example (TOML):
     #     [agent_models]
-    #     reviewer_novelty = "synthesis"          # give one reviewer the big model
+    #     reviewer_contribution_context = "synthesis"   # one reviewer on the big model
     #     editor = { model = "claude-opus-5", effort = "max" }
-    "agent_models": {},
+    "agent_models": {
+        "debate_synthesizer": {"model": "claude-sonnet-5"},
+        "journal_recommender": {"model": "claude-haiku-4-5"},
+    },
     # Run the named reasoning_model for EVERY agent by clearing `models` and
     # `agent_models` after all config layers are applied. This exists because
     # the tag tables win over an explicit --reasoning-model for every tagged
@@ -104,15 +112,29 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "single_model": False,
 
     # --- Workflow ---
+    # There is one workflow: the five-role panel and audit lane fan out, a
+    # deterministic gate checks completeness, the advocate and skeptic debate
+    # in PARALLEL rounds (both argue from the same panel in round 1, blind to
+    # each other; from round 2 each also reads the full previous exchange),
+    # a debate synthesizer condenses the exchange, and the editor decides
+    # from the full reports, the audits, and that synthesis. The old
+    # ``review_workflow`` / ``reviewer_panel`` keys are gone; a TOML still
+    # naming them gets an unknown-key warning.
     "max_debate_rounds": 2,
     # Advocate/skeptic debate. True (default) runs the dialectical debate
-    # after the reviewer panel; False sends the panel directly to the editor.
-    # This remains an evaluation ablation for measuring the
+    # after the reviewer panel; False sends the panel directly to the editor
+    # (and skips the debate synthesizer, which would have nothing to
+    # condense). This remains an evaluation ablation for measuring the
     # debate's contribution in the eval harness.
     "enable_debate": True,
+    # Word budget for the post-debate synthesizer's brief. A word budget
+    # rather than an issue cap: a fixed item count amputates a broad debate,
+    # while a budget forces prioritization without deciding in advance how
+    # many issues the manuscript has.
+    "synthesis_word_budget": 1200,
     # Post-decision venue suggestions are optional enrichment and never part
     # of the publication contract.
-    "enable_journal_recommender": True,
+    "enable_journal_recommender": False,
     # Require the complete requested specialist panel by default. A missing
     # reviewer is a failed run, not evidence that the absent specialty found
     # no problem, and publication evaluations must not count a partial panel
@@ -162,25 +184,25 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # for the converter's spacing.
     "conversion_gate": "degraded",
     # Optional cap on manuscript chars sent to a single agent. None (default)
-    # sends the FULL manuscript — no truncation. Set an int to cap it: long
+    # sends the FULL manuscript with no truncation. Set an int to cap it. Long
     # papers are then truncated section-aware, preserving the most load-bearing
     # sections (abstract, methods, results, discussion, conclusion) and dropping
     # appendices/supplements first. Raise a cap only to bound cost on very long
-    # papers; cost scales with manuscript length × the ~14 agents that read it.
+    # papers. Cost scales with manuscript length and the roughly 10 agents that
+    # read it in the default workflow.
     "manuscript_char_budget": None,
     # --- Revision rounds ---
     # Job ID (or report directory) of the previous round for this manuscript.
     # Setting it turns the run into a revision round: a compliance auditor
     # checks the previous decision letter's numbered required revisions
     # against the new draft, and the editor decides on the round-over-round
-    # delta. The eight specialist reviewers are deliberately NOT told — they
-    # review the manuscript as it stands, every round, because a panel told it
-    # is looking at a revision starts looking for progress. None (default) =
+    # delta. The five specialist reviewers are deliberately not told which
+    # round it is. They review the manuscript as it stands because a panel told
+    # it is looking at a revision starts looking for progress. None (default) =
     # an ordinary first-round review. See peerreviewagents.rounds for the
     # record format.
     "revision_of": None,
-    # Optional path to the REAL authors' response letter (pdf/md/tex/txt) —
-    # the human scientists' reply, not the simulated author-rebuttal agent.
+    # Optional path to the real authors' response letter (pdf/md/tex/txt).
     # Treated as untrusted, interested-party input: never shown to the panel
     # as prose, and reaches reviewers only as verified pointers to passages they
     # must re-read and judge for themselves. It can redirect attention; it
@@ -215,13 +237,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # ["methodology", "data_analysis"]. Empty (default) = the full panel.
     #
     # Built for corrections. If one reviewer misread a table, only that
-    # reviewer's assessment should move; re-running all eight lets the other
-    # seven drift on resampling noise and overstates what the correction
+    # reviewer's assessment should move. Re-running all five lets the other
+    # four drift on resampling noise and overstates what the correction
     # actually changed. Isolating it is the accurate thing, not just the cheap
     # one.
     #
     # Reviewers left out are NOT dropped: their prior reports are carried
-    # forward from `revision_of`, so the meta-reviewer and editor still see a
+    # forward from `revision_of`, so the debate, synthesis, and editor still see a
     # full panel rather than an aggregate over the one agent that re-ran.
     # Requires `revision_of` for that reason.
     "only_reviewers": [],
@@ -575,7 +597,7 @@ def get_config(config_path: str | os.PathLike | None = None, **overrides: Any) -
         **overrides: explicit Python-level overrides (CLI flags, library
             callers). Win over everything else.
     """
-    cfg: dict[str, Any] = DEFAULT_CONFIG.copy()
+    cfg: dict[str, Any] = copy.deepcopy(DEFAULT_CONFIG)
 
     # Layer TOML files in increasing-precedence order.
     toml_paths: list[Path] = [_user_global_config_path(), _project_config_path()]

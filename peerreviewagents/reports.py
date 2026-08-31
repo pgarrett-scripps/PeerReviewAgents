@@ -51,6 +51,9 @@ def write_reports(state: ReviewState) -> str:
         )
         _write(run_dir, "debate_transcript.md", f"# Debate Transcript\n\n{transcript}")
 
+    if state.get("debate_synthesis"):
+        _write(run_dir, "debate_synthesis.md", state["debate_synthesis"])
+
     if state.get("response_verification"):
         _write(run_dir, "author_response_verification.md", state["response_verification"])
     if state.get("desk_screen"):
@@ -186,6 +189,7 @@ def _summary(state: ReviewState) -> str:
     strictness = _strictness_line(state)
     if strictness:
         lines.append(f"**Review strictness:** {strictness}")
+    lines.append(f"**Reviewer panel:** condensed ({len(state.get('reports', []))} reports)")
     prior = state.get("prior_round")
     if prior is not None:
         lines.append(f"**Round:** {prior.round + 1} (revision of {prior.job_id})")
@@ -220,10 +224,7 @@ def _summary(state: ReviewState) -> str:
                 + (f" ({reason})" if reason else "")
                 + ", excluded from the mean"
             )
-    avg = _avg(state)
-    if avg is not None:
-        lines.append("")
-        lines.append(f"**Average reviewer score:** {avg:.2f}/5")
+    lines += ["", "**Panel average:** not used; individual scores are advisory"]
     audits = state.get("audits", [])
     if audits:
         lines += ["", "## Editorial Audits"]

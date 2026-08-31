@@ -10,7 +10,7 @@ import os
 
 from test_pipeline import _CANNED, SAMPLE, _patch_llms
 
-from peerreviewagents.agents.reviewers import REVIEWER_NAMES
+from peerreviewagents.agents.reviewers import CONDENSED_REVIEWER_NAMES
 from peerreviewagents.agents.schemas import DeskScreenOutput
 from peerreviewagents.cli.main import _run_failed
 from peerreviewagents.default_config import get_config
@@ -52,7 +52,7 @@ def test_disabled_graph_runs_full_pipeline(monkeypatch, tmp_path):
     _patch_llms(monkeypatch)
     graph = PeerReviewGraph(get_config(max_debate_rounds=1, output_dir=str(tmp_path)))
     state = graph.review(SAMPLE)
-    assert len(state["reports"]) == len(REVIEWER_NAMES)
+    assert len(state["reports"]) == len(CONDENSED_REVIEWER_NAMES)
     assert not state.get("desk_rejected")
     assert not state.get("desk_screen")  # node never ran
 
@@ -66,7 +66,7 @@ def test_enabled_pass_runs_full_pipeline(monkeypatch, tmp_path):
     state = graph.review(SAMPLE)
     assert state.get("desk_rejected") is False
     assert state.get("desk_screen")  # the screen ran and recorded a note
-    assert len(state["reports"]) == len(REVIEWER_NAMES)
+    assert len(state["reports"]) == len(CONDENSED_REVIEWER_NAMES)
     assert state["decision"] == "major"  # normal editor verdict
 
 

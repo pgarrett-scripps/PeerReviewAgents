@@ -16,29 +16,57 @@ from typing import Any
 
 JOB_STATUS = ("pending", "running", "done", "error")
 
-# Display order of the canonical agents in the office. The frontend reads
-# this from /jobs/<id> so it can lay sprites out deterministically.
+# Display order of the default agents in the office. The frontend reads this
+# from /jobs/<id> so it can lay sprites out deterministically.
 AGENT_LAYOUT: list[dict[str, Any]] = [
-    # Optional desk-screen triage gate (only fires when enabled)
-    {"name": "desk_screen",            "label": "Desk Screen",     "role": "editor",    "emoji": "🛂"},
-    # Reviewers — 8 desks arranged in a 4x2 grid in the bullpen
-    {"name": "reviewer_methodology",   "label": "Methodology",     "role": "reviewer",  "emoji": "🔬"},
-    {"name": "reviewer_data_analysis", "label": "Data Analysis",   "role": "reviewer",  "emoji": "📊"},
-    {"name": "reviewer_novelty",       "label": "Novelty",         "role": "reviewer",  "emoji": "💡"},
-    {"name": "reviewer_clarity",       "label": "Clarity",         "role": "reviewer",  "emoji": "✍️"},
-    {"name": "reviewer_literature",    "label": "Literature",      "role": "reviewer",  "emoji": "📚"},
-    {"name": "reviewer_rigor",         "label": "Rigor",           "role": "reviewer",  "emoji": "🧪"},
-    {"name": "reviewer_reproducibility","label": "Reproducibility","role": "reviewer",  "emoji": "🔁"},
-    {"name": "reviewer_ethics",        "label": "Ethics",          "role": "reviewer",  "emoji": "⚖️"},
-    # Editorial audit lane — factual checklists routed straight to the editor
-    {"name": "audit_methods_completeness", "label": "Methods Audit",  "role": "audit", "emoji": "📋"},
-    {"name": "audit_citation_integrity",   "label": "Citation Audit", "role": "audit", "emoji": "🔗"},
-    # Debate stage
-    {"name": "advocate",               "label": "Advocate",        "role": "debate",    "emoji": "🗣️"},
-    {"name": "skeptic",                "label": "Skeptic",         "role": "debate",    "emoji": "🤨"},
-    {"name": "editor",                 "label": "Editor-in-Chief", "role": "editor",    "emoji": "👔"},
-    # Post-decision: venue suggestions
-    {"name": "journal_recommender",    "label": "Journal Scout",   "role": "recommend", "emoji": "🗺️"},
+    {"name": "desk_screen", "label": "Desk Screen", "role": "editor", "emoji": "🛂"},
+    {
+        "name": "reviewer_scientific_validity",
+        "label": "Scientific Validity",
+        "role": "reviewer",
+        "emoji": "🔬",
+    },
+    {
+        "name": "reviewer_data_analysis",
+        "label": "Data Analysis",
+        "role": "reviewer",
+        "emoji": "📊",
+    },
+    {
+        "name": "reviewer_contribution_context",
+        "label": "Contribution and Context",
+        "role": "reviewer",
+        "emoji": "💡",
+    },
+    {
+        "name": "reviewer_reporting_reproducibility",
+        "label": "Reporting and Reproducibility",
+        "role": "reviewer",
+        "emoji": "🔁",
+    },
+    {"name": "reviewer_ethics", "label": "Ethics", "role": "reviewer", "emoji": "⚖️"},
+    {
+        "name": "audit_methods_completeness",
+        "label": "Methods Audit",
+        "role": "audit",
+        "emoji": "📋",
+    },
+    {
+        "name": "audit_citation_integrity",
+        "label": "Citation Audit",
+        "role": "audit",
+        "emoji": "🔗",
+    },
+    {"name": "advocate", "label": "Advocate", "role": "debate", "emoji": "🗣️"},
+    {"name": "skeptic", "label": "Skeptic", "role": "debate", "emoji": "🤨"},
+    {"name": "debate_synthesizer", "label": "Debate Synthesis", "role": "debate", "emoji": "🎯"},
+    {"name": "editor", "label": "Editor-in-Chief", "role": "editor", "emoji": "👔"},
+    {
+        "name": "journal_recommender",
+        "label": "Journal Scout",
+        "role": "recommend",
+        "emoji": "🗺️",
+    },
 ]
 
 AGENT_NAMES = [a["name"] for a in AGENT_LAYOUT]

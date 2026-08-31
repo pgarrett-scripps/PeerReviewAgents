@@ -12,7 +12,11 @@ that one is present with a null score and already named.
 
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from peerreviewagents.agents.reviewers import REVIEWER_NAMES
+from peerreviewagents.agents.schemas import ReviewerOutput
 from peerreviewagents.agents.utils.agent_utils import score_summary
 
 
@@ -30,10 +34,10 @@ def test_a_full_panel_says_nothing_about_completeness():
 
 
 def test_a_missing_reviewer_is_named():
-    present = [n for n in REVIEWER_NAMES if n != "rigor"]
+    present = [n for n in REVIEWER_NAMES if n != "scientific_validity"]
     s = score_summary(state_with([report(n) for n in present]))
     assert "INCOMPLETE PANEL" in s
-    assert "rigor" in s
+    assert "scientific_validity" in s
 
 
 def test_a_not_applicable_reviewer_is_not_reported_as_missing():
@@ -53,7 +57,7 @@ def test_a_deliberate_subset_is_not_treated_as_missing():
     """A correction re-runs named reviewers only; the rest are carried
     forward by design and are not failures."""
     s = score_summary(state_with(
-        [report("methodology")], only_reviewers=["methodology"]
+        [report("scientific_validity")], only_reviewers=["scientific_validity"]
     ))
     assert "INCOMPLETE PANEL" not in s
 
@@ -61,7 +65,7 @@ def test_a_deliberate_subset_is_not_treated_as_missing():
 def test_the_absence_warns_against_reading_it_as_no_concern():
     """The failure mode is the editor treating a missing specialty as a clean
     bill of health on that dimension."""
-    present = [n for n in REVIEWER_NAMES if n != "methodology"]
+    present = [n for n in REVIEWER_NAMES if n != "reporting_reproducibility"]
     s = score_summary(state_with([report(n) for n in present]))
     assert "do not read a missing specialty as no concern" in s
 
@@ -78,14 +82,14 @@ def test_reporting_failure_labelled_apart_from_reasoned_abstention():
     from peerreviewagents.agents.utils.agent_utils import score_summary
 
     state = {"config": {}, "reports": [
-        {"reviewer": "rigor", "score": None, "confidence": 3,
+        {"reviewer": "scientific_validity", "score": None, "confidence": 3,
          "not_applicable_reason": NO_SCORE_NO_REASON},
         {"reviewer": "data_analysis", "score": None, "confidence": 3,
          "not_applicable_reason": "No statistical claims to judge."},
         {"reviewer": "clarity", "score": 4.0, "confidence": 4.0},
     ]}
     line = score_summary(state)
-    assert "rigor no score returned (reporting failure" in line
+    assert "scientific_validity no score returned (reporting failure" in line
     assert "data_analysis n/a" in line
 
 
@@ -98,11 +102,6 @@ def test_reporting_failure_labelled_apart_from_reasoned_abstention():
 # not that a model wrote nothing — models do that — but that nothing in the
 # pipeline was looking at whether a report contained an assessment.
 # ---------------------------------------------------------------------------
-
-import pytest
-from pydantic import ValidationError
-
-from peerreviewagents.agents.schemas import ReviewerOutput
 
 _REAL = dict(
     score=3,

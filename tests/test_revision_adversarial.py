@@ -135,7 +135,7 @@ def _flatten(messages) -> str:
 
 
 def _record_reviewer_prompts(monkeypatch) -> list[str]:
-    """Capture every prompt the eight specialists send, through the real graph."""
+    """Capture every prompt the five specialists send through the real graph."""
     sink: list[str] = []
     monkeypatch.setattr(
         "peerreviewagents.agents.reviewers.base.make_llm",
@@ -170,7 +170,7 @@ def test_no_reviewer_prompt_carries_the_previous_round(tmp_path, monkeypatch):
     """The load-bearing property, asserted over what the graph really renders.
 
     Not over the source of the node builder, and not over one reviewer: all
-    eight, in a real round-2 run against a real round-1 record with real
+    five, in a real round-2 run against a real round-1 record with real
     weaknesses and asks in it.
     """
     job_id = _first_round(tmp_path, monkeypatch)
@@ -179,7 +179,7 @@ def test_no_reviewer_prompt_carries_the_previous_round(tmp_path, monkeypatch):
 
     _revision(tmp_path, monkeypatch, job_id)
 
-    assert len(prompts) >= 8, "the panel did not run"
+    assert len(prompts) >= 5, "the panel did not run"
     for prompt in prompts:
         lowered = prompt.lower()
         for phrase in (

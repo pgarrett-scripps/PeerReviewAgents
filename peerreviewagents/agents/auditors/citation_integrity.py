@@ -41,4 +41,5 @@ node = make_auditor_node(
     # of two flattened columns. The manuscript text is still there and is
     # still where in-text citations are read from.
     needs_references=True,
+    requires_reliable_references=True,
 )
