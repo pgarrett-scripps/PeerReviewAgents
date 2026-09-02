@@ -1,10 +1,10 @@
 """LLM provider factory.
 
-Three providers wired up: ``anthropic`` (default, direct Anthropic API),
-``openrouter`` (single API key for any model on the platform), and
-``openai`` (direct OpenAI API). Each builds a streaming LangChain
-``BaseChatModel`` with the observability callback attached so token /
-cost events flow back to the TUI exactly like before.
+Seven providers are wired up: ``anthropic`` (default, direct Anthropic API),
+``openrouter`` (single API key for any model on the platform), ``openai``
+(direct OpenAI API), ``claude-code``, ``codex``, ``droid``, and ``pi``. Each
+builds a LangChain ``BaseChatModel`` with the observability callback attached
+so token and cost events flow back to the TUI exactly like before.
 
 A :class:`ProviderSpec` per provider declares the structured-output
 mechanism the provider prefers and whether it honors
@@ -23,6 +23,7 @@ from typing import Any, Callable, Literal
 import httpx
 
 from ..observability import StreamingCallback
+from .subscriptions import SubscriptionChatModel
 
 _TEMPERATURE = 0.3
 
@@ -392,6 +393,27 @@ def _make_anthropic(model: str, *, reasoning_effort: str | None = None,
     return ChatAnthropic(**kwargs)
 
 
+def _make_subscription(
+    provider: str,
+    model: str,
+    *,
+    reasoning_effort: str | None = None,
+    node: str | None = None,
+    run_id: str | None = None,
+    timeout_s: float = _READ_TIMEOUT_S,
+    **_kwargs: Any,
+) -> SubscriptionChatModel:
+    """Build a model backed by a signed-in coding agent CLI."""
+    return SubscriptionChatModel(
+        provider=provider,
+        model=model,
+        reasoning_effort=reasoning_effort,
+        timeout_s=timeout_s,
+        node=node,
+        run_id=run_id,
+    )
+
+
 _ANTHROPIC_THINKING_BUDGET = {"low": 1024, "medium": 4096, "high": 8192}
 
 # Direct-Anthropic model families (matched as normalized substrings, so both
@@ -508,6 +530,36 @@ PROVIDERS: dict[str, ProviderSpec] = {
         supports_cache_control=True,
         api_key_env=("ANTHROPIC_API_KEY",),
     ),
+    "claude-code": ProviderSpec(
+        name="claude-code",
+        factory=lambda model, **kwargs: _make_subscription(
+            "claude-code", model, **kwargs
+        ),
+        structured_method="json_schema",
+        supports_cache_control=False,
+        api_key_env=(),
+    ),
+    "codex": ProviderSpec(
+        name="codex",
+        factory=lambda model, **kwargs: _make_subscription("codex", model, **kwargs),
+        structured_method="json_schema",
+        supports_cache_control=False,
+        api_key_env=(),
+    ),
+    "droid": ProviderSpec(
+        name="droid",
+        factory=lambda model, **kwargs: _make_subscription("droid", model, **kwargs),
+        structured_method="json_schema",
+        supports_cache_control=False,
+        api_key_env=(),
+    ),
+    "pi": ProviderSpec(
+        name="pi",
+        factory=lambda model, **kwargs: _make_subscription("pi", model, **kwargs),
+        structured_method="json_schema",
+        supports_cache_control=False,
+        api_key_env=(),
+    ),
 }
 
 
@@ -552,6 +604,9 @@ def spec_for_llm(llm: Any) -> ProviderSpec:
     ``config['provider']``, so it stays correct when different agents run on
     different providers via model tags.
     """
+    subscription_provider = getattr(llm, "_subscription_provider", None)
+    if subscription_provider in ("claude-code", "codex", "droid", "pi"):
+        return PROVIDERS[subscription_provider]
     # MRO names, not the leaf name: the OpenRouter factory builds a ChatOpenAI
     # *subclass* (see _chat_openrouter_class), and a string check on the leaf
     # class alone would misfile it under the fallback.

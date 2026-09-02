@@ -1,0 +1,38 @@
+{
+  "name": "peer-review-agents",
+  "version": "0.5.0+codex.20260902015405",
+  "description": "Run a rigorous multi-agent peer review from Codex.",
+  "author": {
+    "name": "PeerReviewAgents contributors",
+    "url": "https://github.com/pgarrett-scripps"
+  },
+  "homepage": "https://github.com/pgarrett-scripps/PeerReviewAgents",
+  "repository": "https://github.com/pgarrett-scripps/PeerReviewAgents",
+  "license": "MIT",
+  "keywords": [
+    "peer-review",
+    "manuscripts",
+    "research",
+    "mcp"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Peer Review Agents",
+    "shortDescription": "Multi-agent scholarly peer review",
+    "longDescription": "Run the PeerReviewAgents editorial pipeline on a local manuscript, monitor its progress, and read the resulting review artifacts.",
+    "developerName": "PeerReviewAgents contributors",
+    "category": "Research",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/pgarrett-scripps/PeerReviewAgents",
+    "defaultPrompt": [
+      "Review this manuscript with Peer Review Agents.",
+      "Check the status of my peer review.",
+      "Read the decision letter from my completed review."
+    ]
+  }
+}

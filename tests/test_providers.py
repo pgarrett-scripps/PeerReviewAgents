@@ -16,6 +16,7 @@ from peerreviewagents.runtime.providers import (
     make_chat_model,
     provider_spec,
 )
+from peerreviewagents.runtime.subscriptions import SUBSCRIPTION_PROVIDERS
 
 
 def _cfg(provider: str, model: str = "test-model") -> dict:
@@ -129,7 +130,9 @@ def test_spec_table_consistency():
     # ValueError, and the declared preference was silently dead code.
     for name, spec in PROVIDERS.items():
         assert spec.name == name
-        assert isinstance(spec.api_key_env, tuple) and spec.api_key_env
+        assert isinstance(spec.api_key_env, tuple)
+        if name not in SUBSCRIPTION_PROVIDERS:
+            assert spec.api_key_env
         assert spec.structured_method in ("json_schema", "function_calling")
 
 
@@ -147,6 +150,10 @@ def test_declared_structured_methods_actually_bind(monkeypatch):
         "openrouter": "anthropic/claude-opus-5",
         "openai": "gpt-4.1",
         "anthropic": "claude-opus-5",
+        "claude-code": "default",
+        "codex": "default",
+        "droid": "default",
+        "pi": "default",
     }
     for name, spec in PROVIDERS.items():
         llm = make_chat_model(_cfg(name, models[name]))
