@@ -1,0 +1,15 @@
+{
+  "name": "peer-review-agents-pi",
+  "version": "0.5.0",
+  "description": "Local PeerReviewAgents tools and skill for Pi",
+  "license": "MIT",
+  "type": "module",
+  "keywords": ["pi-package", "peer-review", "mcp", "research"],
+  "dependencies": {
+    "pi-mcp-adapter": "^2.21.2"
+  },
+  "pi": {
+    "extensions": ["./peer-review-mcp.ts"],
+    "skills": ["./skills/peer-review-manuscript"]
+  }
+}

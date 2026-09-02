@@ -79,7 +79,7 @@ def _run_failed(state: dict) -> str | None:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="peerreview",
-        description="Multi-agent peer review (OpenRouter-backed)",
+        description="Multi-agent peer review",
         epilog=(
             "Configuration (lowest to highest precedence):\n"
             "  built-in defaults\n"
@@ -99,6 +99,10 @@ def build_parser() -> argparse.ArgumentParser:
             "  OPENROUTER_API_KEY  — provider=openrouter  (default)\n"
             "  ANTHROPIC_API_KEY   — provider=anthropic\n"
             "  OPENAI_API_KEY      — provider=openai\n"
+            "  Signed-in claude CLI: provider=claude-code\n"
+            "  Signed-in codex CLI:  provider=codex\n"
+            "  Authenticated droid CLI: provider=droid\n"
+            "  Authenticated pi CLI:    provider=pi\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -112,14 +116,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--provider",
         dest="provider",
-        choices=("openrouter", "anthropic", "openai"),
-        help="LLM provider (default: openrouter).",
+        choices=(
+            "openrouter", "anthropic", "openai", "claude-code", "codex", "droid", "pi"
+        ),
+        help="LLM provider. Coding agent providers use their signed-in CLI.",
     )
     p.add_argument(
         "--reasoning-model",
         dest="reasoning_model",
         help="Model id for the active provider (e.g. anthropic/claude-opus-5 "
-             "on OpenRouter, claude-opus-5 on Anthropic direct, gpt-4.1 on OpenAI).",
+             "on OpenRouter, claude-opus-5 on Anthropic direct, gpt-4.1 on OpenAI, "
+             "or default to use a coding agent CLI's configured model).",
     )
     p.add_argument(
         "--single-model",
@@ -487,6 +494,18 @@ def _validate_api_key(config: dict) -> None:
         spec = PROVIDERS.get(name)
         if spec is None:
             continue
+        if not spec.api_key_env:
+            from peerreviewagents.runtime.subscriptions import (
+                SubscriptionCLIError,
+                validate_subscription_cli,
+            )
+
+            try:
+                validate_subscription_cli(name)
+            except SubscriptionCLIError as exc:
+                console.print(f"[red]{exc}[/red]")
+                sys.exit(1)
+            continue
         if any(os.environ.get(var) for var in spec.api_key_env):
             continue
         primary = spec.api_key_env[0]
@@ -611,7 +630,11 @@ def run() -> None:
                              "(default: ./.peerreview-uploads)")
         sp.add_argument("--config", dest="config_path", default=None)
         sp.add_argument("--provider", dest="provider",
-                        choices=("openrouter", "anthropic", "openai"), default=None)
+                        choices=(
+                            "openrouter", "anthropic", "openai", "claude-code", "codex",
+                            "droid", "pi",
+                        ),
+                        default=None)
         sp.add_argument("--reasoning-model", dest="reasoning_model", default=None)
         sp.add_argument("--debate-rounds", type=int, dest="max_debate_rounds", default=None)
         sp.add_argument("--output-dir", dest="output_dir", default=None)
