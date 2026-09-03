@@ -116,14 +116,14 @@ class ReviewService:
         provider = provider.strip().lower()
         if provider not in _PROVIDERS:
             raise ValueError(f"unknown provider {provider!r}. Available: {sorted(_PROVIDERS)}")
-        if provider in SUBSCRIPTION_PROVIDERS:
-            validate_subscription_cli(provider)
         if not 1 <= strictness <= 5:
             raise ValueError("strictness must be between 1 and 5")
         if not 0 <= debate_rounds <= _MAX_DEBATE_ROUNDS:
             raise ValueError(
                 f"debate_rounds must be between 0 and {_MAX_DEBATE_ROUNDS}"
             )
+        if provider in SUBSCRIPTION_PROVIDERS:
+            validate_subscription_cli(provider)
 
         overrides: dict[str, Any] = {
             "provider": provider,
