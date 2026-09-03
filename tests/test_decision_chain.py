@@ -23,6 +23,46 @@ from peerreviewagents.agents.utils.agent_utils import RunResult
 from peerreviewagents.agents.utils.structured import MarkdownResult
 from peerreviewagents.reports import write_reports
 
+_SCORE_BLOCK = """
+**Publication readiness:** 78/100
+
+## Readiness Breakdown
+- Scientific validity: 28/35
+- Methods and evidence: 20/25
+- Reproducibility and reporting: 15/20
+- Clarity and completeness: 15/20
+
+## Contribution Profile
+- Novelty: moderate
+- Significance: moderate
+- Usefulness: high
+
+## Score and Decision
+The score reflects a sound foundation with a material unresolved issue. The
+decision follows the work required to resolve that issue, not a score range.
+"""
+
+
+def _editor_score_fields() -> dict:
+    return {
+        "readiness_score": 78,
+        "readiness_breakdown": {
+            "scientific_validity": 28,
+            "methods_and_evidence": 20,
+            "reproducibility_and_reporting": 15,
+            "clarity_and_completeness": 15,
+        },
+        "contribution_profile": {
+            "novelty": "moderate",
+            "significance": "moderate",
+            "usefulness": "high",
+        },
+        "score_decision_rationale": (
+            "The score reflects a sound foundation with a material unresolved "
+            "issue. The decision follows the required work, not a score range."
+        ),
+    }
+
 
 def _panel_state(**extra):
     state = {
@@ -150,12 +190,26 @@ def test_editor_recovers_explicit_verdict_after_provider_boolean_prefix():
     letter = (
         "false VERDICT: minor\n\n## Summary of Evaluation\n\n"
         "The evidence supports the central claims after reporting corrections.\n\n"
-        "## Required Revisions\n\n1. Clarify the evaluation protocol."
+        "## Required Revisions\n\n1. Clarify the evaluation protocol.\n\n"
+        + _SCORE_BLOCK
     )
     parsed = editor_in_chief._editor_from_markdown(letter)
     assert parsed is not None
     assert parsed[0] == "minor"
     assert parsed[1] == ["Clarify the evaluation protocol."]
+    assert parsed[5] == 78
+    assert parsed[6]["scientific_validity"] == 28
+    assert parsed[7]["usefulness"] == "high"
+
+
+def test_editor_rejects_missing_or_inconsistent_readiness_data():
+    body = (
+        "VERDICT: accept\n\n## Summary of Evaluation\n\n"
+        "The manuscript is publishable as written and has no blocking issues.\n\n"
+    )
+    assert editor_in_chief._editor_from_markdown(body) is None
+    inconsistent = body + _SCORE_BLOCK.replace("78/100", "79/100")
+    assert editor_in_chief._editor_from_markdown(inconsistent) is None
 
 
 # --- editor refuses to repair a non-verdict ----------------------------------
@@ -213,7 +267,7 @@ remaining comments concern reporting and presentation.
 
 ## Minor Suggestions
 - State the software versions and random seed used for the example.
-"""
+""" + _SCORE_BLOCK
     monkeypatch.setattr(editor_in_chief, "make_llm", lambda config, **_k: object())
     monkeypatch.setattr(
         editor_in_chief,
@@ -236,7 +290,8 @@ def test_editor_preserves_verdict_when_revision_list_format_is_unparseable(monke
         "publication. Those are text-only corrections and do not require new "
         "analysis. This deliberately ordinary paragraph has no special section "
         "headings or numbered list, and that formatting choice must not erase "
-        "the editor's actual decision."
+        "the editor's actual decision.\n\n"
+        + _SCORE_BLOCK
     )
     monkeypatch.setattr(editor_in_chief, "make_llm", lambda config, **_k: object())
     monkeypatch.setattr(
@@ -248,7 +303,7 @@ def test_editor_preserves_verdict_when_revision_list_format_is_unparseable(monke
 
     assert out["decision"] == "minor"
     assert out["required_revisions"] == []
-    assert letter in out["decision_letter"]
+    assert letter.strip() in out["decision_letter"]
     assert any("editor degraded" in error for error in out["errors"])
 
 
@@ -392,6 +447,7 @@ def test_editor_schema_rejects_a_major_with_no_required_revisions():
     with pytest.raises(ValueError, match="required_revisions is empty"):
         EditorDecisionOutput(
             decision="major",
+            **_editor_score_fields(),
             summary_of_evaluation=(
                 "The panel found the analysis sound but the headline claim "
                 "unsupported by the reported statistics, and the debate did "
@@ -406,6 +462,7 @@ def test_editor_schema_allows_accept_and_reject_without_revisions():
     for verdict in ("accept", "reject"):
         out = EditorDecisionOutput(
             decision=verdict,
+            **_editor_score_fields(),
             summary_of_evaluation=(
                 "The panel is unanimous and the debate surfaced nothing "
                 "unresolved, so the verdict follows directly from the "
@@ -436,6 +493,7 @@ def test_editor_schema_rejects_a_placeholder_summary():
         with pytest.raises(ValueError, match="says nothing"):
             EditorDecisionOutput(
                 decision="major",
+                **_editor_score_fields(),
                 summary_of_evaluation=junk,
                 required_revisions=["Do the thing."],
             )
@@ -444,6 +502,7 @@ def test_editor_schema_rejects_a_placeholder_summary():
 def test_editor_schema_accepts_a_real_synthesis():
     out = EditorDecisionOutput(
         decision="major",
+        **_editor_score_fields(),
         summary_of_evaluation=(
             "The panel converges on a technically sound dataset whose headline "
             "mechanistic claim outruns the evidence. Two reviewers flagged the "
@@ -457,6 +516,63 @@ def test_editor_schema_accepts_a_real_synthesis():
     assert out.decision == "major"
 
 
+def test_editor_score_does_not_control_the_decision():
+    fields = _editor_score_fields()
+    fields["readiness_score"] = 90
+    fields["readiness_breakdown"] = {
+        "scientific_validity": 33,
+        "methods_and_evidence": 23,
+        "reproducibility_and_reporting": 17,
+        "clarity_and_completeness": 17,
+    }
+    fields["contribution_profile"] = {
+        "novelty": "low",
+        "significance": "moderate",
+        "usefulness": "high",
+    }
+    summary = (
+        "The evidence is valid, complete, and clearly reported. The work is "
+        "incremental but useful to its intended community, and no revision is "
+        "needed before publication. The recommendation therefore follows the "
+        "absence of blocking work rather than novelty or a numerical cutoff."
+    )
+    accepted = EditorDecisionOutput(
+        decision="accept",
+        summary_of_evaluation=summary,
+        **fields,
+    )
+    major = EditorDecisionOutput(
+        decision="major",
+        summary_of_evaluation=(
+            "The manuscript is otherwise strong and nearly complete, but one "
+            "central claim still depends on an outcome-changing analysis. That "
+            "single blocking task makes the recommendation major even though "
+            "the broader publication-readiness assessment remains high."
+        ),
+        required_revisions=["Run the missing outcome-changing analysis."],
+        **fields,
+    )
+    assert accepted.decision == "accept"
+    assert accepted.contribution_profile.novelty == "low"
+    assert major.decision == "major"
+    assert major.readiness_score == 90
+
+
+def test_editor_score_must_equal_its_components():
+    fields = _editor_score_fields()
+    fields["readiness_score"] = 79
+    with pytest.raises(ValueError, match="must equal the sum"):
+        EditorDecisionOutput(
+            decision="accept",
+            summary_of_evaluation=(
+                "The manuscript is scientifically sound, complete, and ready "
+                "for publication. The panel found no blocking concerns, and "
+                "the editor therefore recommends acceptance as it stands."
+            ),
+            **fields,
+        )
+
+
 def test_editor_schema_rejects_a_summary_that_is_a_whole_review():
     """One letter published a 37,275-character summary that had swallowed a
     reviewer report and its numbered questions, while required_revisions held
@@ -464,6 +580,7 @@ def test_editor_schema_rejects_a_summary_that_is_a_whole_review():
     with pytest.raises(ValueError, match="review rather than a synthesis"):
         EditorDecisionOutput(
             decision="major",
+            **_editor_score_fields(),
             summary_of_evaluation="The panel found problems. " * 2000,
             required_revisions=["Do the thing."],
         )
@@ -482,6 +599,7 @@ def test_editor_prose_path_rejects_a_letter_that_is_a_transcript(monkeypatch):
         "statistical objection. Fixing it needs a reanalysis whose outcome "
         "could change a conclusion, so the verdict is major.\n\n"
         "## Required Revisions\n\n1. Rerun the analysis with the correction.\n"
+        + _SCORE_BLOCK
     )
     answers = iter([dump, good])
     monkeypatch.setattr(editor_in_chief, "make_llm", lambda config, **_k: object())
@@ -507,6 +625,7 @@ def test_editor_retry_does_not_echo_a_contaminated_attempt(monkeypatch):
         "## Summary of Evaluation\n\nThe evidence does not yet support the "
         "central claim, and the missing control could change the conclusion.\n\n"
         "## Required Revisions\n\n1. Add the missing control.\n"
+        + _SCORE_BLOCK
     )
     prompts = []
     answers = iter([contaminated, good])

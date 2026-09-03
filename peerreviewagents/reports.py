@@ -189,12 +189,28 @@ def _summary(state: ReviewState) -> str:
     strictness = _strictness_line(state)
     if strictness:
         lines.append(f"**Review strictness:** {strictness}")
+    readiness = state.get("readiness_score")
+    if isinstance(readiness, (int, float)):
+        lines.append(f"**Publication readiness:** {int(readiness)}/100")
+        profile = state.get("contribution_profile") or {}
+        if profile:
+            lines.append(
+                "**Contribution profile:** "
+                + ", ".join(
+                    f"{name} {profile.get(name, 'not rated')}"
+                    for name in ("novelty", "significance", "usefulness")
+                )
+            )
     lines.append(f"**Reviewer panel:** condensed ({len(state.get('reports', []))} reports)")
     prior = state.get("prior_round")
     if prior is not None:
         lines.append(f"**Round:** {prior.round + 1} (revision of {prior.job_id})")
         if prior.weighted_score is not None:
             lines.append(f"**Previous decision:** {_VERDICT_LABEL.get(prior.decision, prior.decision)}")
+        if prior.readiness_score is not None:
+            lines.append(
+                f"**Previous publication readiness:** {prior.readiness_score}/100"
+            )
     # Placed with the other provenance, above the scores: a reader weighing a
     # verdict should learn that the panel read a damaged conversion before
     # they read the verdict, not after.
@@ -224,7 +240,7 @@ def _summary(state: ReviewState) -> str:
                 + (f" ({reason})" if reason else "")
                 + ", excluded from the mean"
             )
-    lines += ["", "**Panel average:** not used; individual scores are advisory"]
+    lines += ["", "**Specialist scores:** advisory inputs, not the editorial score"]
     audits = state.get("audits", [])
     if audits:
         lines += ["", "## Editorial Audits"]

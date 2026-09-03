@@ -77,6 +77,7 @@ def round_delta(state: ReviewState) -> str:
         _score_line(prior, state),
     ]
     for optional in (
+        _prior_readiness_line(prior),
         _resubmission_line(prior, state),
         _per_reviewer_line(prior, state),
         _compliance_line(prior, state),
@@ -125,7 +126,7 @@ def _round_line(prior: Any, state: ReviewState) -> str:
 
 
 def _score_line(prior: Any, state: ReviewState) -> str:
-    """Weighted panel score then vs. now — the headline the prose must match."""
+    """Advisory specialist-panel score then versus now."""
     now = _weighted(state.get("reports") or [])
     then = _float_or_none(_get(prior, "weighted_score", None))
 
@@ -136,6 +137,17 @@ def _score_line(prior: Any, state: ReviewState) -> str:
     delta = now - then
     return (
         f"Weighted panel score: {then:.2f}/5 -> {now:.2f}/5 ({delta:+.2f})."
+    )
+
+
+def _prior_readiness_line(prior: Any) -> str:
+    """The prior editor score, when the earlier record contains one."""
+    score = _float_or_none(_get(prior, "readiness_score", None))
+    if score is None:
+        return ""
+    return (
+        f"Previous publication readiness: {score:.0f}/100. Assign this round's "
+        "score from the current manuscript and verified revision record."
     )
 
 

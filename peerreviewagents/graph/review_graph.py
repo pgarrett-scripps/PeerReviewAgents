@@ -343,6 +343,10 @@ class PeerReviewGraph:
             debate=[],
             debate_round=0,
             debate_synthesis="",
+            readiness_score=None,
+            readiness_breakdown={},
+            contribution_profile={},
+            score_decision_rationale="",
             errors=[],
             total_cost=0.0,
         )

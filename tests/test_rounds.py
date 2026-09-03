@@ -28,6 +28,22 @@ def _state(**over):
         "manuscript_path": "",
         "config": {},
         "decision": "major",
+        "readiness_score": 78,
+        "readiness_breakdown": {
+            "scientific_validity": 28,
+            "methods_and_evidence": 20,
+            "reproducibility_and_reporting": 15,
+            "clarity_and_completeness": 15,
+        },
+        "contribution_profile": {
+            "novelty": "moderate",
+            "significance": "moderate",
+            "usefulness": "high",
+        },
+        "score_decision_rationale": (
+            "The manuscript is promising, but an unresolved central issue "
+            "still requires major revision before publication."
+        ),
         "required_revisions": [
             "Report per-cluster results rather than the pooled mean.",
             "State the random seed used for training.",
@@ -70,6 +86,15 @@ def test_weighted_score_matches_confidence_weighting():
     rec = rounds.build_from_state(_state(), job_id="j")
     # (3*4 + 2*3) / (4+3)
     assert rec.weighted_score == pytest.approx(18 / 7, abs=1e-3)
+
+
+def test_editorial_score_survives_round_record_reload(tmp_path):
+    rec = rounds.build_from_state(_state(), job_id="j")
+    rounds.save(rec, str(tmp_path))
+    loaded = rounds.load(str(tmp_path))
+    assert loaded.readiness_score == 78
+    assert loaded.readiness_breakdown["scientific_validity"] == 28
+    assert loaded.contribution_profile["usefulness"] == "high"
 
 
 def test_round_increments_from_prior():
