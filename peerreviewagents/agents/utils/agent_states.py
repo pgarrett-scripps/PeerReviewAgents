@@ -188,6 +188,14 @@ class ReviewState(TypedDict, total=False):
     # --- final ---
     decision: str                # accept | minor | major | reject
     decision_letter: str
+    # Official 0 to 100 publication-readiness assessment assigned by the
+    # Editor-in-Chief. Reviewer scores remain advisory panel signals.
+    readiness_score: int | None
+    readiness_breakdown: dict[str, int]
+    # Novelty, significance, and usefulness are descriptive contribution
+    # ratings. They are not inputs to a decision threshold.
+    contribution_profile: dict[str, str]
+    score_decision_rationale: str
     # The editor's structured asks, kept alongside the rendered letter so the
     # round record can assign stable ids to them and a later round can check
     # them off. Without these, referencing round N-1 would mean parsing

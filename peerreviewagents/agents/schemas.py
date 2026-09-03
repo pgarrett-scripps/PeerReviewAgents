@@ -16,6 +16,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 Verdict = Literal["accept", "minor", "major", "reject"]
+ContributionLevel = Literal["low", "moderate", "high"]
 
 # Text that fills a required field without saying anything. A model under a
 # schema will sometimes emit the *shape* of an answer — "...", "TBD", a bare
@@ -951,10 +952,48 @@ class AuthorRebuttalOutput(BaseModel):
 # --- Editor-in-Chief --------------------------------------------------------
 
 
+class ReadinessBreakdown(BaseModel):
+    """Publication readiness components scored by the Editor-in-Chief."""
+
+    scientific_validity: int = Field(..., ge=0, le=35)
+    methods_and_evidence: int = Field(..., ge=0, le=25)
+    reproducibility_and_reporting: int = Field(..., ge=0, le=20)
+    clarity_and_completeness: int = Field(..., ge=0, le=20)
+
+    @property
+    def total(self) -> int:
+        return (
+            self.scientific_validity
+            + self.methods_and_evidence
+            + self.reproducibility_and_reporting
+            + self.clarity_and_completeness
+        )
+
+
+class ContributionProfile(BaseModel):
+    """Contribution attributes kept separate from publication readiness."""
+
+    novelty: ContributionLevel
+    significance: ContributionLevel
+    usefulness: ContributionLevel
+    rationale: str = Field(
+        default="",
+        description="Short explanation of the three contribution ratings.",
+    )
+
+
 class EditorDecisionOutput(BaseModel):
     """Editor-in-Chief's final decision + author-facing letter."""
 
     decision: Verdict
+    readiness_score: int = Field(..., ge=0, le=100)
+    readiness_breakdown: ReadinessBreakdown
+    contribution_profile: ContributionProfile
+    score_decision_rationale: str = Field(
+        ...,
+        min_length=40,
+        description="Why the readiness score and revision-burden decision fit together.",
+    )
     summary_of_evaluation: str = Field(
         ...,
         description="Editor's synthesis of the reviewer reports, audits, "
@@ -970,6 +1009,14 @@ class EditorDecisionOutput(BaseModel):
         default_factory=list,
         description="Optional minor suggestions for the authors.",
     )
+
+    @model_validator(mode="after")
+    def _readiness_total_must_match(self) -> "EditorDecisionOutput":
+        if self.readiness_score != self.readiness_breakdown.total:
+            raise ValueError(
+                "readiness_score must equal the sum of readiness_breakdown"
+            )
+        return self
 
     @model_validator(mode="after")
     def _summary_must_be_a_synthesis(self) -> "EditorDecisionOutput":
@@ -1040,6 +1087,24 @@ class EditorDecisionOutput(BaseModel):
             "# Decision Letter",
             "",
             f"**Decision:** {self.decision}",
+            f"**Publication readiness:** {self.readiness_score}/100",
+            "",
+            "## Readiness Breakdown",
+            f"- Scientific validity: {self.readiness_breakdown.scientific_validity}/35",
+            f"- Methods and evidence: {self.readiness_breakdown.methods_and_evidence}/25",
+            "- Reproducibility and reporting: "
+            f"{self.readiness_breakdown.reproducibility_and_reporting}/20",
+            f"- Clarity and completeness: {self.readiness_breakdown.clarity_and_completeness}/20",
+            "",
+            "## Contribution Profile",
+            f"- Novelty: {self.contribution_profile.novelty}",
+            f"- Significance: {self.contribution_profile.significance}",
+            f"- Usefulness: {self.contribution_profile.usefulness}",
+            "",
+            self.contribution_profile.rationale.strip(),
+            "",
+            "## Score and Decision",
+            self.score_decision_rationale.strip(),
             "",
             "## Summary of Evaluation",
             self.summary_of_evaluation.strip(),

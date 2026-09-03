@@ -132,6 +132,12 @@ class RoundRecord:
     manuscript_cache_key: str
     decision: str
     weighted_score: float | None
+    # The official editorial score is distinct from weighted_score, which is
+    # retained as the advisory specialist-panel signal for compatibility.
+    readiness_score: int | None = None
+    readiness_breakdown: dict[str, int] = field(default_factory=dict)
+    contribution_profile: dict[str, str] = field(default_factory=dict)
+    score_decision_rationale: str = ""
     required_revisions: list[RequiredRevision] = field(default_factory=list)
     minor_suggestions: list[str] = field(default_factory=list)
     reviewer_reports: list[PriorReviewerReport] = field(default_factory=list)
@@ -172,6 +178,23 @@ class RoundRecord:
             manuscript_cache_key=str(raw.get("manuscript_cache_key", "")),
             decision=str(raw.get("decision", "")),
             weighted_score=raw.get("weighted_score"),
+            readiness_score=(
+                int(raw["readiness_score"])
+                if isinstance(raw.get("readiness_score"), (int, float))
+                else None
+            ),
+            readiness_breakdown={
+                str(k): int(v)
+                for k, v in (raw.get("readiness_breakdown") or {}).items()
+                if isinstance(v, (int, float))
+            },
+            contribution_profile={
+                str(k): str(v)
+                for k, v in (raw.get("contribution_profile") or {}).items()
+            },
+            score_decision_rationale=str(
+                raw.get("score_decision_rationale", "")
+            ),
             required_revisions=[
                 RequiredRevision(**_known_fields(RequiredRevision, r))
                 for r in raw.get("required_revisions", [])
@@ -314,6 +337,16 @@ def build_from_state(state: dict, job_id: str, cache_key: str = "") -> RoundReco
         manuscript_cache_key=cache_key,
         decision=state.get("decision", ""),
         weighted_score=_weighted_score(state),
+        readiness_score=(
+            int(state["readiness_score"])
+            if isinstance(state.get("readiness_score"), (int, float))
+            else None
+        ),
+        readiness_breakdown=dict(state.get("readiness_breakdown") or {}),
+        contribution_profile=dict(state.get("contribution_profile") or {}),
+        score_decision_rationale=str(
+            state.get("score_decision_rationale") or ""
+        ),
         required_revisions=revisions,
         minor_suggestions=list(state.get("minor_suggestions") or []),
         reviewer_reports=reports,

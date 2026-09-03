@@ -93,6 +93,22 @@ _CANNED: dict[type, object] = {
     ),
     EditorDecisionOutput: EditorDecisionOutput(
         decision="major",
+        readiness_score=78,
+        readiness_breakdown={
+            "scientific_validity": 28,
+            "methods_and_evidence": 20,
+            "reproducibility_and_reporting": 15,
+            "clarity_and_completeness": 15,
+        },
+        contribution_profile={
+            "novelty": "moderate",
+            "significance": "moderate",
+            "usefulness": "high",
+        },
+        score_decision_rationale=(
+            "The current evidence is promising, but the unresolved scope issue "
+            "requires major revision before the manuscript is publishable."
+        ),
         summary_of_evaluation=(
             "The panel agrees the method is sound but the "
             "generalization claim reaches past the evidence shown. The "

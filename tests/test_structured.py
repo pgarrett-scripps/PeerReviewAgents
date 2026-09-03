@@ -111,6 +111,22 @@ def test_author_rebuttal_renders_populated():
 def test_editor_decision_renders_numbered_revisions():
     e = EditorDecisionOutput(
         decision="major",
+        readiness_score=78,
+        readiness_breakdown={
+            "scientific_validity": 28,
+            "methods_and_evidence": 20,
+            "reproducibility_and_reporting": 15,
+            "clarity_and_completeness": 15,
+        },
+        contribution_profile={
+            "novelty": "moderate",
+            "significance": "moderate",
+            "usefulness": "high",
+        },
+        score_decision_rationale=(
+            "The current evidence is promising, but the unresolved scope issue "
+            "requires major revision before the manuscript is publishable."
+        ),
         summary_of_evaluation=(
             "The panel agrees the method is sound but the "
             "generalization claim reaches past the evidence shown. The "
@@ -123,6 +139,7 @@ def test_editor_decision_renders_numbered_revisions():
     md = e.to_markdown()
     assert "# Decision Letter" in md
     assert "**Decision:** major" in md
+    assert "**Publication readiness:** 78/100" in md
     assert "1. Narrow the claim." in md
     assert "2. Add a second cluster." in md
     assert "- Tighten abstract." in md
@@ -365,6 +382,22 @@ def test_failed_repair_falls_back_to_the_unexplained_abstention():
 
 _BAD_EDITOR = {
     "decision": "major",
+    "readiness_score": 78,
+    "readiness_breakdown": {
+        "scientific_validity": 28,
+        "methods_and_evidence": 20,
+        "reproducibility_and_reporting": 15,
+        "clarity_and_completeness": 15,
+    },
+    "contribution_profile": {
+        "novelty": "moderate",
+        "significance": "moderate",
+        "usefulness": "high",
+    },
+    "score_decision_rationale": (
+        "The score reflects a sound foundation with unresolved work that "
+        "requires major revision before publication."
+    ),
     "summary_of_evaluation": "...",
     "required_revisions": [
         "Report the missing ablation and reconcile it with the central claim.",
@@ -391,6 +424,7 @@ def test_editor_summary_is_repaired_without_changing_verdict_or_revisions():
     assert result.instance.decision == "major"
     assert result.instance.required_revisions == _BAD_EDITOR["required_revisions"]
     assert result.instance.summary_of_evaluation == good_summary
+    assert result.instance.readiness_score == 78
     assert not result.warnings
 
 

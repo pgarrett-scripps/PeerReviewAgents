@@ -94,8 +94,9 @@ _REVISION_SYS = (
     "- They are not the record of what happened to your asks and cannot be. "
     "The compliance audit is the ONLY account of that. Where the panel and "
     "the audit seem to disagree, they are answering different questions.\n"
-    "- The prior round's decision and weighted score are your reference "
-    "point, and they come from the delta, not from the panel.\n\n"
+    "- The prior round's decision and publication-readiness score are your "
+    "editorial reference point. The weighted specialist score remains an "
+    "advisory comparison of two blind panels.\n\n"
     "Decide on the delta:\n"
     "- A manuscript that carried out its required revisions should move "
     "toward acceptance. Holding the verdict flat while the record shows the "
@@ -158,11 +159,54 @@ _REVISION_SYS = (
     "minor or major decisions, and optional `## Minor Suggestions`."
 )
 
+_SCORING_INSTRUCTIONS = (
+    "\n\nYou alone assign the official publication-readiness score. Score the "
+    "manuscript from 0 to 100 using exactly four components: scientific "
+    "validity from 0 to 35, methods and evidence from 0 to 25, "
+    "reproducibility and reporting from 0 to 20, and clarity and "
+    "completeness from 0 to 20. The four values must sum to the final score. "
+    "This score measures how ready the current manuscript is for publication. "
+    "It does not measure prestige. Rate novelty, significance, and usefulness "
+    "separately as low, moderate, or high. Low novelty or significance must "
+    "not prevent acceptance when the work is valid, useful, and publishable. "
+    "The decision remains a revision-burden judgment. No score range maps to "
+    "accept, minor, major, or reject. Explain how the score and decision fit. "
+    "Use this exact Markdown structure near the top of the letter:\n\n"
+    "**Publication readiness:** N/100\n\n"
+    "## Readiness Breakdown\n"
+    "- Scientific validity: N/35\n"
+    "- Methods and evidence: N/25\n"
+    "- Reproducibility and reporting: N/20\n"
+    "- Clarity and completeness: N/20\n\n"
+    "## Contribution Profile\n"
+    "- Novelty: low|moderate|high\n"
+    "- Significance: low|moderate|high\n"
+    "- Usefulness: low|moderate|high\n\n"
+    "## Score and Decision\n"
+    "Explain what lowers readiness and why the required work leads to the "
+    "stated decision."
+)
+
+_SYS += _SCORING_INSTRUCTIONS
+_REVISION_SYS += _SCORING_INSTRUCTIONS
+
 _VERDICT_LINE = re.compile(
     r"(?im)^\s*(?:[-*#>]\s*)*(?:\*\*)?"
     r"(?:verdict|decision|recommendation)(?:\*\*)?\s*[:=-]\s*(?:\*\*)?\s*"
     r"(accept|minor(?:\s+revision)?|major(?:\s+revision)?|reject)\b"
 )
+_READINESS_LINE = re.compile(
+    r"(?im)^\s*(?:[-*#>]\s*)*(?:\*\*)?"
+    r"(?:publication\s+readiness|readiness\s+score)(?:\*\*)?\s*[:=-]\s*"
+    r"(?:\*\*)?\s*(\d{1,3})(?:\s*/\s*100)?\b"
+)
+_READINESS_COMPONENTS = {
+    "scientific_validity": ("scientific validity", 35),
+    "methods_and_evidence": ("methods and evidence", 25),
+    "reproducibility_and_reporting": ("reproducibility and reporting", 20),
+    "clarity_and_completeness": ("clarity and completeness", 20),
+}
+_CONTRIBUTION_FIELDS = ("novelty", "significance", "usefulness")
 _MIN_DECISION_LETTER_CHARS = 100
 # And a ceiling, for the failure at the other end. The prose path preserves
 # whatever the editor writes, which is right up to the point where the editor
@@ -361,12 +405,26 @@ def _run(state: ReviewState) -> dict:
         if markdown is not None and not first_issue:
             first_issue = _decision_semantic_issue(markdown[0], markdown[1])
         if markdown is not None and not first_issue:
-            decision, revisions, suggestions, letter, warnings = markdown
+            (
+                decision,
+                revisions,
+                suggestions,
+                letter,
+                warnings,
+                readiness_score,
+                readiness_breakdown,
+                contribution_profile,
+                score_decision_rationale,
+            ) = markdown
             out = {
                 "decision": decision,
                 "decision_letter": letter,
                 "required_revisions": revisions,
                 "minor_suggestions": suggestions,
+                "readiness_score": readiness_score,
+                "readiness_breakdown": readiness_breakdown,
+                "contribution_profile": contribution_profile,
+                "score_decision_rationale": score_decision_rationale,
                 "total_cost": prose_cost,
             }
             if warnings:
@@ -414,7 +472,17 @@ def _run(state: ReviewState) -> dict:
                 retry_markdown[0], retry_markdown[1],
             )
         if retry_markdown is not None and not retry_issue:
-            decision, revisions, suggestions, letter, warnings = retry_markdown
+            (
+                decision,
+                revisions,
+                suggestions,
+                letter,
+                warnings,
+                readiness_score,
+                readiness_breakdown,
+                contribution_profile,
+                score_decision_rationale,
+            ) = retry_markdown
             errors = [
                 "editor degraded: initial prose decision was unusable; "
                 "retained the successful schema-free prose retry"
@@ -425,6 +493,10 @@ def _run(state: ReviewState) -> dict:
                 "decision_letter": letter,
                 "required_revisions": revisions,
                 "minor_suggestions": suggestions,
+                "readiness_score": readiness_score,
+                "readiness_breakdown": readiness_breakdown,
+                "contribution_profile": contribution_profile,
+                "score_decision_rationale": score_decision_rationale,
                 "total_cost": prose_cost,
                 "errors": errors,
             }
@@ -453,7 +525,17 @@ def _run(state: ReviewState) -> dict:
 
 def _editor_from_markdown(
     text: str,
-) -> tuple[str, list[str], list[str], str, list[str]] | None:
+) -> tuple[
+    str,
+    list[str],
+    list[str],
+    str,
+    list[str],
+    int,
+    dict[str, int],
+    dict[str, str],
+    str,
+] | None:
     """Tolerantly parse a decision letter while preserving its exact prose."""
     match = _VERDICT_LINE.search(text)
     raw = re.sub(r"\s+", " ", match.group(1).strip().lower()) if match else ""
@@ -475,6 +557,43 @@ def _editor_from_markdown(
         "major revision": "major",
         "reject": "reject",
     }[raw]
+    score_match = _READINESS_LINE.search(text)
+    if not score_match:
+        return None
+    readiness_score = int(score_match.group(1))
+    if not 0 <= readiness_score <= 100:
+        return None
+
+    readiness_breakdown: dict[str, int] = {}
+    for key, (label, maximum) in _READINESS_COMPONENTS.items():
+        component_match = re.search(
+            rf"(?im)^\s*[-*+]\s*(?:\*\*)?{re.escape(label)}"
+            rf"(?:\*\*)?\s*:\s*(\d{{1,3}})(?:\s*/\s*{maximum})?\b",
+            text,
+        )
+        if not component_match:
+            return None
+        value = int(component_match.group(1))
+        if not 0 <= value <= maximum:
+            return None
+        readiness_breakdown[key] = value
+    if sum(readiness_breakdown.values()) != readiness_score:
+        return None
+
+    contribution_profile: dict[str, str] = {}
+    for field in _CONTRIBUTION_FIELDS:
+        contribution_match = re.search(
+            rf"(?im)^\s*[-*+]\s*(?:\*\*)?{field}(?:\*\*)?\s*:\s*"
+            r"(?:\*\*)?(low|moderate|high)(?:\*\*)?\s*$",
+            text,
+        )
+        if not contribution_match:
+            return None
+        contribution_profile[field] = contribution_match.group(1).lower()
+
+    score_decision_rationale = _section_text(text, "score and decision")
+    if len(score_decision_rationale) < 40:
+        return None
     sections = _decision_sections(text)
     revisions = sections.get("required_revisions", [])
     suggestions = sections.get("minor_suggestions", [])
@@ -485,7 +604,36 @@ def _editor_from_markdown(
             "could be extracted from the Markdown letter"
         )
     letter = text if text.lstrip().startswith("#") else f"# Decision Letter\n\n{text}"
-    return decision, revisions, suggestions, letter, warnings
+    return (
+        decision,
+        revisions,
+        suggestions,
+        letter,
+        warnings,
+        readiness_score,
+        readiness_breakdown,
+        contribution_profile,
+        score_decision_rationale,
+    )
+
+
+def _section_text(text: str, heading: str) -> str:
+    """Return the prose under one Markdown heading."""
+    lines = text.splitlines()
+    start = None
+    for index, raw in enumerate(lines):
+        label = re.sub(r"^[#>*\s-]+|[*:#\s-]+$", "", raw.strip()).lower()
+        if label == heading:
+            start = index + 1
+            break
+    if start is None:
+        return ""
+    body: list[str] = []
+    for raw in lines[start:]:
+        if raw.strip().startswith("#"):
+            break
+        body.append(raw)
+    return "\n".join(body).strip()
 
 
 def _decision_sections(text: str) -> dict[str, list[str]]:
