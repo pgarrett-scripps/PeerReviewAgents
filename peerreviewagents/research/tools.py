@@ -14,19 +14,11 @@ build time.
 
 from __future__ import annotations
 
+import copy
+
 from langchain_core.tools import tool
 
 from .interface import available_methods, route
-
-# Module-level config holder — set by ``get_tools_by_name(names, config)``
-# before agent execution so the @tool functions (which can't take a
-# config arg per LangChain's tool schema rules) can read it.
-_ACTIVE_CONFIG: dict = {}
-
-
-def _cfg() -> dict:
-    return _ACTIVE_CONFIG
-
 
 # --- Logical operations (these are what reviewers actually call) -----------
 
@@ -37,7 +29,7 @@ def find_related_work(query: str, max_results: int = 5) -> str:
 
     Routes through Semantic Scholar (primary) → arXiv (rate-limit fallback).
     """
-    return route("find_related_work", _cfg(), query=query, max_results=max_results)
+    return route("find_related_work", {}, query=query, max_results=max_results)
 
 
 @tool
@@ -48,7 +40,7 @@ def search_biomedical_literature(query: str, max_results: int = 5) -> str:
     Routes through PubMed (primary) → bioRxiv/medRxiv preprints via
     EuropePMC (rate-limit fallback).
     """
-    return route("search_biomedical_literature", _cfg(), query=query, max_results=max_results)
+    return route("search_biomedical_literature", {}, query=query, max_results=max_results)
 
 
 @tool
@@ -58,7 +50,7 @@ def search_preprints(query: str, max_results: int = 5) -> str:
 
     Routes through bioRxiv (primary, via EuropePMC) → arXiv (fallback).
     """
-    return route("search_preprints", _cfg(), query=query, max_results=max_results)
+    return route("search_preprints", {}, query=query, max_results=max_results)
 
 
 # --- Tool registry & lookup -------------------------------------------------
@@ -76,22 +68,31 @@ def available_tool_names() -> list[str]:
 
 
 def get_tools_by_name(names: list[str], config: dict) -> list:
-    """Resolve tool ``names`` to bound tool objects, installing ``config``
-    so the underlying router can read ``data_vendors`` / ``tool_vendors``.
-    """
-    # Mutate in place so existing tool refs (already returned by an
-    # earlier call) pick up the latest config too. The pipeline is
-    # single-job-per-process today, so a global is fine here.
-    _ACTIVE_CONFIG.clear()
-    _ACTIVE_CONFIG.update(config)
-
+    """Resolve tool ``names`` to independently configured tool objects."""
     unknown = [n for n in names if n not in _TOOL_REGISTRY]
     if unknown:
         raise ValueError(
             f"unknown research tool(s): {unknown}; "
             f"available: {available_tool_names()}"
         )
-    return [_TOOL_REGISTRY[n] for n in names]
+
+    bound_config = copy.deepcopy(config)
+    tools = []
+    for name in names:
+        template = _TOOL_REGISTRY[name]
+
+        def invoke(query: str, max_results: int = 5, *, _name=name) -> str:
+            return route(
+                _name,
+                bound_config,
+                query=query,
+                max_results=max_results,
+            )
+
+        invoke.__name__ = name
+        invoke.__doc__ = template.description
+        tools.append(tool(invoke))
+    return tools
 
 
 __all__ = [

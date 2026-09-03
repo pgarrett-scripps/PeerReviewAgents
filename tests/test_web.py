@@ -228,6 +228,8 @@ def test_full_web_pipeline(monkeypatch, tmp_path, patched_llms):
             time.sleep(0.25)
         assert job is not None and job["status"] == "done", f"job: {job}"
         assert job["decision"] == "major"
+        assert "report_dir" not in job
+        assert not (tmp_path / "uploads" / job_id).exists()
 
         # Per-agent REST endpoint returns the finished body.
         sample_reviewer = f"reviewer_{CONDENSED_REVIEWER_NAMES[0]}"
@@ -244,7 +246,9 @@ def test_full_web_pipeline(monkeypatch, tmp_path, patched_llms):
 
         # Reports were written to disk and listed.
         resp = httpx.get(f"{base}/jobs/{job_id}/reports")
-        files = resp.json()["files"]
+        listing = resp.json()
+        assert "dir" not in listing
+        files = listing["files"]
         assert "summary.md" in files
         assert "decision_letter.md" in files
 
@@ -263,6 +267,19 @@ def test_rejects_unknown_suffix(tmp_path):
             files={"manuscript": ("bad.bin", b"\x00\x01", "application/octet-stream")},
         )
     assert resp.status_code == 400
+
+
+def test_rejects_oversized_upload_and_removes_partial_file(tmp_path):
+    uploads = tmp_path / "uploads"
+    app = create_app(upload_dir=str(uploads), max_upload_bytes=8)
+    port = _free_port()
+    with _running_server(app, port):
+        resp = httpx.post(
+            f"http://127.0.0.1:{port}/jobs",
+            files={"manuscript": ("paper.md", b"012345678", "text/markdown")},
+        )
+    assert resp.status_code == 413
+    assert not any(uploads.iterdir())
 
 
 def test_rejects_invalid_strictness(tmp_path):
@@ -335,7 +352,7 @@ def _config_for_upload(tmp_path, monkeypatch, data):
     captured = {}
 
     class _Stub:
-        def __init__(self, job, config, bus):
+        def __init__(self, job, config, bus, **_kwargs):
             captured["config"] = config
 
         def start(self):
@@ -392,7 +409,7 @@ def test_named_journal_still_wins(tmp_path, monkeypatch):
 
 def _stub_runner(monkeypatch, captured):
     class _Stub:
-        def __init__(self, job, config, bus):
+        def __init__(self, job, config, bus, **_kwargs):
             captured["job"] = job
             captured["config"] = config
 

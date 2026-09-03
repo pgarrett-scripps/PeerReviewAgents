@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
 import pytest
 
 from peerreviewagents.research import (
@@ -149,13 +152,26 @@ def test_tool_registry_lists_logical_operations():
     assert "search_preprints" in names
 
 
-def test_get_tools_by_name_returns_bound_tools():
-    cfg = {"data_vendors": {"paper_search": "arxiv,semantic_scholar"}}
-    tools = research_tools.get_tools_by_name(["find_related_work"], cfg)
-    assert len(tools) == 1
-    # The shared active-config holder picked up the override.
-    assert research_tools._ACTIVE_CONFIG["data_vendors"]["paper_search"] \
-        == "arxiv,semantic_scholar"
+def test_get_tools_by_name_isolates_concurrent_configs(monkeypatch):
+    barrier = Barrier(2)
+
+    def routed(_method, config, **_kwargs):
+        barrier.wait(timeout=2)
+        return config["marker"]
+
+    monkeypatch.setattr(research_tools, "route", routed)
+    first = research_tools.get_tools_by_name(
+        ["find_related_work"], {"marker": "first"}
+    )[0]
+    second = research_tools.get_tools_by_name(
+        ["find_related_work"], {"marker": "second"}
+    )[0]
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        one = pool.submit(first.invoke, {"query": "topic"})
+        two = pool.submit(second.invoke, {"query": "topic"})
+    assert one.result() == "first"
+    assert two.result() == "second"
 
 
 def test_get_tools_by_name_rejects_unknown():

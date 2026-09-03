@@ -45,8 +45,8 @@ authors:
 repository-code: "https://github.com/pgarrett-scripps/PeerReviewAgents"
 url: "https://github.com/pgarrett-scripps/PeerReviewAgents"
 license: MIT
-version: "0.5.0"
-date-released: "2026-08-13"
+version: "0.5.1"
+date-released: "2026-09-02"
 keywords:
   - peer review
   - large language models

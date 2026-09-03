@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 import uuid
@@ -18,6 +19,13 @@ from ..runtime.subscriptions import SUBSCRIPTION_PROVIDERS, validate_subscriptio
 
 _PROVIDERS = {"anthropic", "openai", "openrouter", *SUBSCRIPTION_PROVIDERS}
 _FINAL_DECISIONS = {"accept", "minor", "major", "reject"}
+_MANUSCRIPT_SUFFIXES = {".pdf", ".md", ".markdown", ".tex", ".txt"}
+_MAX_DEBATE_ROUNDS = 5
+_MAX_RETAINED_JOBS = 100
+
+
+def _is_within(path: Path, roots: tuple[Path, ...]) -> bool:
+    return any(path == root or root in path.parents for root in roots)
 
 
 @dataclass
@@ -39,17 +47,23 @@ class ReviewJob:
     future: Future[None] | None = field(default=None, repr=False)
 
     def public(self) -> dict[str, Any]:
+        errors = [str(error) for error in self.errors]
+        for private_path in (self.manuscript_path, self.report_dir):
+            if private_path:
+                errors = [
+                    error.replace(private_path, Path(private_path).name)
+                    for error in errors
+                ]
         return {
             "job_id": self.id,
             "status": self.status,
-            "manuscript_path": self.manuscript_path,
+            "manuscript_name": Path(self.manuscript_path).name,
             "created_at": self.created_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "current_stage": self.current_stage,
             "decision": self.decision,
-            "report_dir": self.report_dir,
-            "errors": list(self.errors),
+            "errors": errors,
             "cancel_requested": self.cancel_requested,
         }
 
@@ -57,7 +71,18 @@ class ReviewJob:
 class ReviewService:
     """Thread-safe background job service used by the MCP transport."""
 
-    def __init__(self, max_workers: int = 2):
+    def __init__(
+        self,
+        max_workers: int = 2,
+        *,
+        input_roots: list[str | os.PathLike[str]] | None = None,
+        output_root: str | os.PathLike[str] | None = None,
+        max_jobs: int = _MAX_RETAINED_JOBS,
+    ):
+        roots = input_roots or [Path.cwd()]
+        self._input_roots = tuple(Path(root).expanduser().resolve() for root in roots)
+        self._output_root = Path(output_root or Path.cwd() / "reports").expanduser().resolve()
+        self._max_jobs = max(1, max_jobs)
         self._lock = threading.Lock()
         self._jobs: dict[str, ReviewJob] = {}
         self._executor = ThreadPoolExecutor(
@@ -77,11 +102,17 @@ class ReviewService:
         debate_rounds: int = 2,
         enable_debate: bool = True,
         research_enabled: bool = False,
-        output_dir: str | None = None,
     ) -> dict[str, Any]:
         path = Path(manuscript_path).expanduser().resolve()
+        if not _is_within(path, self._input_roots):
+            raise PermissionError("manuscript is outside the configured input roots")
         if not path.is_file():
             raise FileNotFoundError(f"manuscript not found: {path}")
+        if path.suffix.lower() not in _MANUSCRIPT_SUFFIXES:
+            raise ValueError(
+                f"unsupported manuscript type {path.suffix!r}. "
+                f"Available: {sorted(_MANUSCRIPT_SUFFIXES)}"
+            )
         provider = provider.strip().lower()
         if provider not in _PROVIDERS:
             raise ValueError(f"unknown provider {provider!r}. Available: {sorted(_PROVIDERS)}")
@@ -89,8 +120,10 @@ class ReviewService:
             validate_subscription_cli(provider)
         if not 1 <= strictness <= 5:
             raise ValueError("strictness must be between 1 and 5")
-        if debate_rounds < 0:
-            raise ValueError("debate_rounds cannot be negative")
+        if not 0 <= debate_rounds <= _MAX_DEBATE_ROUNDS:
+            raise ValueError(
+                f"debate_rounds must be between 0 and {_MAX_DEBATE_ROUNDS}"
+            )
 
         overrides: dict[str, Any] = {
             "provider": provider,
@@ -102,9 +135,8 @@ class ReviewService:
             "max_debate_rounds": debate_rounds,
             "enable_debate": enable_debate,
             "research_enabled": research_enabled,
+            "output_dir": str(self._output_root),
         }
-        if output_dir:
-            overrides["output_dir"] = str(Path(output_dir).expanduser().resolve())
         config = get_config(**overrides)
         job = ReviewJob(
             id=uuid.uuid4().hex[:12],
@@ -112,6 +144,9 @@ class ReviewService:
             config=config,
         )
         with self._lock:
+            self._prune_finished_locked()
+            if len(self._jobs) >= self._max_jobs:
+                raise RuntimeError("too many active review jobs")
             self._jobs[job.id] = job
             job.future = self._executor.submit(self._run_job, job)
         return job.public()
@@ -165,6 +200,15 @@ class ReviewService:
             raise KeyError(f"unknown review job: {job_id}")
         return job
 
+    def _prune_finished_locked(self) -> None:
+        finished = sorted(
+            (job for job in self._jobs.values() if job.finished_at is not None),
+            key=lambda job: job.finished_at or 0,
+        )
+        while len(self._jobs) >= self._max_jobs and finished:
+            job = finished.pop(0)
+            del self._jobs[job.id]
+
     def _run_job(self, job: ReviewJob) -> None:
         job.status = "running"
         job.started_at = time.time()
@@ -217,7 +261,6 @@ def create_server(service: ReviewService | None = None):
         debate_rounds: int = 2,
         enable_debate: bool = True,
         research_enabled: bool = False,
-        output_dir: str | None = None,
     ) -> dict[str, Any]:
         """Start a background multi-agent review and return its job ID."""
         return reviews.start_review(
@@ -230,7 +273,6 @@ def create_server(service: ReviewService | None = None):
             debate_rounds=debate_rounds,
             enable_debate=enable_debate,
             research_enabled=research_enabled,
-            output_dir=output_dir,
         )
 
     @server.tool()
@@ -264,4 +306,11 @@ def create_server(service: ReviewService | None = None):
 
 def run() -> None:
     """Run the MCP server over standard input and output."""
-    create_server().run(transport="stdio")
+    configured_roots = os.environ.get("PEERREVIEW_MCP_INPUT_ROOTS", "")
+    input_roots = [root for root in configured_roots.split(os.pathsep) if root]
+    output_root = os.environ.get("PEERREVIEW_MCP_OUTPUT_ROOT") or None
+    service = ReviewService(
+        input_roots=input_roots or None,
+        output_root=output_root,
+    )
+    create_server(service).run(transport="stdio")

@@ -136,13 +136,22 @@ Any client that supports local standard input and output MCP servers can use thi
   "mcpServers": {
     "peer-review-agents": {
       "command": "peerreview-mcp",
-      "args": []
+      "args": [],
+      "env": {
+        "PEERREVIEW_MCP_INPUT_ROOTS": "/absolute/path/to/manuscripts",
+        "PEERREVIEW_MCP_OUTPUT_ROOT": "/absolute/path/to/reports"
+      }
     }
   }
 }
 ```
 
 The client can start and monitor reviews, list journals, and read completed artifacts. Its own subscription will run the panel only if PeerReviewAgents has a tested provider adapter for that client's noninteractive CLI.
+
+The MCP server reads manuscripts only beneath `PEERREVIEW_MCP_INPUT_ROOTS` and
+writes reports only beneath `PEERREVIEW_MCP_OUTPUT_ROOT`. The input root defaults
+to the server's working directory and the output root defaults to its `reports/`
+directory. Use the platform path separator to provide more than one input root.
 
 ## Data handling
 

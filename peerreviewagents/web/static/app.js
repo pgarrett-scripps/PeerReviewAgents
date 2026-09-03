@@ -647,10 +647,6 @@ async function renderCompletion(ev) {
     const dur = jobDuration(state.job);
     if (dur) stats.push({ label: 'duration', value: dur });
     if (state.job && state.job.manuscript_filename) stats.push({ label: 'manuscript', value: state.job.manuscript_filename });
-    if (ev.report_dir) {
-        const base = ev.report_dir.split('/').filter(Boolean).pop();
-        if (base) stats.push({ label: 'job', value: base });
-    }
     for (const s of stats) {
         const div = document.createElement('div');
         const dt = document.createElement('dt');
@@ -748,7 +744,6 @@ async function boot() {
             status: state.job.status,
             decision: state.job.decision,
             total_cost: state.job.total_cost,
-            report_dir: state.job.report_dir,
             errors: state.job.errors,
         };
         showSummaryButton(state.job.status);

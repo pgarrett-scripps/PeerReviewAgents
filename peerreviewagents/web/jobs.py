@@ -11,6 +11,7 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from threading import Lock
 from typing import Any
 
@@ -96,6 +97,13 @@ class JobState:
     accumulated: dict[str, Any] = field(default_factory=dict)
 
     def public_dict(self) -> dict[str, Any]:
+        errors = [str(error) for error in self.errors]
+        for private_path in (self.manuscript_path, self.report_dir):
+            if private_path:
+                errors = [
+                    error.replace(private_path, Path(private_path).name)
+                    for error in errors
+                ]
         return {
             "id": self.id,
             "manuscript_filename": self.manuscript_filename,
@@ -104,9 +112,8 @@ class JobState:
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "decision": self.decision,
-            "report_dir": self.report_dir,
             "total_cost": self.total_cost,
-            "errors": list(self.errors),
+            "errors": errors,
             "agent_status": dict(self.agent_status),
             "agent_usage": dict(self.agent_usage),
             "desk_screen": self.desk_screen,

@@ -41,7 +41,11 @@ def test_review_service_runs_pipeline_and_exposes_artifacts(tmp_path, monkeypatc
     monkeypatch.setattr(mcp_server, "PeerReviewGraph", FakeGraph)
     monkeypatch.setattr(mcp_server, "write_reports", fake_write)
     monkeypatch.setattr(mcp_server, "validate_subscription_cli", lambda _provider: "client")
-    service = mcp_server.ReviewService(max_workers=1)
+    service = mcp_server.ReviewService(
+        max_workers=1,
+        input_roots=[tmp_path],
+        output_root=reports,
+    )
 
     started = service.start_review(str(manuscript), provider="codex", model="default")
     status = _wait(service, started["job_id"])
@@ -56,7 +60,7 @@ def test_review_service_runs_pipeline_and_exposes_artifacts(tmp_path, monkeypatc
 
 
 def test_review_service_rejects_missing_input(tmp_path):
-    service = mcp_server.ReviewService(max_workers=1)
+    service = mcp_server.ReviewService(max_workers=1, input_roots=[tmp_path])
     with pytest.raises(FileNotFoundError, match="manuscript not found"):
         service.start_review(str(tmp_path / "missing.pdf"))
 
@@ -119,3 +123,62 @@ def test_artifact_reader_blocks_path_traversal(tmp_path):
     service._jobs[job.id] = job
     with pytest.raises(FileNotFoundError):
         service.read_artifact(job.id, "../secret.txt")
+
+
+def test_review_service_confines_inputs_and_output(tmp_path):
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    outside = tmp_path / "outside.md"
+    outside.write_text("# Private", encoding="utf-8")
+    unsupported = allowed / "paper.bin"
+    unsupported.write_bytes(b"data")
+    reports = tmp_path / "reports"
+    service = mcp_server.ReviewService(
+        max_workers=1,
+        input_roots=[allowed],
+        output_root=reports,
+    )
+
+    with pytest.raises(PermissionError, match="outside"):
+        service.start_review(str(outside))
+    with pytest.raises(ValueError, match="unsupported manuscript type"):
+        service.start_review(str(unsupported))
+
+
+def test_review_service_caps_debate_rounds(tmp_path):
+    manuscript = tmp_path / "paper.md"
+    manuscript.write_text("# Paper", encoding="utf-8")
+    service = mcp_server.ReviewService(max_workers=1, input_roots=[tmp_path])
+    with pytest.raises(ValueError, match="between 0 and 5"):
+        service.start_review(str(manuscript), debate_rounds=6)
+
+
+def test_public_job_state_does_not_expose_absolute_paths(tmp_path):
+    manuscript = str(tmp_path / "paper.md")
+    reports = str(tmp_path / "reports")
+    job = mcp_server.ReviewJob(
+        "job",
+        manuscript,
+        {},
+        report_dir=reports,
+        errors=[f"failed to read {manuscript} and write {reports}"],
+    )
+    public = job.public()
+    assert public["manuscript_name"] == "paper.md"
+    assert "manuscript_path" not in public
+    assert "report_dir" not in public
+    assert str(tmp_path) not in public["errors"][0]
+
+
+def test_review_service_bounds_retained_job_state(tmp_path):
+    service = mcp_server.ReviewService(
+        max_workers=1,
+        input_roots=[tmp_path],
+        max_jobs=2,
+    )
+    old = mcp_server.ReviewJob("old", "old.md", {}, finished_at=1.0)
+    current = mcp_server.ReviewJob("current", "current.md", {})
+    service._jobs = {old.id: old, current.id: current}
+    with service._lock:
+        service._prune_finished_locked()
+    assert set(service._jobs) == {current.id}

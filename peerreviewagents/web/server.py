@@ -59,6 +59,12 @@ class _NoCacheStaticFiles(StaticFiles):
 
 _STATIC_DIR = Path(__file__).parent / "static"
 _ALLOWED_SUFFIXES = {".pdf", ".md", ".markdown", ".tex", ".txt"}
+_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+_COPY_CHUNK_BYTES = 1024 * 1024
+
+
+class UploadTooLarge(ValueError):
+    """Raised when a streamed upload crosses the configured byte limit."""
 
 # What the upload form submits for "no target venue". A reserved token rather
 # than "": an optional form field that is empty and one that was never sent
@@ -171,9 +177,19 @@ def _upload_name(filename: str) -> str:
     return name
 
 
-def _copy_upload(src, dest: Path) -> None:
-    with dest.open("wb") as fh:
-        shutil.copyfileobj(src, fh)
+def _copy_upload(src, dest: Path, max_bytes: int) -> None:
+    written = 0
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    try:
+        with os.fdopen(os.open(dest, flags, 0o600), "wb") as fh:
+            while chunk := src.read(_COPY_CHUNK_BYTES):
+                written += len(chunk)
+                if written > max_bytes:
+                    raise UploadTooLarge(f"upload exceeds {max_bytes} bytes")
+                fh.write(chunk)
+    except Exception:
+        dest.unlink(missing_ok=True)
+        raise
 
 
 def _safe_run_dir(root: Path, run: str) -> Path:
@@ -194,6 +210,7 @@ def create_app(
     config_overrides: dict[str, Any] | None = None,
     config_path: str | os.PathLike | None = None,
     upload_dir: str | os.PathLike | None = None,
+    max_upload_bytes: int = _MAX_UPLOAD_BYTES,
 ) -> FastAPI:
     """Build a FastAPI app instance.
 
@@ -204,7 +221,9 @@ def create_app(
     """
 
     upload_root = Path(upload_dir) if upload_dir else Path.cwd() / ".peerreview-uploads"
-    upload_root.mkdir(parents=True, exist_ok=True)
+    if max_upload_bytes < 1:
+        raise ValueError("max_upload_bytes must be positive")
+    upload_root.mkdir(parents=True, exist_ok=True, mode=0o700)
 
     app = FastAPI(title="PeerReviewAgents", version="0.1.0")
     app.state.jobs = JobManager()
@@ -213,6 +232,7 @@ def create_app(
     app.state.config_overrides = dict(config_overrides or {})
     app.state.config_path = config_path
     app.state.upload_root = upload_root
+    app.state.max_upload_bytes = max_upload_bytes
 
     _register_routes(app)
     return app
@@ -359,6 +379,7 @@ def _register_routes(app: FastAPI) -> None:
         for stale_id in jobs.prune_finished(keep=1):
             app.state.buses.pop(stale_id, None)
             app.state.runners.pop(stale_id, None)
+            shutil.rmtree(Path(app.state.upload_root) / stale_id, ignore_errors=True)
 
         manuscript_name = _upload_name(manuscript.filename or "")
         suffix = Path(manuscript_name).suffix.lower()
@@ -418,20 +439,30 @@ def _register_routes(app: FastAPI) -> None:
         # which is what keeps the one-job invariant race-free once the file
         # copies below happen asynchronously.
         jobs.set_active(job.id)
+        job_dir = Path(app.state.upload_root) / job.id
         try:
-            job_dir = Path(app.state.upload_root) / job.id
-            job_dir.mkdir(parents=True, exist_ok=True)
+            job_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
             dest = job_dir / manuscript_name
             # Copy off the event loop: a large upload written synchronously
             # here froze every route and WebSocket for its duration.
-            await run_in_threadpool(_copy_upload, manuscript.file, dest)
+            await run_in_threadpool(
+                _copy_upload,
+                manuscript.file,
+                dest,
+                app.state.max_upload_bytes,
+            )
             job.manuscript_path = str(dest)
 
             # Optional supplementary information. Saved alongside the
             # manuscript and handed to the methods_completeness auditor only.
             if supplement is not None and supplement_name:
                 sup_dest = job_dir / supplement_name
-                await run_in_threadpool(_copy_upload, supplement.file, sup_dest)
+                await run_in_threadpool(
+                    _copy_upload,
+                    supplement.file,
+                    sup_dest,
+                    app.state.max_upload_bytes,
+                )
                 job_overrides["supplement_path"] = str(sup_dest)
 
             loop = asyncio.get_running_loop()
@@ -443,16 +474,19 @@ def _register_routes(app: FastAPI) -> None:
             # resolved through the same enablement logic as the graph, so
             # desk_screen_mode = "warm"/"gate" isn't ignored here.
             job.desk_screen = desk_screen_enabled(config)
-            runner = JobRunner(job, config, bus)
+            runner = JobRunner(job, config, bus, cleanup_dir=job_dir)
             app.state.runners[job.id] = runner
             runner.start()
-        except Exception:
+        except Exception as exc:
             # Release the slot: a failed upload must not wedge the server
             # into refusing every future job with a 409.
             job.status = "error"
             jobs.set_active(None)
             app.state.buses.pop(job.id, None)
             app.state.runners.pop(job.id, None)
+            shutil.rmtree(job_dir, ignore_errors=True)
+            if isinstance(exc, UploadTooLarge):
+                raise HTTPException(413, str(exc)) from exc
             raise
 
         return JSONResponse({"job_id": job.id, "status": job.status})
@@ -481,7 +515,7 @@ def _register_routes(app: FastAPI) -> None:
         # match also admits sibling dirs like "<report_dir>-evil".
         report_dir = Path(job.report_dir).resolve()
         target = (report_dir / name).resolve()
-        if target.parent != report_dir or not target.is_file():
+        if target.parent != report_dir or target.suffix != ".md" or not target.is_file():
             raise HTTPException(404, "report file not found")
         return FileResponse(str(target), media_type="text/markdown")
 
@@ -491,8 +525,10 @@ def _register_routes(app: FastAPI) -> None:
         if job is None or not job.report_dir:
             return JSONResponse({"files": []})
         report_dir = Path(job.report_dir)
-        files = sorted(p.name for p in report_dir.iterdir() if p.is_file())
-        return JSONResponse({"files": files, "dir": str(report_dir)})
+        files = sorted(
+            p.name for p in report_dir.iterdir() if p.is_file() and p.suffix == ".md"
+        )
+        return JSONResponse({"files": files})
 
     @app.websocket("/jobs/{job_id}/events")
     async def stream_events(ws: WebSocket, job_id: str) -> None:

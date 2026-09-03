@@ -10,8 +10,10 @@ per-agent buffers and accumulated graph state up to date so that the
 
 from __future__ import annotations
 
+import shutil
 import threading
 import time
+from pathlib import Path
 from queue import Empty, Queue
 from typing import Any
 
@@ -85,12 +87,20 @@ def _desk_screen_body(state: dict):
 class JobRunner:
     """Wraps the graph execution + event forwarding for one job."""
 
-    def __init__(self, job: JobState, config: dict, bus: EventBus):
+    def __init__(
+        self,
+        job: JobState,
+        config: dict,
+        bus: EventBus,
+        *,
+        cleanup_dir: Path | None = None,
+    ):
         self.job = job
         self.config = config
         self.bus = bus
         self._events: Queue[AgentEvent] = Queue()
         self._thread: threading.Thread | None = None
+        self._cleanup_dir = cleanup_dir
         # How many entries of the accumulated ``errors`` list we've already
         # turned into per-agent error events, so we only emit new ones.
         self._seen_errors = 0
@@ -302,11 +312,12 @@ class JobRunner:
             "type": "final",
             "status": self.job.status,
             "decision": self.job.decision,
-            "report_dir": self.job.report_dir,
             "total_cost": self.job.total_cost,
-            "errors": list(self.job.errors),
+            "errors": self.job.public_dict()["errors"],
         })
         self.bus.close()
+        if self._cleanup_dir is not None:
+            shutil.rmtree(self._cleanup_dir, ignore_errors=True)
 
 
 # Sentinel used to wake the forwarder thread on shutdown.
