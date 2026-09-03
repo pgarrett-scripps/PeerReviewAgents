@@ -58,7 +58,7 @@ jobs:
           fi
 
       - name: Install
-        run: pip install --quiet -e '.[research,web-test,dev]'
+        run: pip install --quiet -e '.[research,web-test,mcp,dev]'
 
       # CI already runs this on every push to main, but a tag can point at a
       # commit CI never saw — and this is the run that becomes permanent.
@@ -91,9 +91,10 @@ jobs:
       - name: Import what was built, from the wheel alone
         run: |
           python -m venv /tmp/fresh
-          /tmp/fresh/bin/pip install --quiet dist/*.whl
+          wheel=$(find dist -name '*.whl' -print -quit)
+          /tmp/fresh/bin/pip install --quiet "${wheel}[mcp]"
           /tmp/fresh/bin/python -c "
-          import peerreviewagents, peerreviewagents.cli.main
+          import peerreviewagents, peerreviewagents.cli.main, peerreviewagents.mcp.server
           print('import ok:', peerreviewagents.__name__)
           "
           /tmp/fresh/bin/peerreview --help >/dev/null

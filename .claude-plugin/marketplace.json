@@ -1,0 +1,16 @@
+{
+  "name": "peer-review-agents-local",
+  "owner": {
+    "name": "PeerReviewAgents contributors"
+  },
+  "description": "Local multi-agent scholarly peer review",
+  "plugins": [
+    {
+      "name": "peer-review-agents",
+      "source": "./plugins/peer-review-agents",
+      "description": "Run the PeerReviewAgents pipeline with an authenticated local coding agent",
+      "category": "research",
+      "tags": ["peer-review", "research", "manuscripts", "mcp"]
+    }
+  ]
+}

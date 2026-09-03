@@ -1,0 +1,11 @@
+{
+  "name": "peer-review-agents",
+  "version": "0.5.0",
+  "description": "Run a rigorous multi-agent peer review from a local coding agent.",
+  "author": {
+    "name": "PeerReviewAgents contributors"
+  },
+  "repository": "https://github.com/pgarrett-scripps/PeerReviewAgents",
+  "license": "MIT",
+  "keywords": ["peer-review", "manuscripts", "research", "mcp"]
+}

@@ -49,13 +49,34 @@ debate-synthesizer, editor, and Journal Scout prompts. See
 
 ## Providers
 
-Three are wired up. Pick one with `--provider` or the `provider` TOML key.
+Seven are wired up. Pick one with `--provider` or the `provider` TOML key.
 
 | Provider | Default | API key | Model id format |
 |---|---|---|---|
 | `anthropic`  | yes | `ANTHROPIC_API_KEY`  | model id, e.g. `claude-opus-5` |
 | `openrouter` |     | `OPENROUTER_API_KEY` | slug, e.g. `anthropic/claude-opus-5` |
 | `openai`     |    | `OPENAI_API_KEY`     | model id, e.g. `gpt-4.1`, `o3` |
+| `claude-code` |   | signed-in `claude` CLI | model alias, full id, or `default` |
+| `codex`      |    | signed-in `codex` CLI | model id or `default` |
+| `droid`      |    | authenticated `droid` CLI | model id or `default` |
+| `pi`         |    | authenticated `pi` CLI | model id or `default` |
+
+The coding agent providers use the subscription already authenticated in the
+local CLI. Run one model across the full panel so API-oriented model tags do
+not override it:
+
+```bash
+peerreview paper.pdf --no-tui --provider claude-code \
+  --reasoning-model default --single-model --offline
+
+peerreview paper.pdf --no-tui --provider codex \
+  --reasoning-model default --single-model --offline
+```
+
+Each model turn runs in a fresh restricted child process. Claude Code, Codex,
+and Pi have coding tools disabled. Droid runs in its default read-only mode in
+an empty temporary directory. Local research tools remain available when
+offline mode is not selected.
 
 Provider abstraction lives in [`peerreviewagents/runtime/providers.py`](peerreviewagents/runtime/providers.py).
 Each provider declares its preferred structured-output method and whether it
@@ -139,6 +160,9 @@ pip install -e .
 
 # Optional extra (live arXiv lookups for the Novelty / Literature reviewers):
 pip install -e '.[research]'
+
+# MCP server and Claude Code or Codex plugin support
+pip install -e '.[mcp]'
 ```
 
 Or with [uv](https://docs.astral.sh/uv/), which is what CI and the Dockerfile
@@ -153,6 +177,33 @@ Base deps include `rustypaper` (PDF → Markdown), `langchain-openai`, and
 `langchain-anthropic`.
 No system dependencies; no `Pillow`; no OCR; no external paid
 services beyond your chosen LLM provider.
+
+## Local coding agent plugins
+
+This repository packages local integrations for Claude Code, Codex, Factory
+Droid, and Pi. Install the MCP extra first so the shared `peerreview-mcp`
+command is available. During local development, load the repository directly
+in Claude Code:
+
+```bash
+claude --plugin-dir /absolute/path/to/PeerReviewAgents
+```
+
+Add the repository marketplace and install the Codex plugin:
+
+```bash
+codex plugin marketplace add /absolute/path/to/PeerReviewAgents
+codex plugin add peer-review-agents@peer-review-agents-local
+```
+
+The same `skills/peer-review-manuscript/SKILL.md` workflow and `.mcp.json`
+server are used by both clients. The MCP server starts reviews as background
+jobs, so a client can check status and read artifacts without holding one tool
+call open for the full run.
+
+See [Local agent integrations](docs/INTEGRATIONS.md) for clean installation,
+upgrade, uninstall, Factory Droid, Pi, generic MCP, security, and the tested
+compatibility matrix.
 
 ## Manuscript ingest
 

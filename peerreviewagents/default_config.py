@@ -8,11 +8,10 @@ Resolution order, lowest precedence first:
     5. PEERREVIEW_* env vars   — for one-off overrides.
     6. Explicit kwargs         — `get_config(reasoning_model="...")`, CLI flags.
 
-Three LLM providers are wired up: ``openrouter`` (default), ``anthropic``
-(direct), ``openai`` (direct). Pick one with ``provider = "anthropic"``
-in TOML or ``--provider anthropic`` on the CLI. API keys live in the
-environment / ``.env`` (OPENROUTER_API_KEY, ANTHROPIC_API_KEY,
-OPENAI_API_KEY) and are never read by this module.
+Seven LLM providers are wired up: ``openrouter`` (default), ``anthropic``
+(direct), ``openai`` (direct), ``claude-code``, and ``codex``. The coding
+agent providers also include ``droid`` and ``pi``. They use an existing
+authenticated CLI instead of a separate API key supplied to this project.
 
 PDF ingest is fully local (rustypaper) — no external API key required.
 """
@@ -33,8 +32,7 @@ except ModuleNotFoundError:  # pragma: no cover
 
 DEFAULT_CONFIG: dict[str, Any] = {
     # --- Model ---
-    # Which provider to call. One of: "openrouter", "anthropic" (default),
-    # "openai". See peerreviewagents.runtime.providers.PROVIDERS.
+    # Which provider to call. See peerreviewagents.runtime.providers.PROVIDERS.
     "provider": "anthropic",
     # Fallback model for an agent not covered by the graded tables below. The
     # model string is interpreted by the active provider:
