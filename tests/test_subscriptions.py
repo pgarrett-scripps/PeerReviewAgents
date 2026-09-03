@@ -108,6 +108,10 @@ def test_claude_command_uses_subscription_safe_mode(monkeypatch):
         )
 
     monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        "peerreviewagents.runtime.subscriptions._require_executable",
+        lambda name: name,
+    )
     response = _run_claude("prompt", {"type": "object"}, "sonnet", "high", 30)
 
     assert response.value == {"content": "ok"}
@@ -135,6 +139,10 @@ def test_codex_command_uses_read_only_ephemeral_execution(monkeypatch):
         )
 
     monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        "peerreviewagents.runtime.subscriptions._require_executable",
+        lambda name: name,
+    )
     response = _run_codex("prompt", {"type": "object"}, "default", None, 30)
 
     assert response.value == {"content": "ok"}
