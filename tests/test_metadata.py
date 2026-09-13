@@ -1,13 +1,12 @@
-"""Release metadata that has to agree across files.
+"""Release metadata must agree before the release workflow publishes.
 
-`pyproject.toml` and `CITATION.cff` both carry a version, and they drift the
-moment someone bumps one and forgets the other — which surfaces as a Zenodo
-record whose version disagrees with the package it archives. Cheap to assert,
-annoying to discover later.
+The tag must match pyproject.toml, and CITATION.cff must match that version.
+Zenodo inherits the GitHub release tag without a static JSON override.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import yaml
@@ -30,6 +29,14 @@ def _citation() -> dict:
 
 def test_version_matches_between_pyproject_and_citation():
     assert _citation()["version"] == _pyproject()["project"]["version"]
+
+
+def test_zenodo_inherits_the_github_release_version():
+    metadata = json.loads((ROOT / ".zenodo.json").read_text())
+    assert "version" not in metadata, (
+        "Remove version from .zenodo.json so Zenodo uses the GitHub release tag. "
+        "A static override can archive a release under an outdated version."
+    )
 
 
 def test_citation_has_the_fields_github_needs():
