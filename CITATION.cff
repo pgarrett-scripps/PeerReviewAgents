@@ -19,7 +19,7 @@ abstract: >-
   review. The system is research software for review assistance and evaluation,
   not a substitute for accountable editorial judgment.
 type: software
-# Garrett, Navarro Garrido, and Garcia Carbonell contributed equally.
+# Garrett, Garcia-Carbonell, and Navarro Garrido contributed equally.
 # CFF 1.2.0 has no field for shared first authorship, so state it in the
 # README and in any paper: a citation generated from this file will render
 # them as an ordinary author list.
@@ -29,14 +29,14 @@ authors:
     email: pgarrett@scripps.edu
     affiliation: Scripps Research Institute
     orcid: "https://orcid.org/0000-0002-8434-9693"
-  - family-names: Navarro Garrido
-    given-names: Aleix
-    affiliation: Scripps Research Institute
-    orcid: "https://orcid.org/0009-0002-7383-8771"
   - family-names: Garcia-Carbonell
     given-names: Ricard
     affiliation: Scripps Research Institute
     orcid: "https://orcid.org/0000-0002-9936-6699"
+  - family-names: Navarro Garrido
+    given-names: Aleix
+    affiliation: Scripps Research Institute
+    orcid: "https://orcid.org/0009-0002-7383-8771"
   - family-names: Yates
     given-names: John R.
     name-suffix: III
@@ -45,8 +45,8 @@ authors:
 repository-code: "https://github.com/pgarrett-scripps/PeerReviewAgents"
 url: "https://github.com/pgarrett-scripps/PeerReviewAgents"
 license: MIT
-version: "0.6.0"
-date-released: "2026-09-03"
+version: "0.6.1"
+date-released: "2026-09-12"
 keywords:
   - peer review
   - large language models

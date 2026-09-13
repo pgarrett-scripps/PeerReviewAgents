@@ -677,8 +677,8 @@ MIT. See [`LICENSE`](LICENSE). Contributions are accepted under the same terms.
 Cite the concept DOI, [10.5281/zenodo.21781895](https://doi.org/10.5281/zenodo.21781895), which always
 resolves to the newest version. Machine-readable metadata is in
 [`CITATION.cff`](CITATION.cff), and GitHub's "Cite this repository" button
-reads it. Patrick Garrett, Aleix Navarro Garrido and
-Ricard Garcia-Carbonell contributed equally; the CFF format has no field for
+reads it. Patrick Garrett, Ricard Garcia-Carbonell and
+Aleix Navarro Garrido contributed equally. The CFF format has no field for
 shared first authorship, so a citation generated from that file renders them as
 an ordinary author list.
 

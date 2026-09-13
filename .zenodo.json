@@ -1,7 +1,6 @@
 {
   "title": "PeerReviewAgents",
-  "version": "0.4.0",
-  "description": "<p>PeerReviewAgents is a multi-agent framework for structured manuscript review with large language models. A default run converts a PDF locally, applies an optional desk screen, and sends the manuscript to five specialist reviewers covering scientific validity, quantitative evidence, contribution and prior work, reporting and reproducibility, and ethics. Two parallel auditors check methods completeness and citation support. A meta-reviewer prepares a focused agenda, an advocate and skeptic debate it, and an editor issues an accept, minor revision, major revision, or reject recommendation. A journal scout can optionally suggest publication venues. Each run writes the individual reports, audits, debate, decision letter, usage records, and configuration needed to inspect the process. The framework uses graded Haiku, Sonnet, and Opus routing by default and also supports OpenRouter and OpenAI providers. Optional research tools query scholarly literature sources, while target journal settings and revision rounds support venue-specific and follow-up review. The system is research software for review assistance and evaluation, not a substitute for accountable editorial judgment.</p><p>Garrett, Navarro Garrido and Garcia-Carbonell contributed equally.</p>",
+  "description": "<p>PeerReviewAgents is a multi-agent framework for structured manuscript review with large language models. A default run converts a PDF locally, applies an optional desk screen, and sends the manuscript to five specialist reviewers covering scientific validity, quantitative evidence, contribution and prior work, reporting and reproducibility, and ethics. Two parallel auditors check methods completeness and citation support. A meta-reviewer prepares a focused agenda, an advocate and skeptic debate it, and an editor issues an accept, minor revision, major revision, or reject recommendation. A journal scout can optionally suggest publication venues. Each run writes the individual reports, audits, debate, decision letter, usage records, and configuration needed to inspect the process. The framework uses graded Haiku, Sonnet, and Opus routing by default and also supports OpenRouter and OpenAI providers. Optional research tools query scholarly literature sources, while target journal settings and revision rounds support venue-specific and follow-up review. The system is research software for review assistance and evaluation, not a substitute for accountable editorial judgment.</p><p>Garrett, Garcia-Carbonell and Navarro Garrido contributed equally.</p>",
   "upload_type": "software",
   "access_right": "open",
   "license": "mit",
@@ -13,14 +12,14 @@
       "orcid": "0000-0002-8434-9693"
     },
     {
-      "name": "Navarro Garrido, Aleix",
-      "affiliation": "Scripps Research Institute",
-      "orcid": "0009-0002-7383-8771"
-    },
-    {
       "name": "Garcia-Carbonell, Ricard",
       "affiliation": "Scripps Research Institute",
       "orcid": "0000-0002-9936-6699"
+    },
+    {
+      "name": "Navarro Garrido, Aleix",
+      "affiliation": "Scripps Research Institute",
+      "orcid": "0009-0002-7383-8771"
     },
     {
       "name": "Yates, John R. III",

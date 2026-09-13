@@ -25,7 +25,7 @@ permissions:
 
 jobs:
   verify:
-    name: verify the tag
+    name: verify the tag and metadata
     runs-on: ubuntu-latest
     outputs:
       publish: ${{ steps.version.outputs.publish }}
@@ -62,6 +62,8 @@ jobs:
 
       # CI already runs this on every push to main, but a tag can point at a
       # commit CI never saw — and this is the run that becomes permanent.
+      # Metadata tests keep CFF aligned with the package and prevent a static
+      # Zenodo version from overriding the release tag.
       - name: Test
         run: pytest tests/ -q
 

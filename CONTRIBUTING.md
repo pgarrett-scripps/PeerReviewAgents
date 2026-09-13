@@ -33,6 +33,28 @@ provider instead.
 
 CI runs the same checks across Python 3.10–3.13.
 
+## Releasing
+
+Use a `v<VERSION>` tag to trigger `.github/workflows/release.yml`.
+Before tagging, update `project.version` in `pyproject.toml` and the matching
+`version` and release date in `CITATION.cff`, then commit the release changes.
+Run `pytest tests/test_metadata.py -q` to check the citation metadata locally.
+
+The workflow checks the tag against the package version and runs the tests
+before publishing to PyPI and creating the GitHub Release. The metadata tests
+also check the CFF version and reject a `version` field in `.zenodo.json`.
+
+Leave `version` out of `.zenodo.json`. With the repository's Zenodo GitHub
+integration enabled, Zenodo uses the published release tag, such as `v0.6.0`,
+as its version. Keep authors, licensing, and descriptive metadata in the JSON.
+Zenodo gives this file precedence over `CITATION.cff` during release archiving.
+See [Zenodo's release-tag versioning](https://blog.zenodo.org/2017/11/02/version-field/)
+and [metadata precedence](https://help.zenodo.org/docs/github/describe-software/).
+
+Let the workflow create the GitHub Release after verification. Publishing a
+release manually in the GitHub UI bypasses those checks and can trigger Zenodo
+immediately. Editing metadata in the checkout does not revise older deposits.
+
 ## Adding an agent
 
 Every agent emits a typed pydantic schema through the provider's
