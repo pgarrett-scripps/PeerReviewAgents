@@ -25,7 +25,7 @@ def script(path, body):
 def bootstrap(tmp_path):
     commands = tmp_path / "commands"
     commands.mkdir()
-    for name in ["bash", "dirname", "mktemp", "rm", "sh", "cat", "cp", "mkdir", "tar", "gzip"]:
+    for name in ["bash", "dirname", "mktemp", "rm", "sh", "cat", "cp", "mkdir", "tar", "gzip", "uname"]:
         (commands / name).symlink_to(shutil.which(name))
     mock_uv = script(tmp_path / "mock-uv", 'printf "%s\\n" "$@" > "$PRA_TEST_LOG"\n')
     uv_installer = script(tmp_path / "uv-installer", '''mkdir -p "$UV_UNMANAGED_INSTALL"
@@ -102,3 +102,22 @@ def test_help_does_not_download_or_install(bootstrap):
     assert result.returncode == 0
     assert "No preinstalled Python" in result.stdout
     assert not Path(bootstrap["PRA_TEST_DOWNLOADS"]).exists()
+
+
+@pytest.mark.parametrize("platform", ["MINGW64_NT-10.0", "MSYS_NT-10.0", "CYGWIN_NT-10.0"])
+def test_windows_shell_uses_native_setup_and_preserves_paths(bootstrap, platform):
+    commands = Path(bootstrap["PATH"])
+    # Replace the symlink so the system uname is never modified.
+    (commands / "uname").unlink()
+    script(commands / "uname", f"printf '%s\\n' '{platform}'\n")
+    script(commands / "cygpath", 'printf "%s\\n" "${!#}"\n')
+    script(commands / "powershell.exe", 'printf "%s\\n" "$@" > "$PRA_TEST_LOG"\nexit "${PRA_TEST_EXIT:-0}"\n')
+    result = run(ROOT / "scripts/install-claude.sh", bootstrap, "--claude", "/Claude Code/claude.exe", "--data-dir", "/my data", "--configure-only")
+    assert result.returncode == 0, result.stderr
+    args = Path(bootstrap["PRA_TEST_LOG"]).read_text().splitlines()
+    assert args[:5] == ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "scripts/install-claude.ps1")]
+    assert args[5:] == ["-Claude", "/Claude Code/claude.exe", "-DataDir", "/my data", "-ConfigureOnly"]
+    assert not Path(bootstrap["PRA_TEST_DOWNLOADS"]).exists()
+    bootstrap["PRA_TEST_EXIT"] = "17"
+    assert run(ROOT / "scripts/install-claude.sh", bootstrap).returncode == 17
+    assert run(ROOT / "scripts/install-claude.sh", bootstrap, "--data-dir").returncode == 2

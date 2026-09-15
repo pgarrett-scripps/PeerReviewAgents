@@ -53,27 +53,10 @@ alone does not provide that command, as explained in
 
 1. Install the [standalone Claude Code CLI](https://code.claude.com/docs/en/quickstart).
 2. Open a terminal and run `claude` once to sign in with the account that will run the reviews.
-3. Run the installer for your operating system. Python and uv are installed
+3. Run the shared installer below. It detects your operating system. Python and uv are installed
    automatically when needed. No administrator access or manual Python setup is required.
 
-**Windows PowerShell**, from a checkout:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-claude.ps1
-```
-
-Without a checkout:
-
-```powershell
-$installer = Join-Path $env:TEMP "install-pra-claude.ps1"
-Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/pgarrett-scripps/PeerReviewAgents/main/scripts/install-claude.ps1" -OutFile $installer -ErrorAction Stop
-powershell -NoProfile -ExecutionPolicy Bypass -File $installer
-```
-
-This works with Windows PowerShell 5.1 or later. Bash and WSL are not required.
-It keeps its managed bootstrap runtime under `%LOCALAPPDATA%\peerreviewagents\bootstrap`.
-
-**macOS or Linux**, from a checkout:
+Use the same command on **macOS, Linux, or Windows with Git Bash**. From a checkout:
 
 ```bash
 bash scripts/install-claude.sh
@@ -87,16 +70,32 @@ bash /tmp/install-pra-claude.sh
 ```
 
 The standalone script downloads the repository itself. Re-run it to upgrade.
+On Windows, the script automatically handles native Windows paths and runtime setup.
 It uses the [official uv installer](https://docs.astral.sh/uv/reference/installer/)
-and [uv-managed Python](https://docs.astral.sh/uv/guides/install-python/) under
-`~/.local/share/peerreviewagents/bootstrap`, without editing shell profiles.
+and [uv-managed Python](https://docs.astral.sh/uv/guides/install-python/), without editing shell profiles.
 PRA still runs on Python internally, but users do not need to manage it.
+
+<details>
+<summary>Windows without Bash</summary>
+
+Windows does not include Bash by default. If Git Bash is unavailable, run this in
+PowerShell instead. There is no need to install Bash or WSL:
+
+```powershell
+$installer = Join-Path $env:TEMP "install-pra-claude.ps1"
+Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/pgarrett-scripps/PeerReviewAgents/main/scripts/install-claude.ps1" -OutFile $installer -ErrorAction Stop
+powershell -NoProfile -ExecutionPolicy Bypass -File $installer
+```
+
+From a checkout, use `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-claude.ps1`.
+This launches the same native Windows setup used by the Bash entry point.
+It works with Windows PowerShell 5.1 or later.
+Its optional flags are `-Claude`, `-Runtime`, `-DataDir`, `-ConfigureOnly`, and `-Help`.
+
+</details>
 
 The installer creates a dedicated PRA environment, installs the MCP extra, and
 registers `peer-review-agents@peer-review-agents-configured` for the current user.
-Both shell entry points provision uv and a compatible Python automatically.
-The Python entry point uses uv when available and otherwise creates a virtual
-environment with Python 3.10 through 3.13.
 
 The generated plugin stores absolute paths to `peerreview-mcp` and `claude`, so
 Desktop does not need to inherit your terminal's PATH. Paths containing spaces
@@ -121,14 +120,9 @@ For executables in custom locations, pass their absolute paths:
 bash scripts/install-claude.sh --claude /path/to/claude --runtime /path/to/peerreview-mcp
 ```
 
-On Windows, the equivalent command is:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-claude.ps1 -Claude "C:\path to\claude.exe" -Runtime "C:\path to\peerreview-mcp.exe"
-```
-
-Windows options are `-Claude`, `-Runtime`, `-DataDir`, `-ConfigureOnly`, and `-Help`.
-`-Runtime` or `--runtime` uses an existing PRA installation instead of installing another copy.
+The same flags work on all supported platforms. In Git Bash, Windows paths such as
+`"C:/Program Files/Claude/claude.exe"` and `/c/Users/name/.local/bin/claude.exe` are accepted.
+`--runtime` uses an existing PRA installation instead of installing another copy.
 Omit it for the managed environment. Re-run the installer after pulling repository
 updates to upgrade the runtime and refresh the cached plugin, then restart Claude.
 The `bash scripts/install-local.sh claude` shortcut invokes this same installer
@@ -254,7 +248,7 @@ directory. Use the platform path separator to provide more than one input root.
 
 ### The MCP server does not start
 
-For Claude Code or Desktop, re-run the PowerShell or Bash installer above and restart the app.
+For Claude Code or Desktop, re-run the installer above and restart the app.
 It prints the absolute runtime and Claude paths configured in the plugin.
 For other clients, confirm the command is installed and visible to the agent process:
 

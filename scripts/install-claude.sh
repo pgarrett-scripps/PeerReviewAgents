@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install PRA for Claude Code on macOS or Linux without preinstalled Python.
+# Install PRA for Claude Code without preinstalled Python.
 set -euo pipefail
 
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]
@@ -17,7 +17,8 @@ Options forwarded to the plugin installer:
   --data-dir PATH     Choose where the runtime and plugin are installed
   --configure-only    Prepare the plugin without registering it in Claude
 
-Works from a checkout or as a standalone downloaded script on macOS and Linux.
+Works on macOS, Linux, and Windows Git Bash. Platform setup is selected automatically.
+Use the same command from a checkout or with a standalone downloaded script.
 HELP
   exit 0
 fi
@@ -56,6 +57,55 @@ then
   tar -xzf "${scratch}/source.tar.gz" -C "$scratch"
   repo_root="${scratch}/PeerReviewAgents-main"
 fi
+
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    # Git Bash and native Windows programs use different path formats.
+    powershell_command="$(command -v powershell.exe || true)"
+    if [[ -z "$powershell_command" ]]
+    then
+      powershell_command="$(cygpath -u "${SYSTEMROOT:-C:/Windows}/System32/WindowsPowerShell/v1.0/powershell.exe")"
+    fi
+    windows_args=()
+    while [[ $# -gt 0 ]]
+    do
+      case "$1" in
+        --claude|--runtime|--data-dir)
+          if [[ $# -lt 2 || -z "$2" ]]
+          then
+            echo "PRA installation requires a path after $1." >&2
+            exit 2
+          fi
+          case "$1" in
+            --claude) option="-Claude" ;;
+            --runtime) option="-Runtime" ;;
+            --data-dir) option="-DataDir" ;;
+          esac
+          windows_args+=("$option" "$(cygpath -wa "$2")")
+          shift 2
+          ;;
+        --configure-only)
+          windows_args+=("-ConfigureOnly")
+          shift
+          ;;
+        *)
+          echo "Unknown installer option: $1. Run with --help for supported options." >&2
+          exit 2
+          ;;
+      esac
+    done
+    for path_variable in PEERREVIEW_BOOTSTRAP_DIR PEERREVIEW_CLAUDE_PATH UV_PYTHON_INSTALL_DIR UV_CACHE_DIR CLAUDE_CONFIG_DIR
+    do
+      if [[ -n "${!path_variable:-}" ]]
+      then
+        export "${path_variable}=$(cygpath -wa "${!path_variable}")"
+      fi
+    done
+    MSYS2_ARG_CONV_EXCL='*' "$powershell_command" -NoProfile -ExecutionPolicy Bypass \
+      -File "$(cygpath -wa "${repo_root}/scripts/install-claude.ps1")" "${windows_args[@]}"
+    exit 0
+    ;;
+esac
 
 bootstrap_root="${PEERREVIEW_BOOTSTRAP_DIR:-${HOME}/.local/share/peerreviewagents/bootstrap}"
 uv_command="$(command -v uv || true)"
