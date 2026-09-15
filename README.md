@@ -182,15 +182,20 @@ services beyond your chosen LLM provider.
 
 This repository packages local integrations for Claude Code, Codex, Factory
 Droid, and Pi. For Claude Code or Claude Desktop's Code tab, install and sign
-in to the standalone Claude Code CLI, then run:
+in to the standalone Claude Code CLI. On Windows, run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-claude.ps1
+```
+
+On macOS or Linux:
 
 ```bash
 bash scripts/install-claude.sh
 ```
 
-On macOS and Linux, the Bash installer downloads its own Python automatically.
-On Windows, use `py -3.12 scripts/install-claude.py`. This installs the runtime
-and a plugin configured with absolute executable paths. VS Code is not required.
+Both installers download Python automatically and configure the plugin with
+absolute executable paths. No preinstalled Python or uv is required. VS Code is not required.
 Restart Claude Desktop after installation and select a Local Code session.
 See [Claude setup](docs/INTEGRATIONS.md#claude-code-and-claude-desktop) for prerequisites and upgrades.
 

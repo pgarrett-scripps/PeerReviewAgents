@@ -29,7 +29,7 @@ Controller support and provider support are different. A client can call the MCP
 
 ## Prerequisites
 
-- Python 3.10 through 3.13. The Claude Bash installer provisions this automatically.
+- Python 3.10 through 3.13. The Claude shell installers provision this automatically.
 - One supported coding agent CLI installed and authenticated.
 - `uv` is recommended. A user-level `pip` installation is the fallback.
 
@@ -53,10 +53,27 @@ alone does not provide that command, as explained in
 
 1. Install the [standalone Claude Code CLI](https://code.claude.com/docs/en/quickstart).
 2. Open a terminal and run `claude` once to sign in with the account that will run the reviews.
-3. On macOS or Linux, run the installer. Python and uv are installed automatically
-   when needed. No administrator access or manual Python setup is required.
+3. Run the installer for your operating system. Python and uv are installed
+   automatically when needed. No administrator access or manual Python setup is required.
 
-From a checkout:
+**Windows PowerShell**, from a checkout:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-claude.ps1
+```
+
+Without a checkout:
+
+```powershell
+$installer = Join-Path $env:TEMP "install-pra-claude.ps1"
+Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/pgarrett-scripps/PeerReviewAgents/main/scripts/install-claude.ps1" -OutFile $installer -ErrorAction Stop
+powershell -NoProfile -ExecutionPolicy Bypass -File $installer
+```
+
+This works with Windows PowerShell 5.1 or later. Bash and WSL are not required.
+It keeps its managed bootstrap runtime under `%LOCALAPPDATA%\peerreviewagents\bootstrap`.
+
+**macOS or Linux**, from a checkout:
 
 ```bash
 bash scripts/install-claude.sh
@@ -75,15 +92,9 @@ and [uv-managed Python](https://docs.astral.sh/uv/guides/install-python/) under
 `~/.local/share/peerreviewagents/bootstrap`, without editing shell profiles.
 PRA still runs on Python internally, but users do not need to manage it.
 
-For native Windows, the existing Python entry point remains available:
-
-```powershell
-py -3.12 scripts/install-claude.py
-```
-
 The installer creates a dedicated PRA environment, installs the MCP extra, and
 registers `peer-review-agents@peer-review-agents-configured` for the current user.
-The Bash entry point provisions uv and a compatible Python automatically.
+Both shell entry points provision uv and a compatible Python automatically.
 The Python entry point uses uv when available and otherwise creates a virtual
 environment with Python 3.10 through 3.13.
 
@@ -110,7 +121,14 @@ For executables in custom locations, pass their absolute paths:
 bash scripts/install-claude.sh --claude /path/to/claude --runtime /path/to/peerreview-mcp
 ```
 
-`--runtime` uses an existing PRA installation instead of installing another copy.
+On Windows, the equivalent command is:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-claude.ps1 -Claude "C:\path to\claude.exe" -Runtime "C:\path to\peerreview-mcp.exe"
+```
+
+Windows options are `-Claude`, `-Runtime`, `-DataDir`, `-ConfigureOnly`, and `-Help`.
+`-Runtime` or `--runtime` uses an existing PRA installation instead of installing another copy.
 Omit it for the managed environment. Re-run the installer after pulling repository
 updates to upgrade the runtime and refresh the cached plugin, then restart Claude.
 The `bash scripts/install-local.sh claude` shortcut invokes this same installer
@@ -236,7 +254,7 @@ directory. Use the platform path separator to provide more than one input root.
 
 ### The MCP server does not start
 
-For Claude Code or Desktop, re-run `bash scripts/install-claude.sh` and restart the app.
+For Claude Code or Desktop, re-run the PowerShell or Bash installer above and restart the app.
 It prints the absolute runtime and Claude paths configured in the plugin.
 For other clients, confirm the command is installed and visible to the agent process:
 

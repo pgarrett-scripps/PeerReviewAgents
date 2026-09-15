@@ -74,3 +74,13 @@ jobs:
           cache: pip
       - run: pip install --quiet -e '.[mcp,dev]'
       - run: pytest tests/test_claude_bootstrap.py tests/test_claude_install.py tests/test_subscriptions.py tests/test_mcp_server.py -q
+
+  windows-bootstrap:
+    name: Windows bootstrap without Python
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install and connect using Windows PowerShell 5.1
+        shell: powershell
+        run: .\scripts\test-windows-bootstrap.ps1
