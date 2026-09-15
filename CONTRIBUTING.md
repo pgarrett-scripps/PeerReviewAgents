@@ -37,7 +37,8 @@ CI runs the same checks across Python 3.10–3.13.
 
 Use a `v<VERSION>` tag to trigger `.github/workflows/release.yml`.
 Before tagging, update `project.version` in `pyproject.toml` and the matching
-`version` and release date in `CITATION.cff`, then commit the release changes.
+`version` and release date in `CITATION.cff`, plus the versions in both Claude
+plugin manifests, then commit the release changes.
 Run `pytest tests/test_metadata.py -q` to check the citation metadata locally.
 
 The workflow checks the tag against the package version and runs the tests

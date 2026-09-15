@@ -18,7 +18,8 @@ Each coding agent needs packaging that loads the skill and MCP server. A small s
 
 | Client | Loads local MCP | Loads the skill | Uses client authentication as a review provider | Validation level |
 |---|---:|---:|---:|---|
-| Claude Code | Yes | Yes | `claude-code` | Live tested |
+| Standalone Claude Code CLI | Yes | Yes | `claude-code` | Live tested on Linux |
+| Claude Desktop Code tab, local sessions | Yes | Yes | `claude-code`, through the standalone CLI | Installer and launch contract tested. Desktop UI not live tested |
 | Codex | Yes | Yes | `codex` | Live tested |
 | Factory Droid | Yes | Yes | `droid` | Unit tested, live CLI not available in the development environment |
 | Pi | Yes, through the packaged MCP adapter | Yes | `pi` | Package and command parsing tested, live login not available in the development environment |
@@ -40,35 +41,87 @@ From a cloned checkout, install the local runtime:
 
 This installs `peerreview` and `peerreview-mcp` as user-level commands. It does not install or configure an agent plugin.
 
-## Claude Code
+## Claude Code and Claude Desktop
 
-Install the runtime and plugin:
+Use the standalone Claude Code CLI. VS Code and its Claude extension are not required.
+The Claude Desktop Code tab can host the plugin, but PRA runs the review panel
+through the separately installed, signed-in `claude` command. Installing Desktop
+alone does not provide that command, as explained in
+[Anthropic's Desktop setup guide](https://code.claude.com/docs/en/desktop-quickstart).
+
+### Install on a new computer
+
+1. Install the [standalone Claude Code CLI](https://code.claude.com/docs/en/quickstart).
+2. Open a terminal and run `claude` once to sign in with the account that will run the reviews.
+3. Clone this repository and run the installer from its root:
 
 ```bash
-./scripts/install-local.sh claude
+python3 scripts/install-claude.py
 ```
 
-For source development without marketplace caching:
+On Windows, run the same script with Python 3.12:
+
+```powershell
+py -3.12 scripts/install-claude.py
+```
+
+The installer creates a dedicated PRA environment, installs the MCP extra, and
+registers `peer-review-agents@peer-review-agents-configured` for the current user.
+It uses uv when available and otherwise creates a Python virtual environment.
+Python 3.10 through 3.13 is required for the runtime.
+
+The generated plugin stores absolute paths to `peerreview-mcp` and `claude`, so
+Desktop does not need to inherit your terminal's PATH. Paths containing spaces
+are supported. No editor extension path is discovered or required.
+
+4. Restart Claude Desktop or start a new Claude Code session. In Desktop, select
+   the Code tab, a Local session, and the folder containing the manuscript.
+5. Enable the configured plugin in the plugin manager and ask it to review the
+   manuscript. Use `provider: claude-code` and `model: default`.
+
+If an older `peer-review-agents@peer-review-agents-local` plugin is enabled,
+disable it to avoid duplicate tools. The installer leaves other plugins and
+settings intact. Desktop Code and the Desktop Chat tab have separate MCP
+configuration, as described in the
+[Desktop reference](https://code.claude.com/docs/en/desktop#shared-configuration).
+
+### Custom installations and upgrades
+
+For executables in custom locations, pass their absolute paths:
+
+```bash
+python3 scripts/install-claude.py --claude /path/to/claude --runtime /path/to/peerreview-mcp
+```
+
+`--runtime` uses an existing PRA installation instead of installing another copy.
+Omit it for the managed environment. Re-run the installer after pulling repository
+updates to upgrade the runtime and refresh the cached plugin, then restart Claude.
+The `./scripts/install-local.sh claude` shortcut invokes this same installer.
+
+The adapter also finds native CLI installations in `~/.local/bin` when that
+directory is absent from PATH. `PEERREVIEW_CLAUDE_PATH` selects a custom executable.
+An invalid override fails explicitly instead of silently using a different CLI.
+
+For source development, after installing the MCP extra and making its command
+available on PATH, load the repository directly:
 
 ```bash
 claude --plugin-dir /absolute/path/to/PeerReviewAgents
 ```
 
-Start a review with `provider: claude-code`. The adapter launches a fresh `claude -p` process with tools disabled, safe mode enabled, no session persistence, and schema-constrained JSON output.
+Each review turn uses `claude -p` with tools disabled, safe mode enabled, no
+session persistence, and schema-constrained JSON output. Use an up-to-date CLI
+that supports these flags. The installer does not copy credentials from an IDE.
 
-Upgrade the runtime and cached plugin:
-
-```bash
-./scripts/install-local.sh runtime
-claude plugin marketplace update peer-review-agents-local
-claude plugin update peer-review-agents@peer-review-agents-local
-```
-
-Uninstall the plugin:
+Uninstall the configured plugin:
 
 ```bash
-claude plugin uninstall peer-review-agents@peer-review-agents-local
+claude plugin uninstall peer-review-agents@peer-review-agents-configured
+claude plugin marketplace remove peer-review-agents-configured
 ```
+
+The installer prints its data directory. Remove that directory to remove the
+managed PRA environment and generated marketplace once the plugin is uninstalled.
 
 ## Codex
 
@@ -165,7 +218,9 @@ directory. Use the platform path separator to provide more than one input root.
 
 ### The MCP server does not start
 
-Confirm the command is installed and visible to the agent process:
+For Claude Code or Desktop, re-run `scripts/install-claude.py` and restart the app.
+It prints the absolute runtime and Claude paths configured in the plugin.
+For other clients, confirm the command is installed and visible to the agent process:
 
 ```bash
 command -v peerreview-mcp

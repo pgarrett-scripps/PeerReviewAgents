@@ -1,6 +1,6 @@
 {
   "name": "peer-review-agents",
-  "version": "0.5.0",
+  "version": "0.6.1",
   "description": "Run a rigorous multi-agent peer review from a local coding agent.",
   "author": {
     "name": "PeerReviewAgents contributors"

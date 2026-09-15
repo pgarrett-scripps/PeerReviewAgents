@@ -363,9 +363,32 @@ def validate_subscription_cli(provider: str) -> str:
 
 
 def _require_executable(name: str) -> str:
+    if name == "claude":
+        override = os.environ.get("PEERREVIEW_CLAUDE_PATH")
+        if override:
+            candidate = Path(override).expanduser()
+            if candidate.is_absolute() and candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+            raise SubscriptionCLIError(
+                "PEERREVIEW_CLAUDE_PATH must name an executable absolute path to "
+                "the standalone Claude Code CLI."
+            )
+        # Desktop apps may omit the native install directory from PATH.
+        native = Path.home() / ".local" / "bin" / (
+            "claude.exe" if os.name == "nt" else "claude"
+        )
+        if native.is_file() and os.access(native, os.X_OK):
+            return str(native)
     path = shutil.which(name)
     if path:
         return path
+    if name == "claude":
+        raise SubscriptionCLIError(
+            "The standalone Claude Code CLI was not found. Install it from "
+            "https://code.claude.com/docs/en/quickstart and run claude to sign in. "
+            "Claude Desktop alone does not install the terminal command. "
+            "For a custom location, set PEERREVIEW_CLAUDE_PATH to its absolute path."
+        )
     raise SubscriptionCLIError(
         f"{name!r} was not found on PATH. Install it and sign in before using this provider."
     )
@@ -385,6 +408,11 @@ def _completed(command: list[str], prompt: str, timeout_s: float) -> subprocess.
     except subprocess.TimeoutExpired as exc:
         raise SubscriptionCLIError(
             f"{Path(command[0]).name} exceeded the {timeout_s:g} second request timeout"
+        ) from exc
+    except OSError as exc:
+        raise SubscriptionCLIError(
+            f"Could not launch {command[0]!r}: {exc}. "
+            "Check that the executable is installed and accessible to the client."
         ) from exc
     if result.returncode != 0:
         streams = [part.strip() for part in (result.stderr, result.stdout) if part.strip()]
