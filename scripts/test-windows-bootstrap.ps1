@@ -17,11 +17,8 @@ $env:PEERREVIEW_BOOTSTRAP_DIR = Join-Path $testRoot 'bootstrap'
 $env:UV_CACHE_DIR = Join-Path $testRoot 'uv cache'
 $env:UV_PYTHON_INSTALL_DIR = Join-Path $testRoot 'managed python'
 $env:CLAUDE_CONFIG_DIR = Join-Path $testRoot 'claude settings'
-$env:PATH = @(
-    (Join-Path $env:SystemRoot 'System32'),
-    $env:SystemRoot,
-    (Split-Path -Parent $windowsPowerShell)
-) -join [IO.Path]::PathSeparator
+# System32 contains a WSL bash launcher on hosted runners. Keep only PowerShell.
+$env:PATH = Split-Path -Parent $windowsPowerShell
 foreach ($name in @('python', 'python3', 'uv', 'bash')) {
     if (Get-Command $name -CommandType Application -ErrorAction SilentlyContinue) {
         throw "$name should not be available on the test PATH."
