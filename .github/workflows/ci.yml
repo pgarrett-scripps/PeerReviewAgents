@@ -81,6 +81,6 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - name: Install and connect using Windows PowerShell 5.1
+      - name: Install and connect using PowerShell and the shared Bash entry point
         shell: powershell
         run: .\scripts\test-windows-bootstrap.ps1

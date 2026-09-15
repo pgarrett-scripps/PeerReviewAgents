@@ -65,4 +65,28 @@ $badData = Join-Path $testRoot 'failed installation'
 if ($LASTEXITCODE -eq 0) { throw 'The installer hid a child-process failure.' }
 if (Test-Path -LiteralPath $badData) { throw 'Invalid Claude path created a runtime.' }
 Write-Host 'Native Windows bootstrap, upgrade, failure handling, and real MCP connection passed.'
+
+# The shared Bash entry point must choose this native setup automatically.
+$gitRoot = Join-Path $env:ProgramFiles 'Git'
+$gitBash = Join-Path $gitRoot 'bin/bash.exe'
+$env:PATH = (Join-Path $gitRoot 'usr/bin') + [IO.Path]::PathSeparator + $env:PATH
+$env:PEERREVIEW_BOOTSTRAP_DIR = Join-Path $testRoot 'Git Bash bootstrap'
+$env:CLAUDE_CONFIG_DIR = Join-Path $testRoot 'Git Bash Claude settings'
+$bashData = Join-Path $testRoot 'Git Bash plugin data'
+$sharedInstaller = Join-Path $PSScriptRoot 'install-claude.sh'
+& $gitBash --noprofile --norc $sharedInstaller --claude $claude --data-dir $bashData
+if ($LASTEXITCODE -ne 0) { throw 'Shared Bash entry point failed on Windows.' }
+$bashRuntime = Join-Path $bashData 'runtime/Scripts/peerreview-mcp.exe'
+if (-not (Test-Path -LiteralPath $bashRuntime)) { throw 'Bash did not install the native Windows runtime.' }
+
+$standaloneBash = Join-Path $testRoot 'standalone.sh'
+Copy-Item -LiteralPath $sharedInstaller -Destination $standaloneBash
+& $gitBash --noprofile --norc $standaloneBash --claude $claude --data-dir $bashData --runtime $bashRuntime
+if ($LASTEXITCODE -ne 0) { throw 'Standalone Bash installation failed on Windows.' }
+$bashHealth = & $claude mcp list 2>&1 | Out-String
+Write-Host $bashHealth
+if ($LASTEXITCODE -ne 0 -or $bashHealth -notmatch '\bConnected\b') {
+    throw 'The plugin installed through Git Bash did not connect.'
+}
+Write-Host 'Shared Bash entry point, native Windows runtime, and MCP connection passed.'
 exit 0
