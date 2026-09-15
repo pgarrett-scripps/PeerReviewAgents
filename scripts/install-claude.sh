@@ -66,7 +66,7 @@ case "$(uname -s)" in
     then
       powershell_command="$(cygpath -u "${SYSTEMROOT:-C:/Windows}/System32/WindowsPowerShell/v1.0/powershell.exe")"
     fi
-    windows_args=()
+    windows_args=(-NoProfile -ExecutionPolicy Bypass -File "$(cygpath -wa "${repo_root}/scripts/install-claude.ps1")")
     while [[ $# -gt 0 ]]
     do
       case "$1" in
@@ -101,8 +101,7 @@ case "$(uname -s)" in
         export "${path_variable}=$(cygpath -wa "${!path_variable}")"
       fi
     done
-    MSYS2_ARG_CONV_EXCL='*' "$powershell_command" -NoProfile -ExecutionPolicy Bypass \
-      -File "$(cygpath -wa "${repo_root}/scripts/install-claude.ps1")" "${windows_args[@]}"
+    MSYS2_ARG_CONV_EXCL='*' "$powershell_command" "${windows_args[@]}"
     exit 0
     ;;
 esac
