@@ -4,6 +4,11 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 target="${1:-runtime}"
 
+if [[ "$target" == "claude" ]]
+then
+  exec python3 "${repo_root}/scripts/install-claude.py"
+fi
+
 install_runtime() {
   if command -v uv >/dev/null 2>&1
   then
@@ -21,11 +26,7 @@ PY
 
 install_runtime
 
-if [[ "$target" == "claude" ]]
-then
-  claude plugin marketplace add "$repo_root"
-  claude plugin install peer-review-agents@peer-review-agents-local
-elif [[ "$target" == "codex" ]]
+if [[ "$target" == "codex" ]]
 then
   codex plugin marketplace add "$repo_root"
   codex plugin add peer-review-agents@peer-review-agents-local

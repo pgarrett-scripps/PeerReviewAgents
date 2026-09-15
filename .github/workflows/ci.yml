@@ -58,3 +58,19 @@ jobs:
       # tables, grouped kwargs), and adopting it would reformat 70 of 117
       # files in one mechanical diff. If you want it, run `ruff format .` as
       # its own commit and add the check back here.
+
+  claude-portability:
+    name: Claude installation (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install --quiet -e '.[mcp,dev]'
+      - run: pytest tests/test_claude_install.py tests/test_subscriptions.py tests/test_mcp_server.py -q

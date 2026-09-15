@@ -181,9 +181,20 @@ services beyond your chosen LLM provider.
 ## Local coding agent plugins
 
 This repository packages local integrations for Claude Code, Codex, Factory
-Droid, and Pi. Install the MCP extra first so the shared `peerreview-mcp`
-command is available. During local development, load the repository directly
-in Claude Code:
+Droid, and Pi. For Claude Code or Claude Desktop's Code tab, install and sign
+in to the standalone Claude Code CLI, then run:
+
+```bash
+python3 scripts/install-claude.py
+```
+
+On Windows, use `py -3.12 scripts/install-claude.py`. This installs the runtime
+and a plugin configured with absolute executable paths. VS Code is not required.
+Restart Claude Desktop after installation and select a Local Code session.
+See [Claude setup](docs/INTEGRATIONS.md#claude-code-and-claude-desktop) for prerequisites and upgrades.
+
+For other clients, install the MCP extra so `peerreview-mcp` is available.
+During local development, load the repository directly in Claude Code:
 
 ```bash
 claude --plugin-dir /absolute/path/to/PeerReviewAgents
