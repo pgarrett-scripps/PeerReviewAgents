@@ -185,9 +185,10 @@ Droid, and Pi. For Claude Code or Claude Desktop's Code tab, install and sign
 in to the standalone Claude Code CLI, then run:
 
 ```bash
-python3 scripts/install-claude.py
+bash scripts/install-claude.sh
 ```
 
+On macOS and Linux, the Bash installer downloads its own Python automatically.
 On Windows, use `py -3.12 scripts/install-claude.py`. This installs the runtime
 and a plugin configured with absolute executable paths. VS Code is not required.
 Restart Claude Desktop after installation and select a Local Code session.

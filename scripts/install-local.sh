@@ -6,7 +6,8 @@ target="${1:-runtime}"
 
 if [[ "$target" == "claude" ]]
 then
-  exec python3 "${repo_root}/scripts/install-claude.py"
+  shift
+  exec bash "${repo_root}/scripts/install-claude.sh" "$@"
 fi
 
 install_runtime() {

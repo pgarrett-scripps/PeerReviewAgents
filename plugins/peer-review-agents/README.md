@@ -3,7 +3,8 @@
 This plugin loads the local PeerReviewAgents MCP server and manuscript review skill.
 
 For Claude Code and Claude Desktop's Code tab, run
-`python3 scripts/install-claude.py` from the repository root. On Windows use
+`bash scripts/install-claude.sh` from the repository root on macOS or Linux.
+It downloads Python automatically. On Windows use
 `py -3.12 scripts/install-claude.py`. Install and sign in to the standalone
 Claude Code CLI first. The configured plugin uses absolute executable paths,
 so it can launch from Desktop without your terminal's PATH. VS Code is not required.
