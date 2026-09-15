@@ -373,16 +373,16 @@ def _require_executable(name: str) -> str:
                 "PEERREVIEW_CLAUDE_PATH must name an executable absolute path to "
                 "the standalone Claude Code CLI."
             )
+    path = shutil.which(name)
+    if path:
+        return path
+    if name == "claude":
         # Desktop apps may omit the native install directory from PATH.
         native = Path.home() / ".local" / "bin" / (
             "claude.exe" if os.name == "nt" else "claude"
         )
         if native.is_file() and os.access(native, os.X_OK):
             return str(native)
-    path = shutil.which(name)
-    if path:
-        return path
-    if name == "claude":
         raise SubscriptionCLIError(
             "The standalone Claude Code CLI was not found. Install it from "
             "https://code.claude.com/docs/en/quickstart and run claude to sign in. "

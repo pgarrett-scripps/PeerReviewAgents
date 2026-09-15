@@ -61,6 +61,7 @@ def test_missing_cli_explains_desktop_prerequisite(clean_home):
 
 
 def test_custom_path_install_remains_supported(monkeypatch, clean_home):
+    make_executable(clean_home / ".local/bin" / ("claude.exe" if os.name == "nt" else "claude"))
     monkeypatch.setattr("shutil.which", lambda name: "/opt/custom/claude")
     assert validate_subscription_cli("claude-code") == "/opt/custom/claude"
 
