@@ -1,0 +1,34 @@
+[
+  {
+    "id": "econ-staggered-trend",
+    "kind": "supported_concern",
+    "manuscript_excerpt": "Using difference-in-differences, we estimate the causal effect of state adoption. Treated states show rising outcomes for three years before adoption while controls are flat.",
+    "source_record": "The event-study coefficients and confidence intervals show a sustained pre-adoption divergence, and no alternative trend model is presented.",
+    "expected_disposition": "Raise a design-specific concern that the reported pretrend conflicts with the identifying counterfactual used for the causal claim.",
+    "rationale": "The manuscript's own diagnostic challenges its causal interpretation."
+  },
+  {
+    "id": "econ-benign-unweighted",
+    "kind": "benign_near_match",
+    "manuscript_excerpt": "We estimate the association among respondents in the analytic sample and do not report a national population mean.",
+    "source_record": "The sampling process is described, inference is conditional on observed covariates, and no population-representative claim is made.",
+    "expected_disposition": "Do not require survey weights solely because weights exist. Evaluate whether the stated conditional target is supported.",
+    "rationale": "Weighting depends on the estimand and design, not a universal rule."
+  },
+  {
+    "id": "econ-iv-exclusion-unclear",
+    "kind": "unresolved",
+    "manuscript_excerpt": "Distance to the training center instruments program completion and therefore identifies its effect on earnings.",
+    "source_record": "First-stage strength is reported, but the manuscript does not address local labor-market access as a direct pathway from distance to earnings.",
+    "expected_disposition": "Ask for the exclusion argument and analyses addressing the direct pathway. Do not declare the instrument invalid solely from plausibility.",
+    "rationale": "Relevance is shown, but the exclusion restriction remains unresolved."
+  },
+  {
+    "id": "econ-vintage-unavailable",
+    "kind": "unavailable_evidence",
+    "manuscript_excerpt": "Policy assignment used the unemployment estimate available in March 2009.",
+    "source_record": "The configured public source exposes the current revised series, while the March 2009 vintage is unavailable without optional archival access.",
+    "expected_disposition": "Do not substitute the revised value. Record the historical-vintage gap and request the contemporaneous release source.",
+    "rationale": "Revision can change assignment around a threshold or alter a historical claim."
+  }
+]

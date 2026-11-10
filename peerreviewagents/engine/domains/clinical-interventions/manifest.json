@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "id": "clinical-interventions",
+  "catalog_id": "D10",
+  "name": "Clinical interventions and diagnostics",
+  "description": "Review registered clinical studies, intervention reporting, outcomes, harms, and diagnostic evidence.",
+  "triggers": [
+    "randomized clinical trial",
+    "clinical trial registration",
+    "NCT number",
+    "diagnostic accuracy",
+    "reference standard",
+    "adverse events",
+    "randomized trial",
+    "randomised trial",
+    "randomized controlled trial",
+    "randomised controlled trial",
+    "trial registration"
+  ],
+  "skills": [
+    "skills/clinical-interventions/SKILL.md"
+  ],
+  "providers": [
+    "clinicaltrials",
+    "crossref",
+    "europepmc"
+  ],
+  "source_notes": [
+    {
+      "url": "https://clinicaltrials.gov/data-api/about-api",
+      "purpose": "Current trial records and linked documents",
+      "access": "public",
+      "status": "documented"
+    },
+    {
+      "url": "https://www.who.int/tools/clinical-trials-registry-platform/the-ictrp-search-portal",
+      "purpose": "Cross-registry discovery and public downloads",
+      "access": "public downloads with terms",
+      "status": "documented"
+    },
+    {
+      "url": "https://www.consort-spirit.org/",
+      "purpose": "Randomized trial and protocol reporting guidance",
+      "access": "public guidance with reuse review required",
+      "status": "documented"
+    }
+  ],
+  "maturity": {
+    "instructions": "implemented",
+    "sources": "documented",
+    "live_access": "not_tested",
+    "manuscript_evaluation": "not_evaluated"
+  },
+  "limitations": [
+    "A registry record is sponsor-supplied and does not establish trial validity.",
+    "Current registry data must not be represented as a historical protocol state.",
+    "The skill does not provide clinical advice or recalculate treatment effects."
+  ],
+  "provenance": {
+    "kind": "original",
+    "date": "2026-09-25",
+    "attribution": "Original PRA instructions informed by linked primary documentation."
+  }
+}

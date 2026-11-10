@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "microbiology",
+  "catalog_id": "D05",
+  "name": "Microbiology",
+  "description": "Review microbial strain identity, assemblies, resistance evidence, and versioned pathogen clusters.",
+  "triggers": ["bacterial isolate", "fungal isolate", "antimicrobial resistance", "virulence gene", "SNP cluster", "metagenomic", "BioSample accession", "strain typing"],
+  "skills": ["skills/microbiology/SKILL.md"],
+  "providers": ["ncbi-datasets"],
+  "source_notes": [
+    {"url": "https://www.ncbi.nlm.nih.gov/pathogens/pathogens_help/", "purpose": "Versioned pathogen isolate and SNP cluster records", "access": "public", "status": "documented"},
+    {"url": "https://www.bv-brc.org/docs/system_documentation/system_architecture.html", "purpose": "Bacterial and viral data API", "access": "public", "status": "audit_required_candidate"}
+  ],
+  "maturity": {"instructions": "implemented", "sources": "documented", "live_access": "not_tested", "manuscript_evaluation": "not_evaluated"},
+  "limitations": ["A resistance genotype does not prove a resistance phenotype.", "Cluster membership does not prove transmission or outbreak membership."],
+  "provenance": {"kind": "original", "date": "2026-09-25", "attribution": "Original PRA instructions informed by linked primary documentation."}
+}

@@ -81,6 +81,20 @@ def build_parser() -> argparse.ArgumentParser:
         prog="peerreview",
         description="Multi-agent peer review",
         epilog=(
+            "Evidence-linked engine (0.7.0, the supported path) — "
+            "`peerreview <command> --help`:\n"
+            "  import            import a PDF into a manuscript workspace of source blocks\n"
+            "  verify            verify a workspace against its manifest\n"
+            "  review            run one evidence-linked review on a subscription transport\n"
+            "  investigate       run one focused evidence investigation\n"
+            "  report            write REVIEW.md and REVIEW.txt from a run, no model calls\n"
+            "  result-map        map reported results to their source blocks\n"
+            "  add-review        normalize and save an external review response\n"
+            "  confirm-billing   record that this Claude subscription cannot buy extra usage\n"
+            "  checks            record offline prose and readability checks\n\n"
+            "Legacy LangGraph panel: `peerreview <manuscript>` or "
+            "`peerreview legacy-panel <manuscript>`.\n"
+            "Web UI: `peerreview serve`.\n\n"
             "Configuration (lowest to highest precedence):\n"
             "  built-in defaults\n"
             "  ~/.config/peerreviewagents/config.toml   (user-global)\n"
@@ -618,6 +632,26 @@ def run_server(args) -> None:
 def run() -> None:
     load_dotenv()
     argv = sys.argv[1:]
+    # The 0.7.0 evidence-linked engine owns its own subcommands. They are
+    # dispatched before anything else because the legacy review CLI takes a
+    # bare positional manuscript path, so a word like `review` would
+    # otherwise be read as a filename.
+    from peerreviewagents.engine.__main__ import COMMANDS as ENGINE_COMMANDS
+
+    if argv and argv[0] in ENGINE_COMMANDS:
+        from peerreviewagents.engine.__main__ import build_parser as engine_parser
+        from peerreviewagents.engine.__main__ import dispatch as engine_dispatch
+
+        ep = engine_parser(prog="peerreview")
+        engine_dispatch(ep, ep.parse_args(argv))
+        return
+    # `legacy-panel` is the named form of the legacy LangGraph run. The bare
+    # `peerreview <manuscript>` form still works and is unchanged.
+    if argv and argv[0] == "legacy-panel":
+        console.print("[yellow]`legacy-panel` runs the legacy LangGraph panel (v0.6.x), "
+                      "kept for compatibility; the 0.7.0 engine commands are the "
+                      "supported path.[/yellow]")
+        argv = argv[1:]
     # Hand off the `serve` subcommand to a dedicated parser so the
     # primary review CLI keeps its current positional-argument shape.
     if argv and argv[0] == "serve":
@@ -656,7 +690,7 @@ def run() -> None:
         run_server(sp.parse_args(argv[1:]))
         return
 
-    args = build_parser().parse_args()
+    args = build_parser().parse_args(argv)
     if args.list_journals:
         _print_journals(config_from_args(args))
         return

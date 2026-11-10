@@ -1,0 +1,34 @@
+[
+  {
+    "id": "d07-supported-unit-concern",
+    "kind": "supported_concern",
+    "manuscript_excerpt": "The physiological model uses conductance in S per square meter and reproduces the cited equation.",
+    "source_record": "The parameter value was copied from mS per square centimeter without conversion, creating a factor-of-ten discrepancy.",
+    "expected_disposition": "retain_concern",
+    "rationale": "The unit conversion changes model behavior and the manuscript value is dimensionally inconsistent with its source."
+  },
+  {
+    "id": "d07-benign-unit-conversion",
+    "kind": "benign_near_match",
+    "manuscript_excerpt": "Perfusion was maintained at 12 mL per minute.",
+    "source_record": "The protocol reports 0.2 mL per second, which is exactly 12 mL per minute under the same preparation.",
+    "expected_disposition": "dismiss_concern",
+    "rationale": "The apparent difference is an explicit, correct unit conversion."
+  },
+  {
+    "id": "d07-ambiguous-parameter",
+    "kind": "unresolved_ambiguous",
+    "manuscript_excerpt": "The fitted parameter is a direct estimate of channel density.",
+    "source_record": "The observable depends jointly on channel density and conductance. The fitting procedure fixes neither and reports no identifiability analysis.",
+    "expected_disposition": "narrow_claim",
+    "rationale": "A fitted composite effect does not uniquely identify channel density."
+  },
+  {
+    "id": "d07-unavailable-model",
+    "kind": "unavailable_evidence",
+    "manuscript_excerpt": "The full CellML implementation and initial conditions are provided in the repository.",
+    "source_record": "The repository identifier resolves to a private workspace and the supplement omits initial conditions.",
+    "expected_disposition": "report_unavailable",
+    "rationale": "Static consistency and reproducibility cannot be checked from the available materials."
+  }
+]

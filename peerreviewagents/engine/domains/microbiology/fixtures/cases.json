@@ -1,0 +1,34 @@
+[
+  {
+    "id": "d05-supported-amr-concern",
+    "kind": "supported_concern",
+    "manuscript_excerpt": "Detection of a beta-lactamase gene proves phenotypic resistance to every beta-lactam tested.",
+    "source_record": "The assembly contains a related gene, but allele resolution is incomplete and no susceptibility measurements are reported.",
+    "expected_disposition": "retain_concern",
+    "rationale": "A predicted genotype cannot establish drug-specific phenotype without appropriate allele and susceptibility evidence."
+  },
+  {
+    "id": "d05-benign-strain-alias",
+    "kind": "benign_near_match",
+    "manuscript_excerpt": "Experiments used bacterial isolate LAB-17.",
+    "source_record": "BioSample SAMN1 lists LAB-17 as an alias of collection strain DSM 123, matching the assembly and manuscript provenance.",
+    "expected_disposition": "dismiss_concern",
+    "rationale": "The names refer to the same accession-linked isolate."
+  },
+  {
+    "id": "d05-ambiguous-cluster",
+    "kind": "unresolved_ambiguous",
+    "manuscript_excerpt": "Membership in SNP cluster PDS1 proves direct transmission between patients.",
+    "source_record": "The isolates share a versioned cluster, but collection dates overlap, intermediate sampling is absent, and the cluster uses single-linkage membership.",
+    "expected_disposition": "narrow_claim",
+    "rationale": "Genomic relatedness does not establish transmission direction or exclude unsampled intermediates."
+  },
+  {
+    "id": "d05-private-biosample",
+    "kind": "unavailable_evidence",
+    "manuscript_excerpt": "All bacterial isolate metadata are available in BioProject PRJNA_PRIVATE.",
+    "source_record": "The project is not public and no reviewer access information is supplied.",
+    "expected_disposition": "report_unavailable",
+    "rationale": "Isolate identity and sampling context cannot be verified from the available record."
+  }
+]

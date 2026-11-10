@@ -1,0 +1,34 @@
+[
+  {
+    "id": "d06-supported-atlas-concern",
+    "kind": "supported_concern",
+    "manuscript_excerpt": "The brain atlas shows the marker is absent from adult cortical layer 5 neurons.",
+    "source_record": "The cited atlas experiment used juvenile animals and reports sparse positive cells in the corresponding region under a different layer ontology.",
+    "expected_disposition": "retain_concern",
+    "rationale": "Age and anatomical ontology mismatches undermine the claimed adult layer-specific absence."
+  },
+  {
+    "id": "d06-benign-region-mapping",
+    "kind": "benign_near_match",
+    "manuscript_excerpt": "Reconstructions were sampled from primary motor cortex.",
+    "source_record": "The repository uses the atlas label MOp, with an explicit ontology mapping to primary motor cortex in the cited atlas version.",
+    "expected_disposition": "dismiss_concern",
+    "rationale": "The labels are explicitly mapped synonyms within the same coordinate framework."
+  },
+  {
+    "id": "d06-ambiguous-morphology",
+    "kind": "unresolved_ambiguous",
+    "manuscript_excerpt": "Longer dendrites demonstrate a disease-specific neuronal phenotype.",
+    "source_record": "Control reconstructions are from thicker sections and older animals, with no shrinkage correction or reconstruction-completeness measure.",
+    "expected_disposition": "retain_concern",
+    "rationale": "Preparation and completeness differences can produce the morphometric difference."
+  },
+  {
+    "id": "d06-unavailable-atlas",
+    "kind": "unavailable_evidence",
+    "manuscript_excerpt": "Coordinates were transformed to a custom brain atlas available online.",
+    "source_record": "The atlas URL is unavailable and the version, transform, and region ontology are not archived with the manuscript.",
+    "expected_disposition": "report_unavailable",
+    "rationale": "The coordinate mapping cannot be checked or reproduced."
+  }
+]

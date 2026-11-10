@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "earth-climate",
+  "catalog_id": "D16",
+  "name": "Earth, environment, and climate",
+  "description": "Review product lineage, spatial reference, temporal baseline, calibration, coverage, missingness, and uncertainty.",
+  "triggers": ["satellite product", "climate baseline", "remote sensing dataset", "weather station", "spatial resolution", "environmental time series"],
+  "skills": ["skills/earth-climate/SKILL.md"],
+  "providers": ["nasa-cmr", "noaa", "crossref"],
+  "source_notes": [
+    {"url": "https://cmr.earthdata.nasa.gov/search/site/docs/search/api.html", "purpose": "Active exact collection concept metadata", "access": "public metadata", "status": "implemented"},
+    {"url": "https://www.ncei.noaa.gov/cdo-web/webservices/v2", "purpose": "Station, dataset, variable, and bounded observation queries", "access": "token required", "status": "optional"},
+    {"url": "https://www.usgs.gov/products/data-and-tools/apis", "purpose": "Discipline-specific earth observations", "access": "varies", "status": "audit_required"}
+  ],
+  "maturity": {"instructions": "implemented", "sources": "documented", "live_access": "not_tested", "manuscript_evaluation": "not_evaluated"},
+  "limitations": ["Metadata identity does not validate a derived geophysical analysis.", "Some observations require authentication even when metadata are public.", "The skill does not download rasters, cubes, or large time series."],
+  "provenance": {"kind": "original", "date": "2026-09-25", "attribution": "Original PRA instructions informed by linked primary documentation."}
+}

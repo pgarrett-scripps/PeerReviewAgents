@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "qualitative-mixed-methods",
+  "catalog_id": "D14",
+  "name": "Qualitative and mixed methods",
+  "description": "Review methodological coherence, sampling, reflexivity, analytic evidence, and integration across qualitative and quantitative strands.",
+  "triggers": ["qualitative interviews", "focus groups", "participant observation", "reflexive thematic analysis", "mixed methods design", "joint display"],
+  "skills": ["skills/qualitative-mixed-methods/SKILL.md"],
+  "providers": ["crossref", "europepmc", "osf"],
+  "source_notes": [
+    {"url": "https://www.apa.org/pubs/journals/releases/amp-amp0000151.pdf", "purpose": "Qualitative and mixed-method reporting standards with reviewer considerations", "access": "public document with copyright constraints", "status": "documented"},
+    {"url": "https://www.equator-network.org/reporting-guidelines/coreq/", "purpose": "Interview and focus-group reporting guidance", "access": "public record and linked guidance", "status": "documented"}
+  ],
+  "maturity": {"instructions": "implemented", "sources": "documented", "live_access": "not_tested", "manuscript_evaluation": "not_evaluated"},
+  "limitations": ["Quality criteria must fit the stated qualitative tradition.", "COREQ is specific to interviews and focus groups.", "The skill does not inspect private transcripts or recode participant material."],
+  "provenance": {"kind": "original", "date": "2026-09-25", "attribution": "Original PRA instructions informed by linked primary documentation."}
+}

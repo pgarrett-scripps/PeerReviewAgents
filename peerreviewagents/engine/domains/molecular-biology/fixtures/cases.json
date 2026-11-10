@@ -1,0 +1,34 @@
+[
+  {
+    "id": "d01-supported-interaction-concern",
+    "kind": "supported_concern",
+    "manuscript_excerpt": "A STRING score of 0.93 demonstrates that A directly binds B in human cells.",
+    "source_record": "STRING reports a high functional association driven by coexpression and transferred evidence. No direct experimental binding channel or cited human binding assay is present.",
+    "expected_disposition": "retain_concern",
+    "rationale": "A functional association score does not establish direct binding, species-specific experimental evidence, or the cellular context."
+  },
+  {
+    "id": "d01-benign-isoform-match",
+    "kind": "benign_near_match",
+    "manuscript_excerpt": "Knockdown of isoform 2 reduced gene expression and pathway activation.",
+    "source_record": "The antibody and siRNA identifiers map specifically to the documented isoform 2 sequence. The manuscript reports isoform-specific rescue.",
+    "expected_disposition": "dismiss_concern",
+    "rationale": "The apparent canonical-versus-isoform mismatch is resolved by explicit reagent mapping and rescue."
+  },
+  {
+    "id": "d01-ambiguous-coip",
+    "kind": "unresolved_ambiguous",
+    "manuscript_excerpt": "Co-immunoprecipitation confirms a direct interaction between the proteins.",
+    "source_record": "The experiment recovers both proteins from a lysate, but no purified-protein assay, crosslink map, or complex composition control is reported.",
+    "expected_disposition": "narrow_claim",
+    "rationale": "Co-immunoprecipitation supports association in a complex but cannot alone distinguish direct binding."
+  },
+  {
+    "id": "d01-unavailable-record",
+    "kind": "unavailable_evidence",
+    "manuscript_excerpt": "A proprietary pathway database confirms pathway activation in this cell line.",
+    "source_record": "The named database record is inaccessible and no stable identifier or underlying citation is supplied.",
+    "expected_disposition": "report_unavailable",
+    "rationale": "The external support cannot be checked and must not be replaced by a different annotation source."
+  }
+]

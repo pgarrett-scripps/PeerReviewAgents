@@ -1,0 +1,34 @@
+[
+  {
+    "id": "clinical-outcome-timepoint-change",
+    "kind": "supported_concern",
+    "manuscript_excerpt": "This randomized clinical trial identified 12-week pain as the primary outcome. Registration: NCT01234567.",
+    "source_record": "The last registry version before enrollment identifies 6-week function as the sole primary outcome. Twelve-week pain first appears after study completion, with no reason recorded.",
+    "expected_disposition": "Raise a focused primary-outcome and chronology concern, while asking whether a dated protocol explains the change.",
+    "rationale": "The construct and time point changed after completion, which can affect selective reporting and interpretation."
+  },
+  {
+    "id": "clinical-benign-sample-amendment",
+    "kind": "benign_near_match",
+    "manuscript_excerpt": "The target sample was increased from 180 to 220 after a blinded reassessment of the nuisance variance.",
+    "source_record": "A dated protocol amendment before unblinding states the rule, revised target, and unchanged effect size and primary outcome.",
+    "expected_disposition": "Do not characterize the sample change as outcome-driven. Retain the blinded amendment as qualifying evidence.",
+    "rationale": "Prospective, outcome-blinded documentation supplies a benign explanation."
+  },
+  {
+    "id": "diagnostic-reference-unclear",
+    "kind": "unresolved",
+    "manuscript_excerpt": "Diagnostic accuracy was calculated against clinical diagnosis, with adjudication when clinicians disagreed.",
+    "source_record": "The manuscript does not define adjudication criteria or whether adjudicators saw the index test.",
+    "expected_disposition": "Ask for the reference-standard procedure and blinding. Do not assert biased accuracy as established.",
+    "rationale": "The missing procedure could permit review bias, but the direction and magnitude are unknown."
+  },
+  {
+    "id": "clinical-history-unavailable",
+    "kind": "unavailable_evidence",
+    "manuscript_excerpt": "The trial was prospectively registered in a regional registry as RCT-2018-44.",
+    "source_record": "The current record is visible, but historical versions and the linked protocol are unavailable.",
+    "expected_disposition": "Record that prospective outcome comparison is unavailable and avoid treating the current record as the original plan.",
+    "rationale": "Current fields cannot resolve when the plan was specified."
+  }
+]

@@ -1,0 +1,34 @@
+[
+  {
+    "id": "d08-supported-homeolog-concern",
+    "kind": "supported_concern",
+    "manuscript_excerpt": "RNA-seq proves that wheat gene A is induced in roots.",
+    "source_record": "The quantified reads map equally to A-genome and B-genome homeologs, while the manuscript reports only the A-genome locus.",
+    "expected_disposition": "retain_concern",
+    "rationale": "Homeolog ambiguity prevents locus-specific expression attribution."
+  },
+  {
+    "id": "d08-benign-locus-rename",
+    "kind": "benign_near_match",
+    "manuscript_excerpt": "Arabidopsis locus ATXG00010 controls root development.",
+    "source_record": "TAIR maps the retired locus symbol directly to the current identifier, and the cited allele and ecotype match.",
+    "expected_disposition": "dismiss_concern",
+    "rationale": "The identifier difference is a documented locus rename."
+  },
+  {
+    "id": "d08-ambiguous-expression-context",
+    "kind": "unresolved_ambiguous",
+    "manuscript_excerpt": "Expression Atlas confirms induction by drought in leaves.",
+    "source_record": "The atlas experiment used seedlings, osmotic treatment, and whole shoots from another cultivar rather than drought-treated mature leaves.",
+    "expected_disposition": "narrow_claim",
+    "rationale": "Tissue, stage, genotype, and treatment do not match the manuscript context."
+  },
+  {
+    "id": "d08-restricted-tair-release",
+    "kind": "unavailable_evidence",
+    "manuscript_excerpt": "The current TAIR subscriber release validates the phenotype annotation.",
+    "source_record": "Only an older public release is accessible and the current subscriber record was not supplied.",
+    "expected_disposition": "report_unavailable",
+    "rationale": "Restricted current content cannot be assumed or replaced by an older record without qualification."
+  }
+]

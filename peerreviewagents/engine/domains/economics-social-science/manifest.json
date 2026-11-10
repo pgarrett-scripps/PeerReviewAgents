@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "id": "economics-social-science",
+  "catalog_id": "D13",
+  "name": "Economics and quantitative social science",
+  "description": "Review identification, registered interventions, survey and administrative measures, dependence, and public economic series.",
+  "triggers": ["difference-in-differences", "regression discontinuity", "instrumental variables", "AEA RCT Registry", "survey weights", "administrative records"],
+  "skills": ["skills/economics-social-science/SKILL.md"],
+  "providers": ["aea", "census", "worldbank", "fred", "osf", "crossref"],
+  "source_notes": [
+    {"url": "https://docs.socialscienceregistry.org/", "purpose": "AEA RCT Registry metadata and downloads", "access": "public", "status": "documented"},
+    {"url": "https://www.census.gov/data/developers.html", "purpose": "US survey and population metadata", "access": "public with limits", "status": "documented"},
+    {"url": "https://api.worldbank.org/v2/indicator", "purpose": "Active exact indicator metadata without country-year values", "access": "public", "status": "implemented"},
+    {"url": "https://fred.stlouisfed.org/docs/api/fred/overview.html", "purpose": "Current and archival economic series", "access": "account key required", "status": "optional"}
+  ],
+  "maturity": {"instructions": "implemented", "sources": "documented", "live_access": "not_tested", "manuscript_evaluation": "not_evaluated"},
+  "limitations": ["Public aggregates cannot validate restricted microdata or derived estimates.", "FRED access requires a registered key and source terms may vary.", "The skill does not reproduce full econometric analyses."],
+  "provenance": {"kind": "original", "date": "2026-09-25", "attribution": "Original PRA instructions informed by linked primary documentation."}
+}

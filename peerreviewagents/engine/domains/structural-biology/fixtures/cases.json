@@ -1,0 +1,34 @@
+[
+  {
+    "id": "d03-supported-residue-concern",
+    "kind": "supported_concern",
+    "manuscript_excerpt": "The crystal structure shows residue 120 contacting the ligand.",
+    "source_record": "Residue 120 is present in the deposited construct sequence but has no modeled coordinates in the relevant chain.",
+    "expected_disposition": "retain_concern",
+    "rationale": "Sequence presence is insufficient for a claimed observed contact."
+  },
+  {
+    "id": "d03-benign-chain-numbering",
+    "kind": "benign_near_match",
+    "manuscript_excerpt": "Mutation R67 disrupts the binding interface in the PDB accession.",
+    "source_record": "R67 in construct numbering maps explicitly to UniProt R91 after removal of a 24-residue targeting sequence, and coordinates support the interface contact.",
+    "expected_disposition": "dismiss_concern",
+    "rationale": "The numbering mismatch is explained and the mapped residue is locally supported."
+  },
+  {
+    "id": "d03-ambiguous-assembly",
+    "kind": "unresolved_ambiguous",
+    "manuscript_excerpt": "The structure proves the protein is a physiological dimer.",
+    "source_record": "The interface occurs in the crystal lattice. Author and software assembly annotations disagree, and no solution-state evidence is reported.",
+    "expected_disposition": "narrow_claim",
+    "rationale": "A crystal contact with conflicting assembly assignments cannot establish physiological oligomerization."
+  },
+  {
+    "id": "d03-unreleased-entry",
+    "kind": "unavailable_evidence",
+    "manuscript_excerpt": "Coordinates and validation are available under PDB 9ZZZ.",
+    "source_record": "The entry is listed as unreleased and no reviewer coordinates or validation report are supplied.",
+    "expected_disposition": "report_unavailable",
+    "rationale": "The structural claims cannot be checked from the public record."
+  }
+]

@@ -10,6 +10,46 @@ parallel advocate and skeptic debate with a synthesized record, and a final
 editorial decision. Every stage leaves
 an inspectable Markdown artifact.
 
+## 0.7.0: the evidence-linked engine
+
+0.7.0 ships a new engine, `peerreviewagents.engine`. It imports a manuscript
+into immutable source blocks with evidence handles, runs independent reviewers
+against bounded manuscript and literature tools, synthesizes their findings
+through an audited debate, and validates every quote and location before a
+finding reaches the editor package. It runs on a Codex or Claude Code
+subscription, makes no API-key calls, and writes reports from saved JSON
+without any further inference.
+
+The LangGraph panel described in the rest of this README is **legacy**. It
+still works, unchanged, as `peerreview <manuscript>` or
+`peerreview legacy-panel <manuscript>`, and the journal profiles, revision
+auditors and research adapters it uses are untouched. New work should use the
+engine commands: `peerreview --help` lists them, and
+[`peerreviewagents/engine/README.md`](peerreviewagents/engine/README.md)
+documents them in full.
+
+One review on a Claude Code subscription, with no API key:
+
+```bash
+# 1. Sign in to the claude CLI, turn extra usage off in Claude settings, and
+#    record that the subscription cannot buy paid usage (valid 24 hours).
+peerreview confirm-billing billing.json --provider claude-code --extra-usage-disabled
+
+# 2. Import the PDF into a verified workspace of source blocks.
+peerreview import manuscript.pdf workspace
+
+# 3. Review it. --literature-cutoff bounds what published work is eligible.
+peerreview review workspace run-output \
+    --provider claude-code \
+    --billing-confirmation billing.json \
+    --literature-cutoff 2026-01-05
+
+# 4. Write REVIEW.md and REVIEW.txt from the saved run. No model calls.
+peerreview report run-output
+```
+
+The headless API for embedding the engine is `peerreviewagents.engine.api`.
+
 ## Pipeline
 
 ```text
