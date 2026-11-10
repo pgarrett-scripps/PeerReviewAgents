@@ -41,6 +41,9 @@ class ReviewPolicy:
     tool_calls: int | None = None
     revision_tool_calls: int = 2
     debate_tool_calls: int = 2
+    external_requests: int = 6
+    debate_external_requests: int = 2
+    tool_checks: int | None = 4
     generation_calls: int | None = None
     max_attempts: int = 1
     session: str = 'bounded-passes'
@@ -52,13 +55,19 @@ class ReviewPolicy:
         if not 1 <= self.max_attempts <= MAX_ATTEMPT_CEILING:
             raise ValueError('A review policy allows one call or one bounded retry')
         for value in (self.observed_token_stop, self.call_timeout_seconds, self.word_budget,
-                      self.revision_tool_calls, self.debate_tool_calls):
+                      self.revision_tool_calls, self.debate_tool_calls, self.external_requests,
+                      self.debate_external_requests):
             if type(value) is not int or value <= 0:
                 raise ValueError('Review policy limits must be positive integers')
         for value in (self.finding_cap, self.candidate_finding_cap, self.tool_calls,
-                      self.generation_calls):
+                      self.tool_checks, self.generation_calls):
             if value is not None and (type(value) is not int or value <= 0):
                 raise ValueError('Optional review policy limits must be positive integers or None')
+
+    @property
+    def single_session(self):
+        """One long investigative session rather than bounded short passes."""
+        return self.session == 'single-long-agentic-session'
 
     def record(self):
         return {'policy_version': POLICY_VERSION, **asdict(self)}
@@ -117,6 +126,9 @@ AGENTIC = ReviewPolicy(
     tool_calls=30,
     revision_tool_calls=8,
     debate_tool_calls=8,
+    external_requests=24,
+    debate_external_requests=8,
+    tool_checks=30,
     generation_calls=2,
     max_attempts=2,
     session='single-long-agentic-session',

@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Literal
 
 from .config import get_review_preset, resolved_review_config, review_presets
-from .review_policy import (APPROVED_EFFORTS, DEFAULT_POLICY_NAME, MAX_ATTEMPT_CEILING,
-                            get_review_policy, review_policies)
+from .review_policy import (APPROVED_EFFORTS, DEFAULT_POLICY, DEFAULT_POLICY_NAME,
+                            MAX_ATTEMPT_CEILING, get_review_policy, review_policies)
 
 API_VERSION = 'paper-workbench-core-v1'
 
@@ -14,6 +14,9 @@ API_VERSION = 'paper-workbench-core-v1'
 def capabilities():
     """Advertise supported execution, without starting providers or the UI."""
     from .models import DEFAULT_MODELS, PROVIDER_MODELS, SUBSCRIPTION_MODELS
+    policies = review_policies()
+    efforts_by_policy = {name: record['effort'] for name, record in policies.items()}
+    retries_by_policy = {name: record['max_attempts'] > 1 for name, record in policies.items()}
     return {'api_version': API_VERSION, 'artifact_version': 'paper-workbench-run-v1',
             'workflows': ['manuscript-only', 'independent', 'ensemble'], 'provider': 'codex',
             'providers': list(PROVIDER_MODELS),
@@ -23,22 +26,30 @@ def capabilities():
             'presets': list(review_presets()),
             'policies': list(review_policies()),
             'default_policy': DEFAULT_POLICY_NAME,
-            'review_policies': review_policies(),
+            'review_policies': policies,
             'evidence_modes': ['current', 'historical'],
             'evidence_policies': ['none', 'live', 'frozen'],
-            'models': list(SUBSCRIPTION_MODELS), 'reasoning_effort': 'medium',
+            'models': list(SUBSCRIPTION_MODELS), 'reasoning_effort': DEFAULT_POLICY.effort,
             'reasoning_efforts': list(APPROVED_EFFORTS),
+            'reasoning_effort_by_policy': efforts_by_policy,
             'billing': 'verified_subscription_with_bounded_usage_policy',
             'tool_access': 'workflow-specific',
             'tool_access_by_workflow': {'manuscript-only': 'none',
                                         'independent': 'bounded_manuscript_tools',
                                         'ensemble': 'bounded_manuscript_tools'},
-            'automatic_retries': False,
-            'retry_policy': {'default_attempts': 1, 'max_attempts_ceiling': MAX_ATTEMPT_CEILING,
-                             'retried': 'a launched call that failed or timed out',
-                             'never_retried': 'any guard refusal, including the call and token stops',
+            'automatic_retries': retries_by_policy[DEFAULT_POLICY_NAME],
+            'automatic_retries_by_policy': retries_by_policy,
+            'retry_policy': {'default_attempts': DEFAULT_POLICY.max_attempts,
+                             'max_attempts_ceiling': MAX_ATTEMPT_CEILING,
+                             'attempts_by_policy': {name: record['max_attempts']
+                                                    for name, record in policies.items()},
+                             'retried': 'a launched call that timed out, crashed or lost its transport',
+                             'never_retried': 'any refusal or guard stop, including billing, safety, '
+                                              'the call ceiling and the token stop',
                              'per_attempt_receipts': True},
             'invalid_finding_policy': 'quarantined-with-reason-not-run-ending',
+            'review_guard_statuses': ['clean', 'partially-quarantined', 'all-findings-quarantined'],
+            'zero_surviving_findings_status': 'complete-without-findings',
             'saved_draft_synthesis': {'policy': 'ordinary', 'generation_calls': 1,
                                       'discovery_calls': 0, 'tool_allowance': 2},
             'limitations': ['Manuscript-only mode has no review tools or external access.',

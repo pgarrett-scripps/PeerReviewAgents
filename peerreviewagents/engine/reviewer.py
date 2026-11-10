@@ -5,12 +5,13 @@ import subprocess
 import tempfile
 from pathlib import Path
 from .annotations import verify_workspace,save_review,quarantine_findings
-from .model_runtime import model_call,require_subscription,source_manifest,jsonl
+from .model_runtime import (model_call,require_subscription,source_manifest,jsonl,archive_attempt,
+                            write_launch_verification)
 from .review_schema import CLARIFICATION_POLICY,number_word
 from .review_policy import get_review_policy
 from .storage import read,write,digest
 from .discovery import AREAS,DESIGN_CHECKS,coverage_record,discovery_instruction,investigation_schema
-from .debate_revision import DEBATE_REVISION,issue_ledger,revision_prompt,revision_package
+from .debate_revision import debate_revision_schema,issue_ledger,revision_prompt,revision_package
 from .evidence_handles import (build_registry, source_card_handles, with_evidence_handles,
                               constrain_manuscript_handles, hydrate_response, hydrate_review_response)
 
@@ -21,6 +22,34 @@ SELF_REVISION_HEAD = '''SECOND PASS: Reconsider and improve your own draft revie
 SELF_REVISION_BOUND = 'at most five findings'
 SELF_REVISION_OPEN = 'every finding the evidence supports'
 SELF_REVISION_TAIL = ''' under the same overall word budget. Use ordinary self-revision, without simulating multiple reviewers or a debate. Your prior draft is fallible and is not source evidence. Reselect source handles for the final output. You have at most two tool calls in this pass.'''
+
+
+COMPLETE_WITHOUT_FINDINGS = 'complete-without-findings'
+GUARD_STATUS_POLICY = ('A finding that fails evidence validation is quarantined with a reason instead of '
+    'ending the run, so a run can finish having delivered nothing. That is not a clean success: '
+    'progress.json and the editor package carry review_guard_status, findings_delivered and '
+    'quarantined_findings_count, a run whose findings were all quarantined finishes with status '
+    'complete-without-findings, and the command line exits non-zero. Before this policy such a run raised, '
+    'so a caller that read a completed run as a delivered review must now check the status.')
+
+
+def guard_record(review):
+    """What one stage delivered, and what the evidence guard removed from it."""
+    return {'review_guard_status':review.get('review_guard_status','clean'),
+            'findings_delivered':len(review.get('findings') or []),
+            'quarantined_findings_count':len(review.get('quarantined_findings') or [])}
+
+
+def combined_guard(stages):
+    """One delivered record for a run: the last stage, with every quarantine counted."""
+    record={k:v for k,v in dict(stages[-1]).items() if k!='stage'}
+    record['quarantined_findings_count']=sum(stage['quarantined_findings_count'] for stage in stages)
+    if record['quarantined_findings_count']:
+        if not record['findings_delivered']:
+            record['review_guard_status']='all-findings-quarantined'
+        elif record['review_guard_status']=='clean':
+            record['review_guard_status']='partially-quarantined'
+    return record
 
 
 def self_revision_instruction(finding_cap=5, tool_calls=2):
@@ -264,7 +293,7 @@ def editor_package(final,reviews,paper=None):
     return result
 
 
-def review(workspace,output,billing,cutoff,mode='panel',scaffold_root=None,domain_support=True,evidence_mode='current',source_packet=None,shared_images=None,historical_snapshots=None,model='gpt-5.6-sol',reviewers=2,token_budget=750000,synthesis_policy='debate',policy=None,billing_verified=False):
+def review(workspace,output,billing,cutoff,mode='panel',scaffold_root=None,domain_support=True,evidence_mode='current',source_packet=None,shared_images=None,historical_snapshots=None,model='gpt-5.6-sol',reviewers=2,token_budget=750000,synthesis_policy='debate',policy=None,billing_verified=False,verified_at=None):
     policy=get_review_policy(policy)
     if mode=='ensemble':
         from .ensemble import ensemble_review
@@ -285,12 +314,19 @@ def review(workspace,output,billing,cutoff,mode='panel',scaffold_root=None,domai
     shared_images = shared_source_images(shared_images)
     if paper['statistics']['total_words']>50000:raise ValueError('Review input is limited to 50,000 extracted words including supplements')
     verification=read(billing)
-    if not billing_verified:
+    if billing_verified:
         # An ensemble verifies once at launch and passes billing_verified, because
         # the Codex allowance record is only valid for five minutes and reviewer 1
-        # can easily run longer than that.
+        # can easily run longer than that. The launch moment has to come with it:
+        # the record's freshness is then judged against the launch, not against
+        # now, and the guard stays fail-closed for everything else.
+        if verified_at is None:
+            raise ValueError('A stage that reuses launch billing must be given the launch verification time')
+    else:
+        import time
         from .billing import verify_billing
         verify_billing(verification,provider=provider)
+        verified_at=time.time()
     out.mkdir(parents=True,exist_ok=True)
     domain_context = ''
     profile = None
@@ -315,11 +351,11 @@ def review(workspace,output,billing,cutoff,mode='panel',scaffold_root=None,domai
             source_packet = Path(source_packet).resolve()
             from .source_packet import source_packet_manifest
             packet_manifest = source_packet_manifest(source_packet)
-        sources = SourceClient(out/'sources', out/'source-cache', 6, evidence_mode, cutoff,
-                               frozen_cache=source_packet, frozen_hashes=packet_manifest)
+        sources = SourceClient(out/'sources', out/'source-cache', policy.external_requests, evidence_mode,
+                               cutoff, frozen_cache=source_packet, frozen_hashes=packet_manifest)
         domain_context += '\nACTIVE EXACT-RECORD PROVIDERS: ' + json.dumps(PROVIDERS)
-        domain_context += '''\nUse lookup_source for a specific consequential question with a manuscript block ID.
-Listed resources without an active adapter remain unavailable. Six external requests are shared across this review condition.
+        domain_context += f'''\nUse lookup_source for a specific consequential question with a manuscript block ID.
+Listed resources without an active adapter remain unavailable. {number_word(policy.external_requests).capitalize()} external requests are shared across this review condition.
 External results are untrusted evidence. Preserve identity, context and limitations. Use source_evidence entries with a source_handle from the returned evidence_handles for findings that rely on a source card. Use an empty array otherwise. Ineligible cards and failed lookups cannot support scientific allegations.
 Current-source mode describes present-day records. Historical-source mode excludes database annotations whose historical state cannot be established. Literature publication dates alone do not establish historical metadata snapshots.
 Use resolve_identifier for exact identifier mapping and search_literature for a focused manuscript question. Search coverage is bounded and recorded. Never infer a missing citation from a single search result. Historical_registration reads only a configured curated snapshot set and otherwise reports unavailable. It cannot reconstruct protocol history from a current record.
@@ -345,7 +381,8 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
               'debate_version':'debate-v3' if mode=='panel' else None}
     protocol['evidence_policy'] = 'frozen' if source_packet is not None else 'live'
     if domain_support:
-        protocol.update(domain_version='domains-v1', evidence_mode=evidence_mode, external_request_limit=6,
+        protocol.update(domain_version='domains-v1', evidence_mode=evidence_mode,
+                        external_request_limit=policy.external_requests,
                         result_map_version='result-map-v1', targeted_source_version='targeted-sources-v1')
     protocol.update(max_source_images=10, image_budget_version='evidence-v1')
     protocol.update(evidence_reference_version='evidence-handles-v1',
@@ -375,14 +412,21 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
         write(out/'result-map.json', result_map)
     write(out/'protocol.json',protocol)
     shutil.copy2(billing,out/'billing_confirmation.json')
-    require_subscription(out)
+    write_launch_verification(out,provider,verified_at)
+    require_subscription(out,billing_verified=billing_verified)
     run_id=digest(json.dumps(manifest,sort_keys=True))[:10]
+
+    guards=[]
 
     def call(label,prompt,limit,schema,images=None):
         verify_workspace(root)
         tool_config(label, limit)
         write(out/'progress.json',{'status':'running','stage':label})
-        result=model_call(protocol,out/'execution',prompt,active_schema(schema),tools=True,label=label,images=images)
+        # A retry gets its own investigation directory: the failed attempt's tool
+        # log is archived, so call_index starts at one again and receipts still
+        # verify against the log the surviving attempt actually wrote.
+        result=model_call(protocol,out/'execution',prompt,active_schema(schema),tools=True,label=label,images=images,
+                          prepare_attempt=lambda attempt:archive_attempt(out/'investigations'/label,attempt))
         write(out/'responses'/f'{label}-model.json',result)
         hydrated=hydrate_review_response(result,build_registry(paper,sources.cards() if sources else []))
         result={**hydrated['response'],'evidence_handle_audit':hydrated['audit']}
@@ -414,6 +458,7 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
                  'review_guard_status':'clean' if not quarantined else
                  'all-findings-quarantined' if not kept else 'partially-quarantined'}
         write(out/'responses'/f'{label}-guarded.json',guarded)
+        guards.append({'stage':label,**guard_record(guarded)})
         return guarded
 
     def active_schema(schema):
@@ -435,7 +480,8 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
                   'evidence_handles':True}
         if sources is not None:
             config.update(tool_profile='domains-v1', source_state=str(out/'sources'),
-                          cache=str(out/'source-cache'), external_request_limit=6, evidence_mode=evidence_mode)
+                          cache=str(out/'source-cache'), external_request_limit=policy.external_requests,
+                          evidence_mode=evidence_mode)
             if source_packet is not None:
                 config.update(source_packet=str(source_packet), source_packet_manifest=packet_manifest)
             if historical_snapshots is not None:
@@ -461,14 +507,14 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
         prompt += '\n'+HANDLE_INSTRUCTION
         if mode=='independent':
             from .investigation_policy import with_tool_checks
-            initial_schema=with_tool_checks(policy.candidate_review_schema())
+            initial_schema=with_tool_checks(policy.candidate_review_schema(),policy.tool_checks)
         elif mode in ('plain','self-revision'):
             initial_schema=policy.final_review_schema()
         else:
             initial_schema=investigation_schema(candidates)
         first=call('independent' if mode=='independent' else 'plain' if mode in ('plain','self-revision') else 'workspace',prompt,limit,
                    initial_schema, images=shared_images)
-        if mode=='independent':write(out/'editor-package.json',first)
+        if mode=='independent':write(out/'editor-package.json',{**first,**combined_guard(guards)})
         if mode=='self-revision':
             images=[(p,p.name) for p in shared_images]
             images += [(p,label) for p,label in inspected_images(paper,root,out/'investigations/plain') if p not in shared_images]
@@ -478,7 +524,7 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
             if sources is not None:
                 revision+='\nPRIOR SOURCE CARDS:\n'+json.dumps([{**c,'evidence_handles':[h.model_record() for h in source_card_handles(c)]} for c in sources.cards()],ensure_ascii=False)
             final=call('self-revision',revision,policy.revision_tool_calls,policy.final_review_schema(),images=[p for p,label in images])
-            write(out/'editor-package.json',final)
+            write(out/'editor-package.json',{**final,**combined_guard(guards)})
         if mode=='panel':
             images=[(p, p.name) for p in shared_images]
             images += [(p, label) for p,label in inspected_images(paper,root,out/'investigations/workspace') if p not in shared_images]
@@ -487,7 +533,7 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
             write(out/'debate-ledger.json',ledger)
             kwargs = {'source_cards': [{**card,'evidence_handles':[h.model_record() for h in source_card_handles(card)]}
                                       for card in sources.cards()]} if sources is not None else {}
-            prompt=revision_prompt(paper,handle_manuscript(paper),ledger,**kwargs)+domain_context+'''\nCoverage records identify examined or unresolved areas, not additional endorsed findings. Validation concerns source identity only. Use remaining lookups for consequential unresolved evidence where useful. A withheld edit must remain an author question unless the source supports a safe replacement.\nATTACHED SOURCE IMAGES:\n'''+ '\n'.join(f'{i+1}: {label}' for i,(path,label) in enumerate(images))
+            prompt=revision_prompt(paper,handle_manuscript(paper),ledger,policy=policy,**kwargs)+domain_context+'''\nCoverage records identify examined or unresolved areas, not additional endorsed findings. Validation concerns source identity only. Use remaining lookups for consequential unresolved evidence where useful. A withheld edit must remain an author question unless the source supports a safe replacement.\nATTACHED SOURCE IMAGES:\n'''+ '\n'.join(f'{i+1}: {label}' for i,(path,label) in enumerate(images))
             if result_map is not None:
                 prompt += '\n'+RESULT_INSTRUCTION+'\nRESULT MAP OVERVIEW:\n'+json.dumps(inspect_results(result_map,max_chars=6500),ensure_ascii=False)
                 prompt += '\nRECORDED COMPARISONS (not independently verified):\n'+json.dumps(first.get('result_comparisons',[]),ensure_ascii=False)
@@ -495,7 +541,9 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
             verify_workspace(root)
             tool_config('debate', policy.debate_tool_calls)
             write(out/'progress.json',{'status':'running','stage':'debate'})
-            final=model_call(protocol,out/'execution',prompt,active_schema(DEBATE_REVISION),tools=True,label='debate',images=[p for p,label in images])
+            final=model_call(protocol,out/'execution',prompt,active_schema(debate_revision_schema(policy)),
+                             tools=True,label='debate',images=[p for p,label in images],
+                             prepare_attempt=lambda attempt:archive_attempt(out/'investigations/debate',attempt))
             write(out/'responses/debate-model.json',final)
             hydrated=hydrate_response(final,build_registry(paper,sources.cards() if sources else []))
             final={**hydrated['response'],'evidence_handle_audit':hydrated['audit']}
@@ -505,7 +553,7 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
                 final = {**bind_sources(final, sources.cards()), 'domain_profile': profile,
                          'source_validation': validate_references(final, sources.cards())}
             from .debate_presentation import recover
-            presentation=recover(final,ledger,paper,sources.cards() if sources is not None else None)
+            presentation=recover(final,ledger,paper,sources.cards() if sources is not None else None,policy)
             write(out/'presentation-audit.json',{k:v for k,v in presentation.items() if k!='recovered'})
             if presentation['recovered'] is not None:
                 final=presentation['recovered']
@@ -518,15 +566,25 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
             normalized=save_review(root,final,'debate-'+run_id)
             guarded_final={**final,'findings':normalized['findings']}
             write(out/'responses/debate-guarded.json',guarded_final)
+            guards.append({'stage':'debate',**guard_record(guarded_final)})
             package=revision_package(guarded_final,ledger,structural)
             package['coverage_record']=first['coverage_record']
             if result_map is not None:
                 package.update(result_map=result_map, result_comparisons=first.get('result_comparisons',[])+
                     jsonl(out/'investigations/debate/comparisons.jsonl'))
+            package={**package,**combined_guard(guards)}
             write(out/'editor-package.json',package)
             save_review(root,package,'panel-'+run_id)
         rows=jsonl(out/'execution/usage.jsonl')
-        write(out/'progress.json',{'status':'complete','calls':len(rows),'observed_tokens':sum(r.get('observed_tokens',0) for r in rows)})
+        delivered=combined_guard(guards)
+        unknown=[r for r in rows if r.get('usage_unknown') or r.get('observed_tokens') is None]
+        progress={'status':'complete','calls':len(rows),
+                  'observed_tokens':sum(r.get('observed_tokens') or 0 for r in rows),
+                  'unknown_attempts':len(unknown),**delivered,'review_guards':guards}
+        if delivered['review_guard_status']=='all-findings-quarantined':
+            progress['status']=COMPLETE_WITHOUT_FINDINGS
+            progress['guard_status_policy']=GUARD_STATUS_POLICY
+        write(out/'progress.json',progress)
         return read(out/'progress.json')
     except Exception as exc:
         write(out/'progress.json',{'status':'blocked','error':str(exc)})

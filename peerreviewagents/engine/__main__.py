@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .config import get_review_preset, review_presets
 from .models import DEFAULT_MODELS, SUBSCRIPTION_MODELS, provider_for
-from .review_policy import DEFAULT_POLICY_NAME, review_policies
+from .review_policy import DEFAULT_POLICY_NAME, get_review_policy, review_policies
 from .storage import read
 
 MODEL_HELP=('Exact model ID. Without it, the default for --provider is used: '+
@@ -28,7 +28,8 @@ def add_policy_arguments(parser):
         help=f'Named review policy (default {DEFAULT_POLICY_NAME}). workspace-agentic-v1 runs one long '
              'high-effort session with a thirty call tool allowance, no finding cap and one bounded retry')
     parser.add_argument('--preset',choices=tuple(review_presets()),
-        help='Named review preset. It pins --mode, --reviewers, --token-budget and --policy, so pass it alone')
+        help='Named review preset. It pins --mode, --reviewers, --token-budget, --model and --policy, '
+             'so pass it alone')
 
 
 def apply_preset(parser,args):
@@ -43,8 +44,25 @@ def apply_preset(parser,args):
         parser.error('--preset sets --mode, --reviewers and --token-budget. Pass the preset on its own')
     if args.policy is not None and args.policy!=preset.policy:
         parser.error(f'--policy {args.policy} conflicts with the {preset.policy} policy its preset pins')
+    if args.model is not None and args.model!=preset.model:
+        parser.error(f'--model {args.model} conflicts with the {preset.model} model its preset pins')
     args.mode,args.reviewers=preset.workflow,preset.reviewers
     args.token_budget,args.policy=preset.token_budget,preset.policy
+    args.model=preset.model
+
+
+def apply_policy(parser,args):
+    """Refuse a single-session policy left on the default multi-call ensemble.
+
+    ``--policy workspace-agentic-v1`` used to run a two reviewer ensemble plus a
+    debate stage, which is three long high-effort calls rather than the one long
+    investigative session the policy names. Ask for the mode explicitly.
+    """
+    if args.policy is None:
+        return
+    if get_review_policy(args.policy).single_session and args.mode=='ensemble':
+        parser.error(f'--policy {args.policy} runs one long investigative session, not an ensemble. '
+                     f'Pass --preset {args.policy}, or --mode independent with it')
 
 
 def resolve_model(parser,args):
@@ -122,9 +140,8 @@ def build_parser(prog='peerreviewagents.engine'):
 
 def dispatch(parser,args):
     """Run one parsed engine command. The parser is used only for argument errors."""
-    if args.command in ('review','investigate'):
-        resolve_model(parser,args)
     if args.command=='investigate':
+        resolve_model(parser,args)
         from .focused_investigation import investigate
         memo=investigate(args.workspace,args.output,args.billing_confirmation,args.literature_cutoff,
                          args.question,args.block,model=args.model)
@@ -144,10 +161,18 @@ def dispatch(parser,args):
         if args.mode!='ensemble' and (args.reviewers!=2 or args.token_budget!=750000):
             parser.error('--reviewers and --token-budget apply only to ensemble mode')
         apply_preset(parser,args)
-        print(review(args.workspace,args.output,args.billing_confirmation,args.literature_cutoff,args.mode,args.scaffold_root,
-                     domain_support=not args.legacy_tools,evidence_mode=args.evidence_mode,source_packet=args.source_packet,
-                     historical_snapshots=args.historical_snapshots,model=args.model,reviewers=args.reviewers,
-                     token_budget=args.token_budget,shared_images=args.source_image,policy=args.policy))
+        apply_policy(parser,args)
+        resolve_model(parser,args)
+        progress=review(args.workspace,args.output,args.billing_confirmation,args.literature_cutoff,args.mode,args.scaffold_root,
+                        domain_support=not args.legacy_tools,evidence_mode=args.evidence_mode,source_packet=args.source_packet,
+                        historical_snapshots=args.historical_snapshots,model=args.model,reviewers=args.reviewers,
+                        token_budget=args.token_budget,shared_images=args.source_image,policy=args.policy)
+        print(progress)
+        from .reviewer import COMPLETE_WITHOUT_FINDINGS,GUARD_STATUS_POLICY
+        if isinstance(progress,dict) and (progress.get('status')==COMPLETE_WITHOUT_FINDINGS
+                or progress.get('review_guard_status')=='all-findings-quarantined'):
+            print(GUARD_STATUS_POLICY)
+            raise SystemExit(2)
     elif args.command=='confirm-billing':
         from .billing import claude_billing_record
         from .model_runtime import auth_status

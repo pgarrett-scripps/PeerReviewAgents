@@ -8,10 +8,10 @@ CONFLICT = "Priority conflicts with component destinations"
 SUPPORTED = {"supported_concern", "supported_clarification"}
 
 
-def recover(value, ledger, paper, source_cards=None):
+def recover(value, ledger, paper, source_cards=None, policy=None):
     """Return a revalidated presentation-only recovery when the exact conflict permits it."""
     try:
-        audit = validate_revision(value, ledger, paper, source_cards)
+        audit = validate_revision(value, ledger, paper, source_cards, policy)
     except ValueError as error:
         original = {"status": "failure", "error": str(error)}
     else:
@@ -36,7 +36,7 @@ def recover(value, ledger, paper, source_cards=None):
                          "before": before, "after": after,
                          "preserved_destinations": preserved})
     try:
-        audit = validate_revision(revised, ledger, paper, source_cards)
+        audit = validate_revision(revised, ledger, paper, source_cards, policy)
     except ValueError as error:
         return {"original": original, "recovered": None,
                 "audit": {"status": "failure", "error": str(error)}, "changed_fields": receipts}
