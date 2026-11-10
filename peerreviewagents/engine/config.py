@@ -18,6 +18,7 @@ class ReviewPreset:
     evidence_profile: str
     synthesis_policy: str
     revision_policy: str
+    policy: str = 'standard-v1'
 
     def record(self):
         return {'configuration_version': CONFIG_VERSION, **asdict(self)}
@@ -52,6 +53,14 @@ _PRESETS = MappingProxyType({preset.name: preset for preset in (
         evidence_profile='workspace-and-bounded-evidence-tools', synthesis_policy='ordinary-synthesis-v1',
         revision_policy='findings-only-no-automatic-revision',
     ),
+    ReviewPreset(
+        name='workspace-agentic-v1', workflow='independent', reviewers=1,
+        model='gpt-5.6-terra', token_budget=1500000,
+        prompt_profile='agentic-session-v1', manuscript_access='workspace-bounded',
+        evidence_profile='workspace-and-bounded-evidence-tools', synthesis_policy='none',
+        revision_policy='findings-only-no-automatic-revision',
+        policy='workspace-agentic-v1',
+    ),
 )})
 
 
@@ -81,6 +90,7 @@ def resolved_review_config(request):
                                  else 'workspace-and-bounded-evidence-tools'),
             'synthesis_policy': 'audited-debate-v1' if request.workflow == 'ensemble' else 'none',
             'revision_policy': 'findings-only-no-automatic-revision',
+            'policy': 'standard-v1',
         }
     else:
         preset = get_review_preset(request.preset)
@@ -90,6 +100,11 @@ def resolved_review_config(request):
             raise ValueError('Request workflow, reviewer count, and synthesis policy do not match its preset')
         base = preset.record()
         base['preset'] = base.pop('name')
+    requested_policy = getattr(request, 'policy', None)
+    if requested_policy is not None:
+        # An explicit policy is a deliberate runtime override, like model and
+        # token budget. The resolved record states the policy that actually ran.
+        base['policy'] = requested_policy
     packet = dict(request.source_packet_hashes)
     from .storage import digest
     import json

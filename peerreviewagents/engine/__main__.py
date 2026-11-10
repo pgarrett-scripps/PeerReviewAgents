@@ -6,7 +6,9 @@
 import argparse
 from pathlib import Path
 
+from .config import get_review_preset, review_presets
 from .models import DEFAULT_MODELS, SUBSCRIPTION_MODELS, provider_for
+from .review_policy import DEFAULT_POLICY_NAME, review_policies
 from .storage import read
 
 MODEL_HELP=('Exact model ID. Without it, the default for --provider is used: '+
@@ -19,6 +21,30 @@ COMMANDS = ('import', 'verify', 'add-review', 'result-map', 'review', 'investiga
 def add_model_arguments(parser):
     parser.add_argument('--provider',choices=tuple(DEFAULT_MODELS),help='Subscription transport (default codex)')
     parser.add_argument('--model',choices=SUBSCRIPTION_MODELS,help=MODEL_HELP)
+
+
+def add_policy_arguments(parser):
+    parser.add_argument('--policy',choices=tuple(review_policies()),
+        help=f'Named review policy (default {DEFAULT_POLICY_NAME}). workspace-agentic-v1 runs one long '
+             'high-effort session with a thirty call tool allowance, no finding cap and one bounded retry')
+    parser.add_argument('--preset',choices=tuple(review_presets()),
+        help='Named review preset. It pins --mode, --reviewers, --token-budget and --policy, so pass it alone')
+
+
+def apply_preset(parser,args):
+    """Resolve --preset into the review arguments it pins, rejecting conflicts."""
+    if args.preset is None:
+        return
+    preset=get_review_preset(args.preset)
+    if preset.workflow=='manuscript-only':
+        parser.error(f'--preset {args.preset} is a manuscript-only workflow. Run it through '
+                     'peerreviewagents.engine.api.review_request_from_preset')
+    if (args.mode,args.reviewers,args.token_budget)!=('ensemble',2,750000):
+        parser.error('--preset sets --mode, --reviewers and --token-budget. Pass the preset on its own')
+    if args.policy is not None and args.policy!=preset.policy:
+        parser.error(f'--policy {args.policy} conflicts with the {preset.policy} policy its preset pins')
+    args.mode,args.reviewers=preset.workflow,preset.reviewers
+    args.token_budget,args.policy=preset.token_budget,preset.policy
 
 
 def resolve_model(parser,args):
@@ -56,6 +82,7 @@ def add_subcommands(sub):
     p.add_argument('--reviewers',type=int,default=2,help='Independent discovery reviewers for ensemble mode, from 1 to 16 (default 2)')
     p.add_argument('--token-budget',type=int,default=750000,help='Ensemble observed-token launch ceiling, not a hard cap on a running call')
     add_model_arguments(p)
+    add_policy_arguments(p)
     p.add_argument('--source-image',action='append',default=[],help='Original manuscript figure page to attach, at most three')
     p.add_argument('--scaffold-root',help='Use offline advisory checks from this Paper Scaffold checkout')
     p.add_argument('--legacy-tools',action='store_true',help='Use the older fixed tool profile without domain skills')
@@ -116,10 +143,11 @@ def dispatch(parser,args):
         from .reviewer import review
         if args.mode!='ensemble' and (args.reviewers!=2 or args.token_budget!=750000):
             parser.error('--reviewers and --token-budget apply only to ensemble mode')
+        apply_preset(parser,args)
         print(review(args.workspace,args.output,args.billing_confirmation,args.literature_cutoff,args.mode,args.scaffold_root,
                      domain_support=not args.legacy_tools,evidence_mode=args.evidence_mode,source_packet=args.source_packet,
                      historical_snapshots=args.historical_snapshots,model=args.model,reviewers=args.reviewers,
-                     token_budget=args.token_budget,shared_images=args.source_image))
+                     token_budget=args.token_budget,shared_images=args.source_image,policy=args.policy))
     elif args.command=='confirm-billing':
         from .billing import claude_billing_record
         from .model_runtime import auth_status

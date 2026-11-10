@@ -4,14 +4,16 @@ from pathlib import Path
 
 
 def run_manuscript_only(request, paper, resolved_config):
-    from .annotations import save_review
+    from .annotations import quarantine_findings, save_review
     from .ensemble import _prepare, observed_usage
     from .evidence_handles import build_registry, constrain_manuscript_handles, hydrate_review_response, with_evidence_handles
     from .model_runtime import model_call, source_manifest
     from .models import provider_for
-    from .review_schema import COMMON, REVIEW
-    from .reviewer import HANDLE_INSTRUCTION, MAX_SOURCE_IMAGES, handle_manuscript
+    from .review_policy import get_review_policy
+    from .reviewer import HANDLE_INSTRUCTION, MAX_SOURCE_IMAGES, QUARANTINE_POLICY, handle_manuscript
     from .storage import digest, read, write
+
+    policy = get_review_policy(resolved_config.get('policy') or getattr(request, 'policy', None))
 
     root = Path(request.workspace).resolve()
     output = Path(request.output).resolve()
@@ -47,15 +49,16 @@ def run_manuscript_only(request, paper, resolved_config):
     if len(images) > MAX_SOURCE_IMAGES:
         raise ValueError(f'Manuscript-only review has more than {MAX_SOURCE_IMAGES} unique source images. Prepare a complete bounded image set explicitly.')
     protocol = {
-        'provider': provider_for(request.model), 'model': request.model, 'effort': 'medium',
+        'provider': provider_for(request.model), 'model': request.model, 'effort': policy.effort,
         'held_out_runs_authorized': False, 'max_calls_per_condition': 1,
-        'observed_token_stop': request.token_budget, 'call_timeout_seconds': 900,
+        'observed_token_stop': request.token_budget, 'call_timeout_seconds': policy.call_timeout_seconds,
         'max_source_images': MAX_SOURCE_IMAGES, 'image_budget_version': 'evidence-v1',
         'mode': 'manuscript-only', 'version': 'manuscript-only-v1',
         'tool_access': 'none', 'live_retrieval': False,
+        **policy.protocol_overlay(),
     }
     _prepare(output, request.billing_confirmation, protocol)
-    prompt = COMMON + '''\nReview the complete supplied manuscript once. Base every finding only on the manuscript and attached source figures. You have no review tools, external sources, other reviews, or hidden evaluation material. Do not claim that an omitted external search establishes an error. The full extracted text is supplied below.\n''' + HANDLE_INSTRUCTION
+    prompt = policy.shared_instructions() + '''\nReview the complete supplied manuscript once. Base every finding only on the manuscript and attached source figures. You have no review tools, external sources, other reviews, or hidden evaluation material. Do not claim that an omitted external search establishes an error. The full extracted text is supplied below.\n''' + HANDLE_INSTRUCTION
     prompt += '\nMANUSCRIPT INVENTORY:\n' + json.dumps({
         'title': paper.get('title', ''), 'assets': paper.get('assets', []),
         'references': paper.get('references', []),
@@ -67,8 +70,10 @@ def run_manuscript_only(request, paper, resolved_config):
         prompt += '\nSOURCE ASSETS WITHOUT DELIVERED PIXELS:\n' + json.dumps(unavailable_assets, ensure_ascii=False)
         prompt += '\nDo not infer visual content for these assets. State the resulting review limitation when it affects a finding.'
     prompt += '\n' + HANDLE_INSTRUCTION
+    if policy.session_instruction:
+        prompt = policy.session_instruction + '\n' + prompt
     registry = build_registry(paper)
-    schema = constrain_manuscript_handles(with_evidence_handles(REVIEW), registry)
+    schema = constrain_manuscript_handles(with_evidence_handles(policy.final_review_schema()), registry)
     manifest = {
         'configuration': resolved_config,
         'source_manifest_sha256': digest((root / 'manifest.json').read_bytes()),
@@ -86,10 +91,15 @@ def run_manuscript_only(request, paper, resolved_config):
         hydrated = hydrate_review_response(response, registry)
         guarded = {**hydrated['response'], 'evidence_handle_audit': hydrated['audit']}
         normalized = save_review(root, guarded, 'manuscript-only-' + digest(json.dumps(manifest, sort_keys=True))[:10])
-        if any(finding['placement'] != 'anchored' or finding['invalid_evidence_blocks']
-               for finding in normalized['findings']):
-            raise ValueError('Manuscript-only review contains invalid manuscript evidence')
-        package = {**guarded, 'findings': normalized['findings']}
+        kept, quarantined = quarantine_findings(normalized['findings'])
+        if quarantined:
+            write(output / 'responses' / 'manuscript-only-quarantined.json',
+                  {'label': 'manuscript-only', 'quarantined_findings': quarantined,
+                   'quarantine_policy': QUARANTINE_POLICY, 'kept_findings': len(kept)})
+        package = {**guarded, 'findings': kept, 'quarantined_findings': quarantined,
+                   'quarantine_policy': QUARANTINE_POLICY,
+                   'review_guard_status': 'clean' if not quarantined else
+                   'all-findings-quarantined' if not kept else 'partially-quarantined'}
         write(output / 'editor-package.json', package)
         return package
     finally:

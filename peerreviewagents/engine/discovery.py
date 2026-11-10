@@ -1,6 +1,6 @@
 """A bounded coverage record for manuscript investigation, without extra inference."""
 import copy
-from .review_schema import REVIEW, STRING, obj
+from .review_schema import REVIEW, STRING, capped_findings, number_word, obj
 
 
 MEASUREMENT_PATH = 'For empirical claims based on measured outcomes, trace a central outcome from its operational definition through aggregation, thresholds, missingness, exclusions, and the observations included in analysis. Check whether inclusion or exclusion depends on the outcome signal itself and whether selection could differ among comparison groups. Distinguish a possible selection effect from demonstrated misclassification. Inspect reported validation and controls before raising a concern. An established proxy does not by itself require a new validation experiment. Prefer a proportionate request for existing checks, exclusion counts, sensitivity, or narrower interpretation when warranted.'
@@ -34,10 +34,50 @@ INVESTIGATION_REVIEW['properties']['coverage_checks'] = {
 }
 INVESTIGATION_REVIEW['required'].append('coverage_checks')
 
-DISCOVERY = MEASUREMENT_PATH + '\n' + DESIGN_CHECKS + '\n' + '''First scan the supplied manuscript across the six investigation areas below before narrowing your attention. These are questions to assess, not a list of defects to manufacture. Investigate the most consequential uncertainties deeply, prioritizing specific design or measurement issues over generic criticism of causal language. Activate domain-specific checks only where the manuscript design warrants them. Do not request unavailable experiments simply to fill an area.
-Use at most three tool calls for evidence you do not already have. The complete extracted text is supplied. Inspect original figure pixels when the concern depends on a visual feature. For an apparent omission, check relevant methods, captions, and available supplementary material before calling it missing. If access or budget prevents that check, describe the uncertainty and ask the authors instead of asserting absence.
-For this investigator stage, return up to ten distinct, anchored candidate findings. This stage intentionally overrides the shared five-finding instruction. Include a supported or unresolved actionable concern even when it may be secondary to the likely final five. Fewer candidates are preferable to padding. Keep all finding comments together within the shared concise word budget. Use discarded_hypotheses only for ideas you investigated and rejected or could not formulate as an anchored actionable question. Do not put a supported concern there merely because it has lower editorial priority.
-Return one coverage_checks entry for every area. Keep the record concise. Cite exact short quotations and block IDs for examined areas. An examined status means you considered the area, not that the paper passed a validity check. Use unresolved for incomplete investigation and not_applicable with a reason when appropriate. Save this record in the final response rather than spending a tool call on save_note. The record is not a finding and does not count toward the ten-candidate limit. Retain competing explanations in counterevidence and discarded hypotheses.\nINVESTIGATION AREAS:\n'''
+DEFAULT_CANDIDATE_CAP = 10
+DEFAULT_DISCOVERY_TOOL_CALLS = 3
+
+SCAN = '''First scan the supplied manuscript across the six investigation areas below before narrowing your attention. These are questions to assess, not a list of defects to manufacture. Investigate the most consequential uncertainties deeply, prioritizing specific design or measurement issues over generic criticism of causal language. Activate domain-specific checks only where the manuscript design warrants them. Do not request unavailable experiments simply to fill an area.
+Use at most three tool calls for evidence you do not already have. The complete extracted text is supplied. Inspect original figure pixels when the concern depends on a visual feature. For an apparent omission, check relevant methods, captions, and available supplementary material before calling it missing. If access or budget prevents that check, describe the uncertainty and ask the authors instead of asserting absence.'''
+CANDIDATE_BUDGET = 'For this investigator stage, return up to ten distinct, anchored candidate findings. This stage intentionally overrides the shared five-finding instruction. Include a supported or unresolved actionable concern even when it may be secondary to the likely final five. Fewer candidates are preferable to padding. Keep all finding comments together within the shared concise word budget. Use discarded_hypotheses only for ideas you investigated and rejected or could not formulate as an anchored actionable question. Do not put a supported concern there merely because it has lower editorial priority.'
+OPEN_CANDIDATE_BUDGET = 'For this investigator stage, return every distinct, anchored candidate finding your investigation supports. There is no candidate quota, and this stage overrides any shared finding limit. Include a supported or unresolved actionable concern even when it may be secondary to your strongest findings. Do not pad the list with candidates the evidence does not support. Keep all finding comments within the shared word budget. Use discarded_hypotheses only for ideas you investigated and rejected or could not formulate as an anchored actionable question. Do not put a supported concern there merely because it has lower editorial priority.'
+RECORD_HEAD = 'Return one coverage_checks entry for every area. Keep the record concise. Cite exact short quotations and block IDs for examined areas. An examined status means you considered the area, not that the paper passed a validity check. Use unresolved for incomplete investigation and not_applicable with a reason when appropriate. Save this record in the final response rather than spending a tool call on save_note. '
+CANDIDATE_LIMIT_CLAUSE = 'The record is not a finding and does not count toward the ten-candidate limit.'
+OPEN_LIMIT_CLAUSE = 'The record is not a finding and does not count as a candidate finding.'
+RECORD_TAIL = ' Retain competing explanations in counterevidence and discarded hypotheses.\nINVESTIGATION AREAS:\n'
+
+
+def candidate_budget(candidate_cap=DEFAULT_CANDIDATE_CAP):
+    """The candidate-finding paragraph for one policy's cap."""
+    if candidate_cap == DEFAULT_CANDIDATE_CAP:
+        return CANDIDATE_BUDGET
+    if candidate_cap is None:
+        return OPEN_CANDIDATE_BUDGET
+    return CANDIDATE_BUDGET.replace(
+        'up to ten distinct', f'up to {number_word(candidate_cap)} distinct')
+
+
+def discovery_instruction(tool_calls=None, candidate_cap=DEFAULT_CANDIDATE_CAP):
+    """The investigator instruction under one policy's tool and candidate budget.
+
+    ``tool_calls=None`` leaves the prose allowance ("at most three tool calls")
+    as written; an explicit count always substitutes the numeral, including
+    three, which is what the engine has always sent.
+    """
+    scan = SCAN
+    if tool_calls is not None:
+        scan = scan.replace('at most three tool calls', f'at most {tool_calls} tool calls')
+    clause = CANDIDATE_LIMIT_CLAUSE if candidate_cap == DEFAULT_CANDIDATE_CAP else OPEN_LIMIT_CLAUSE
+    return (MEASUREMENT_PATH + '\n' + DESIGN_CHECKS + '\n' + scan + '\n'
+            + candidate_budget(candidate_cap) + '\n' + RECORD_HEAD + clause + RECORD_TAIL)
+
+
+def investigation_schema(candidate_cap=DEFAULT_CANDIDATE_CAP):
+    """The investigator response schema with this policy's candidate cap."""
+    return capped_findings(INVESTIGATION_REVIEW, candidate_cap)
+
+
+DISCOVERY = discovery_instruction()
 
 
 def coverage_record(paper, response):

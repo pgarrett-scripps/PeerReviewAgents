@@ -60,6 +60,33 @@ def normalize_review(paper, response, review_id):
             'annotation_counts':{'total':len(notes),'anchored':sum(a['placement']=='anchored' for a in notes)}}
 
 
+def quarantine_findings(findings):
+    """Split normalized findings into the ones that passed evidence validation and the ones that did not.
+
+    A finding is quarantined when its quote could not be anchored in the
+    source block it names, or when it cites block IDs the manuscript does not
+    contain. Each quarantined finding keeps its content and gains a reason, so
+    one unanchored quote costs that finding and nothing else. The caller writes
+    both lists to the run output: the quarantine is evidence about the model,
+    not something to discard quietly.
+    """
+    kept, quarantined = [], []
+    for finding in findings:
+        reasons = []
+        if finding.get('placement') != 'anchored':
+            reasons.append(finding.get('placement_reason')
+                           or 'Finding is not anchored to an exact source quote')
+        if finding.get('invalid_evidence_blocks'):
+            reasons.append('Cites block IDs absent from the manuscript: '
+                           + ', '.join(str(bid) for bid in finding['invalid_evidence_blocks']))
+        if reasons:
+            quarantined.append({**finding, 'quarantined': True, 'issue_status': 'quarantined',
+                                'quarantine_reason': ' '.join(reasons)})
+        else:
+            kept.append(finding)
+    return kept, quarantined
+
+
 def export_draft(paper, review, decisions):
     if review['paper_id']!=paper['id'] or decisions['paper_id']!=paper['id']:
         raise ValueError('Decisions belong to a different manuscript')

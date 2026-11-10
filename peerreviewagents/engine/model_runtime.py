@@ -128,18 +128,25 @@ def require_subscription(root):
         raise StudyBlocked(str(error)) from error
     return status
 
+# The approved efforts and the one-retry ceiling are owned by review_policy, so
+# the transport and the named policies can never disagree about them.
+from .review_policy import APPROVED_EFFORTS, MAX_ATTEMPT_CEILING  # noqa: E402
+
 def validate_protocol(protocol):
     pinned = PROVIDER_MODELS
     if protocol.get("provider") not in pinned or protocol.get("model") not in pinned[protocol["provider"]]:
         raise StudyBlocked("Unapproved provider or model. No automatic fallback is permitted.")
     if protocol.get("held_out_runs_authorized"):
         raise StudyBlocked("This runner is limited to one development paper.")
-    if protocol.get("effort") != "medium":
-        raise StudyBlocked("Unapproved reasoning effort. This runner is pinned to medium.")
+    if protocol.get("effort") not in APPROVED_EFFORTS:
+        raise StudyBlocked("Unapproved reasoning effort. Approved values are low, medium and high.")
     for key in ("max_calls_per_condition", "observed_token_stop", "call_timeout_seconds"):
         value = protocol.get(key)
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             raise StudyBlocked(f"Protocol field {key} must be a positive integer.")
+    attempts = protocol.get("max_attempts", 1)
+    if isinstance(attempts, bool) or not isinstance(attempts, int) or not 1 <= attempts <= MAX_ATTEMPT_CEILING:
+        raise StudyBlocked("Protocol field max_attempts allows one call or one bounded retry.")
 
 def source_manifest(path):
     return {str(p.relative_to(path)): digest(p.read_bytes()) for p in sorted(Path(path).rglob("*"))
@@ -156,9 +163,18 @@ def usage_row(record):
     return {k: v for k, v in record.items()
             if k not in {"value", "envelope", "stdout", "stderr", "events", "command"}}
 
-def account_once(path, record):
+def attempt_key(record):
+    """Identity of one attempt. A retry of the same request is a separate row."""
     identity = record.get("request_sha256")
-    if identity and any(row.get("request_sha256") == identity for row in jsonl(path)):
+    return f"{identity}#{record.get('attempt') or 1}" if identity else None
+
+def attempt_stem(identity, attempt):
+    """File stem for an attempt. Attempt one keeps the plain identity for compatibility."""
+    return identity if attempt <= 1 else f"{identity}.attempt{attempt}"
+
+def account_once(path, record):
+    key = attempt_key(record)
+    if key and any(attempt_key(row) == key for row in jsonl(path)):
         return
     append_json(path, usage_row(record))
 
@@ -166,8 +182,8 @@ def reconcile_receipts(out):
     calls = Path(out) / "calls"
     if not calls.exists():
         return
-    for receipt in calls.glob("*.json"):
-        if not re.fullmatch(r"[0-9a-f]{64}\.json", receipt.name):
+    for receipt in sorted(calls.glob("*.json")):
+        if not re.fullmatch(r"[0-9a-f]{64}(\.attempt[0-9]+)?\.json", receipt.name):
             continue
         account_once(Path(out) / "usage.jsonl", read_json(receipt))
 
@@ -497,6 +513,24 @@ def recover_claude_call(out, identity, started):
     return record
 
 def model_call(protocol, out, prompt, schema, *, tools=False, label="call", images=None, recover_only=False):
+    """One request, with at most ``protocol['max_attempts']`` attempts at it.
+
+    A retry happens only when an attempt was actually launched and failed or
+    timed out. Every guard refusal, including the call and token stops, is
+    returned to the caller unchanged and never retried. The failed attempt
+    keeps its own receipt and its incurred usage, so nothing is hidden.
+    """
+    limit = 1 if recover_only else protocol.get("max_attempts", 1)
+    while True:
+        try:
+            return _model_call(protocol, out, prompt, schema, tools=tools, label=label,
+                               images=images, recover_only=recover_only)
+        except Exception as error:
+            launched = getattr(error, "attempt_launched", None)
+            if launched is None or launched >= limit:
+                raise
+
+def _model_call(protocol, out, prompt, schema, *, tools=False, label="call", images=None, recover_only=False):
     """A single fresh session, with a durable content-addressed response cache."""
     validate_protocol(protocol)
     out = Path(out)
@@ -509,20 +543,33 @@ def model_call(protocol, out, prompt, schema, *, tools=False, label="call", imag
     work = out / "workspace"
     work.mkdir(exist_ok=True)
     identity = request_identity(protocol, prompt, schema, tools, images, work)
-    cache = out / "calls" / f"{identity}.json"
-    if cache.exists():
+    # One request may own up to max_attempts attempt stems. Attempt one keeps the
+    # bare identity, so an existing run directory is untouched when retries are off.
+    attempt = 1
+    limit = protocol.get("max_attempts", 1)
+    while True:
+        stem = attempt_stem(identity, attempt)
+        cache = out / "calls" / f"{stem}.json"
+        if not cache.exists():
+            break
         saved = read_json(cache)
         account_once(out / "usage.jsonl", saved)
-        if saved.get("usage_unknown") or saved.get("observed_tokens") is None:
-            raise StudyBlocked("Cached output has unknown usage. Inspect its receipt before continuing.")
-        if saved.get("ok"):
+        unknown = saved.get("usage_unknown") or saved.get("observed_tokens") is None
+        if saved.get("ok") and not unknown:
             return saved["value"]
+        if not saved.get("ok") and attempt < limit:
+            # A failed or timed-out attempt is retried once, in its own stem, so the
+            # failed receipt and its incurred usage both stay on disk.
+            attempt += 1
+            continue
+        if unknown:
+            raise StudyBlocked("Cached output has unknown usage. Inspect its receipt before continuing.")
         raise StudyBlocked("A prior attempt failed. Inspect it and use a new attempt directory to retry.")
-    started_path = out / "calls" / f"{identity}.started.json"
+    started_path = out / "calls" / f"{stem}.started.json"
     if started_path.exists():
         started = read_json(started_path)
         recover = recover_codex_call if protocol["provider"] == "codex" else recover_claude_call
-        recovered = recover(out, identity, started)
+        recovered = recover(out, stem, started)
         if recovered:
             write_json(cache, recovered)
             account_once(out / "usage.jsonl", recovered)
@@ -536,23 +583,28 @@ def model_call(protocol, out, prompt, schema, *, tools=False, label="call", imag
     if unresolved_attempts(out):
         raise StudyBlocked("An earlier interrupted attempt is unresolved. Inspect it before any new model call.")
     prior = jsonl(out / "usage.jsonl")
-    if any(row.get("usage_unknown") or row.get("observed_tokens") is None for row in prior):
+    # An attempt this retry replaces is superseded: its failure is recorded, its
+    # tokens still count, but it no longer blocks the request that replaces it.
+    superseded = [index for index, row in enumerate(prior)
+                  if row.get("request_sha256") == identity and (row.get("attempt") or 1) < attempt]
+    effective = [row for index, row in enumerate(prior) if index not in set(superseded)]
+    if any(row.get("usage_unknown") or row.get("observed_tokens") is None for row in effective):
         raise StudyBlocked("Prior model usage is unknown. No further model calls are permitted in this attempt directory.")
-    if len(prior) >= protocol["max_calls_per_condition"]:
+    if len(effective) >= protocol["max_calls_per_condition"]:
         raise StudyBlocked("Pilot call limit reached. Outputs have been saved.")
     if sum(row.get("observed_tokens", 0) for row in prior) >= protocol["observed_token_stop"]:
         raise StudyBlocked("Pilot observed-token stop reached. Outputs have been saved.")
     if protocol["provider"] == "claude-code":
         command = claude_command(protocol, schema, tools, work)
         payload = claude_input(prompt, images)
-    record = {"label": label, "request_sha256": identity, "started_at": time.time(),
+    record = {"label": label, "request_sha256": identity, "attempt": attempt, "started_at": time.time(),
               "model_requested": protocol["model"], "tools": tools, "ok": False,
               "usage_unknown": True}
-    write_json(out / "calls" / f"{identity}.request.json",
-               {"prompt": prompt, "schema": schema, "identity": identity})
+    write_json(out / "calls" / f"{stem}.request.json",
+               {"prompt": prompt, "schema": schema, "identity": identity, "attempt": attempt})
     if protocol["provider"] == "codex":
-        schema_path = out / "calls" / f"{identity}.schema.json"
-        answer_path = out / "calls" / f"{identity}.answer.json"
+        schema_path = out / "calls" / f"{stem}.schema.json"
+        answer_path = out / "calls" / f"{stem}.answer.json"
         write_json(schema_path, schema)
         command = [shutil.which("codex") or "codex", "exec", "--ephemeral",
                    "--sandbox", "read-only", "--ignore-user-config", "--ignore-rules",
@@ -581,8 +633,8 @@ def model_call(protocol, out, prompt, schema, *, tools=False, label="call", imag
     except FileExistsError as exc:
         raise StudyBlocked("This request was started by another launcher. Inspect it before continuing.") from exc
     try:
-        stdout_path = out / "calls" / f"{identity}.events.jsonl"
-        stderr_path = out / "calls" / f"{identity}.stderr.txt"
+        stdout_path = out / "calls" / f"{stem}.events.jsonl"
+        stderr_path = out / "calls" / f"{stem}.stderr.txt"
         if protocol["provider"] == "claude-code":
             record["returncode"] = run_claude(command, payload, stdout_path, stderr_path, work,
                                               protocol["call_timeout_seconds"], tools)
@@ -637,9 +689,15 @@ def model_call(protocol, out, prompt, schema, *, tools=False, label="call", imag
             return value
     except subprocess.TimeoutExpired as exc:
         record["error"] = "Call timed out. Incurred usage is unknown."
-        raise StudyBlocked(record["error"]) from exc
+        blocked = StudyBlocked(record["error"])
+        # The attempt number travels on the exception so the caller can tell a
+        # launched failure, which one bounded retry may replace, from a guard
+        # refusal raised before anything was spent.
+        blocked.attempt_launched = attempt
+        raise blocked from exc
     except Exception as exc:
         record["error"] = str(exc)
+        exc.attempt_launched = attempt
         raise
     finally:
         record["elapsed_seconds"] = time.time() - record["started_at"]

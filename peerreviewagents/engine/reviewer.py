@@ -1,15 +1,15 @@
 """Reusable bounded review and evidence-focused debate."""
 import json
-import copy
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from .annotations import verify_workspace,save_review
+from .annotations import verify_workspace,save_review,quarantine_findings
 from .model_runtime import model_call,require_subscription,source_manifest,jsonl
-from .review_schema import COMMON,REVIEW,CLARIFICATION_POLICY
+from .review_schema import CLARIFICATION_POLICY,number_word
+from .review_policy import get_review_policy
 from .storage import read,write,digest
-from .discovery import AREAS,DISCOVERY,DESIGN_CHECKS,INVESTIGATION_REVIEW,coverage_record
+from .discovery import AREAS,DESIGN_CHECKS,coverage_record,discovery_instruction,investigation_schema
 from .debate_revision import DEBATE_REVISION,issue_ledger,revision_prompt,revision_package
 from .evidence_handles import (build_registry, source_card_handles, with_evidence_handles,
                               constrain_manuscript_handles, hydrate_response, hydrate_review_response)
@@ -17,8 +17,47 @@ from .evidence_handles import (build_registry, source_card_handles, with_evidenc
 
 HANDLE_INSTRUCTION = '''SOURCE REFERENCE FORMAT: Select the supplied immutable handle IDs instead of copying source quotations or writing block IDs in output reference fields. This instruction replaces earlier output directions about copying quotes. Use a manuscript handle with anchor_eligible true for anchor_handle. Use only manuscript handles in manuscript_evidence_handles. Put external handles in source_evidence entries as source_handle. For coverage and decision evidence use evidence_handle. Coverage evidence must use manuscript handles. Source card tools return external handles with exact source text. The system inserts the exact original text and source identifiers and records the span. Unknown handles or the wrong source type fail validation. final_quote in a debate component is different: it must still exactly quote your own final finding comment to demonstrate retention. An edit replaces exactly the selected anchor span, so do not write a replacement for a larger passage. Handle validity establishes source location, not scientific truth.'''
 
-SELF_REVISION = '''SECOND PASS: Reconsider and improve your own draft review against the entire supplied manuscript and figures. Check scientific validity, specificity and proportionality. Resolve misunderstandings or unsupported premises. Look for important omissions as well as mistakes in the draft. Keep useful concerns, refine or remove weak ones, and add issues only when the available evidence supports them. Return your best final scientific review, with at most five findings under the same overall word budget. Use ordinary self-revision, without simulating multiple reviewers or a debate. Your prior draft is fallible and is not source evidence. Reselect source handles for the final output. You have at most two tool calls in this pass.'''
-SELF_REVISION+='\n'+CLARIFICATION_POLICY
+SELF_REVISION_HEAD = '''SECOND PASS: Reconsider and improve your own draft review against the entire supplied manuscript and figures. Check scientific validity, specificity and proportionality. Resolve misunderstandings or unsupported premises. Look for important omissions as well as mistakes in the draft. Keep useful concerns, refine or remove weak ones, and add issues only when the available evidence supports them. Return your best final scientific review, with '''
+SELF_REVISION_BOUND = 'at most five findings'
+SELF_REVISION_OPEN = 'every finding the evidence supports'
+SELF_REVISION_TAIL = ''' under the same overall word budget. Use ordinary self-revision, without simulating multiple reviewers or a debate. Your prior draft is fallible and is not source evidence. Reselect source handles for the final output. You have at most two tool calls in this pass.'''
+
+
+def self_revision_instruction(finding_cap=5, tool_calls=2):
+    """The second-pass instruction under one policy's finding and tool budget."""
+    if finding_cap is None:
+        bound = SELF_REVISION_OPEN
+    elif finding_cap == 5:
+        bound = SELF_REVISION_BOUND
+    else:
+        bound = f'at most {number_word(finding_cap)} findings'
+    text = SELF_REVISION_HEAD + bound + SELF_REVISION_TAIL
+    if tool_calls != 2:
+        text = text.replace('at most two tool calls in this pass',
+                            f'at most {number_word(tool_calls)} tool calls in this pass')
+    return text + '\n' + CLARIFICATION_POLICY
+
+
+SELF_REVISION = self_revision_instruction()
+
+INDEPENDENT_HEAD = 'Review the entire paper independently. Identify consequential, source-supported scientific concerns and actionable uncertainties. Consider strengths and author explanations. '
+INDEPENDENT_BOUND = 'Return up to ten concise candidate findings, overriding the shared five-finding instruction for this discovery stage.'
+INDEPENDENT_TAIL = ' Preserve useful secondary concerns. Do not manufacture issues to reach a count. Your candidates will later be assessed alongside other independently produced reviews.'
+
+
+def independent_instruction(candidate_cap=10, finding_cap=5):
+    """The independent discovery instruction under one policy's caps."""
+    if candidate_cap == 10 and finding_cap == 5:
+        bound = INDEPENDENT_BOUND
+    elif candidate_cap is None:
+        bound = ('Return every concise candidate finding your investigation supports, overriding any shared '
+                 'finding limit for this discovery stage.')
+    else:
+        bound = (f'Return up to {number_word(candidate_cap)} concise candidate findings, overriding any '
+                 'shared finding limit for this discovery stage.')
+    return INDEPENDENT_HEAD + bound + INDEPENDENT_TAIL
+
+QUARANTINE_POLICY = 'A finding whose quote could not be anchored in its source block, or that cites unknown block IDs, is moved to quarantined_findings with a reason instead of ending the run. Quarantined findings are preserved verbatim and are not endorsed. The remaining findings passed source location checks only, which does not establish scientific correctness.'
 
 MAX_SOURCE_IMAGES = 10
 
@@ -69,12 +108,17 @@ def evidence_packet(paper,reviews):
             'limitation':'This packet includes cited evidence, not the complete manuscript. Use tools for omitted context. A missing item in this packet is not proof of absence in the full paper.'}
 
 
-def debate_prompt(paper,reviews):
+def debate_prompt(paper,reviews,policy=None):
+    """The retention cap and the tool allowance come from the named policy."""
+    policy=get_review_policy(policy)
     tagged=json.loads(json.dumps(reviews))
     for i,review in enumerate(tagged,1):
         for j,finding in enumerate(review['findings'],1):
             finding['source_finding_id']=f'r{i}-f{j}'
-    return COMMON+'''\nDebate the supplied reviews. For each consequential allegation, articulate the strongest defense of the authors and decide whether the concern survives, needs narrowing, or should be dropped. Preserve independent useful findings and identify duplicates. Do not assume agreement makes a claim true. Preserve substantive counterarguments and dropped hypotheses in the output. Retain at most five distinct findings, and do not add unsupported replacement facts. You have two tool calls for missing evidence. An image-based finding cannot be rejected merely because its evidence is absent from extracted text. Inspect the attached source image or mark it as needs_verification. Reconcile the reviews into a final report for an editor. Give one explicit source_dispositions entry for every source_finding_id. A shared source anchor does not make findings duplicates. Use final finding numbers as one-based positions in your findings array.\nREVIEWS:\n'''+json.dumps(tagged,ensure_ascii=False)+'\nSOURCE EVIDENCE:\n'+json.dumps(evidence_packet(paper,reviews),ensure_ascii=False)
+    retention=('Retain every distinct finding the debate leaves standing' if policy.finding_cap is None
+               else f'Retain at most {number_word(policy.finding_cap)} distinct findings')
+    tools=f'You have {number_word(policy.debate_tool_calls)} tool calls for missing evidence.'
+    return policy.shared_instructions()+'''\nDebate the supplied reviews. For each consequential allegation, articulate the strongest defense of the authors and decide whether the concern survives, needs narrowing, or should be dropped. Preserve independent useful findings and identify duplicates. Do not assume agreement makes a claim true. Preserve substantive counterarguments and dropped hypotheses in the output. '''+retention+''', and do not add unsupported replacement facts. '''+tools+''' An image-based finding cannot be rejected merely because its evidence is absent from extracted text. Inspect the attached source image or mark it as needs_verification. Reconcile the reviews into a final report for an editor. Give one explicit source_dispositions entry for every source_finding_id. A shared source anchor does not make findings duplicates. Use final finding numbers as one-based positions in your findings array.\nREVIEWS:\n'''+json.dumps(tagged,ensure_ascii=False)+'\nSOURCE EVIDENCE:\n'+json.dumps(evidence_packet(paper,reviews),ensure_ascii=False)
 
 
 def inspected_images(paper,workspace,investigation,limit=3):
@@ -220,13 +264,14 @@ def editor_package(final,reviews,paper=None):
     return result
 
 
-def review(workspace,output,billing,cutoff,mode='panel',scaffold_root=None,domain_support=True,evidence_mode='current',source_packet=None,shared_images=None,historical_snapshots=None,model='gpt-5.6-sol',reviewers=2,token_budget=750000,synthesis_policy='debate'):
+def review(workspace,output,billing,cutoff,mode='panel',scaffold_root=None,domain_support=True,evidence_mode='current',source_packet=None,shared_images=None,historical_snapshots=None,model='gpt-5.6-sol',reviewers=2,token_budget=750000,synthesis_policy='debate',policy=None,billing_verified=False):
+    policy=get_review_policy(policy)
     if mode=='ensemble':
         from .ensemble import ensemble_review
         return ensemble_review(workspace,output,billing,cutoff,reviewers=reviewers,token_budget=token_budget,
             scaffold_root=scaffold_root,domain_support=domain_support,evidence_mode=evidence_mode,
             source_packet=source_packet,shared_images=shared_images,historical_snapshots=historical_snapshots,model=model,
-            synthesis_policy=synthesis_policy)
+            synthesis_policy=synthesis_policy,policy=policy)
     from .models import provider_for
     provider=provider_for(model)
     if mode not in ('plain','workspace','panel','self-revision','independent'):
@@ -240,8 +285,12 @@ def review(workspace,output,billing,cutoff,mode='panel',scaffold_root=None,domai
     shared_images = shared_source_images(shared_images)
     if paper['statistics']['total_words']>50000:raise ValueError('Review input is limited to 50,000 extracted words including supplements')
     verification=read(billing)
-    from .billing import verify_billing
-    verify_billing(verification,provider=provider)
+    if not billing_verified:
+        # An ensemble verifies once at launch and passes billing_verified, because
+        # the Codex allowance record is only valid for five minutes and reviewer 1
+        # can easily run longer than that.
+        from .billing import verify_billing
+        verify_billing(verification,provider=provider)
     out.mkdir(parents=True,exist_ok=True)
     domain_context = ''
     profile = None
@@ -289,10 +338,10 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
             raise ValueError('Scaffold diagnostics changed. Use a new run directory.')
         write(diagnostic_path,diagnostics)
         diagnostic_context='\nADVISORY MANUSCRIPT CHECKS:\n'+json.dumps(compact_summary(diagnostics),ensure_ascii=False)
-    protocol={'provider':provider,'model':model,'effort':'medium','live_retrieval':source_packet is None,'held_out_runs_authorized':False,
-              'max_calls_per_condition':2 if mode in ('panel','self-revision') else 1,'observed_token_stop':250000,'call_timeout_seconds':900,
+    protocol={'provider':provider,'model':model,'effort':policy.effort,'live_retrieval':source_packet is None,'held_out_runs_authorized':False,
+              'max_calls_per_condition':policy.generation_call_limit(mode),'observed_token_stop':policy.observed_token_stop,'call_timeout_seconds':policy.call_timeout_seconds,
               'mode':mode,'literature_cutoff':cutoff,'paper_id':paper['id'],
-              'investigation_version':'candidate-inventory-v1','investigator_tool_limit':4 if domain_support and mode in ('panel','self-revision','independent') else 6 if domain_support else 3,
+              'investigation_version':'candidate-inventory-v1','investigator_tool_limit':policy.investigator_tool_limit(mode,domain_support),
               'debate_version':'debate-v3' if mode=='panel' else None}
     protocol['evidence_policy'] = 'frozen' if source_packet is not None else 'live'
     if domain_support:
@@ -305,6 +354,9 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
     if mode=='independent':
         from .investigation_policy import VERSION
         protocol['tool_investigation_policy']=VERSION
+    # The default policy contributes no keys, so an existing run directory's
+    # manifest still compares equal and stays resumable.
+    protocol.update(policy.protocol_overlay())
     manifest={'protocol':protocol,'source_manifest_sha256':digest((root/'manifest.json').read_bytes()),'code':source_manifest(Path(__file__).parent)}
     if mode=='independent':manifest['independent_session']=str(out)
     if scaffold_root:
@@ -352,9 +404,15 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
             annotated['coverage_record']=coverage_record(paper,result)
             write(out/'coverage-record.json',annotated['coverage_record'])
         normalized=save_review(root,annotated,label+'-'+run_id)
-        if any(f['placement'] != 'anchored' or f['invalid_evidence_blocks'] for f in normalized['findings']):
-            raise ValueError('Initial review contains invalid manuscript evidence. Raw output is preserved.')
-        guarded={**annotated,'findings':normalized['findings']}
+        kept,quarantined=quarantine_findings(normalized['findings'])
+        if quarantined:
+            write(out/'responses'/f'{label}-quarantined.json',
+                  {'label':label,'quarantined_findings':quarantined,'quarantine_policy':QUARANTINE_POLICY,
+                   'kept_findings':len(kept)})
+        guarded={**annotated,'findings':kept,'quarantined_findings':quarantined,
+                 'quarantine_policy':QUARANTINE_POLICY,
+                 'review_guard_status':'clean' if not quarantined else
+                 'all-findings-quarantined' if not kept else 'partially-quarantined'}
         write(out/'responses'/f'{label}-guarded.json',guarded)
         return guarded
 
@@ -386,23 +444,28 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
 
     try:
         limit=protocol['investigator_tool_limit']
-        instruction='Give your strongest scientific peer review.\n'+DESIGN_CHECKS if mode in ('plain','self-revision') else DISCOVERY.replace('at most three tool calls', f'at most {limit} tool calls')+json.dumps(AREAS)
+        candidates=policy.candidate_finding_cap
+        instruction='Give your strongest scientific peer review.\n'+DESIGN_CHECKS if mode in ('plain','self-revision') else discovery_instruction(limit,candidates)+json.dumps(AREAS)
         if mode=='independent':
-            instruction='Review the entire paper independently. Identify consequential, source-supported scientific concerns and actionable uncertainties. Consider strengths and author explanations. Return up to ten concise candidate findings, overriding the shared five-finding instruction for this discovery stage. Preserve useful secondary concerns. Do not manufacture issues to reach a count. Your candidates will later be assessed alongside other independently produced reviews.'
+            instruction=independent_instruction(candidates,policy.finding_cap)
             from .investigation_policy import INSTRUCTION
             instruction+='\n'+INSTRUCTION
-        prompt=COMMON+'\n'+instruction+'\n'+HANDLE_INSTRUCTION+f'''\nAt most {limit} tool calls. Full extracted text is already provided. Spend tools on missing evidence such as figure pixels or a focused external check. Avoid rereading supplied paragraphs unless necessary. The asset inventory distinguishes available files from captions only.\n'''+json.dumps({'title':paper['title'],'assets':paper['assets'],'references':paper['references']},ensure_ascii=False)+'\n'+handle_manuscript(paper)
+        prompt=policy.shared_instructions()+'\n'+instruction+'\n'+HANDLE_INSTRUCTION+f'''\nAt most {limit} tool calls. Full extracted text is already provided. Spend tools on missing evidence such as figure pixels or a focused external check. Avoid rereading supplied paragraphs unless necessary. The asset inventory distinguishes available files from captions only.\n'''+json.dumps({'title':paper['title'],'assets':paper['assets'],'references':paper['references']},ensure_ascii=False)+'\n'+handle_manuscript(paper)
+        if policy.session_instruction:
+            prompt=policy.session_instruction+'\n'+prompt
         prompt+=diagnostic_context+domain_context+'\nTreat prose and readability checks as advisory. They do not establish scientific validity or justify padding the review.'
         if result_map is not None:
             prompt += '\n'+RESULT_INSTRUCTION+'\nRESULT MAP OVERVIEW:\n'+json.dumps(inspect_results(result_map,max_chars=6500),ensure_ascii=False)
         if shared_images:
             prompt += '\nSHARED ORIGINAL FIGURE PAGES, attached in this order:\n' + '\n'.join(str(p.name) for p in shared_images)
         prompt += '\n'+HANDLE_INSTRUCTION
-        initial_schema=copy.deepcopy(REVIEW) if mode=='independent' else REVIEW if mode in ('plain','self-revision') else INVESTIGATION_REVIEW
         if mode=='independent':
             from .investigation_policy import with_tool_checks
-            initial_schema['properties']['findings']['maxItems']=10
-            initial_schema=with_tool_checks(initial_schema)
+            initial_schema=with_tool_checks(policy.candidate_review_schema())
+        elif mode in ('plain','self-revision'):
+            initial_schema=policy.final_review_schema()
+        else:
+            initial_schema=investigation_schema(candidates)
         first=call('independent' if mode=='independent' else 'plain' if mode in ('plain','self-revision') else 'workspace',prompt,limit,
                    initial_schema, images=shared_images)
         if mode=='independent':write(out/'editor-package.json',first)
@@ -411,15 +474,15 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
             images += [(p,label) for p,label in inspected_images(paper,root,out/'investigations/plain') if p not in shared_images]
             fields=('title','block_id','quote','kind','severity','comment','replacement','counterevidence','evidence_blocks','source_evidence','source_urls')
             draft={'summary':first['summary'],'findings':[{k:f[k] for k in fields if k in f} for f in first['findings']], 'limitations':first['limitations']}
-            revision=prompt.replace(f'At most {limit} tool calls.', 'At most 2 tool calls.')+'\n'+SELF_REVISION+'\nYOUR PRIOR DRAFT:\n'+json.dumps(draft,ensure_ascii=False)
+            revision=prompt.replace(f'At most {limit} tool calls.', f'At most {policy.revision_tool_calls} tool calls.')+'\n'+self_revision_instruction(policy.finding_cap,policy.revision_tool_calls)+'\nYOUR PRIOR DRAFT:\n'+json.dumps(draft,ensure_ascii=False)
             if sources is not None:
                 revision+='\nPRIOR SOURCE CARDS:\n'+json.dumps([{**c,'evidence_handles':[h.model_record() for h in source_card_handles(c)]} for c in sources.cards()],ensure_ascii=False)
-            final=call('self-revision',revision,2,REVIEW,images=[p for p,label in images])
+            final=call('self-revision',revision,policy.revision_tool_calls,policy.final_review_schema(),images=[p for p,label in images])
             write(out/'editor-package.json',final)
         if mode=='panel':
             images=[(p, p.name) for p in shared_images]
             images += [(p, label) for p,label in inspected_images(paper,root,out/'investigations/workspace') if p not in shared_images]
-            save_initial_checkpoint(out,prompt,active_schema(INVESTIGATION_REVIEW),first,images)
+            save_initial_checkpoint(out,prompt,active_schema(investigation_schema(candidates)),first,images)
             ledger=issue_ledger(first)
             write(out/'debate-ledger.json',ledger)
             kwargs = {'source_cards': [{**card,'evidence_handles':[h.model_record() for h in source_card_handles(card)]}
@@ -430,7 +493,7 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
                 prompt += '\nRECORDED COMPARISONS (not independently verified):\n'+json.dumps(first.get('result_comparisons',[]),ensure_ascii=False)
             prompt += '\n'+HANDLE_INSTRUCTION
             verify_workspace(root)
-            tool_config('debate', 2)
+            tool_config('debate', policy.debate_tool_calls)
             write(out/'progress.json',{'status':'running','stage':'debate'})
             final=model_call(protocol,out/'execution',prompt,active_schema(DEBATE_REVISION),tools=True,label='debate',images=[p for p,label in images])
             write(out/'responses/debate-model.json',final)

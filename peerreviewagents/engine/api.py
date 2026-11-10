@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Literal
 
 from .config import get_review_preset, resolved_review_config, review_presets
+from .review_policy import (APPROVED_EFFORTS, DEFAULT_POLICY_NAME, MAX_ATTEMPT_CEILING,
+                            get_review_policy, review_policies)
 
 API_VERSION = 'paper-workbench-core-v1'
 
@@ -19,15 +21,24 @@ def capabilities():
             'default_models': dict(DEFAULT_MODELS),
             'configuration_version': 'paper-workbench-config-v1',
             'presets': list(review_presets()),
+            'policies': list(review_policies()),
+            'default_policy': DEFAULT_POLICY_NAME,
+            'review_policies': review_policies(),
             'evidence_modes': ['current', 'historical'],
             'evidence_policies': ['none', 'live', 'frozen'],
             'models': list(SUBSCRIPTION_MODELS), 'reasoning_effort': 'medium',
+            'reasoning_efforts': list(APPROVED_EFFORTS),
             'billing': 'verified_subscription_with_bounded_usage_policy',
             'tool_access': 'workflow-specific',
             'tool_access_by_workflow': {'manuscript-only': 'none',
                                         'independent': 'bounded_manuscript_tools',
                                         'ensemble': 'bounded_manuscript_tools'},
             'automatic_retries': False,
+            'retry_policy': {'default_attempts': 1, 'max_attempts_ceiling': MAX_ATTEMPT_CEILING,
+                             'retried': 'a launched call that failed or timed out',
+                             'never_retried': 'any guard refusal, including the call and token stops',
+                             'per_attempt_receipts': True},
+            'invalid_finding_policy': 'quarantined-with-reason-not-run-ending',
             'saved_draft_synthesis': {'policy': 'ordinary', 'generation_calls': 1,
                                       'discovery_calls': 0, 'tool_allowance': 2},
             'limitations': ['Manuscript-only mode has no review tools or external access.',
@@ -71,6 +82,7 @@ class ReviewRequest:
     source_packet: Path | None = None
     source_packet_hashes: tuple[tuple[str, str], ...] = field(default_factory=tuple, init=False)
     synthesis_policy: Literal['debate', 'ordinary'] = 'debate'
+    policy: str | None = None
 
     def __post_init__(self):
         from datetime import date
@@ -86,6 +98,8 @@ class ReviewRequest:
             raise ValueError('Manuscript-only review requires exactly one reviewer')
         if self.preset is not None:
             get_review_preset(self.preset)
+        if self.policy is not None:
+            get_review_policy(self.policy)
         if self.evidence_mode not in ('current', 'historical'):
             raise ValueError('Evidence mode must be current or historical')
         if self.source_packet is not None:
@@ -276,7 +290,8 @@ def run_review(request: ReviewRequest):
                    token_budget=request.token_budget, scaffold_root=request.scaffold_root,
                    shared_images=request.source_images, evidence_mode=request.evidence_mode,
                    source_packet=request.source_packet,
-                   synthesis_policy=request.synthesis_policy)
+                   synthesis_policy=request.synthesis_policy,
+                   policy=resolved_config.get('policy'))
         finally:
             if request.source_packet is not None:
                 packet_after = verify_source_packet(request.source_packet, packet_before)
@@ -300,7 +315,7 @@ def run_review(request: ReviewRequest):
 def review_request_from_preset(name, *, workspace, output, billing_confirmation,
                                literature_cutoff, model=None, token_budget=None,
                                scaffold_root=None, source_images=(), evidence_mode='current',
-                               source_packet=None, synthesis_policy=None):
+                               source_packet=None, synthesis_policy=None, policy=None):
     """Construct a request from one named preset, with explicit runtime overrides."""
     preset = get_review_preset(name)
     preset_synthesis = 'ordinary' if preset.synthesis_policy == 'ordinary-synthesis-v1' else 'debate'
@@ -313,6 +328,7 @@ def review_request_from_preset(name, *, workspace, output, billing_confirmation,
         scaffold_root=scaffold_root, source_images=tuple(source_images), preset=name,
         evidence_mode=evidence_mode, source_packet=source_packet,
         synthesis_policy=preset_synthesis if synthesis_policy is None else synthesis_policy,
+        policy=preset.policy if policy is None else policy,
     )
 
 

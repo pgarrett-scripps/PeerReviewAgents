@@ -22,10 +22,32 @@ def validate_options(reviewers=2,token_budget=750000):
 
 
 def observed_usage(out):
-    rows=[r for p in Path(out).rglob('usage.jsonl') for r in jsonl(p)]
+    """Account for every attempt, but judge resolution on the surviving ones.
+
+    A retried call leaves a failed receipt behind on purpose. Its tokens still
+    count against the budget, and it is still listed, but a superseded attempt
+    with unknown usage must not make the whole ensemble unresolvable: the
+    retry that replaced it reports its own usage.
+    """
+    rows=[r for p in sorted(Path(out).rglob('usage.jsonl')) for r in jsonl(p)]
     attempts=list(Path(out).rglob('*.started.json'))
+    effective=effective_usage_rows(rows)
     return {'calls':len(attempts),'receipts':len(rows),'observed_tokens':sum(r.get('observed_tokens') or 0 for r in rows),
-            'unknown':len(attempts)!=len(rows) or any(r.get('usage_unknown') or r.get('observed_tokens') is None for r in rows)}
+            'retried_attempts':len(rows)-len(effective),
+            'unknown':len(attempts)!=len(rows) or any(r.get('usage_unknown') or r.get('observed_tokens') is None for r in effective)}
+
+
+def effective_usage_rows(rows):
+    """One row per request: the highest attempt, which is the one that stands."""
+    best={}
+    for row in rows:
+        key=row.get('request_sha256')
+        attempt=row.get('attempt') or 1
+        if key is None:
+            best[id(row)]=row
+        elif key not in best or (best[key].get('attempt') or 1)<attempt:
+            best[key]=row
+    return list(best.values())
 
 
 def check_budget(out,token_budget,max_calls):
@@ -62,31 +84,45 @@ def combine_reviews(paper,records):
     return combined
 
 
-def _prepare(out,billing,protocol):
+def _prepare(out,billing,protocol,verified=False):
+    """Stage one run directory. ``verified`` means billing was checked at launch.
+
+    The Codex included-allowance record is only valid for five minutes, and a
+    stage that starts after reviewer 1 has been working for longer would fail a
+    second check on a perfectly good launch. Billing is a launch guard, so the
+    workflow verifies once and the later stages record the same confirmation.
+    """
     if out.exists():raise ValueError('Use a fresh ensemble output directory')
     verification=read(billing)
-    from .billing import verify_billing
-    verify_billing(verification,provider=protocol['provider'])
+    if not verified:
+        from .billing import verify_billing
+        verify_billing(verification,provider=protocol['provider'])
     out.mkdir(parents=True)
     write(out/'protocol.json',protocol)
     shutil.copy2(billing,out/'billing_confirmation.json')
     require_subscription(out)
 
 
-def _protocol(model,reviewers,token_budget):
+def _protocol(model,reviewers,token_budget,policy=None):
     from .models import provider_for
-    return {'provider':provider_for(model),'model':model,'effort':'medium','held_out_runs_authorized':False,
-        'max_calls_per_condition':1,'observed_token_stop':token_budget,'call_timeout_seconds':900,
+    from .review_policy import get_review_policy
+    policy=get_review_policy(policy)
+    return {'provider':provider_for(model),'model':model,'effort':policy.effort,'held_out_runs_authorized':False,
+        'max_calls_per_condition':1,'observed_token_stop':token_budget,'call_timeout_seconds':policy.call_timeout_seconds,
         'max_source_images':10,'image_budget_version':'evidence-v1','mode':'ensemble',
         'reviewers':reviewers,'total_generation_calls':reviewers+1,'token_launch_budget':token_budget,
-        'independent_tool_allowance':4,'debate_tool_allowance':2,'version':'ensemble-v3'}
+        'independent_tool_allowance':policy.investigator_tool_limit('independent'),
+        'debate_tool_allowance':policy.debate_tool_calls,'version':'ensemble-v3',
+        **policy.protocol_overlay()}
 
 
 def debate_reviews(workspace,out,billing,cutoff,records,*,images=(),model='gpt-5.6-terra',
                    token_budget=750000,domain_support=True,evidence_mode='current',cache_roots=(),
                    source_packet=None,historical_snapshots=None,evidence_memos=(),
-                   synthesis_policy='debate',reused_drafts=False):
+                   synthesis_policy='debate',reused_drafts=False,policy=None,billing_verified=False):
     """Shared debate implementation for fresh discovery and explicitly recorded reused drafts."""
+    from .review_policy import get_review_policy
+    policy=get_review_policy(policy)
     from .ensemble_debate import (ensemble_schema, ensemble_prompt, ordinary_synthesis_prompt, augment_ledger,
                                   normalize_new_decisions, adjudicated_secondary,
                                   audit_only_secondary, attach_adjudicated_secondary,
@@ -104,7 +140,7 @@ def debate_reviews(workspace,out,billing,cutoff,records,*,images=(),model='gpt-5
         packet_manifest = source_packet_manifest(source_packet)
     validate_options(len(records),token_budget)
     paper=verify_workspace(root)
-    protocol=_protocol(model,len(records),token_budget)
+    protocol=_protocol(model,len(records),token_budget,policy)
     if reused_drafts:
         protocol.update(mode='saved-draft-synthesis', total_generation_calls=1, discovery_calls=0)
     protocol.update(evidence_mode=evidence_mode,
@@ -120,7 +156,7 @@ def debate_reviews(workspace,out,billing,cutoff,records,*,images=(),model='gpt-5
         memos.append(memo)
         memo_images.extend(extra_images)
     if memos:protocol['focused_evidence_version']='manuscript-memo-v1'
-    _prepare(out,billing,protocol)
+    _prepare(out,billing,protocol,billing_verified)
     try:
         ledger=combine_reviews(paper,records)
         if memos:
@@ -177,7 +213,7 @@ def debate_reviews(workspace,out,billing,cutoff,records,*,images=(),model='gpt-5
         prompt+='\nATTACHED MANUSCRIPT IMAGES, in order:\n'+'\n'.join(p.name for p in image_paths)
         stage = 'debate' if synthesis_policy == 'debate' else 'ordinary-synthesis'
         config={'paper':str(root),'output':str(out/'investigations'/stage),'cache':str(out/'source-cache'),
-                'tool_limit':2,'literature_cutoff':cutoff,'evidence_handles':True,
+                'tool_limit':policy.debate_tool_calls,'literature_cutoff':cutoff,'evidence_handles':True,
                 'synthesis_ledger':str(out/'debate-ledger.json')}
         if sources:config.update(tool_profile='domains-v1',source_state=str(out/'sources'),external_request_limit=2,evidence_mode=evidence_mode)
         if source_packet:config.update(source_packet=str(source_packet),source_packet_manifest=packet_manifest)
@@ -186,7 +222,7 @@ def debate_reviews(workspace,out,billing,cutoff,records,*,images=(),model='gpt-5
         write(out/'manifest.json',{'paper_id':paper['id'],'code':source_manifest(Path(__file__).parent),
             'review_input_sha256':digest((out/'input-reviews.json').read_bytes()),
             'images':{str(p):digest(p.read_bytes()) for p in image_paths},
-            'synthesis_policy':synthesis_policy,'synthesis_tool_limit':2})
+            'synthesis_policy':synthesis_policy,'synthesis_tool_limit':policy.debate_tool_calls})
         raw=model_call(protocol,out/'execution',prompt,schema,tools=True,label='ensemble-'+stage,images=image_paths)
         write(out/'responses'/(stage+'-model.json'),raw)
         hydrated=hydrate_response(raw,build_registry(paper,sources.cards() if sources else []))
@@ -221,7 +257,7 @@ def debate_reviews(workspace,out,billing,cutoff,records,*,images=(),model='gpt-5
         package.update(workflow_version='ensemble-v3',synthesis_policy=synthesis_policy,
             synthesis_provenance={'policy':synthesis_policy,'input_reviews_sha256':digest((out/'input-reviews.json').read_bytes()),
                                   'generation_calls':1,'discovery_calls':0 if reused_drafts else len(records),
-                                  'reused_drafts':reused_drafts,'tool_limit':2},reviewer_count=len(records),
+                                  'reused_drafts':reused_drafts,'tool_limit':policy.debate_tool_calls},reviewer_count=len(records),
             reviewer_provenance=[r['provenance'] for r in records],candidate_origins={i['issue_id']:i.get('origin',i.get('provenance')) for i in augmented['issues']})
         if memos:package['focused_evidence_provenance']=[{'memo_sha256':m['memo_sha256'],'memo_path':m['memo_path']} for m in memos]
         write(out/'editor-package.json',package)
@@ -236,45 +272,53 @@ def debate_reviews(workspace,out,billing,cutoff,records,*,images=(),model='gpt-5
 def ensemble_review(workspace,output,billing,cutoff,reviewers=2,token_budget=750000,
                     scaffold_root=None,domain_support=True,evidence_mode='current',source_packet=None,
                     shared_images=None,historical_snapshots=None,model='gpt-5.6-terra',
-                    synthesis_policy='debate'):
+                    synthesis_policy='debate',policy=None):
+    from .review_policy import get_review_policy
     from .reviewer import review,inspected_images
+    policy=get_review_policy(policy)
     validate_options(reviewers,token_budget)
     if synthesis_policy not in ('debate', 'ordinary'):
         raise ValueError('Synthesis policy must be debate or ordinary')
     root,out=Path(workspace).resolve(),Path(output).resolve()
     paper=verify_workspace(root)
     if out==root:raise ValueError('Use a separate output directory')
-    protocol=_protocol(model,reviewers,token_budget)
+    protocol=_protocol(model,reviewers,token_budget,policy)
     protocol.update(evidence_mode=evidence_mode,
                     evidence_policy='frozen' if source_packet is not None else 'live',
                     live_retrieval=source_packet is None)
+    # The one billing check for the whole workflow. Every later stage records
+    # this confirmation instead of re-verifying a record that expires in 300 s.
     _prepare(out,billing,protocol)
+    call_ceiling=(reviewers+1)*policy.max_attempts
     write(out/'manifest.json',{'paper_id':paper['id'],'code':source_manifest(Path(__file__).parent),
         'plan':{'independent_reviewers':reviewers,'synthesis_passes':1,'synthesis_policy':synthesis_policy,
-                'max_generation_calls':reviewers+1,
+                'max_generation_calls':reviewers+1,'max_attempts_per_call':policy.max_attempts,
+                'review_policy':policy.name,
+                'billing_verification':'Verified once at launch. Later stages reuse the recorded confirmation because the included-allowance record expires in five minutes.',
                 'execution':'Fresh isolated sessions, scheduled sequentially to bound subscription usage.'}})
     records=[]
     images=list(shared_images or [])
     try:
         for index in range(1,reviewers+1):
-            check_budget(out,token_budget,reviewers+1)
+            check_budget(out,token_budget,call_ceiling)
             target=out/f'reviewer-{index}'
             write(out/'progress.json',{'status':'running','stage':f'reviewer-{index}','reviewers':reviewers})
             review(root,target,billing,cutoff,mode='independent',scaffold_root=scaffold_root,
                 domain_support=domain_support,evidence_mode=evidence_mode,source_packet=source_packet,
-                shared_images=shared_images,historical_snapshots=historical_snapshots,model=model)
+                shared_images=shared_images,historical_snapshots=historical_snapshots,model=model,
+                policy=policy,billing_verified=True)
             path=target/'editor-package.json'
             records.append({'review':read(path),'provenance':{'reviewer_id':f'reviewer-{index}',
                 'paper_id':paper['id'],'source_review_path':str(path),'source_review_sha256':digest(path.read_bytes()),'origin':'fresh_independent_session'}})
             images.extend(p for p,label in inspected_images(paper,root,target/'investigations/independent',10))
-        check_budget(out,token_budget,reviewers+1)
+        check_budget(out,token_budget,call_ceiling)
         stage = 'debate' if synthesis_policy == 'debate' else 'ordinary-synthesis'
         write(out/'progress.json',{'status':'running','stage':stage,'reviewers':reviewers})
         package=debate_reviews(root,out/stage,billing,cutoff,records,images=images,model=model,
             token_budget=token_budget-observed_usage(out)['observed_tokens'],domain_support=domain_support,
             evidence_mode=evidence_mode,cache_roots=[out/f'reviewer-{i}/source-cache' for i in range(1,reviewers+1)],
             source_packet=source_packet,historical_snapshots=historical_snapshots,
-            synthesis_policy=synthesis_policy)
+            synthesis_policy=synthesis_policy,policy=policy,billing_verified=True)
         write(out/'editor-package.json',package)
         write(out/'progress.json',{'status':'complete','reviewers':reviewers,'usage':observed_usage(out)})
         return read(out/'progress.json')

@@ -42,9 +42,13 @@ class ReviewPresetTests(unittest.TestCase):
         self.assertEqual(set(presets), {
             'manuscript-only-single-v1', 'workspace-independent-v1',
             'workspace-ensemble-v1', 'workspace-ensemble-ordinary-v1',
+            'workspace-agentic-v1',
         })
         self.assertTrue(all(item['configuration_version'] == 'paper-workbench-config-v1'
                             for item in presets.values()))
+        existing = [name for name in presets if name != 'workspace-agentic-v1']
+        self.assertTrue(all(presets[name]['policy'] == 'standard-v1' for name in existing))
+        self.assertEqual(presets['workspace-agentic-v1']['policy'], 'workspace-agentic-v1')
         independent = review_request_from_preset(
             'workspace-independent-v1', workspace=self.workspace,
             output=self.root / 'independent', billing_confirmation=self.root / 'billing.json',
