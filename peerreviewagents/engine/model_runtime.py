@@ -619,6 +619,50 @@ def archive_attempt(directory, attempt):
     directory.rename(target)
     return target
 
+SPENT_SOURCE_STATE = ("requests.json", "targets.json")
+
+def archive_source_allowance(state, attempt):
+    """Move the spent external request and target records aside for a retry.
+
+    The failed attempt's external requests are gone, but they were spent by a
+    call whose output is discarded. Left in place they come out of the retry's
+    allowance, so a timed-out agentic attempt would hand its replacement a
+    partly or wholly spent source budget and a filled target quota.
+
+    Only those two records move. ``cards.json`` and the raw ``source-cache``
+    stay, because an earlier stage's findings already reference the handles
+    those cards carry and a cache hit costs no budget, so the retry re-reads
+    what the run already fetched for free.
+    """
+    state = Path(state)
+    moved = []
+    for name in SPENT_SOURCE_STATE:
+        path = state / name
+        if not path.exists():
+            continue
+        stem, suffix = path.stem, path.suffix
+        target = state / f"{stem}.attempt{attempt - 1}{suffix}"
+        index = 1
+        while target.exists():
+            index += 1
+            target = state / f"{stem}.attempt{attempt - 1}.{index}{suffix}"
+        path.rename(target)
+        moved.append(target)
+    return moved
+
+def prepare_retry(investigation, source_state):
+    """The ``prepare_attempt`` callback every retried generation call uses.
+
+    One place decides what a retry inherits: not the replaced attempt's tool
+    log, preflight receipts or call indices, and not its spent external request
+    allowance.
+    """
+    def prepare(attempt):
+        archived = archive_attempt(investigation, attempt)
+        archive_source_allowance(source_state, attempt)
+        return archived
+    return prepare
+
 def model_call(protocol, out, prompt, schema, *, tools=False, label="call", images=None,
                recover_only=False, prepare_attempt=None):
     """One request, with at most ``protocol['max_attempts']`` attempts at it.
@@ -786,10 +830,19 @@ def _model_call(protocol, out, prompt, schema, *, tools=False, label="call", ima
                 record["usage_unknown"] = False
             failures = terminal_codex_failures(events)
             if result.returncode or not completed or failures:
-                # A reported failure is a verdict about this run. A missing
-                # completed turn without one is a crashed or killed process.
+                # A reported failure is a verdict about this run, and so is a
+                # turn the model completed: that turn was generated and paid
+                # for, whatever status the process exited with afterwards, so
+                # retrying it would spend the allowance twice for one review.
+                # Only a missing completed turn without a reported failure is a
+                # crashed or killed process, which may be retried.
                 message = f"Codex failed. {failures[-1:]}"
-                raise StudyBlocked(message) if failures else transient_failure(message)
+                if completed and not failures:
+                    message = (f"Codex completed the turn and then exited {result.returncode}. "
+                               "A completed turn is spent, so it is not retried.")
+                if failures or completed:
+                    raise StudyBlocked(message)
+                raise transient_failure(message)
             tool_calls = [e.get("item", {}) for e in events if e.get("type") == "item.completed"
                           and e.get("item", {}).get("type") == "mcp_tool_call"]
             if any(item.get("status") != "completed" for item in tool_calls):

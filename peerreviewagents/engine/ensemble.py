@@ -11,7 +11,7 @@ from .evidence_handles import (build_registry,with_evidence_handles,constrain_ma
                               hydrate_response,source_card_handles)
 from .external_evidence import SourceClient,bind_sources,validate_references
 from .model_runtime import (model_call,require_subscription,jsonl,source_manifest,effective_rows,
-                           unaccounted_attempts,write_launch_verification)
+                           prepare_retry,unaccounted_attempts,write_launch_verification)
 from .review_schema import with_external_evidence
 from .storage import read,write,digest
 
@@ -257,7 +257,11 @@ def debate_reviews(workspace,out,billing,cutoff,records,*,images=(),model='gpt-5
             'review_input_sha256':digest((out/'input-reviews.json').read_bytes()),
             'images':{str(p):digest(p.read_bytes()) for p in image_paths},
             'synthesis_policy':synthesis_policy,'synthesis_tool_limit':policy.debate_tool_calls})
-        raw=model_call(protocol,out/'execution',prompt,schema,tools=True,label='ensemble-'+stage,images=image_paths)
+        # Same retry hygiene as every other generation call: a replaced attempt
+        # keeps its own tool log and synthesis-preflight receipts, and its spent
+        # source requests do not come out of the retry's allowance.
+        raw=model_call(protocol,out/'execution',prompt,schema,tools=True,label='ensemble-'+stage,images=image_paths,
+                       prepare_attempt=prepare_retry(out/'investigations'/stage,out/'sources'))
         write(out/'responses'/(stage+'-model.json'),raw)
         hydrated=hydrate_response(raw,build_registry(paper,sources.cards() if sources else []))
         final={**normalize_new_decisions(hydrated['response']),'evidence_handle_audit':hydrated['audit']}
@@ -323,9 +327,15 @@ def ensemble_review(workspace,output,billing,cutoff,reviewers=2,token_budget=750
                     scaffold_root=None,domain_support=True,evidence_mode='current',source_packet=None,
                     shared_images=None,historical_snapshots=None,model='gpt-5.6-terra',
                     synthesis_policy='debate',policy=None):
-    from .review_policy import get_review_policy
+    from .review_policy import get_review_policy,single_session_refusal
     from .reviewer import review,inspected_images
     policy=get_review_policy(policy)
+    # The last gate. The CLI and the request object refuse this earlier, and a
+    # caller reaching the engine directly must not spend reviewers+1 long
+    # high-effort calls for a policy that names one session.
+    if policy.single_session:
+        raise ValueError(single_session_refusal(policy.name,option='policy',preset='preset',
+                                                mode="mode='independent'"))
     validate_options(reviewers,token_budget)
     if synthesis_policy not in ('debate', 'ordinary'):
         raise ValueError('Synthesis policy must be debate or ordinary')

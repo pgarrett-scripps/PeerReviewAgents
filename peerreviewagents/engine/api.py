@@ -6,7 +6,8 @@ from typing import Literal
 
 from .config import get_review_preset, resolved_review_config, review_presets
 from .review_policy import (APPROVED_EFFORTS, DEFAULT_POLICY, DEFAULT_POLICY_NAME,
-                            MAX_ATTEMPT_CEILING, get_review_policy, review_policies)
+                            MAX_ATTEMPT_CEILING, get_review_policy, review_policies,
+                            single_session_refusal)
 
 API_VERSION = 'paper-workbench-core-v1'
 
@@ -110,7 +111,12 @@ class ReviewRequest:
         if self.preset is not None:
             get_review_preset(self.preset)
         if self.policy is not None:
-            get_review_policy(self.policy)
+            # The CLI refuses this combination. The request object is the other
+            # way in, so it refuses it too rather than spending three long
+            # high-effort calls on a request that asked for one session.
+            if get_review_policy(self.policy).single_session and self.workflow == 'ensemble':
+                raise ValueError(single_session_refusal(
+                    self.policy, option='policy', preset='preset', mode="workflow='independent'"))
         if self.evidence_mode not in ('current', 'historical'):
             raise ValueError('Evidence mode must be current or historical')
         if self.source_packet is not None:
@@ -272,6 +278,24 @@ def run_saved_draft_synthesis(request: SavedDraftSynthesisRequest):
     return result
 
 
+def manuscript_only_progress(package):
+    """The same status vocabulary the reviewer reports, for the one-call baseline.
+
+    ``run_manuscript_only`` returns the editor package rather than a progress
+    record. The guard status is in it, so the zero-finding outcome is named
+    here the way every other workflow names it.
+    """
+    from .reviewer import COMPLETE_WITHOUT_FINDINGS, GUARD_STATUS_POLICY
+    package = package or {}
+    guard = package.get('review_guard_status', 'clean')
+    progress = {'status': 'complete', 'review_guard_status': guard,
+                'findings_delivered': len(package.get('findings') or []),
+                'quarantined_findings_count': len(package.get('quarantined_findings') or [])}
+    if guard == 'all-findings-quarantined':
+        progress.update(status=COMPLETE_WITHOUT_FINDINGS, guard_status_policy=GUARD_STATUS_POLICY)
+    return progress
+
+
 def run_review(request: ReviewRequest):
     """Explicit inference entry point. Importing or constructing requests is offline."""
     from .reviewer import review
@@ -291,21 +315,29 @@ def run_review(request: ReviewRequest):
     if request.source_packet is not None:
         from .source_packet import verify_source_packet
         verify_source_packet(request.source_packet, packet_before)
+    # A run that completes with every finding quarantined is not the same
+    # outcome as a clean one. The engine says which it was; the artifact has to
+    # carry it, because an API caller never reads progress.json.
     if request.workflow == 'manuscript-only':
         from .baseline import run_manuscript_only
-        run_manuscript_only(request, paper, resolved_config)
+        package = run_manuscript_only(request, paper, resolved_config)
+        progress = manuscript_only_progress(package)
     else:
         try:
-            review(workspace, output, request.billing_confirmation, request.literature_cutoff,
-                   mode=request.workflow, model=request.model, reviewers=request.reviewers,
-                   token_budget=request.token_budget, scaffold_root=request.scaffold_root,
-                   shared_images=request.source_images, evidence_mode=request.evidence_mode,
-                   source_packet=request.source_packet,
-                   synthesis_policy=request.synthesis_policy,
-                   policy=resolved_config.get('policy'))
+            progress = review(workspace, output, request.billing_confirmation, request.literature_cutoff,
+                              mode=request.workflow, model=request.model, reviewers=request.reviewers,
+                              token_budget=request.token_budget, scaffold_root=request.scaffold_root,
+                              shared_images=request.source_images, evidence_mode=request.evidence_mode,
+                              source_packet=request.source_packet,
+                              synthesis_policy=request.synthesis_policy,
+                              policy=resolved_config.get('policy'))
         finally:
             if request.source_packet is not None:
                 packet_after = verify_source_packet(request.source_packet, packet_before)
+    if not progress:
+        # The engine writes the same record to the run directory. Read it back
+        # rather than report an unknown status.
+        progress = read(output/'progress.json') if (output/'progress.json').exists() else {}
     engine = source_manifest(Path(__file__).parent)
     core_engine = source_manifest(Path(__file__).parent)
     artifact = {'api_version': API_VERSION, 'artifact_version': 'paper-workbench-run-v1',
@@ -316,6 +348,7 @@ def run_review(request: ReviewRequest):
                 'source_packet_manifest_before': packet_before or None,
                 'source_packet_manifest_after': packet_after or None,
                 'engine_source': engine, 'core_source': core_engine,
+                'status': progress.get('status'), 'run_progress': progress,
                 'editor_package': read(output/'editor-package.json'),
                 'usage': observed_usage(output), 'output_directory': str(output),
                 'limitation': 'A pipeline artifact is not a benchmark score. The benchmark owns blinding, grading and hidden answer keys.'}

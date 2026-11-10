@@ -8,7 +8,8 @@ from pathlib import Path
 
 from .config import get_review_preset, review_presets
 from .models import DEFAULT_MODELS, SUBSCRIPTION_MODELS, provider_for
-from .review_policy import DEFAULT_POLICY_NAME, get_review_policy, review_policies
+from .review_policy import (DEFAULT_POLICY_NAME, get_review_policy, review_policies,
+                            single_session_refusal)
 from .storage import read
 
 MODEL_HELP=('Exact model ID. Without it, the default for --provider is used: '+
@@ -57,12 +58,14 @@ def apply_policy(parser,args):
     ``--policy workspace-agentic-v1`` used to run a two reviewer ensemble plus a
     debate stage, which is three long high-effort calls rather than the one long
     investigative session the policy names. Ask for the mode explicitly.
+
+    The request object and ``ensemble_review`` refuse the same combination, so
+    no entry point can spend three long calls on it.
     """
     if args.policy is None:
         return
     if get_review_policy(args.policy).single_session and args.mode=='ensemble':
-        parser.error(f'--policy {args.policy} runs one long investigative session, not an ensemble. '
-                     f'Pass --preset {args.policy}, or --mode independent with it')
+        parser.error(single_session_refusal(args.policy))
 
 
 def resolve_model(parser,args):

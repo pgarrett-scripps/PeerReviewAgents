@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 from .annotations import verify_workspace,save_review,quarantine_findings
-from .model_runtime import (model_call,require_subscription,source_manifest,jsonl,archive_attempt,
+from .model_runtime import (model_call,require_subscription,source_manifest,jsonl,prepare_retry,
                             write_launch_verification)
 from .review_schema import CLARIFICATION_POLICY,number_word
 from .review_policy import get_review_policy
@@ -422,11 +422,12 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
         verify_workspace(root)
         tool_config(label, limit)
         write(out/'progress.json',{'status':'running','stage':label})
-        # A retry gets its own investigation directory: the failed attempt's tool
-        # log is archived, so call_index starts at one again and receipts still
-        # verify against the log the surviving attempt actually wrote.
+        # A retry gets its own investigation directory and its own source
+        # request allowance: the failed attempt's tool log is archived, so
+        # call_index starts at one again and receipts still verify against the
+        # log the surviving attempt actually wrote.
         result=model_call(protocol,out/'execution',prompt,active_schema(schema),tools=True,label=label,images=images,
-                          prepare_attempt=lambda attempt:archive_attempt(out/'investigations'/label,attempt))
+                          prepare_attempt=prepare_retry(out/'investigations'/label,out/'sources'))
         write(out/'responses'/f'{label}-model.json',result)
         hydrated=hydrate_review_response(result,build_registry(paper,sources.cards() if sources else []))
         result={**hydrated['response'],'evidence_handle_audit':hydrated['audit']}
@@ -543,7 +544,7 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
             write(out/'progress.json',{'status':'running','stage':'debate'})
             final=model_call(protocol,out/'execution',prompt,active_schema(debate_revision_schema(policy)),
                              tools=True,label='debate',images=[p for p,label in images],
-                             prepare_attempt=lambda attempt:archive_attempt(out/'investigations/debate',attempt))
+                             prepare_attempt=prepare_retry(out/'investigations/debate',out/'sources'))
             write(out/'responses/debate-model.json',final)
             hydrated=hydrate_response(final,build_registry(paper,sources.cards() if sources else []))
             final={**hydrated['response'],'evidence_handle_audit':hydrated['audit']}

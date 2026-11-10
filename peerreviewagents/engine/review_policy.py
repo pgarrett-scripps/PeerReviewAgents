@@ -156,3 +156,17 @@ def get_review_policy(policy=None):
         return _POLICIES[policy]
     except KeyError as error:
         raise ValueError('Unknown review policy') from error
+
+
+def single_session_refusal(policy, option='--policy', preset='--preset', mode='--mode independent'):
+    """The one refusal text for a single-session policy left on an ensemble.
+
+    ``workspace-agentic-v1`` names one long investigative session. Asked for on
+    the ensemble workflow it would instead run two reviewer calls and a
+    synthesis call, each at high effort with a two hour timeout and one bounded
+    retry: up to six long calls for a request that reads like one. Every
+    surface refuses it with this sentence, each spelling the option the way its
+    own callers write it.
+    """
+    return (f'{option} {policy} runs one long investigative session, not an ensemble. '
+            f'Pass {preset} {policy}, or {mode} with it')

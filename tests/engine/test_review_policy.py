@@ -470,6 +470,31 @@ class AgenticPolicy(unittest.TestCase):
         apply_policy(parser, parser.parse_args(base + ['--policy', 'standard-v1']))
         apply_policy(parser, parser.parse_args(base))
 
+    def test_the_api_and_the_engine_refuse_an_agentic_ensemble_as_well(self):
+        """The CLI was the only surface that refused it.
+
+        ``ReviewRequest(workflow='ensemble', policy='workspace-agentic-v1')``
+        was accepted and ran two reviewer calls and a synthesis call, each at
+        high effort with a two hour timeout and one bounded retry: up to six
+        long calls for a policy that names one session.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root, out, billing = workspace(directory)
+            common = dict(workspace=root, output=out, billing_confirmation=billing,
+                          literature_cutoff='2025-01-01', policy='workspace-agentic-v1')
+            with self.assertRaisesRegex(ValueError, 'one long investigative session'):
+                ReviewRequest(**common, workflow='ensemble')
+            independent = ReviewRequest(**common, workflow='independent')
+            self.assertEqual(independent.policy, 'workspace-agentic-v1')
+            # The engine is the last gate, for a caller that reaches it directly.
+            with self.assertRaisesRegex(ValueError, 'one long investigative session'):
+                ensemble.ensemble_review(root, out, billing, '2025-01-01',
+                                         policy='workspace-agentic-v1')
+            with self.assertRaisesRegex(ValueError, 'one long investigative session'):
+                reviewer.review(root, out, billing, '2025-01-01', mode='ensemble',
+                                policy=AGENTIC)
+            self.assertFalse(out.exists())
+
 
 class QuarantinedFindings(unittest.TestCase):
     def test_an_unanchored_finding_is_quarantined_with_a_reason(self):
@@ -585,6 +610,44 @@ class QuarantinedFindings(unittest.TestCase):
                 dispatch(parser, args)
         self.assertIn('complete-without-findings', printed.getvalue())
 
+    def test_the_api_artifact_names_the_zero_finding_outcome(self):
+        """``run_review`` discarded the engine's status and core-artifact.json
+        had none, so an API caller could not tell a run that delivered nothing
+        from a clean one: both returned an artifact with an empty package."""
+        from peerreviewagents.engine.api import manuscript_only_progress
+        from peerreviewagents.engine.api import run_review as run_api_review
+        empty = {'status': reviewer.COMPLETE_WITHOUT_FINDINGS, 'findings_delivered': 0,
+                 'quarantined_findings_count': 2,
+                 'review_guard_status': 'all-findings-quarantined'}
+        delivered = {'status': 'complete', 'findings_delivered': 1,
+                     'quarantined_findings_count': 0, 'review_guard_status': 'clean'}
+
+        def engine(progress):
+            def run(paper_root, output, *args, **kwargs):
+                write(output / 'editor-package.json', {'summary': 'Review', 'findings': []})
+                return progress
+            return run
+
+        with tempfile.TemporaryDirectory() as directory:
+            root, out, billing = workspace(directory)
+            for index, progress in enumerate((empty, delivered)):
+                target = out.with_name(f'run-{index}')
+                request = ReviewRequest(workspace=root, output=target,
+                                        billing_confirmation=billing,
+                                        literature_cutoff='2025-01-01')
+                with patch.object(reviewer, 'review', side_effect=engine(progress)):
+                    artifact = run_api_review(request)
+                self.assertEqual(artifact['status'], progress['status'])
+                self.assertEqual(artifact['run_progress'], progress)
+                self.assertEqual(read(target / 'core-artifact.json')['status'], progress['status'])
+        # The one-call baseline returns a package rather than a progress record.
+        self.assertEqual(manuscript_only_progress(
+            {'findings': [], 'quarantined_findings': [1, 2],
+             'review_guard_status': 'all-findings-quarantined'}),
+            {**empty, 'guard_status_policy': reviewer.GUARD_STATUS_POLICY})
+        self.assertEqual(manuscript_only_progress({'findings': [1], 'review_guard_status': 'clean'}),
+                         delivered)
+
     def test_the_registry_still_refuses_an_ambiguous_anchor_outright(self):
         registry = build_registry(REPEATED_PAPER)
         ambiguous = next(h for h in registry.handles if h.text == 'We studied 5 plants.')
@@ -609,8 +672,22 @@ class BoundedRetry(unittest.TestCase):
             'input_tokens': 7, 'output_tokens': 3}}) + '\n')
         return SimpleNamespace(returncode=0)
 
-    def crash(self, command, **kwargs):
-        """A launched attempt that died without a verdict: retryable."""
+    def die(self, command, **kwargs):
+        """A launched attempt that died without a verdict: retryable.
+
+        It reached the model and emitted work, but no turn completed, so no
+        token count is observable and nothing was reported about the run.
+        """
+        kwargs['stdout'].write(json.dumps({'type': 'item.completed', 'item': {
+            'type': 'agent_message', 'text': 'working'}}) + '\n')
+        return SimpleNamespace(returncode=1)
+
+    def spent(self, command, **kwargs):
+        """A turn the model completed, followed by a non-zero exit.
+
+        The generation happened and was charged. Whatever killed the process
+        afterwards, there is nothing left to retry.
+        """
         kwargs['stdout'].write(json.dumps({'type': 'turn.completed', 'usage': {
             'input_tokens': 4, 'output_tokens': 1}}) + '\n')
         return SimpleNamespace(returncode=1)
@@ -635,7 +712,7 @@ class BoundedRetry(unittest.TestCase):
         return run, calls
 
     def test_a_crashed_call_is_retried_once_in_the_same_run(self):
-        run, calls = self.sequence(self.crash, self.succeed)
+        run, calls = self.sequence(self.die, self.succeed)
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
             with patch.object(runtime.subprocess, 'run', side_effect=run):
@@ -648,9 +725,11 @@ class BoundedRetry(unittest.TestCase):
             self.assertEqual([row['transient_failure'] for row in rows], [True, False])
             usage = ensemble.observed_usage(out)
             self.assertEqual((usage['calls'], usage['receipts'], usage['retried_attempts']), (2, 2, 1))
-            self.assertEqual(usage['observed_tokens'], 15)
+            # No turn completed on the first attempt, so its spend is a lower
+            # bound rather than zero.
+            self.assertEqual(usage['observed_tokens'], 10)
             self.assertFalse(usage['unknown'])
-            self.assertEqual(usage['unknown_attempts'], 0)
+            self.assertEqual(usage['unknown_attempts'], 1)
             stems = sorted(path.name for path in (out / 'calls').glob('*.json'))
             self.assertTrue(any('.attempt2.json' in name for name in stems))
 
@@ -665,6 +744,23 @@ class BoundedRetry(unittest.TestCase):
             rows = runtime.jsonl(out / 'usage.jsonl')
             self.assertEqual([row['transient_failure'] for row in rows], [False])
             # The saved refusal stays final, so a rerun never relaunches it either.
+            with patch.object(runtime.subprocess, 'run', side_effect=run):
+                with self.assertRaisesRegex(runtime.StudyBlocked, 'prior attempt failed'):
+                    runtime.model_call(self.protocol, out, 'prompt', self.schema)
+            self.assertEqual(len(calls), 1)
+
+    def test_a_completed_turn_is_never_retried_after_a_non_zero_exit(self):
+        """The turn was generated and charged, so a second one is a second spend."""
+        run, calls = self.sequence(self.spent, self.succeed)
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)
+            with patch.object(runtime.subprocess, 'run', side_effect=run):
+                with self.assertRaisesRegex(runtime.StudyBlocked, 'completed the turn'):
+                    runtime.model_call(self.protocol, out, 'prompt', self.schema)
+            self.assertEqual(len(calls), 1)
+            rows = runtime.jsonl(out / 'usage.jsonl')
+            self.assertEqual([row['transient_failure'] for row in rows], [False])
+            self.assertEqual([row['observed_tokens'] for row in rows], [5])
             with patch.object(runtime.subprocess, 'run', side_effect=run):
                 with self.assertRaisesRegex(runtime.StudyBlocked, 'prior attempt failed'):
                     runtime.model_call(self.protocol, out, 'prompt', self.schema)
@@ -697,7 +793,7 @@ class BoundedRetry(unittest.TestCase):
             ensemble.check_budget(out, 1000, 5, allowed_unknown=1)
 
     def test_a_successful_retry_does_not_block_the_next_call_in_the_run(self):
-        run, calls = self.sequence(self.crash, self.succeed, self.succeed)
+        run, calls = self.sequence(self.die, self.succeed, self.succeed)
         protocol = {**self.protocol, 'max_calls_per_condition': 2}
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
@@ -711,19 +807,22 @@ class BoundedRetry(unittest.TestCase):
             self.assertEqual(usage['retried_attempts'], 1)
 
     def test_a_second_crash_blocks_the_run(self):
-        run, calls = self.sequence(self.crash, self.crash)
+        run, calls = self.sequence(self.die, self.die)
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
             with patch.object(runtime.subprocess, 'run', side_effect=run):
                 with self.assertRaises(runtime.StudyBlocked):
                     runtime.model_call(self.protocol, out, 'prompt', self.schema)
-                with self.assertRaisesRegex(runtime.StudyBlocked, 'prior attempt failed'):
+                # A crashed attempt has no observable token count, so the saved
+                # receipt refuses the rerun on unknown usage before the spent
+                # attempt limit is even reached. Either way it never relaunches.
+                with self.assertRaisesRegex(runtime.StudyBlocked, 'unknown usage'):
                     runtime.model_call(self.protocol, out, 'prompt', self.schema)
             self.assertEqual(len(calls), 2)
             self.assertEqual([row['attempt'] for row in runtime.jsonl(out / 'usage.jsonl')], [1, 2])
 
     def test_the_default_policy_never_retries(self):
-        run, calls = self.sequence(self.crash, self.succeed)
+        run, calls = self.sequence(self.die, self.succeed)
         protocol = {key: value for key, value in self.protocol.items() if key != 'max_attempts'}
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
@@ -771,9 +870,12 @@ class BoundedRetry(unittest.TestCase):
             self.assertIsNone(runtime.archive_attempt(live, 2))
             self.assertEqual(len(runtime.jsonl(first / 'tool-log.jsonl')), 1)
 
-    def test_a_retried_investigation_starts_a_fresh_tool_log(self):
+    def test_a_retried_investigation_starts_a_fresh_tool_log_and_source_budget(self):
         """A retry shares the request identity, so it must not append to the
-        replaced attempt's tool log: call_index restarts and receipts verify."""
+        replaced attempt's tool log: call_index restarts and receipts verify.
+        It must not inherit the replaced attempt's spent source requests
+        either, or a timed-out agentic attempt hands its replacement a budget
+        it never used."""
         with tempfile.TemporaryDirectory() as directory:
             root, out, billing = workspace(directory)
             handle = build_registry(PAPER).handles[0].handle_id
@@ -783,6 +885,10 @@ class BoundedRetry(unittest.TestCase):
                 log = out / 'investigations' / 'plain' / 'tool-log.jsonl'
                 log.parent.mkdir(parents=True, exist_ok=True)
                 log.write_text(json.dumps({'call_index': 1, 'tool': 'read_source_block'}) + '\n')
+                write(out / 'sources' / 'requests.json', {'limit': 6, 'requests': ['a', 'b']})
+                write(out / 'sources' / 'targets.json', {'count': ['x', 'y']})
+                write(out / 'sources' / 'cards.json',
+                      [{'evidence_id': 'E1', 'eligible': True, 'evidence_text': 'Five plants.'}])
                 seen['archived'] = options['prepare_attempt'](2)
                 return copy.deepcopy(model_response(handle))
 
@@ -795,6 +901,45 @@ class BoundedRetry(unittest.TestCase):
             self.assertEqual(archived.name, 'plain.attempt1')
             self.assertEqual(len(runtime.jsonl(archived / 'tool-log.jsonl')), 1)
             self.assertFalse((out / 'investigations' / 'plain' / 'tool-log.jsonl').exists())
+            sources = out / 'sources'
+            self.assertFalse((sources / 'requests.json').exists())
+            self.assertFalse((sources / 'targets.json').exists())
+            self.assertEqual(read(sources / 'requests.attempt1.json')['requests'], ['a', 'b'])
+            self.assertEqual(read(sources / 'targets.attempt1.json')['count'], ['x', 'y'])
+            # Cards stay: earlier findings already reference their handles, and
+            # the raw cache means a re-read of them costs no budget.
+            self.assertEqual(read(sources / 'cards.json')[0]['evidence_id'], 'E1')
+
+    def test_the_ensemble_synthesis_call_archives_its_attempt_too(self):
+        """The debate stage used to pass no prepare_attempt, so a retried
+        agentic synthesis inherited the failed attempt's tool log, its
+        synthesis-preflight receipts and its spent source requests."""
+        with tempfile.TemporaryDirectory() as directory:
+            root, out, billing = workspace(directory)
+            seen = {}
+            base = {'title': 'Count', 'kind': 'question', 'severity': 'moderate', 'block_id': 'b1',
+                    'quote': 'We studied 5 plants.', 'evidence_blocks': ['b1'], 'replacement': '',
+                    'counterevidence': '', 'source_urls': []}
+            records = [{'review': {'findings': [{**base, 'comment': f'Confirm the count {i}.'}]},
+                        'provenance': {'paper_id': 'paper', 'origin': 'test'}} for i in (1, 2)]
+
+            def fake(protocol, execution, prompt, schema, **options):
+                stage = out / 'investigations' / 'debate'
+                write(stage / 'synthesis-preflight' / 'receipt.json', {'call_index': 1})
+                write(out / 'sources' / 'requests.json', {'limit': 2, 'requests': ['a', 'b']})
+                seen['archived'] = options['prepare_attempt'](2)
+                raise Captured()
+
+            with patch.object(ensemble, 'require_subscription'), \
+                 patch.object(ensemble, 'model_call', side_effect=fake):
+                with self.assertRaises(Captured):
+                    ensemble.debate_reviews(root, out, billing, '2025-01-01', records,
+                                            model='gpt-5.6-terra')
+            self.assertEqual(Path(seen['archived']).name, 'debate.attempt1')
+            self.assertTrue((out / 'investigations' / 'debate.attempt1' /
+                             'synthesis-preflight' / 'receipt.json').exists())
+            self.assertFalse((out / 'sources' / 'requests.json').exists())
+            self.assertEqual(read(out / 'sources' / 'requests.attempt1.json')['requests'], ['a', 'b'])
 
 
 class BillingVerifiedOnce(unittest.TestCase):
@@ -883,6 +1028,88 @@ class BillingVerifiedOnce(unittest.TestCase):
                 runtime.write_launch_verification(root, 'codex')
                 with self.assertRaisesRegex(runtime.StudyBlocked, 'Record current Codex'):
                     runtime.require_subscription(root, billing_verified=True)
+
+    def ensemble_transport(self, clock, jump):
+        """A fake transport for both ensemble stages that advances the clock.
+
+        Each call writes the receipt and usage row the budget check reads, then
+        moves the clock on by ``jump`` seconds, the way a long stage does.
+        """
+        handle = build_registry(PAPER).handles[0].handle_id
+        findings, labels = [], []
+
+        def fake(protocol, execution, prompt, schema, **options):
+            labels.append(options['label'])
+            clock[0] += jump
+            write(execution / 'calls' / 'attempt.started.json', {})
+            (execution / 'usage.jsonl').write_text(json.dumps({'observed_tokens': 100}) + '\n')
+            item = finding(handle)
+            if options['label'] == 'independent':
+                item = {**item, 'comment': f'Confirm request {len(findings) + 1}.'}
+                findings.append(item)
+                return {'summary': 'Review', 'findings': [copy.deepcopy(item)], 'limitations': [],
+                        'investigation_summary': 'Checked.', 'discarded_hypotheses': []}
+            decisions = []
+            for index, kept in enumerate(findings, 1):
+                issue = f'r{index}-issue-1'
+                decisions.append({
+                    'issue_id': issue, 'scientific_status': 'supported_clarification',
+                    'presentation': 'primary', 'strongest_criticism': 'Count unclear.',
+                    'strongest_author_defense': 'The count is stated.',
+                    'decisive_question': 'How many plants?', 'decision_reason': 'Retain.',
+                    'evidence': [{'evidence_handle': handle}],
+                    'components': [{'component_id': issue + '-part-1', 'treatment': 'preserved',
+                                    'final_finding_number': index, 'final_quote': kept['comment'],
+                                    'reason': 'Kept.', 'evidence': []}]})
+            return {'summary': 'Review', 'findings': copy.deepcopy(findings), 'limitations': [],
+                    'decisions': decisions, 'new_candidates': []}
+
+        return fake, labels
+
+    def test_the_whole_ensemble_passes_the_real_guard_as_the_clock_advances(self):
+        """End to end with the real guard: nothing about billing is patched out.
+
+        Every call here takes longer than the five minute freshness window of
+        the included-allowance record, which is what a real stage does and what
+        the launch verification exists for. The launch moment is the only one
+        judged against that window, so the run completes while each of the
+        three stages still runs the rest of the guard, and the 24 hour launch
+        window still refuses a run that outlives it.
+        """
+        record = self.aged_codex_record(age=0)
+        real, clock, auth = time.time, [0.0], []
+
+        def auth_status(provider):
+            auth.append(provider)
+            return {'loggedIn': True, 'authMethod': 'chatgpt'}
+
+        with tempfile.TemporaryDirectory() as directory:
+            root, out, billing = workspace(directory)
+            write(billing, record)
+            fake, labels = self.ensemble_transport(clock, 400)
+            with patch.object(runtime, 'auth_status', side_effect=auth_status), \
+                 patch('time.time', lambda: real() + clock[0]), \
+                 patch.object(reviewer, 'model_call', side_effect=fake), \
+                 patch.object(ensemble, 'model_call', side_effect=fake), \
+                 patch.object(reviewer, 'inspected_images', return_value=[]):
+                progress = ensemble.ensemble_review(root, out, billing, '2025-01-01')
+                self.assertEqual(progress['status'], 'complete')
+                self.assertEqual(labels, ['independent', 'independent', 'ensemble-debate'])
+                # The launch check plus one real guard call per stage.
+                self.assertEqual(auth, ['codex'] * 4)
+                moment = read(out / 'reviewer-1' / runtime.LAUNCH_VERIFICATION)['verified_at']
+                for stage in ('reviewer-1', 'reviewer-2', 'debate'):
+                    self.assertEqual(
+                        read(out / stage / runtime.LAUNCH_VERIFICATION)['verified_at'], moment)
+                self.assertLess(moment, real() + clock[0] - 300)
+                # A run that drags past the launch window is refused, not reused.
+                clock[0] = 0.0
+                slow, _ = self.ensemble_transport(clock, 50000)
+                with patch.object(reviewer, 'model_call', side_effect=slow), \
+                     patch.object(ensemble, 'model_call', side_effect=slow):
+                    with self.assertRaisesRegex(runtime.StudyBlocked, 'too old'):
+                        ensemble.ensemble_review(root, Path(directory) / 'slow', billing,
+                                                 '2025-01-01')
 
 
 if __name__ == '__main__':
