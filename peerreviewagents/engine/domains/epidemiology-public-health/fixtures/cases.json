@@ -1,0 +1,34 @@
+[
+  {
+    "id": "epi-immortal-time",
+    "kind": "supported_concern",
+    "manuscript_excerpt": "In this population-based cohort, patients were classified as treated if they filled a prescription within 90 days after discharge. Survival time began at discharge.",
+    "source_record": "Deaths during the first 90 days remain assigned to the untreated group, and treatment is modeled as fixed from discharge.",
+    "expected_disposition": "Raise a time-alignment concern because treated status requires survival after time zero.",
+    "rationale": "The exposure definition creates guaranteed survival time in the treated group unless handled as time varying or by another valid design."
+  },
+  {
+    "id": "epi-benign-nonrepresentative",
+    "kind": "benign_near_match",
+    "manuscript_excerpt": "The cross-sectional survey estimates the association within employees at the participating hospitals and does not claim national prevalence.",
+    "source_record": "Recruitment and exclusions are reported, and conclusions remain explicitly limited to the sampled workforce.",
+    "expected_disposition": "Do not demand national representativeness. Discuss selection only if it threatens the within-sample association.",
+    "rationale": "External validity is calibrated to the stated population."
+  },
+  {
+    "id": "epi-surveillance-denominator",
+    "kind": "unresolved",
+    "manuscript_excerpt": "County incidence increased by 40 percent from 2019 to 2021 based on surveillance reports.",
+    "source_record": "Case counts are given, but the population denominator, boundary vintage, and change in testing availability are not described.",
+    "expected_disposition": "Ask for denominator and ascertainment details. Do not accept or reject the trend from counts alone.",
+    "rationale": "Population and detection changes could alter the reported incidence trend."
+  },
+  {
+    "id": "epi-public-series-unavailable",
+    "kind": "unavailable_evidence",
+    "manuscript_excerpt": "The exposure was assigned from the 2004 district deprivation index published by the national statistics office.",
+    "source_record": "No stable table ID or archived metadata is available through the configured providers.",
+    "expected_disposition": "Record that the series identity and vintage could not be verified, then review the manuscript's own definition.",
+    "rationale": "Unavailable metadata should not be treated as evidence that the index is wrong."
+  }
+]

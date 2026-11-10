@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "mathematics-computing",
+  "catalog_id": "D20",
+  "name": "Mathematics and computing",
+  "description": "Provide limited methods review of definitions, assumptions, claims, benchmarks, leakage, comparison fairness, complexity, and uncertainty.",
+  "triggers": ["theorem proof", "computational complexity", "machine learning benchmark", "train-test split", "data leakage", "algorithm comparison"],
+  "skills": ["skills/mathematics-computing/SKILL.md"],
+  "providers": ["crossref", "datacite"],
+  "source_notes": [
+    {"url": "https://www.crossref.org/documentation/retrieve-metadata/rest-api/", "purpose": "Publication and version identity", "access": "public", "status": "documented"},
+    {"url": "https://support.datacite.org/docs/api", "purpose": "Dataset and software record identity", "access": "public", "status": "documented"}
+  ],
+  "maturity": {"instructions": "limited", "sources": "documented", "live_access": "not_tested", "manuscript_evaluation": "not_evaluated"},
+  "limitations": ["This is limited methods coverage, not a computational-paper prototype.", "The skill does not execute author code, reproduce benchmarks, or certify proofs.", "Bibliographic records do not establish algorithm correctness."],
+  "provenance": {"kind": "original", "date": "2026-09-25", "attribution": "Original PRA instructions informed by linked primary documentation."}
+}

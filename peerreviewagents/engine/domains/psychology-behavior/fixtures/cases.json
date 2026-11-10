@@ -1,0 +1,34 @@
+[
+  {
+    "id": "psych-unregistered-exclusion",
+    "kind": "supported_concern",
+    "manuscript_excerpt": "This preregistered hypothesis predicted faster reaction times in the priming condition. Participants with the weakest priming response were excluded.",
+    "source_record": "The frozen OSF registration lists only accuracy and incomplete-session exclusions. The response-based exclusion was added after data collection.",
+    "expected_disposition": "Raise a focused concern that the outcome-related exclusion can change the confirmatory comparison and request results under the registered rule.",
+    "rationale": "Excluding weak responders conditions the analysis on the effect being tested."
+  },
+  {
+    "id": "psych-exploratory-labeled",
+    "kind": "benign_near_match",
+    "manuscript_excerpt": "The preregistered primary outcome was null. We clearly label the following unregistered moderator analysis as exploratory.",
+    "source_record": "The registration confirms the primary outcome, and the manuscript reports it before the exploratory analysis without claiming confirmation.",
+    "expected_disposition": "Do not describe the moderator analysis as concealed outcome switching. Evaluate its uncertainty and exploratory framing.",
+    "rationale": "The deviation is transparent and does not replace the registered result."
+  },
+  {
+    "id": "psych-measure-invariance-unclear",
+    "kind": "unresolved",
+    "manuscript_excerpt": "Group differences in latent anxiety increased after translation of the scale for the second site.",
+    "source_record": "Reliability is reported by site, but translation procedures and cross-language measurement invariance are not described.",
+    "expected_disposition": "Ask for translation and comparability evidence before interpreting the score difference as a construct difference.",
+    "rationale": "Reliable scores can still have different meanings across language versions."
+  },
+  {
+    "id": "psych-registration-embargoed",
+    "kind": "unavailable_evidence",
+    "manuscript_excerpt": "The behavioral experiment was preregistered on OSF before recruitment.",
+    "source_record": "The supplied OSF identifier resolves to an embargoed registration that is not available to the reviewer.",
+    "expected_disposition": "State that adherence cannot be checked and ask the authors or editor for a blinded registration copy.",
+    "rationale": "An inaccessible record supports neither adherence nor a deviation allegation."
+  }
+]

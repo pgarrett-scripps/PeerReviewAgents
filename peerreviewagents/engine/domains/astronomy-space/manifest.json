@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "astronomy-space",
+  "catalog_id": "D19",
+  "name": "Astronomy and space science",
+  "description": "Review object identity, coordinates, epoch, catalog context, selection, upper limits, calibration, and observation provenance.",
+  "triggers": ["celestial coordinates", "catalog cross-match", "proper motion", "upper limit", "spectroscopic observation", "survey selection function"],
+  "skills": ["skills/astronomy-space/SKILL.md"],
+  "providers": ["simbad", "vizier", "ads", "crossref"],
+  "source_notes": [
+    {"url": "https://simbad.cds.unistra.fr/simbad/sim-fscript", "purpose": "Object identifiers, coordinates, and references", "access": "public", "status": "documented"},
+    {"url": "https://tapvizier1.cds.unistra.fr/adql/", "purpose": "Catalog records through TAP", "access": "public", "status": "documented"},
+    {"url": "https://ui.adsabs.harvard.edu/help/api/api-docs.html", "purpose": "Astronomy literature metadata", "access": "token required", "status": "optional"}
+  ],
+  "maturity": {"instructions": "implemented", "sources": "documented", "live_access": "not_tested", "manuscript_evaluation": "not_evaluated"},
+  "limitations": ["A catalog label is not a final physical classification.", "Cross-matches require justified frame, epoch, and tolerance.", "The skill does not download surveys or reduce telescope data."],
+  "provenance": {"kind": "original", "date": "2026-09-25", "attribution": "Original PRA instructions informed by linked primary documentation."}
+}

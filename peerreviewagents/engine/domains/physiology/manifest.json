@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "physiology",
+  "catalog_id": "D07",
+  "name": "Physiology",
+  "description": "Review physiological context and the equations, units, parameters, and provenance of computational models.",
+  "triggers": ["physiological model", "CellML", "action potential", "dose-response curve", "electrophysiological recording", "organ perfusion", "parameter fitting", "initial conditions"],
+  "skills": ["skills/physiology/SKILL.md"],
+  "providers": ["cellml"],
+  "source_notes": [
+    {"url": "https://www.cellml.org/model/index", "purpose": "Versioned physiological model records", "access": "public_model_specific_license", "status": "documented"},
+    {"url": "https://www.cellml.org/tools/api", "purpose": "CellML parsing and validation libraries", "access": "public", "status": "documented"}
+  ],
+  "maturity": {"instructions": "implemented", "sources": "documented", "live_access": "not_tested", "manuscript_evaluation": "not_evaluated"},
+  "limitations": ["Static model consistency does not validate biological assumptions or numerical results.", "Reference ranges depend on species, preparation, state, temperature, and measurement method."],
+  "provenance": {"kind": "original", "date": "2026-09-25", "attribution": "Original PRA instructions informed by linked primary documentation."}
+}

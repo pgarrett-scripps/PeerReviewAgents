@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "physics-engineering-metrology",
+  "catalog_id": "D18",
+  "name": "Physics, engineering, and metrology",
+  "description": "Review dimensions, calibration, uncertainty, instrument limits, boundary conditions, scaling, and model assumptions.",
+  "triggers": ["uncertainty budget", "calibration traceability", "instrument resolution", "dimensional analysis", "boundary conditions", "engineering prototype"],
+  "skills": ["skills/physics-engineering-metrology/SKILL.md"],
+  "providers": ["crossref", "datacite"],
+  "source_notes": [
+    {"url": "https://www.bipm.org/en/publications/si-brochure", "purpose": "SI units and definitions", "access": "public CC BY 4.0", "status": "documented"},
+    {"url": "https://www.bipm.org/en/committees/jc/jcgm/publications", "purpose": "Measurement uncertainty concepts", "access": "public documents with edition tracking", "status": "documented"}
+  ],
+  "maturity": {"instructions": "implemented", "sources": "documented", "live_access": "not_tested", "manuscript_evaluation": "not_evaluated"},
+  "limitations": ["Local checks require explicit inputs and assumptions.", "Unreported covariance cannot be assumed zero.", "The skill does not simulate, redesign, certify, or establish regulatory compliance."],
+  "provenance": {"kind": "original", "date": "2026-09-25", "attribution": "Original PRA instructions informed by linked primary documentation."}
+}

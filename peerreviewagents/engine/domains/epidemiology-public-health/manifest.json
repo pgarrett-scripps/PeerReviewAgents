@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "epidemiology-public-health",
+  "catalog_id": "D11",
+  "name": "Epidemiology and public health",
+  "description": "Review population, measurement, bias, surveillance, and causal interpretation in epidemiologic research.",
+  "triggers": ["population-based cohort", "case-control study", "cross-sectional survey", "incidence rate", "prevalence estimate", "public health surveillance"],
+  "skills": ["skills/epidemiology-public-health/SKILL.md"],
+  "providers": ["clinicaltrials", "osf", "census", "worldbank", "europepmc"],
+  "source_notes": [
+    {"url": "https://www.strobe-statement.org/", "purpose": "Observational study reporting questions", "access": "public guidance with reuse constraints", "status": "documented"},
+    {"url": "https://www.census.gov/data/developers.html", "purpose": "US population series metadata", "access": "public with limits", "status": "documented"},
+    {"url": "https://datahelpdesk.worldbank.org/knowledgebase/articles/889392-about-the-indicators-api-documentation", "purpose": "International indicator metadata and values", "access": "public", "status": "documented"}
+  ],
+  "maturity": {"instructions": "implemented", "sources": "documented", "live_access": "not_tested", "manuscript_evaluation": "not_evaluated"},
+  "limitations": ["Aggregate metadata cannot validate individual-level or causal claims.", "STROBE supports reporting review and is not a quality score.", "The skill does not reanalyze participant-level data."],
+  "provenance": {"kind": "original", "date": "2026-09-25", "attribution": "Original PRA instructions informed by linked primary documentation."}
+}

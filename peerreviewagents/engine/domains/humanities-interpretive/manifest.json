@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "humanities-interpretive",
+  "catalog_id": "D21",
+  "name": "Humanities and interpretive scholarship",
+  "description": "Provide limited methods review of source identity, editions, translations, quotation context, provenance, argument scope, and counterexamples.",
+  "triggers": ["archival sources", "critical edition", "translated quotation", "textual analysis", "primary source corpus", "historical interpretation"],
+  "skills": ["skills/humanities-interpretive/SKILL.md"],
+  "providers": ["crossref", "datacite"],
+  "source_notes": [
+    {"url": "https://www.crossref.org/documentation/retrieve-metadata/rest-api/", "purpose": "Secondary-source publication identity", "access": "public", "status": "documented"},
+    {"url": "https://support.datacite.org/docs/api", "purpose": "Public dataset or edition record identity", "access": "public", "status": "documented"}
+  ],
+  "maturity": {"instructions": "limited", "sources": "documented", "live_access": "not_tested", "manuscript_evaluation": "not_evaluated"},
+  "limitations": ["This is limited methods coverage, not comprehensive humanities review.", "Specialized archive and library connectors require separate audits.", "Metadata cannot establish quotation context or interpretive validity."],
+  "provenance": {"kind": "original", "date": "2026-09-25", "attribution": "Original PRA instructions informed by linked primary documentation."}
+}

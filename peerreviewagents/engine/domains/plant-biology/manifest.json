@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "plant-biology",
+  "catalog_id": "D08",
+  "name": "Plant biology",
+  "description": "Review plant gene identity, cultivar and assembly context, homology, expression, and phenotype claims.",
+  "triggers": ["Arabidopsis", "crop cultivar", "plant ecotype", "plant genome", "subgenome", "leaf expression", "root development", "plant ortholog"],
+  "skills": ["skills/plant-biology/SKILL.md"],
+  "providers": ["ensembl", "expression-atlas", "tair"],
+  "source_notes": [
+    {"url": "https://rest.ensembl.org/documentation/", "purpose": "Active exact stable plant gene or transcript identity and coordinates where supported", "access": "public_rate_limited", "status": "implemented"},
+    {"url": "https://www.ebi.ac.uk/gxa/plant/experiments", "purpose": "Curated plant expression studies", "access": "public", "status": "documented"},
+    {"url": "https://phoenixbioinformatics.atlassian.net/wiki/spaces/COM/pages/42216430/TAIR+Terms+of+Use", "purpose": "Arabidopsis records and access terms", "access": "mixed_public_subscription", "status": "documented"}
+  ],
+  "maturity": {"instructions": "implemented", "sources": "documented", "live_access": "not_tested", "manuscript_evaluation": "not_evaluated"},
+  "limitations": ["Homology does not establish conserved function or phenotype.", "Plant identifiers, annotations, and coordinates are release, cultivar, ploidy, and subgenome specific."],
+  "provenance": {"kind": "original", "date": "2026-09-25", "attribution": "Original PRA instructions informed by linked primary documentation."}
+}

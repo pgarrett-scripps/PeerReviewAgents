@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "genetics-genomics",
+  "catalog_id": "D04",
+  "name": "Genetics and genomics",
+  "description": "Review variant identity, assembly and transcript coordinates, public classifications, and genomic accessions.",
+  "triggers": ["genome assembly", "whole-genome sequencing", "variant calling", "HGVS", "ClinVar", "GRCh37", "GRCh38", "transcript isoform", "genetic association"],
+  "skills": ["skills/genetics-genomics/SKILL.md"],
+  "providers": ["ensembl", "clinvar", "ncbi-datasets"],
+  "source_notes": [
+    {"url": "https://rest.ensembl.org/documentation/", "purpose": "Active exact stable gene or transcript identity and coordinates", "access": "public_rate_limited", "status": "implemented"},
+    {"url": "https://www.ncbi.nlm.nih.gov/clinvar/docs/access/", "purpose": "Submitted human variant classifications", "access": "public", "status": "documented"},
+    {"url": "https://www.ncbi.nlm.nih.gov/datasets/docs/v2/api/", "purpose": "Gene, genome, taxonomy, and accession metadata", "access": "public_optional_key", "status": "documented"}
+  ],
+  "maturity": {"instructions": "implemented", "sources": "documented", "live_access": "partially_tested", "manuscript_evaluation": "not_evaluated"},
+  "limitations": ["A predicted variant consequence is not a demonstrated molecular effect.", "A ClinVar classification is not a patient-specific diagnosis and may conflict across submitters."],
+  "provenance": {"kind": "original", "date": "2026-09-25", "attribution": "Original PRA instructions informed by linked primary documentation."}
+}

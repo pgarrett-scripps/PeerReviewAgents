@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "id": "chemistry-pharmacology",
+  "catalog_id": "D09",
+  "name": "Chemistry and pharmacology",
+  "description": "Review chemical identity, assay context, characterization, dose, concentration, reaction, and yield claims.",
+  "triggers": [
+    "chemical synthesis",
+    "stereoisomer",
+    "IC50 assay",
+    "binding affinity",
+    "analytical characterization",
+    "reaction yield",
+    "nanoparticles",
+    "dynamic light scattering",
+    "infrared spectroscopy",
+    "molecular formula"
+  ],
+  "skills": [
+    "skills/chemistry-pharmacology/SKILL.md"
+  ],
+  "providers": [
+    "pubchem",
+    "chembl",
+    "crossref"
+  ],
+  "source_notes": [
+    {
+      "url": "https://pubchem.ncbi.nlm.nih.gov/docs/pug-rest",
+      "purpose": "Compound identity and properties",
+      "access": "public",
+      "status": "documented"
+    },
+    {
+      "url": "https://chembl.gitbook.io/chembl-interface-documentation/web-services/chembl-data-web-services",
+      "purpose": "Assay-specific activity records",
+      "access": "public",
+      "status": "documented"
+    },
+    {
+      "url": "https://webbook.nist.gov/chemistry/",
+      "purpose": "Reference properties and spectra",
+      "access": "public website",
+      "status": "audit_required"
+    }
+  ],
+  "maturity": {
+    "instructions": "implemented",
+    "sources": "documented",
+    "live_access": "not_tested",
+    "manuscript_evaluation": "not_evaluated"
+  },
+  "limitations": [
+    "A name or connectivity match does not establish stereochemical identity.",
+    "Activity values from different assays are not directly comparable.",
+    "The skill does not reconstruct spectra, dock compounds, or predict synthesis."
+  ],
+  "provenance": {
+    "kind": "original",
+    "date": "2026-09-25",
+    "attribution": "Original PRA instructions informed by linked primary documentation."
+  }
+}

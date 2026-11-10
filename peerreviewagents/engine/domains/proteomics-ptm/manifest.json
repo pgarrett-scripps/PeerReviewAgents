@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "proteomics-ptm",
+  "catalog_id": "D03",
+  "name": "Proteomics and post-translational modifications",
+  "description": "Review proteomics deposits, peptide mapping, protein inference, and modification localization claims.",
+  "triggers": ["mass spectrometry", "proteomics", "phosphoproteomics", "peptide-spectrum match", "site localization", "protein inference", "PXD accession", "mass shift"],
+  "skills": ["skills/proteomics-ptm/SKILL.md"],
+  "providers": ["pride", "uniprot", "unimod"],
+  "source_notes": [
+    {"url": "https://www.ebi.ac.uk/pride/ws/archive/v2/docs/api-guide.html", "purpose": "Proteomics project and file metadata", "access": "public", "status": "documented"},
+    {"url": "https://www.unimod.org/xml/unimod.xml", "purpose": "Modification masses and residue specificity", "access": "public", "status": "documented"},
+    {"url": "https://www.phosphosite.org/staticDownloads.action", "purpose": "Protein-specific modification occurrence", "access": "license_request", "status": "optional"}
+  ],
+  "maturity": {"instructions": "implemented", "sources": "documented", "live_access": "partially_tested", "manuscript_evaluation": "not_evaluated"},
+  "limitations": ["Mass compatibility does not prove site localization.", "Metadata inspection does not replace spectrum-level reanalysis or false-discovery assessment."],
+  "provenance": {"kind": "original", "date": "2026-09-25", "attribution": "Original PRA instructions informed by linked primary documentation."}
+}

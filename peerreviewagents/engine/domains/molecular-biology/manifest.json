@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "id": "molecular-biology",
+  "catalog_id": "D01",
+  "name": "Molecular and cell biology",
+  "description": "Review molecular perturbations, protein interactions, pathways, and context-specific cellular evidence.",
+  "triggers": ["gene expression", "protein interaction", "co-immunoprecipitation", "knockdown", "CRISPR knockout", "cell line", "subcellular localization", "pathway activation"],
+  "skills": ["skills/molecular-biology/SKILL.md"],
+  "providers": ["uniprot", "string", "string-interactions", "intact", "reactome", "go", "expression-atlas"],
+  "source_notes": [
+    {"url": "https://www.uniprot.org/help/api", "purpose": "Protein identity and evidence-coded annotation", "access": "public", "status": "documented"},
+    {"url": "https://string-db.org/help/scores/", "purpose": "Active exact taxon and protein-pair association with explicit evidence channels", "access": "public", "status": "implemented"},
+    {"url": "https://reactome.org/dev/content-service", "purpose": "Active exact stable pathway or reaction metadata", "access": "public", "status": "implemented"},
+    {"url": "https://www.ebi.ac.uk/training/online/courses/intact-quick-tour/getting-data-from-intact/", "purpose": "Detailed molecular interaction records", "access": "public", "status": "documented"}
+  ],
+  "maturity": {"instructions": "implemented", "sources": "documented", "live_access": "partially_tested", "manuscript_evaluation": "not_evaluated"},
+  "limitations": ["Association, co-complex membership, direct binding, and causal regulation are distinct claims.", "An annotation or pathway record does not establish the manuscript mechanism."],
+  "provenance": {"kind": "original", "date": "2026-09-25", "attribution": "Original PRA instructions informed by linked primary documentation."}
+}

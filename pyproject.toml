@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "peerreviewagents"
-version = "0.6.1"
+version = "0.7.0"
 description = "Multi-agent LLM peer-review framework (an editorial board for manuscripts)"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
@@ -60,7 +60,16 @@ dependencies = [
     # typed bibliography; the loader feature-detects and still runs on 0.1.x,
     # but a fresh install should get the version whose sections are read, not
     # guessed.
-    "rustypaper>=0.2",
+    #
+    # Pinned exactly: peerreviewagents.engine records the converter version in
+    # every run manifest and compares it when resuming, so a floating minor
+    # would invalidate in-flight runs.
+    "rustypaper==0.2.2",
+    # peerreviewagents.engine runtime: Pillow renders the page images the
+    # importer attaches to a review, openpyxl reads spreadsheet supplements in
+    # peerreviewagents.engine.table_evidence.
+    "Pillow>=10",
+    "openpyxl>=3.1",
 ]
 
 [project.optional-dependencies]
@@ -96,9 +105,27 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I"]
 
+# peerreviewagents.engine and its tests came over from paper-workbench in
+# 0.7.0. Their house style is dense one-line bodies (`if x:return y`) and
+# unsorted import blocks, which trip E701 and I001 on nearly every module.
+# Reflowing ~160 lines of a reviewed engine would hide real changes in future
+# diffs against upstream, so the two formatting rules are off for that tree.
+# Everything else, including the F rules that catch dead code, still applies.
+[tool.ruff.lint.per-file-ignores]
+"peerreviewagents/engine/*" = ["E701", "I001"]
+"tests/engine/*" = ["E701", "I001"]
+
 [tool.setuptools.packages.find]
 include = ["peerreviewagents*"]
 
 [tool.setuptools.package-data]
 "peerreviewagents.journals" = ["*.toml", "README.md"]
 "peerreviewagents.web" = ["static/*"]
+# The engine reads its domain packs from the installed package, so the
+# manifests, reviewer skills, and fixture cases have to ship in the wheel.
+"peerreviewagents.engine" = [
+    "README.md",
+    "domains/*/manifest.json",
+    "domains/*/skills/*/SKILL.md",
+    "domains/*/fixtures/cases.json",
+]

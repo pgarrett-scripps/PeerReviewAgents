@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "neuroscience",
+  "catalog_id": "D06",
+  "name": "Neuroscience",
+  "description": "Review neuroscience atlas context, neuronal morphology, anatomical mapping, and preparation-specific claims.",
+  "triggers": ["brain atlas", "neuronal morphology", "brain region", "cortical layer", "single-neuron reconstruction", "stereotaxic coordinates", "cell-type taxonomy", "electrophysiology"],
+  "skills": ["skills/neuroscience/SKILL.md"],
+  "providers": ["neuromorpho", "expression-atlas"],
+  "source_notes": [
+    {"url": "https://www.neuromorpho.org/api.jsp", "purpose": "Neuron metadata, morphometry, and literature", "access": "public_rate_limited", "status": "documented"},
+    {"url": "https://www.neuromorpho.org/useterm.jsp", "purpose": "Programmatic access and attribution terms", "access": "public", "status": "documented"},
+    {"url": "https://portal.brain-map.org/", "purpose": "Brain atlas datasets", "access": "dataset_specific", "status": "audit_required_candidate"}
+  ],
+  "maturity": {"instructions": "implemented", "sources": "documented", "live_access": "not_tested", "manuscript_evaluation": "not_evaluated"},
+  "limitations": ["An atlas average does not establish the result in the manuscript cohort.", "Anatomical labels and coordinate spaces are not interchangeable across atlases or species."],
+  "provenance": {"kind": "original", "date": "2026-09-25", "attribution": "Original PRA instructions informed by linked primary documentation."}
+}

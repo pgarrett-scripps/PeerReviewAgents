@@ -1,0 +1,158 @@
+"""Command line for the evidence-linked review engine.
+
+``python -m peerreviewagents.engine <command>`` and the engine commands of the
+``peerreview`` entry point share this parser.
+"""
+import argparse
+from pathlib import Path
+
+from .models import DEFAULT_MODELS, SUBSCRIPTION_MODELS, provider_for
+from .storage import read
+
+MODEL_HELP=('Exact model ID. Without it, the default for --provider is used: '+
+            ', '.join(f'{model} for {provider}' for provider,model in DEFAULT_MODELS.items())+'.')
+
+COMMANDS = ('import', 'verify', 'add-review', 'result-map', 'review', 'investigate',
+            'confirm-billing', 'report', 'checks')
+
+
+def add_model_arguments(parser):
+    parser.add_argument('--provider',choices=tuple(DEFAULT_MODELS),help='Subscription transport (default codex)')
+    parser.add_argument('--model',choices=SUBSCRIPTION_MODELS,help=MODEL_HELP)
+
+
+def resolve_model(parser,args):
+    """Fill the provider default and reject a model that belongs to another provider."""
+    if args.model is None:
+        args.model=DEFAULT_MODELS[args.provider or 'codex']
+    elif args.provider and provider_for(args.model)!=args.provider:
+        parser.error(f'{args.model} is not a {args.provider} model')
+
+
+def add_subcommands(sub):
+    """Attach every engine command to an existing argparse subparser group."""
+    p=sub.add_parser('import',help='Import a PDF into a manuscript workspace of source blocks')
+    p.add_argument('pdf')
+    p.add_argument('output')
+    p.add_argument('--xml')
+    p.add_argument('--title')
+    p.add_argument('--source-url',default='')
+    p.add_argument('--supplements')
+    p=sub.add_parser('verify',help='Verify a manuscript workspace against its manifest')
+    p.add_argument('workspace')
+    p=sub.add_parser('add-review',help='Normalize and save an external review response')
+    p.add_argument('workspace')
+    p.add_argument('response')
+    p.add_argument('--id',required=True)
+    p=sub.add_parser('result-map',help='Map reported results to their source blocks')
+    p.add_argument('workspace')
+    p.add_argument('--output',required=True)
+    p=sub.add_parser('review',help='Run one evidence-linked review on a subscription transport')
+    p.add_argument('workspace')
+    p.add_argument('output')
+    p.add_argument('--billing-confirmation',required=True)
+    p.add_argument('--literature-cutoff',required=True,help='Latest eligible publication date, YYYY-MM-DD')
+    p.add_argument('--mode',choices=('ensemble','independent','plain','workspace','panel','self-revision'),default='ensemble')
+    p.add_argument('--reviewers',type=int,default=2,help='Independent discovery reviewers for ensemble mode, from 1 to 16 (default 2)')
+    p.add_argument('--token-budget',type=int,default=750000,help='Ensemble observed-token launch ceiling, not a hard cap on a running call')
+    add_model_arguments(p)
+    p.add_argument('--source-image',action='append',default=[],help='Original manuscript figure page to attach, at most three')
+    p.add_argument('--scaffold-root',help='Use offline advisory checks from this Paper Scaffold checkout')
+    p.add_argument('--legacy-tools',action='store_true',help='Use the older fixed tool profile without domain skills')
+    p.add_argument('--evidence-mode',choices=('current','historical'),default='current',help='Current records or cutoff-restricted historical evidence')
+    p.add_argument('--source-packet',help='Frozen source cache for comparison runs, with live source retrieval disabled')
+    p.add_argument('--historical-snapshots',help='Curated, hash-verified registration snapshot directory')
+    p=sub.add_parser('investigate',help='Run one focused evidence investigation with at most two tools')
+    p.add_argument('workspace')
+    p.add_argument('output')
+    p.add_argument('--question',required=True)
+    p.add_argument('--block',action='append',required=True,help='Whole source block to include, repeat up to sixteen times')
+    p.add_argument('--billing-confirmation',required=True)
+    p.add_argument('--literature-cutoff',required=True)
+    add_model_arguments(p)
+    p=sub.add_parser('confirm-billing',help='Record that this Claude subscription cannot buy paid extra usage')
+    p.add_argument('output')
+    p.add_argument('--provider',choices=('claude-code',),required=True)
+    p.add_argument('--extra-usage-disabled',action='store_true',required=True,
+                   help='Confirm that extra usage is turned off in Claude settings. Valid for 24 hours.')
+    p=sub.add_parser('report',help='Write REVIEW.md and REVIEW.txt from a review run, without model calls')
+    p.add_argument('run',help='Output folder of a review run')
+    p.add_argument('--workspace',help='Reviewed workspace. Found from the run when omitted')
+    p.add_argument('--output-dir',help='Folder for the two reports. Defaults to the run folder')
+    p=sub.add_parser('checks',help='Record offline prose and readability checks for a workspace')
+    p.add_argument('workspace')
+    p.add_argument('--scaffold-root',required=True)
+    p.add_argument('--output',required=True)
+    return sub
+
+
+def build_parser(prog='peerreviewagents.engine'):
+    parser=argparse.ArgumentParser(prog=prog,
+        description='Build and inspect a local annotated manuscript workspace')
+    add_subcommands(parser.add_subparsers(dest='command',required=True))
+    return parser
+
+
+def dispatch(parser,args):
+    """Run one parsed engine command. The parser is used only for argument errors."""
+    if args.command in ('review','investigate'):
+        resolve_model(parser,args)
+    if args.command=='investigate':
+        from .focused_investigation import investigate
+        memo=investigate(args.workspace,args.output,args.billing_confirmation,args.literature_cutoff,
+                         args.question,args.block,model=args.model)
+        print({'ready_for_adjudication':memo['ready_for_adjudication'],'output':str(Path(args.output)/'memo.json')})
+    elif args.command=='import':
+        from .ingest import import_paper
+        paper=import_paper(args.pdf,args.output,args.xml,args.title,args.source_url,args.supplements)
+        print(paper['title'])
+        print(paper['statistics'])
+    elif args.command=='add-review':
+        from .annotations import save_review
+        print(save_review(args.workspace,read(args.response),args.id)['annotation_counts'])
+    elif args.command=='review':
+        import datetime
+        datetime.date.fromisoformat(args.literature_cutoff)
+        from .reviewer import review
+        if args.mode!='ensemble' and (args.reviewers!=2 or args.token_budget!=750000):
+            parser.error('--reviewers and --token-budget apply only to ensemble mode')
+        print(review(args.workspace,args.output,args.billing_confirmation,args.literature_cutoff,args.mode,args.scaffold_root,
+                     domain_support=not args.legacy_tools,evidence_mode=args.evidence_mode,source_packet=args.source_packet,
+                     historical_snapshots=args.historical_snapshots,model=args.model,reviewers=args.reviewers,
+                     token_budget=args.token_budget,shared_images=args.source_image))
+    elif args.command=='confirm-billing':
+        from .billing import claude_billing_record
+        from .model_runtime import auth_status
+        from .storage import write
+        record=claude_billing_record(auth_status(args.provider))
+        write(args.output,record)
+        print({'output':args.output,'subscription_type':record['subscription_type'],'valid_hours':24})
+    elif args.command=='report':
+        from .run_report import write_reports
+        paths=write_reports(args.run,args.workspace,args.output_dir)
+        print({kind:str(path) for kind,path in paths.items()})
+    elif args.command=='checks':
+        from .scaffold_checks import build_report,compact_summary
+        from .storage import write
+        report=build_report(args.workspace,args.scaffold_root)
+        write(args.output,report)
+        print(compact_summary(report))
+    elif args.command=='result-map':
+        from .annotations import verify_workspace
+        from .result_map import build_result_map
+        from .storage import write
+        result = build_result_map(verify_workspace(args.workspace))
+        write(args.output,result)
+        print(result['coverage'])
+    else:
+        from .annotations import verify_workspace
+        print('Verified manuscript '+verify_workspace(args.workspace)['id'])
+
+
+def main(argv=None):
+    parser=build_parser()
+    dispatch(parser,parser.parse_args(argv))
+
+
+if __name__=='__main__':
+    main()

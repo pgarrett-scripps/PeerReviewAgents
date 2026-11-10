@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "structural-biology",
+  "catalog_id": "D02",
+  "name": "Structural biology",
+  "description": "Review structural constructs, coordinate coverage, assemblies, ligands, and validation evidence.",
+  "triggers": ["crystal structure", "cryo-EM structure", "NMR structure", "PDB accession", "AlphaFold prediction", "binding interface", "biological assembly", "structure resolution"],
+  "skills": ["skills/structural-biology/SKILL.md"],
+  "providers": ["rcsb", "uniprot"],
+  "source_notes": [
+    {"url": "https://www.rcsb.org/docs/programmatic-access/web-apis-overview", "purpose": "Structure metadata, search, sequence coordinates, and coordinate subsets", "access": "public_rate_limited", "status": "documented"},
+    {"url": "https://www.rcsb.org/news/feature/67edb6c196cbbd16fc52edb0", "purpose": "wwPDB validation fields", "access": "public", "status": "documented"}
+  ],
+  "maturity": {"instructions": "implemented", "sources": "documented", "live_access": "partially_tested", "manuscript_evaluation": "not_evaluated"},
+  "limitations": ["Sequence presence does not mean a residue is resolved in coordinates.", "A predicted model does not establish a conformation, interaction, ligand pose, or cellular mechanism."],
+  "provenance": {"kind": "original", "date": "2026-09-25", "attribution": "Original PRA instructions informed by linked primary documentation."}
+}

@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "id": "materials-crystallography",
+  "catalog_id": "D17",
+  "name": "Materials and crystallography",
+  "description": "Review composition, phase, processing, structure identity, specimen dependence, measurement context, and uncertainty.",
+  "triggers": [
+    "crystal structure",
+    "materials property",
+    "phase transition",
+    "powder diffraction",
+    "checkCIF report",
+    "thin film processing",
+    "nanoparticles",
+    "hydrodynamic radius",
+    "X-ray diffraction"
+  ],
+  "skills": [
+    "skills/materials-crystallography/SKILL.md"
+  ],
+  "providers": [
+    "cod",
+    "optimade",
+    "materials-project",
+    "crossref"
+  ],
+  "source_notes": [
+    {
+      "url": "https://www.crystallography.net/cod/",
+      "purpose": "Open crystallographic structures",
+      "access": "public",
+      "status": "documented"
+    },
+    {
+      "url": "https://www.optimade.org/",
+      "purpose": "Common materials-provider query standard",
+      "access": "provider dependent",
+      "status": "documented"
+    },
+    {
+      "url": "https://docs.materialsproject.org/downloading-data/using-the-api/getting-started",
+      "purpose": "Computed materials records",
+      "access": "API key required",
+      "status": "optional"
+    }
+  ],
+  "maturity": {
+    "instructions": "implemented",
+    "sources": "documented",
+    "live_access": "not_tested",
+    "manuscript_evaluation": "not_evaluated"
+  },
+  "limitations": [
+    "Computed records are not experimental property measurements.",
+    "Provider content and terms vary behind OPTIMADE.",
+    "The skill does not upload unpublished CIFs or rerun refinement."
+  ],
+  "provenance": {
+    "kind": "original",
+    "date": "2026-09-25",
+    "attribution": "Original PRA instructions informed by linked primary documentation."
+  }
+}

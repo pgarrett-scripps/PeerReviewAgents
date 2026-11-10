@@ -1,0 +1,34 @@
+[
+  {
+    "id": "qual-claim-exceeds-evidence",
+    "kind": "supported_concern",
+    "manuscript_excerpt": "Qualitative interviews prove that all rural patients reject telehealth because three participants described poor connectivity.",
+    "source_record": "The purposive sample contains 14 patients from one clinic. Other participants describe convenience, and the analysis does not address these divergent accounts.",
+    "expected_disposition": "Raise a claim-scope and analytic-evidence concern, citing the contradictory material and bounded sample.",
+    "rationale": "The universal claim is inconsistent with both the sampling design and evidence reported."
+  },
+  {
+    "id": "qual-benign-no-interrater",
+    "kind": "benign_near_match",
+    "manuscript_excerpt": "We used reflexive thematic analysis. Two researchers developed interpretations collaboratively and did not calculate coding agreement.",
+    "source_record": "The paper explains the reflexive orientation, researcher positions, iterative analysis, and how disagreements deepened interpretation rather than serving as reliability failures.",
+    "expected_disposition": "Do not require inter-rater reliability. Evaluate coherence and transparency within the stated reflexive approach.",
+    "rationale": "Coding agreement is not a universal quality criterion for reflexive thematic analysis."
+  },
+  {
+    "id": "mixed-integration-unclear",
+    "kind": "unresolved",
+    "manuscript_excerpt": "Our mixed methods design combined a national survey with 20 follow-up interviews.",
+    "source_record": "The strands are reported in separate sections, but participant connection, integration procedure, and handling of conflicting results are not described.",
+    "expected_disposition": "Ask where and how integration occurred before accepting the combined inference as a mixed-method conclusion.",
+    "rationale": "Use of two methods does not show how their evidence was integrated."
+  },
+  {
+    "id": "qual-transcripts-unavailable",
+    "kind": "unavailable_evidence",
+    "manuscript_excerpt": "Participant observation and interviews informed an ethnographic account of workplace hierarchy.",
+    "source_record": "Field notes and transcripts are confidential, while the manuscript provides only a brief methods description and selected excerpts.",
+    "expected_disposition": "Review coherence from the manuscript, request missing methodological detail, and do not demand private source material as a routine condition.",
+    "rationale": "Confidential material can remain unavailable while reporting still needs to support appraisal."
+  }
+]

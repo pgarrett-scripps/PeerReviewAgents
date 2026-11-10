@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "ecology-conservation",
+  "catalog_id": "D15",
+  "name": "Ecology, evolution, and conservation",
+  "description": "Review taxon identity, sampling effort, detectability, dependence, space, season, range, and management inference.",
+  "triggers": ["species occurrence", "occupancy survey", "biodiversity sampling", "native range", "conservation intervention", "ecological field sites", "natal dispersal", "breeding success", "population ecology", "habitat selection", "species richness", "predator abundance", "wildlife conservation"],
+  "skills": ["skills/ecology-conservation/SKILL.md"],
+  "providers": ["gbif", "gbif-occurrence", "crossref"],
+  "source_notes": [
+    {"url": "https://techdocs.gbif.org/en/openapi/v1/species", "purpose": "Taxonomic names and matches", "access": "public", "status": "documented"},
+    {"url": "https://techdocs.gbif.org/en/openapi/v1/occurrence", "purpose": "Active exact numeric occurrence record with bounded provenance and quality flags", "access": "public", "status": "implemented"},
+    {"url": "https://www.marinespecies.org/", "purpose": "Marine taxonomic identity", "access": "public website", "status": "audit_required"}
+  ],
+  "maturity": {"instructions": "implemented", "sources": "documented", "live_access": "not_tested", "manuscript_evaluation": "not_evaluated"},
+  "limitations": ["No occurrence hit does not establish absence.", "Occurrence records are not independent standardized samples.", "Marine and specialized archive connectors require separate audits."],
+  "provenance": {"kind": "original", "date": "2026-09-25", "attribution": "Original PRA instructions informed by linked primary documentation."}
+}

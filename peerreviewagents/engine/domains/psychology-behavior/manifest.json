@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "psychology-behavior",
+  "catalog_id": "D12",
+  "name": "Psychology and behavioral science",
+  "description": "Review preregistration, constructs, measures, exclusions, manipulations, and confirmatory claims in behavioral research.",
+  "triggers": ["behavioral experiment", "preregistered hypothesis", "psychometric scale", "manipulation check", "reaction time task", "self-report measure"],
+  "skills": ["skills/psychology-behavior/SKILL.md"],
+  "providers": ["osf", "crossref", "europepmc"],
+  "source_notes": [
+    {"url": "https://github.com/CenterForOpenScience/developer.osf.io/blob/master/swagger-spec/swagger.yaml", "purpose": "Public registration records, schema responses, files, and logs", "access": "public GET for public content", "status": "documented"},
+    {"url": "https://www.apa.org/pubs/journals/resources/apa-style-jars.html", "purpose": "Psychology reporting guidance", "access": "public guidance with copyright constraints", "status": "documented"},
+    {"url": "https://www.cosmin.nl/cosmin-tools/", "purpose": "Measurement-property concepts for suitable instruments", "access": "public guidance with permission terms", "status": "documented"}
+  ],
+  "maturity": {"instructions": "implemented", "sources": "documented", "live_access": "not_tested", "manuscript_evaluation": "not_evaluated"},
+  "limitations": ["A cited validation does not establish validity in every population or use.", "Preregistration availability does not establish adherence.", "The skill does not rescore participant data or diagnose individuals."],
+  "provenance": {"kind": "original", "date": "2026-09-25", "attribution": "Original PRA instructions informed by linked primary documentation."}
+}
