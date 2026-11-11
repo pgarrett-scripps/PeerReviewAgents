@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import base64
 
-import hashlib
-
 import json
 
 import os
@@ -23,6 +21,7 @@ import time
 
 from pathlib import Path
 from .models import DEFAULT_PROVIDER, PROVIDER_MODELS
+from .storage import digest, read as read_json, write as write_json
 
 class RunBlocked(RuntimeError):
     """A run guard refused. ``transient`` marks the few failures a retry may replace."""
@@ -43,20 +42,6 @@ APPROVED_MANUSCRIPT_TOOLS = (
     "read_blocks", "search", "calculate", "save_note", "view_page",
     "view_supplement", "check_citation", "search_literature",
 )
-
-def digest(value):
-    data = value if isinstance(value, bytes) else json.dumps(value, sort_keys=True).encode()
-    return hashlib.sha256(data).hexdigest()
-
-def read_json(path):
-    return json.loads(Path(path).read_text())
-
-def write_json(path, value):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(f".tmp-{os.getpid()}")
-    temp.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n")
-    temp.replace(path)
 
 def claim_json(path, value):
     path = Path(path)
@@ -256,7 +241,7 @@ def request_identity(protocol, prompt, schema, tools, images, work):
     if protocol.get("provider") == "claude-code":
         # Claude Code runs replace the default system prompt, so the replacement is part of the request.
         request["system_prompt"] = CLAUDE_SYSTEM_PROMPT
-    return digest(request)
+    return digest(json.dumps(request, sort_keys=True))
 
 def observed_codex_tokens(events):
     completed = [event for event in events if event.get("type") == "turn.completed"]
@@ -836,4 +821,3 @@ def _model_call(protocol, out, prompt, schema, *, tools=False, label="call", ima
     return record["value"]
 
 HERE = Path(__file__).resolve().parent
-CODEX_MODEL = "gpt-5.6-sol"

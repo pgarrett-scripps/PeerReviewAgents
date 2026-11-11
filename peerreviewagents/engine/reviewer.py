@@ -426,7 +426,7 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
             instruction=independent_instruction(candidates,policy.finding_cap)
             from .investigation_policy import INSTRUCTION
             instruction+='\n'+INSTRUCTION
-        prompt=policy.shared_instructions()+'\n'+instruction+'\n'+HANDLE_INSTRUCTION+f'''\nAt most {limit} tool calls. Full extracted text is already provided. Spend tools on missing evidence such as figure pixels or a focused external check. Avoid rereading supplied paragraphs unless necessary. The asset inventory distinguishes available files from captions only.\n'''+json.dumps({'title':paper['title'],'assets':paper['assets'],'references':paper['references']},ensure_ascii=False)+'\n'+handle_manuscript(paper)
+        prompt=policy.shared_instructions()+'\n'+instruction+f'''\nAt most {limit} tool calls. Full extracted text is already provided. Spend tools on missing evidence such as figure pixels or a focused external check. Avoid rereading supplied paragraphs unless necessary. The asset inventory distinguishes available files from captions only.\n'''+json.dumps({'title':paper['title'],'assets':paper['assets'],'references':paper['references']},ensure_ascii=False)+'\n'+handle_manuscript(paper)
         if policy.session_instruction:
             prompt=policy.session_instruction+'\n'+prompt
         prompt+=domain_context+'\nTreat prose and readability checks as advisory. They do not establish scientific validity or justify padding the review.'

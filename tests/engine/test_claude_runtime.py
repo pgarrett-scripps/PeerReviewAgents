@@ -302,11 +302,12 @@ class ClaudeRuntime(unittest.TestCase):
         work = self.root / 'work'
         work.mkdir()
         codex = {**self.protocol, 'provider': 'codex', 'model': 'gpt-5.6-sol'}
-        expected = runtime.digest({'prompt': 'p', 'schema': self.schema, 'tools': None, 'protocol': codex, 'images': []})
-        self.assertEqual(runtime.request_identity(codex, 'p', self.schema, False, [], work), expected)
+        def identity(protocol):
+            return runtime.digest(json.dumps({'prompt': 'p', 'schema': self.schema, 'tools': None,
+                                              'protocol': protocol, 'images': []}, sort_keys=True))
+        self.assertEqual(runtime.request_identity(codex, 'p', self.schema, False, [], work), identity(codex))
         self.assertNotEqual(runtime.request_identity(self.protocol, 'p', self.schema, False, [], work),
-                            runtime.digest({'prompt': 'p', 'schema': self.schema, 'tools': None,
-                                            'protocol': self.protocol, 'images': []}))
+                            identity(self.protocol))
 
 
 class ClaudeSubscriptionGuard(unittest.TestCase):

@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from peerreviewagents.engine import reviewer
 from peerreviewagents.engine.annotations import export_draft
-from peerreviewagents.engine.discovery import AREAS, DISCOVERY, INVESTIGATION_REVIEW, coverage_record
+from peerreviewagents.engine.discovery import AREAS, INVESTIGATION_REVIEW, coverage_record, discovery_instruction
 from peerreviewagents.engine.evidence_handles import build_registry, with_evidence_handles, constrain_manuscript_handles
 from peerreviewagents.engine.review_schema import with_external_evidence
 from peerreviewagents.engine.storage import digest, read, write
@@ -94,11 +94,12 @@ class DiscoveryChecks(unittest.TestCase):
 
     def test_investigator_allows_bounded_candidate_inventory(self):
         self.assertEqual(INVESTIGATION_REVIEW['properties']['findings']['maxItems'], 10)
-        self.assertIn('up to ten distinct, anchored candidate findings', DISCOVERY)
-        self.assertIn('Fewer candidates are preferable to padding', DISCOVERY)
-        self.assertIn('For a clinical trial', DISCOVERY)
-        self.assertIn('For an ecology field study', DISCOVERY)
-        self.assertIn('only when the manuscript design matches', DISCOVERY)
+        instruction = discovery_instruction()
+        self.assertIn('up to ten distinct, anchored candidate findings', instruction)
+        self.assertIn('Fewer candidates are preferable to padding', instruction)
+        self.assertIn('For a clinical trial', instruction)
+        self.assertIn('For an ecology field study', instruction)
+        self.assertIn('only when the manuscript design matches', instruction)
 
     def test_unresolved_and_inapplicable_are_not_promoted_to_examined(self):
         rows = checks()

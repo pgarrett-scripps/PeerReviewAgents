@@ -52,10 +52,10 @@ REPEATED_PAPER = {
 MODES = ('plain', 'workspace', 'self-revision', 'independent')
 
 EXPECTED_DIGESTS = {
-    'independent': '47d4f31390e5964327d12c0f836c7104ca272ba21664ed338c5f2752a748ec93',
-    'plain': '924d3cb5ef68f8f5a88fb6d37f8168e738a071f9cf0f8c347ce135b6fb4b6d42',
-    'self-revision': '592ae75d54a0041a8d9fc962ae0b5554dbea92574d3a992e998ef7a635d07be1',
-    'workspace': '867796a06028a722e34f794d6c2f7464256e081e26bcd012084e148d71158bf3',
+    'independent': 'd101ec5bed4dde2b4c8083493a1d71dd948e507601745da185e0709208109170',
+    'plain': '7eb0718c52f0e0286c1c42f56d0ab11de5d3b5593e6269f72c8218577ad890ca',
+    'self-revision': 'dd8eb43558c33a4fed69acd979e8627e6c5d8db27d1472c6c405e9dd2e89db00',
+    'workspace': 'd796df64d98b12d8a64548dc22f6d9f9d3026f5c4eff4f0203e5ec4f098f11f1',
 }
 
 # The panel, ensemble debate and manuscript-only stages, captured the same way.
@@ -64,9 +64,9 @@ EXPECTED_DIGESTS = {
 RUN_ID = re.compile(r'(?<=[a-z])-[0-9a-f]{10}\b')
 
 STAGE_DIGESTS = {
-    'panel': '6ba7710fab020fa23f7dd5eda5be38da1d1bb42f60465a784750e04ab31b726d',
+    'panel': 'b9ab5b953465a6466b02eb321eeab8dd492b75705742f70f3c132d7c240506db',
     'ensemble-debate': '13b22ecb0f0652635ccfaca6e32b3ec9a8611a9283feb142fa9670edd6bebae7',
-    'manuscript-only': 'd8ed3c908a4808b2a41e7e5c85ebe6062e07c30a51da99d62f49b7158deb4422',
+    'manuscript-only': '687c6ed172f37cfab19a0bc1fbc0442b7985462c4822cd73fb6501a4fd341558',
 }
 
 STAGE_CALLS = {'panel': 2, 'ensemble-debate': 1, 'manuscript-only': 1}

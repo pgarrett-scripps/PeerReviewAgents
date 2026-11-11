@@ -36,7 +36,7 @@ def observed_usage(out):
     """
     rows=[r for p in sorted(Path(out).rglob('usage.jsonl')) for r in jsonl(p)]
     attempts=list(Path(out).rglob('*.started.json'))
-    effective=effective_usage_rows(rows)
+    effective=effective_rows(rows)
     unaccounted=unaccounted_attempts(rows)
     value={'calls':len(attempts),'receipts':len(rows),'observed_tokens':sum(r.get('observed_tokens') or 0 for r in rows),
            'retried_attempts':len(rows)-len(effective),'unknown_attempts':len(unaccounted),
@@ -48,11 +48,6 @@ def observed_usage(out):
                                         'attempt':r.get('attempt') or 1,'error':r.get('error'),
                                         'elapsed_seconds':r.get('elapsed_seconds')} for r in unaccounted]
     return value
-
-
-def effective_usage_rows(rows):
-    """One row per request: the highest attempt, which is the one that stands."""
-    return effective_rows(rows)
 
 
 def check_budget(out,token_budget,max_calls,allowed_unknown=0):

@@ -26,12 +26,6 @@ FINDING=obj({'title':STRING,'block_id':STRING,'quote':STRING,'kind':{'type':'str
              'evidence_blocks':STRINGS,'counterevidence':STRING,'source_urls':STRINGS})
 REVIEW=obj({'summary':STRING,'findings':{'type':'array','items':FINDING,'maxItems':5},'limitations':STRINGS,
             'investigation_summary':STRING,'discarded_hypotheses':STRINGS})
-DISPOSITION=obj({'source_finding_id':STRING,
-                 'disposition':{'type':'string','enum':['retained','merged','rejected','needs_verification']},
-                 'final_finding_numbers':{'type':'array','items':{'type':'integer','minimum':1}},
-                 'reason':STRING,'evidence_blocks':STRINGS})
-DEBATE=obj({**REVIEW['properties'],
-            'source_dispositions':{'type':'array','items':DISPOSITION}})
 
 DEFAULT_FINDING_CAP=5
 DEFAULT_WORD_BUDGET=900
@@ -82,4 +76,3 @@ def capped_findings(base=None, cap=DEFAULT_FINDING_CAP):
 
 
 COMMON=common_instructions()
-WORKSPACE='Use the manuscript as an investigation workspace. Start with its central claims and identify the evidence needed for each. Select at most three consequential uncertainties, then resolve them through targeted searches of methods, captions, tables, figures, and prior work as appropriate. Use the save_note tool once to preserve a concise claim-to-evidence map and competing interpretations. Before reporting a problem, actively search for the passage or supplement that would rebut it. Prefer supported, located feedback over generic reviewer advice. Use counterevidence fields to record actual checks, not a formulaic claim that none exists. Retain a useful proposed edit only when the source supports the replacement. Report discarded hypotheses so the investigation is auditable.\n'
