@@ -133,8 +133,10 @@ def prepare_manuscript(parser,args):
     ``peerreview review manuscript.pdf run-output`` is the whole review: the PDF
     is imported into ``run-output/manuscript``, the review runs in
     ``run-output/review``, and the two reports are written into ``run-output``.
-    Naming an existing workspace directory instead keeps exactly the previous
-    behaviour: that run writes no reports of its own.
+    Without a run folder — the bare ``peerreview manuscript.pdf`` — it is
+    ``manuscript-review`` beside the PDF. Naming an existing workspace directory
+    instead keeps exactly the previous behaviour: that run writes no reports of
+    its own.
 
     The layout and the refusals are ``bundle.plan_review``, which every surface
     offering the one-command review shares. This only turns its refusals into
@@ -172,7 +174,9 @@ def add_subcommands(sub):
     p=sub.add_parser('review',help='Review a manuscript PDF, or an imported workspace, end to end')
     p.add_argument('workspace',metavar='paper',
                    help='Manuscript PDF to import and review, or an already imported workspace')
-    p.add_argument('output',help='Run folder. For a PDF it holds manuscript/, review/ and the reports')
+    p.add_argument('output',nargs='?',default=None,
+                   help='Run folder. For a PDF it holds manuscript/, review/ and the reports. '
+                        'Defaults to the PDF name with -review, beside the PDF')
     p.add_argument('--literature-cutoff',default=None,
                    help=CUTOFF_HELP+', or the cutoff an existing run directory already recorded')
     # Every mode the engine has is still accepted. Only the three a person

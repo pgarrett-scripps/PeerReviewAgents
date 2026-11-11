@@ -122,7 +122,20 @@ def run_directory(bundle):
     raise BundleError(f'{bundle} already holds {MAX_RUNS} review runs. Name a different run folder')
 
 
-def plan_review(paper,output):
+def default_output(paper):
+    """The run folder a review writes when the command names none.
+
+    ``peerreview manuscript.pdf`` is the shortest path to a review, so the
+    folder is predictable from the manuscript's own name and sits beside it:
+    ``manuscript-review``, holding the import, the run and the two reports. A
+    second run of the same command reuses the import and writes ``review-2``,
+    exactly as naming the folder again would.
+    """
+    source=Path(paper)
+    return source.parent/f'{source.name if source.is_dir() else source.stem}-review'
+
+
+def plan_review(paper,output=None):
     """Resolve a manuscript PDF or an imported workspace into review paths.
 
     A PDF is imported into ``<output>/manuscript`` and the run is placed beside
@@ -132,8 +145,13 @@ def plan_review(paper,output):
 
     Re-running the same one-command review reuses the import and never reviews
     the same manuscript twice by accident: see ``run_directory``.
+
+    Without an ``output``, the folder is ``default_output(paper)``, which is
+    what the bare ``peerreview manuscript.pdf`` review writes.
     """
     source=Path(paper)
+    if output is None:
+        output=default_output(source)
     if source.is_dir():
         if not (source/'paper.json').is_file():
             raise BundleError(f'{paper} is a directory with no paper.json, so it is not an imported '
