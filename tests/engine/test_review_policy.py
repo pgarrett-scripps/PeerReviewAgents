@@ -6,6 +6,11 @@ it produced before review limits became data. The digests below were captured
 from the engine at commit 1658fd2 and recaptured when the engine cleanup
 removed the study-only evidence options.
 
+They are captured under ``standard-v1``, the study budget, which every scenario
+here names explicitly. It is no longer what a run takes when no policy is
+named: the engine default is ``agentic-v1`` on every surface, and these digests
+stay fixed so the paper's arms are comparable across that change.
+
 They are not a freeze on the prompt text. The reviewer prompt lost its
 duplicated handle instruction and its scaffold-era advisory sentence, and
 ``candidate-inventory-v2``, ``manuscript-only-v2`` and ``review-policy-v2``
@@ -37,8 +42,9 @@ from peerreviewagents.engine.ensemble_debate import NEW_CANDIDATE_LIMIT, ensembl
 from peerreviewagents.engine.evidence_handles import build_registry
 from peerreviewagents.engine.investigation_policy import with_tool_checks
 from peerreviewagents.engine.models import DEFAULT_MODEL, DEFAULT_PROVIDER
-from peerreviewagents.engine.review_policy import (AGENTIC, AGENTIC_SESSION, DEFAULT_POLICY_NAME,
-                                                   POLICY_VERSION, STANDARD, ReviewPolicy,
+from peerreviewagents.engine.review_policy import (AGENTIC, AGENTIC_PASSES, AGENTIC_SESSION,
+                                                   DEFAULT_POLICY_NAME, POLICY_VERSION, STANDARD,
+                                                   STUDY_POLICY_NAME, ReviewPolicy,
                                                    get_review_policy, review_policies)
 from peerreviewagents.engine.storage import digest, read, write
 
@@ -107,7 +113,7 @@ def workspace(directory, paper=PAPER):
     return root, Path(directory) / 'run'
 
 
-def run_review(directory, mode='plain', policy=None, paper=PAPER,
+def run_review(directory, mode='plain', policy=STUDY_POLICY_NAME, paper=PAPER,
                response=None, **kwargs):
     """Run one review against a fake transport and capture every model call."""
     root, out = workspace(directory, paper)
@@ -160,11 +166,12 @@ def panel_payload(directory):
          patch.object(reviewer, 'model_call', side_effect=fake), \
          patch.object(reviewer, 'inspected_images', return_value=[]):
         with contextlib.suppress(Captured):
-            reviewer.review(root, out, '2025-01-01', mode='panel', model='gpt-5.6-terra')
+            reviewer.review(root, out, '2025-01-01', mode='panel', model='gpt-5.6-terra',
+                            policy=STUDY_POLICY_NAME)
     return captured, (out, root, directory)
 
 
-def debate_payload(directory, policy=None):
+def debate_payload(directory, policy=STUDY_POLICY_NAME):
     """The ensemble synthesis call over two recorded independent reviews."""
     root, out = workspace(directory)
     captured = []
@@ -197,7 +204,7 @@ def manuscript_only_payload(directory):
 
     request = ReviewRequest(workspace=root, output=out,
                             literature_cutoff='2025-01-01', workflow='manuscript-only',
-                            reviewers=1, model='gpt-5.6-terra')
+                            reviewers=1, model='gpt-5.6-terra', policy=STUDY_POLICY_NAME)
     with patch.object(ensemble, 'require_subscription'), \
          patch.object(runtime, 'model_call', side_effect=fake):
         with contextlib.suppress(Captured):
@@ -227,7 +234,7 @@ def stage_digest(scenario):
         return len(captured), hashlib.sha256(normalize(captured, paths).encode()).hexdigest()
 
 
-class DefaultPolicyIsUnchanged(unittest.TestCase):
+class StudyPolicyIsUnchanged(unittest.TestCase):
     def test_every_existing_mode_sends_byte_identical_prompts_and_limits(self):
         for mode in MODES:
             with self.subTest(scenario=mode):
@@ -247,15 +254,29 @@ class DefaultPolicyIsUnchanged(unittest.TestCase):
         self.assertEqual(STANDARD.final_review_schema(), review_schema.capped_findings())
         self.assertEqual(STANDARD.final_review_schema()['properties']['findings']['maxItems'], 5)
         self.assertEqual(STANDARD.protocol_overlay(), {})
-        self.assertIs(get_review_policy(None), STANDARD)
-        self.assertIs(get_review_policy(DEFAULT_POLICY_NAME), STANDARD)
-        self.assertEqual(debate_revision_schema('standard-v1'), debate_revision_schema())
-        self.assertEqual(ensemble_schema('standard-v1'), ensemble_schema())
+        self.assertIs(get_review_policy(STUDY_POLICY_NAME), STANDARD)
+        self.assertEqual(STUDY_POLICY_NAME, 'standard-v1')
+        self.assertEqual(debate_revision_schema('standard-v1'),
+                         debate_revision_schema(STUDY_POLICY_NAME))
+        self.assertEqual(ensemble_schema('standard-v1'), ensemble_schema(STUDY_POLICY_NAME))
         self.assertEqual(with_tool_checks(STANDARD.candidate_review_schema(), STANDARD.tool_checks),
                          with_tool_checks(STANDARD.candidate_review_schema()))
 
-    def test_default_ensemble_protocol_record_is_explicit_and_unchanged(self):
-        self.assertEqual(ensemble._protocol('gpt-5.6-terra', 2, 750000), {
+    def test_the_engine_default_is_agentic_everywhere_and_is_not_the_study_budget(self):
+        """The command line ran the agentic passes while the request object, the
+        engine functions and the library default ran the bounded study budget.
+        One review asked for in four ways is now one review."""
+        self.assertEqual(DEFAULT_POLICY_NAME, 'agentic-v1')
+        self.assertIs(get_review_policy(None), AGENTIC_PASSES)
+        self.assertIs(get_review_policy(DEFAULT_POLICY_NAME), AGENTIC_PASSES)
+        self.assertIsNot(get_review_policy(None), STANDARD)
+        self.assertEqual(ReviewRequest(workspace='workspace', output='run').policy_name(),
+                         DEFAULT_POLICY_NAME)
+        self.assertEqual(capabilities()['default_policy'], DEFAULT_POLICY_NAME)
+        self.assertEqual(capabilities()['study_policy'], STUDY_POLICY_NAME)
+
+    def test_study_ensemble_protocol_record_is_explicit_and_unchanged(self):
+        self.assertEqual(ensemble._protocol('gpt-5.6-terra', 2, 750000, STUDY_POLICY_NAME), {
             'provider': 'codex', 'model': 'gpt-5.6-terra', 'effort': 'medium',
             'observed_token_stop': 750000, 'call_timeout_seconds': 900,
             'max_source_images': 10, 'image_budget_version': 'evidence-v1', 'mode': 'ensemble',
@@ -263,7 +284,13 @@ class DefaultPolicyIsUnchanged(unittest.TestCase):
             'independent_tool_allowance': 4, 'debate_tool_allowance': 2, 'version': 'ensemble-v3',
         })
         self.assertEqual(ensemble._protocol('gpt-5.6-terra', 2, 750000, 'standard-v1'),
-                         ensemble._protocol('gpt-5.6-terra', 2, 750000))
+                         ensemble._protocol('gpt-5.6-terra', 2, 750000, STUDY_POLICY_NAME))
+        # The same record under the engine default states the policy it ran, so
+        # a run directory is never ambiguous about which allowance produced it.
+        default = ensemble._protocol('gpt-5.6-terra', 2, 4500000)
+        self.assertEqual(default['review_policy'], DEFAULT_POLICY_NAME)
+        self.assertEqual((default['effort'], default['independent_tool_allowance'],
+                          default['debate_tool_allowance']), ('high', 30, 8))
 
     def test_every_other_preset_keeps_the_standard_policy(self):
         for name, record in review_presets().items():
@@ -343,10 +370,16 @@ class AgenticPolicy(unittest.TestCase):
         self.assertIn('24 external requests are shared', call['prompt'])
         self.assertEqual(call['schema']['properties']['tool_checks']['maxItems'], 30)
         with tempfile.TemporaryDirectory() as directory:
-            captured, _, _ = run_review(directory, mode='independent')
+            captured, _, _ = run_review(directory, mode='independent', policy=STUDY_POLICY_NAME)
         self.assertEqual(captured[0]['tool_config']['external_request_limit'], 6)
         self.assertIn('Six external requests are shared', captured[0]['prompt'])
         self.assertEqual(captured[0]['schema']['properties']['tool_checks']['maxItems'], 4)
+        # And a run that names no policy takes the agentic allowance, not the
+        # bounded one it used to fall back to.
+        with tempfile.TemporaryDirectory() as directory:
+            captured, _, _ = run_review(directory, mode='independent', policy=None)
+        self.assertEqual(captured[0]['tool_config']['external_request_limit'], 24)
+        self.assertEqual(captured[0]['protocol']['review_policy'], DEFAULT_POLICY_NAME)
 
     def test_the_agentic_debate_stage_drops_the_cap_and_widens_the_budget(self):
         ledger = {'version': 'debate-ledger-v3', 'issues': [], 'investigation_context': {}}
@@ -372,15 +405,20 @@ class AgenticPolicy(unittest.TestCase):
         self.assertEqual(captured[0]['tool_config']['external_request_limit'], 8)
         self.assertEqual(captured[0]['tool_config']['tool_limit'], 8)
         with tempfile.TemporaryDirectory() as directory:
-            captured, _ = debate_payload(directory)
+            captured, _ = debate_payload(directory, policy=STUDY_POLICY_NAME)
         self.assertEqual(captured[0]['tool_config']['external_request_limit'], 2)
         self.assertEqual(captured[0]['tool_config']['tool_limit'], 2)
+        with tempfile.TemporaryDirectory() as directory:
+            captured, _ = debate_payload(directory, policy=None)
+        self.assertEqual(captured[0]['tool_config']['tool_limit'], 8)
+        self.assertEqual(captured[0]['protocol']['token_launch_budget'], 4500000)
 
     def test_the_api_exposes_the_preset_and_the_policy(self):
         advertised = capabilities()
         self.assertIn('workspace-agentic-v1', advertised['presets'])
         self.assertIn('workspace-agentic-v1', advertised['policies'])
-        self.assertEqual(advertised['default_policy'], 'standard-v1')
+        self.assertEqual(advertised['default_policy'], 'agentic-v1')
+        self.assertEqual(advertised['study_policy'], 'standard-v1')
         self.assertEqual(advertised['review_policies'], review_policies())
         self.assertEqual(advertised['retry_policy']['max_attempts_ceiling'], 2)
         self.assertEqual(advertised['reasoning_efforts'], ['low', 'medium', 'high'])
@@ -403,15 +441,19 @@ class AgenticPolicy(unittest.TestCase):
 
     def test_the_api_advertises_the_retry_and_guard_policy_per_policy(self):
         advertised = capabilities()
-        self.assertEqual(advertised['reasoning_effort'], STANDARD.effort)
+        self.assertEqual(advertised['reasoning_effort'], AGENTIC_PASSES.effort)
         self.assertEqual(advertised['reasoning_effort_by_policy'],
-                         {'standard-v1': 'medium', 'workspace-agentic-v1': 'high'})
-        self.assertFalse(advertised['automatic_retries'])
+                         {'standard-v1': 'medium', 'workspace-agentic-v1': 'high',
+                          'agentic-v1': 'high'})
+        # The default policy retries one lost call, so the advertised default
+        # follows it. The study budget never retried and still does not.
+        self.assertTrue(advertised['automatic_retries'])
         self.assertEqual(advertised['automatic_retries_by_policy'],
-                         {'standard-v1': False, 'workspace-agentic-v1': True})
-        self.assertEqual(advertised['retry_policy']['default_attempts'], 1)
+                         {'standard-v1': False, 'workspace-agentic-v1': True,
+                          'agentic-v1': True})
+        self.assertEqual(advertised['retry_policy']['default_attempts'], 2)
         self.assertEqual(advertised['retry_policy']['attempts_by_policy'],
-                         {'standard-v1': 1, 'workspace-agentic-v1': 2})
+                         {'standard-v1': 1, 'workspace-agentic-v1': 2, 'agentic-v1': 2})
         self.assertIn('timed out', advertised['retry_policy']['retried'])
         self.assertIn('refusal', advertised['retry_policy']['never_retried'])
         self.assertTrue(advertised['retry_policy']['per_attempt_receipts'])
@@ -484,17 +526,19 @@ class AgenticPolicy(unittest.TestCase):
         from peerreviewagents.engine import __main__ as cli
         from peerreviewagents.engine.__main__ import build_parser, dispatch
         parser = build_parser()
-        args = parser.parse_args(['review', 'paper', 'run',
-                                  '--preset', 'workspace-agentic-v1'])
-        self.assertIsNone(args.literature_cutoff)
-        self.assertIsNone(args.model)
-        self.assertIsNone(args.provider)
-        # Today's date comes from one function, so the assertion never races the
-        # clock between dispatch and the comparison.
-        with patch.object(cli, 'default_literature_cutoff', return_value='2026-11-02'), \
-             patch.object(reviewer, 'review', return_value={'status': 'complete'}) as call, \
-             contextlib.redirect_stdout(io.StringIO()):
-            dispatch(parser, args)
+        with tempfile.TemporaryDirectory() as directory:
+            root, out = workspace(directory)
+            args = parser.parse_args(['review', str(root), str(out),
+                                      '--preset', 'workspace-agentic-v1'])
+            self.assertIsNone(args.literature_cutoff)
+            self.assertIsNone(args.model)
+            self.assertIsNone(args.provider)
+            # Today's date comes from one function, so the assertion never races
+            # the clock between dispatch and the comparison.
+            with patch.object(cli, 'default_literature_cutoff', return_value='2026-11-02'), \
+                 patch.object(reviewer, 'review', return_value={'status': 'complete'}) as call, \
+                 contextlib.redirect_stdout(io.StringIO()):
+                dispatch(parser, args)
         passed = call.call_args
         self.assertEqual(passed.args[2], '2026-11-02')
         self.assertEqual(passed.args[3], 'independent')
@@ -657,14 +701,16 @@ class QuarantinedFindings(unittest.TestCase):
     def test_the_command_line_exits_non_zero_when_nothing_survived(self):
         from peerreviewagents.engine.__main__ import build_parser, dispatch
         parser = build_parser()
-        args = parser.parse_args(['review', 'paper', 'run',
-                                  '--literature-cutoff', '2026-09-25', '--mode', 'plain'])
         empty = {'status': reviewer.COMPLETE_WITHOUT_FINDINGS, 'findings_delivered': 0,
                  'quarantined_findings_count': 2,
                  'review_guard_status': 'all-findings-quarantined'}
         delivered = {'status': 'complete', 'findings_delivered': 2,
                      'quarantined_findings_count': 0, 'review_guard_status': 'clean'}
-        with contextlib.redirect_stdout(io.StringIO()) as printed:
+        with tempfile.TemporaryDirectory() as directory, \
+             contextlib.redirect_stdout(io.StringIO()) as printed:
+            root, out = workspace(directory)
+            args = parser.parse_args(['review', str(root), str(out),
+                                      '--literature-cutoff', '2026-09-25', '--mode', 'plain'])
             with patch.object(reviewer, 'review', return_value=empty):
                 with self.assertRaises(SystemExit) as caught:
                     dispatch(parser, args)

@@ -359,11 +359,19 @@ class ProviderDefaults(unittest.TestCase):
 
     def selected_model(self, *options, command='review'):
         from peerreviewagents.engine.__main__ import main
-        argv = ['paper-workbench', *self.COMMANDS[command],
-                '--literature-cutoff', '2024-01-01', *options]
-        with patch.object(sys, 'argv', argv), patch('builtins.print'), \
-                patch(self.TARGETS[command], return_value={'ready_for_adjudication': False}) as call:
-            main()
+        from peerreviewagents.engine.storage import write
+        with tempfile.TemporaryDirectory() as directory:
+            # The review command refuses a path that is neither a PDF nor an
+            # imported workspace, so the transport check needs a real one.
+            workspace = Path(directory) / 'workspace'
+            write(workspace / 'paper.json', {'id': 'paper'})
+            argv = ['paper-workbench',
+                    *[str(workspace) if token == 'workspace' else token
+                      for token in self.COMMANDS[command]],
+                    '--literature-cutoff', '2024-01-01', *options]
+            with patch.object(sys, 'argv', argv), patch('builtins.print'), \
+                    patch(self.TARGETS[command], return_value={'ready_for_adjudication': False}) as call:
+                main()
         return call.call_args.kwargs['model']
 
     def test_provider_without_a_model_uses_its_pinned_default(self):

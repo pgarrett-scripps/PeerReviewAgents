@@ -50,7 +50,8 @@ class DiscoveryChecks(unittest.TestCase):
                 calls.append({'protocol':protocol,'prompt':prompt,'config':read(execution/'workspace/tool-config.json')})
                 return copy.deepcopy(model)
             with patch.object(reviewer,'require_subscription'), patch.object(reviewer,'model_call',side_effect=fake), patch.object(reviewer,'inspected_images',return_value=[]):
-                reviewer.review(root,out,'2025-01-01',mode='self-revision',model='gpt-5.6-terra')
+                reviewer.review(root,out,'2025-01-01',mode='self-revision',model='gpt-5.6-terra',
+                                policy='standard-v1')
             self.assertEqual([c['config']['tool_limit'] for c in calls],[4,2])
             self.assertEqual(calls[0]['config']['source_state'],calls[1]['config']['source_state'])
             self.assertEqual(calls[0]['protocol']['observed_token_stop'],
@@ -170,7 +171,7 @@ class DiscoveryChecks(unittest.TestCase):
             with patch.object(reviewer, 'require_subscription'), \
                     patch.object(reviewer, 'model_call', side_effect=fake_call) as invoke, \
                     patch.object(reviewer, 'inspected_images', return_value=[]):
-                result = reviewer.review(root, out, '2024-01-01')
+                result = reviewer.review(root, out, '2024-01-01', policy='standard-v1')
             self.assertEqual(result['status'], 'complete')
             self.assertEqual(invoke.call_count, 2)
             self.assertEqual(seen[0]['schema'],

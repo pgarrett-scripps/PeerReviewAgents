@@ -21,9 +21,13 @@ class OrdinarySynthesisTests(unittest.TestCase):
         self.assertIn('new_candidates', schema['properties'])
 
     def test_matched_protocol_has_one_synthesis_call_and_two_tools(self):
-        protocol = _protocol('gpt-5.6-terra', 2, 750000)
+        """The ablation is matched under the study policy, which the arm pins.
+        The engine default is agentic and gives the synthesis more tools, so the
+        matched protocol has to name the policy it is matched under."""
+        protocol = _protocol('gpt-5.6-terra', 2, 750000, 'standard-v1')
         self.assertEqual(protocol['total_generation_calls'], 3)
         self.assertEqual(protocol['debate_tool_allowance'], 2)
+        self.assertEqual(_protocol('gpt-5.6-terra', 2, 750000)['debate_tool_allowance'], 8)
 
 
 if __name__ == '__main__':

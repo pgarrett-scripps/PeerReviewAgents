@@ -4,14 +4,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from .config import (default_literature_cutoff, get_review_preset, resolved_review_config,
-                     review_presets)
+from .config import (default_literature_cutoff, get_review_preset, preset_synthesis_policy,
+                     resolved_review_config, review_presets)
 from .models import DEFAULT_MODEL, DEFAULT_PROVIDER
 from .review_policy import (APPROVED_EFFORTS, DEFAULT_POLICY, DEFAULT_POLICY_NAME,
-                            MAX_ATTEMPT_CEILING, get_review_policy, review_policies,
-                            single_session_refusal)
+                            MAX_ATTEMPT_CEILING, STUDY_POLICY_NAME, get_review_policy,
+                            review_policies, single_session_refusal)
 
-API_VERSION = 'paper-workbench-core-v2'
+# v3: a request that names no policy runs the agentic allowance rather than the
+# bounded study budget, so a v2 artifact was produced under different defaults.
+API_VERSION = 'paper-workbench-core-v3'
 
 
 def capabilities():
@@ -31,6 +33,7 @@ def capabilities():
             'presets': list(review_presets()),
             'policies': list(review_policies()),
             'default_policy': DEFAULT_POLICY_NAME,
+            'study_policy': STUDY_POLICY_NAME,
             'review_policies': policies,
             'evidence_policies': ['none', 'live'],
             'models': list(SUBSCRIPTION_MODELS), 'reasoning_effort': DEFAULT_POLICY.effort,
@@ -55,7 +58,8 @@ def capabilities():
             'review_guard_statuses': ['clean', 'partially-quarantined', 'all-findings-quarantined'],
             'zero_surviving_findings_status': 'complete-without-findings',
             'saved_draft_synthesis': {'policy': 'ordinary', 'generation_calls': 1,
-                                      'discovery_calls': 0, 'tool_allowance': 2},
+                                      'discovery_calls': 0,
+                                      'tool_allowance': 'the original run review policy allowance'},
             'limitations': ['Manuscript-only mode has no review tools or external access.',
                            'Independent mode includes tools and is not a tool-free baseline.',
                            'Claude Code and Codex subscription sessions are supported. API keys, other providers and arbitrary models are not.',
@@ -89,10 +93,13 @@ class ReviewRequest:
     workflow: Literal['manuscript-only', 'independent', 'ensemble'] = 'ensemble'
     model: str = DEFAULT_MODEL
     reviewers: int = 2
-    token_budget: int = 750000
+    # None takes the ceiling this request's policy needs for its stages, which
+    # is what every surface means by naming no budget.
+    token_budget: int | None = None
     source_images: tuple[Path, ...] = field(default_factory=tuple)
     preset: str | None = None
     synthesis_policy: Literal['debate', 'ordinary'] = 'debate'
+    # None is the engine default policy, the same one the command line takes.
     policy: str | None = None
 
     def __post_init__(self):
@@ -103,6 +110,8 @@ class ReviewRequest:
             raise ValueError('Unsupported Paper Workbench model. No fallback is permitted.')
         if type(self.reviewers) is not int or not 1 <= self.reviewers <= 16:
             raise ValueError('Reviewer count must be between one and sixteen')
+        if self.token_budget is None:
+            object.__setattr__(self, 'token_budget', self.resolved_token_budget())
         if type(self.token_budget) is not int or self.token_budget <= 0:
             raise ValueError('Token launch budget must be a positive integer')
         if self.workflow == 'manuscript-only' and self.reviewers != 1:
@@ -124,6 +133,26 @@ class ReviewRequest:
         if Path(self.workspace).resolve() == Path(self.output).resolve():
             raise ValueError('Use a separate run output directory')
 
+    def policy_name(self):
+        """The policy this request runs under, named explicitly or by its preset."""
+        if self.policy is not None:
+            return self.policy
+        if self.preset is not None:
+            return get_review_preset(self.preset).policy
+        return DEFAULT_POLICY_NAME
+
+    def resolved_token_budget(self):
+        """The observed-token ceiling this request starts under.
+
+        One ceiling covers every generation call a run makes, so an ensemble
+        asks the policy for its reviewers plus the synthesis and a single-call
+        workflow asks for one stage. The study budget is the same fixed figure
+        either way, so a study arm's ceiling is unchanged.
+        """
+        policy = get_review_policy(self.policy_name())
+        stages = self.reviewers + 1 if self.workflow == 'ensemble' else 1
+        return policy.launch_budget(stages)
+
 
 @dataclass(frozen=True)
 class SavedDraftSynthesisRequest:
@@ -141,7 +170,10 @@ class SavedDraftSynthesisRequest:
     # instead of synthesising saved drafts against a later date.
     literature_cutoff: str | None = None
     model: str = DEFAULT_MODEL
-    token_budget: int = 750000
+    # The matched pass must launch under the same ceiling the original synthesis
+    # did, and that figure depends on the policy the original run chose. None
+    # takes it from the original debate stage rather than from a fixed number.
+    token_budget: int | None = None
     synthesis_policy: Literal['ordinary'] = 'ordinary'
 
     def __post_init__(self):
@@ -150,6 +182,12 @@ class SavedDraftSynthesisRequest:
         original_protocol = Path(self.original_output) / 'reviewer-1' / 'protocol.json'
         if not original_protocol.is_file():
             raise ValueError('Saved draft synthesis needs the original run reviewer-1 protocol')
+        if self.token_budget is None:
+            debate_protocol = Path(self.original_output) / 'debate' / 'protocol.json'
+            if not debate_protocol.is_file():
+                raise ValueError('Saved draft synthesis needs the original run debate protocol')
+            object.__setattr__(self, 'token_budget',
+                               read(debate_protocol).get('token_launch_budget'))
         original_cutoff = read(original_protocol).get('literature_cutoff')
         date.fromisoformat(str(original_cutoff))
         if self.literature_cutoff is None:
@@ -219,7 +257,14 @@ def run_saved_draft_synthesis(request: SavedDraftSynthesisRequest):
     if not isinstance(expected_images, dict) or supplied_images != expected_images:
         raise ValueError('Saved draft synthesis requires the complete original image set')
     protocol = read(debate_root / 'protocol.json')
-    if protocol.get('debate_tool_allowance') != 2 or protocol.get('token_launch_budget') != request.token_budget:
+    # The drafts were debated under one review policy, and the matched pass runs
+    # under that same allowance: an agentic run's synthesis is not a bounded
+    # study synthesis. The study policy records no overlay, so a run made before
+    # policies were data reads as the study budget it actually ran under.
+    original_policy = protocol.get('review_policy', STUDY_POLICY_NAME)
+    policy = get_review_policy(original_policy)
+    if (protocol.get('debate_tool_allowance') != policy.debate_tool_calls
+            or protocol.get('token_launch_budget') != request.token_budget):
         raise ValueError('Saved draft synthesis must match the original synthesis tool and token budget')
     expected_discovery_calls = artifact.get('resolved_configuration', {}).get('reviewers')
     if type(expected_discovery_calls) is not int or len(records) != expected_discovery_calls:
@@ -244,7 +289,8 @@ def run_saved_draft_synthesis(request: SavedDraftSynthesisRequest):
                          for path in root.glob('*.raw') if path.is_file()})
     package = debate_reviews(workspace, output, request.literature_cutoff,
         records, images=request.source_images, model=request.model, token_budget=request.token_budget,
-        cache_roots=cache_roots, synthesis_policy='ordinary', reused_drafts=True)
+        cache_roots=cache_roots, synthesis_policy='ordinary', reused_drafts=True,
+        policy=original_policy)
     cache_after = {str(path.resolve()): digest(path.read_bytes()) for root in cache_roots for path in root.glob('*') if path.is_file()}
     if cache_after != cache_before:
         raise ValueError('Original reviewer evidence cache changed during synthesis')
@@ -260,7 +306,8 @@ def run_saved_draft_synthesis(request: SavedDraftSynthesisRequest):
         'paper_id': paper['id'], 'source_manifest_sha256': source_manifest_sha,
         'workflow': 'ensemble', 'execution_scope': 'saved-draft-synthesis', 'model_requested': request.model,
         'resolved_configuration': {'synthesis_policy': 'ordinary', 'reused_drafts': True,
-            'discovery_calls': 0, 'synthesis_calls': 1, 'synthesis_tool_allowance': 2,
+            'discovery_calls': 0, 'synthesis_calls': 1,
+            'synthesis_tool_allowance': policy.debate_tool_calls, 'review_policy': policy.name,
             'token_launch_budget': request.token_budget, 'evidence_policy': 'live'},
         'engine_source': current_engine, 'editor_package': package,
         'usage': synthesis_usage, 'usage_scope': 'new_synthesis_stage_only',
@@ -342,7 +389,7 @@ def review_request_from_preset(name, *, workspace, output,
                                source_images=(), synthesis_policy=None, policy=None):
     """Construct a request from one named preset, with explicit runtime overrides."""
     preset = get_review_preset(name)
-    preset_synthesis = 'ordinary' if preset.synthesis_policy == 'ordinary-synthesis-v1' else 'debate'
+    preset_synthesis = preset_synthesis_policy(preset)
     return ReviewRequest(
         workspace=Path(workspace), output=Path(output),
         literature_cutoff=(default_literature_cutoff() if literature_cutoff is None
