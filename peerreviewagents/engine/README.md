@@ -54,7 +54,7 @@ Scaffold's bibliography checker requires BibTeX entries and citation keys, so it
 
 ## Headless API
 
-`peerreviewagents.engine.api` is the versioned integration boundary, re-exported from `peerreviewagents.engine` itself. It carries `ReviewRequest`, `capabilities`, `load_manuscript`, `evidence_registry`, `validate_review`, `run_review`, `StructuredRequest`, `run_structured`, `usage_summary`, `review_request_from_preset`, `SavedDraftSynthesisRequest` and `run_saved_draft_synthesis`, with the presets and resolved configuration in `config.py`. Importing it starts no model provider and reads no manuscript.
+`peerreviewagents.engine.api` is the versioned integration boundary, re-exported from `peerreviewagents.engine` itself. It carries `ReviewRequest`, `capabilities`, `load_manuscript`, `evidence_registry`, `validate_review`, `run_review`, `review_request_from_preset`, `SavedDraftSynthesisRequest` and `run_saved_draft_synthesis`, with the presets and resolved configuration in `config.py`. Importing it starts no model provider and reads no manuscript.
 
 Run manifests record a content hash of this package directory under `engine_source` and `core_source`. Both keys are kept for artifact compatibility; after the move into `peerreviewagents.engine` they hash the same directory, so runs started under the previous layout cannot be resumed.
 
