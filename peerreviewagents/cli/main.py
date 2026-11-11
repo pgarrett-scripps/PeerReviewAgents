@@ -595,7 +595,7 @@ def run_headless(manuscript: str, config: dict) -> None:
 
 
 def run_server(args) -> None:
-    """Launch the FastAPI web UI."""
+    """Launch the FastAPI web UI over the review engine."""
     try:
         import uvicorn
 
@@ -605,24 +605,20 @@ def run_server(args) -> None:
         console.print("Run: [bold]uv pip install -e .[/bold] to pick them up.")
         sys.exit(1)
 
-    overrides: dict = {}
-    for key in ("provider", "reasoning_model", "max_debate_rounds",
-                "output_dir", "cache_dir", "target_journal", "article_type",
-                "review_strictness", "desk_screen"):
-        val = getattr(args, key, None)
-        if val is not None:
-            overrides[key] = val
-
-    # --config is threaded through as a first-class parameter: the app hands
-    # it to every get_config call it makes, so an explicit TOML actually
-    # governs the jobs the server runs (it used to be silently dropped here).
+    defaults = {
+        key: getattr(args, key)
+        for key in ("mode", "reviewers", "provider", "model", "policy", "literature_cutoff")
+        if getattr(args, key, None) is not None
+    }
     app = create_app(
-        config_overrides=overrides,
-        config_path=args.config_path,
+        output_dir=args.output_dir,
         upload_dir=args.upload_dir,
+        input_roots=list(args.input_roots or []),
+        defaults=defaults,
     )
     console.print(Panel.fit(
-        f"[bold]PeerReviewAgents web UI[/bold]\nhttp://{args.host}:{args.port}",
+        f"[bold]PeerReviewAgents web UI[/bold]\nhttp://{args.host}:{args.port}\n"
+        f"Reviews are written to {app.state.output_root}",
         border_style="cyan",
     ))
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
@@ -654,38 +650,36 @@ def run() -> None:
     # Hand off the `serve` subcommand to a dedicated parser so the
     # primary review CLI keeps its current positional-argument shape.
     if argv and argv[0] == "serve":
-        sp = argparse.ArgumentParser(prog="peerreview serve",
-                                     description="Launch the web UI")
+        sp = argparse.ArgumentParser(
+            prog="peerreview serve",
+            description="Launch the web UI: upload a manuscript PDF, read its REVIEW.md",
+        )
         sp.add_argument("--host", default="127.0.0.1")
         sp.add_argument("--port", type=int, default=8765)
+        sp.add_argument("--output-dir", dest="output_dir", default=None,
+                        help="Where reviews are written (default: ./reviews)")
         sp.add_argument("--upload-dir", dest="upload_dir", default=None,
-                        help="Where to store uploaded manuscripts "
+                        help="Where uploaded manuscripts are stored "
                              "(default: ./.peerreview-uploads)")
-        sp.add_argument("--config", dest="config_path", default=None)
+        sp.add_argument("--input-root", dest="input_roots", action="append", default=None,
+                        metavar="DIR",
+                        help="A further folder a manuscript may be read from; "
+                             "repeatable. The upload folder is always one.")
+        sp.add_argument("--mode", dest="mode", default=None,
+                        choices=("ensemble", "independent", "panel"),
+                        help="Default review mode for the form (default: ensemble)")
+        sp.add_argument("--reviewers", dest="reviewers", type=int, default=None,
+                        help="Default reviewer count for ensemble mode (default: 2)")
         sp.add_argument("--provider", dest="provider",
-                        choices=(
-                            "openrouter", "anthropic", "openai", "claude-code", "codex",
-                            "droid", "pi",
-                        ),
-                        default=None)
-        sp.add_argument("--reasoning-model", dest="reasoning_model", default=None)
-        sp.add_argument("--debate-rounds", type=int, dest="max_debate_rounds", default=None)
-        sp.add_argument("--output-dir", dest="output_dir", default=None)
-        sp.add_argument("--cache-dir", dest="cache_dir", default=None)
-        sp.add_argument("--journal", dest="target_journal", default=None,
-                        help="Default target-journal slug for jobs (the web "
-                             "form can override per-upload).")
-        sp.add_argument("--article-type", dest="article_type", default=None,
-                        help="Default article-type key for jobs (the web "
-                             "form can override per-upload).")
-        sp.add_argument("--strictness", type=int, dest="review_strictness",
-                        choices=range(1, 6), metavar="{1-5}", default=None,
-                        help="Default review strictness for jobs 1-5 (the web "
-                             "form can override per-upload).")
-        sp.add_argument("--desk-screen", dest="desk_screen",
-                        action="store_const", const=True, default=None,
-                        help="Enable the desk-screen gate by default for jobs "
-                             "(the web form can override per-upload).")
+                        choices=("claude-code", "codex"), default=None,
+                        help="Default transport (default: claude-code)")
+        sp.add_argument("--model", dest="model", default=None,
+                        help="Default model for the chosen transport")
+        sp.add_argument("--policy", dest="policy", default=None,
+                        help="Default review policy, such as standard-v1")
+        sp.add_argument("--literature-cutoff", dest="literature_cutoff", default=None,
+                        metavar="YYYY-MM-DD",
+                        help="Default literature cutoff date for the form")
         run_server(sp.parse_args(argv[1:]))
         return
 

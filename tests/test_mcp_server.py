@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from peerreviewagents import review_service
 from peerreviewagents.engine.bundle import ReviewPaths
 from peerreviewagents.mcp import server as mcp_server
 
@@ -49,8 +50,8 @@ def test_the_server_runs_one_engine_review_and_exposes_its_report(tmp_path, monk
         return {"progress": {"status": "complete"}, "reports": {"markdown": str(report)},
                 "failure": None}
 
-    monkeypatch.setattr(mcp_server, "plan_review", fake_plan)
-    monkeypatch.setattr(mcp_server, "run_review_options", fake_run)
+    monkeypatch.setattr(review_service, "plan_review", fake_plan)
+    monkeypatch.setattr(review_service, "run_review_options", fake_run)
     service = mcp_server.ReviewService(
         max_workers=1, input_roots=[tmp_path], output_root=reviews
     )
@@ -77,9 +78,9 @@ def test_a_stopped_review_is_reported_as_an_error_with_its_cause(tmp_path, monke
     def fake_plan(paper, output):
         return ReviewPaths(Path(output) / "manuscript", Path(output) / "review", Path(output))
 
-    monkeypatch.setattr(mcp_server, "plan_review", fake_plan)
+    monkeypatch.setattr(review_service, "plan_review", fake_plan)
     monkeypatch.setattr(
-        mcp_server,
+        review_service,
         "run_review_options",
         lambda paths, options: {
             "progress": {"status": "blocked"},
@@ -103,14 +104,14 @@ def test_a_review_that_endorses_nothing_says_so_instead_of_claiming_a_review(
 ):
     manuscript = _pdf(tmp_path / "paper.pdf")
     monkeypatch.setattr(
-        mcp_server,
+        review_service,
         "plan_review",
         lambda paper, output: ReviewPaths(
             Path(output) / "manuscript", Path(output) / "review", Path(output)
         ),
     )
     monkeypatch.setattr(
-        mcp_server,
+        review_service,
         "run_review_options",
         lambda paths, options: {
             "progress": {"status": "complete-without-findings"},
