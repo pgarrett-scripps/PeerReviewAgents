@@ -207,6 +207,35 @@ def test_artifact_reader_blocks_path_traversal_and_the_imported_manuscript(tmp_p
     assert service.list_artifacts(job.id) == []
 
 
+def test_the_artifact_listing_has_one_order_on_every_operating_system(tmp_path):
+    """The same finished review listed REVIEW.md first on Linux and last on
+    Windows, because `sorted` over paths follows the platform's case rules.
+    The listing is a contract for the MCP client and the review page, so the
+    order is the reports in the run folder, then the files inside it, by the
+    exact characters of each name."""
+    service = mcp_server.ReviewService(max_workers=1)
+    bundle = tmp_path / "bundle"
+    (bundle / "review").mkdir(parents=True)
+    (bundle / "manuscript").mkdir()
+    (bundle / "manuscript" / "paper.json").write_text("{}", encoding="utf-8")
+    for relative in ("REVIEW.md", "Review-summary.md", "answers.json",
+                     "review/progress.json", "review/Protocol.json", "review/calls/1.json"):
+        target = bundle / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("x", encoding="utf-8")
+    job = mcp_server.ReviewJob("job", "paper.pdf", {}, bundle=str(bundle))
+    service._jobs[job.id] = job
+
+    assert [item["name"] for item in service.list_artifacts(job.id)] == [
+        "REVIEW.md",
+        "Review-summary.md",
+        "answers.json",
+        "review/Protocol.json",
+        "review/progress.json",
+        "review/calls/1.json",
+    ]
+
+
 def test_public_job_state_does_not_expose_absolute_paths(tmp_path):
     manuscript = str(tmp_path / "paper.pdf")
     bundle = str(tmp_path / "reviews" / "run-1")

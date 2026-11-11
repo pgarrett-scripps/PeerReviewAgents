@@ -209,7 +209,18 @@ class ReviewService:
         return state
 
     def list_artifacts(self, job_id: str) -> list[dict[str, Any]]:
-        """The reports and saved run files, named relative to the run folder."""
+        """The reports and saved run files, named relative to the run folder.
+
+        The order is the listing's contract, for the MCP client and the review
+        page alike: the reports in the run folder itself first, then the files
+        inside it, each group ordered by the exact characters of its name.
+
+        It used to be ``sorted(root.rglob('*'))``, which orders paths the way
+        the platform does: Windows compares them case-insensitively, so the
+        same finished review listed ``REVIEW.md`` first on macOS and Linux and
+        last on Windows. Sorting the relative names, by depth and then
+        codepoint, is the same order on every operating system.
+        """
         job = self._get(job_id)
         if not job.bundle:
             return []
@@ -217,16 +228,17 @@ class ReviewService:
         if not root.is_dir():
             return []
         found = []
-        for path in sorted(root.rglob("*")):
-            if len(found) >= MAX_LISTED_ARTIFACTS:
-                break
+        for path in root.rglob("*"):
             relative = path.relative_to(root)
             # The imported manuscript is the input, not a review artifact, and
             # its source images would fill the listing on their own.
             if relative.parts[0] == MANUSCRIPT_DIRECTORY or not path.is_file():
                 continue
             found.append({"name": relative.as_posix(), "size": path.stat().st_size})
-        return found
+        # Ordered before the cap, so a long run reports the same first 200
+        # artifacts everywhere rather than whichever the walk reached first.
+        found.sort(key=lambda artifact: (artifact["name"].count("/"), artifact["name"]))
+        return found[:MAX_LISTED_ARTIFACTS]
 
     def read_artifact(self, job_id: str, name: str, max_chars: int = 100_000) -> str:
         job = self._get(job_id)
