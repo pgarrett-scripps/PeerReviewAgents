@@ -44,7 +44,6 @@ class ReviewPolicy:
     external_requests: int = 6
     debate_external_requests: int = 2
     tool_checks: int | None = 4
-    generation_calls: int | None = None
     max_attempts: int = 1
     session: str = 'bounded-passes'
     session_instruction: str = ''
@@ -60,7 +59,7 @@ class ReviewPolicy:
             if type(value) is not int or value <= 0:
                 raise ValueError('Review policy limits must be positive integers')
         for value in (self.finding_cap, self.candidate_finding_cap, self.tool_calls,
-                      self.tool_checks, self.generation_calls):
+                      self.tool_checks):
             if value is not None and (type(value) is not int or value <= 0):
                 raise ValueError('Optional review policy limits must be positive integers or None')
 
@@ -77,12 +76,6 @@ class ReviewPolicy:
         if self.tool_calls is not None:
             return self.tool_calls
         return 4 if mode in ('panel', 'self-revision', 'independent') else 6
-
-    def generation_call_limit(self, mode):
-        """Generation calls one run directory may spend, retries included."""
-        if self.generation_calls is not None:
-            return self.generation_calls
-        return 2 if mode in ('panel', 'self-revision') else 1
 
     def shared_instructions(self):
         """The COMMON review instructions, with this policy's budget sentence."""
@@ -127,7 +120,6 @@ AGENTIC = ReviewPolicy(
     external_requests=24,
     debate_external_requests=8,
     tool_checks=30,
-    generation_calls=2,
     max_attempts=2,
     session='single-long-agentic-session',
     session_instruction=AGENTIC_SESSION,

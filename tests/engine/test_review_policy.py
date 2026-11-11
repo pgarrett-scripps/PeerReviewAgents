@@ -52,10 +52,10 @@ REPEATED_PAPER = {
 MODES = ('plain', 'workspace', 'self-revision', 'independent')
 
 EXPECTED_DIGESTS = {
-    'independent': '4a2e9c67b5a1686d069ced6b1103d675fa89d2c815e7da3c52c09ce6c7e08a72',
-    'plain': 'cd2e162e9f99a4434350d536833bd02808c6954effc17bfa7cdc39dada38cfe6',
-    'self-revision': '4ccce1bf05cb76bd789002346f2d7f3cf2a67dfcde1c4dc7188d40d6f19af333',
-    'workspace': '4ba3db7b8b5edd77ecf8e4e47813f17859186c8da4440a427435de7bb9db3ff5',
+    'independent': '47d4f31390e5964327d12c0f836c7104ca272ba21664ed338c5f2752a748ec93',
+    'plain': '924d3cb5ef68f8f5a88fb6d37f8168e738a071f9cf0f8c347ce135b6fb4b6d42',
+    'self-revision': '592ae75d54a0041a8d9fc962ae0b5554dbea92574d3a992e998ef7a635d07be1',
+    'workspace': '867796a06028a722e34f794d6c2f7464256e081e26bcd012084e148d71158bf3',
 }
 
 # The panel, ensemble debate and manuscript-only stages, captured the same way.
@@ -64,9 +64,9 @@ EXPECTED_DIGESTS = {
 RUN_ID = re.compile(r'(?<=[a-z])-[0-9a-f]{10}\b')
 
 STAGE_DIGESTS = {
-    'panel': '3a6b831cf6f4f686645add47c276ac5b7ae264a5a202136d514657bd12174764',
-    'ensemble-debate': 'eea3881f7d43439448b3248e4ed7b59d5216620da79ec75779c931990c4173fd',
-    'manuscript-only': '827799000d7b7a6d5b4c4eba5946e0f0d00fc924c3f9df350bdcecf6b58e12c7',
+    'panel': '6ba7710fab020fa23f7dd5eda5be38da1d1bb42f60465a784750e04ab31b726d',
+    'ensemble-debate': '13b22ecb0f0652635ccfaca6e32b3ec9a8611a9283feb142fa9670edd6bebae7',
+    'manuscript-only': 'd8ed3c908a4808b2a41e7e5c85ebe6062e07c30a51da99d62f49b7158deb4422',
 }
 
 STAGE_CALLS = {'panel': 2, 'ensemble-debate': 1, 'manuscript-only': 1}
@@ -251,7 +251,6 @@ class DefaultPolicyIsUnchanged(unittest.TestCase):
     def test_default_ensemble_protocol_record_is_explicit_and_unchanged(self):
         self.assertEqual(ensemble._protocol('gpt-5.6-terra', 2, 750000), {
             'provider': 'codex', 'model': 'gpt-5.6-terra', 'effort': 'medium',
-            'held_out_runs_authorized': False, 'max_calls_per_condition': 1,
             'observed_token_stop': 750000, 'call_timeout_seconds': 900,
             'max_source_images': 10, 'image_budget_version': 'evidence-v1', 'mode': 'ensemble',
             'reviewers': 2, 'total_generation_calls': 3, 'token_launch_budget': 750000,
@@ -718,7 +717,6 @@ class QuarantinedFindings(unittest.TestCase):
 class BoundedRetry(unittest.TestCase):
     def setUp(self):
         self.protocol = {'provider': 'codex', 'model': 'gpt-5.6-terra', 'effort': 'medium',
-                         'held_out_runs_authorized': False, 'max_calls_per_condition': 1,
                          'observed_token_stop': 1000, 'call_timeout_seconds': 30,
                          'max_attempts': 2}
         self.schema = {'type': 'object'}
@@ -851,7 +849,7 @@ class BoundedRetry(unittest.TestCase):
 
     def test_a_successful_retry_does_not_block_the_next_call_in_the_run(self):
         run, calls = self.sequence(self.die, self.succeed, self.succeed)
-        protocol = {**self.protocol, 'max_calls_per_condition': 2}
+        protocol = dict(self.protocol)
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
             with patch.object(runtime.subprocess, 'run', side_effect=run):
@@ -890,7 +888,7 @@ class BoundedRetry(unittest.TestCase):
 
     def test_a_guard_refusal_is_never_retried(self):
         run, calls = self.sequence(self.succeed, self.succeed)
-        protocol = {**self.protocol, 'observed_token_stop': 1, 'max_calls_per_condition': 5}
+        protocol = {**self.protocol, 'observed_token_stop': 1}
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
             write(out / 'usage.jsonl', {})

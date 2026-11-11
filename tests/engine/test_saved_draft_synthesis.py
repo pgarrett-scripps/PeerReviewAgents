@@ -131,6 +131,17 @@ class SavedDraftSynthesisTests(unittest.TestCase):
             SavedDraftSynthesisRequest(**{**self.request.__dict__,
                 'output': self.root / 'missing'})
 
+    def test_rejects_a_packet_that_is_not_a_flat_directory_of_real_files(self):
+        nested = self.packet / 'nested'
+        nested.mkdir()
+        with self.assertRaisesRegex(ValueError, 'flat'):
+            SavedDraftSynthesisRequest(**{**self.request.__dict__, 'output': self.root / 'nested'})
+        nested.rmdir()
+        link = self.packet / 'link.json'
+        link.symlink_to(self.packet / 'index.json')
+        with self.assertRaisesRegex(ValueError, 'symlinks'):
+            SavedDraftSynthesisRequest(**{**self.request.__dict__, 'output': self.root / 'linked'})
+
     def test_rejects_wrong_expected_discovery_count(self):
         artifact_path = self.original / 'core-artifact.json'
         artifact = json.loads(artifact_path.read_text())

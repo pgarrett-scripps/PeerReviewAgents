@@ -45,8 +45,9 @@ The optional adapter genuinely reuses `readability.metrics` and `prose_check.che
 
 ```bash
 peerreview checks workspace --scaffold-root /path/to/paper-scaffold --output scaffold-report.json
-peerreview review workspace run-output --mode panel --literature-cutoff 2026-01-05 --scaffold-root /path/to/paper-scaffold
 ```
+
+The checks are a separate command. A review run never calls them.
 
 The checks operate on extracted plain text and skip headings, references, and tables. They include captions and supplementary prose. Their word convention differs from the importer totals. Readability and prose warnings are editorial cues, not evidence of scientific defects. Scaffold's Typst authoring rules and journal limits are not imposed on imported manuscripts.
 

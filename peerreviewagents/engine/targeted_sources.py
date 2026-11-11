@@ -1,17 +1,13 @@
-"""Targeted identifier, literature, and curated historical registration access."""
+"""Targeted identifier and literature access over the bounded source client."""
 import datetime
-import argparse
 import json
 import re
-from pathlib import Path
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import quote, urlencode
 
 from .storage import digest
-from .source_adapters import parse as parse_adapter
 
 
 IDENTIFIER_KINDS = ('doi', 'pmid', 'pmcid', 'nct', 'osf')
-REGISTRATION_HOSTS = {'clinicaltrials.gov', 'api.osf.io'}
 
 
 def literature_request(query, cutoff=None, limit=3):
@@ -129,201 +125,18 @@ def parse_identifier(kind, identifier, data):
             'limitation':'Identifier resolution verifies record identity and selected metadata, not claim support or historical state.'}
 
 
-class HistoricalRegistrationStore:
-    """Read hash-manifested dated snapshots without changing source artifacts."""
-    def __init__(self, root):
-        self.root = Path(root)
-        manifest_path = self.root / 'manifest.json'
-        manifest_raw = manifest_path.read_bytes()
-        if not manifest_raw or len(manifest_raw) > 1_000_000:
-            raise ValueError('Historical registration manifest is empty or too large')
-        self.manifest_sha256 = digest(manifest_raw)
-        self.manifest = json.loads(manifest_raw)
-        if self.manifest.get('schema_version') != 1 or not isinstance(self.manifest.get('files'), dict):
-            raise ValueError('Historical registration manifest is invalid')
-
-    def _records(self):
-        manifest_path = self.root / 'manifest.json'
-        manifest_raw = manifest_path.read_bytes()
-        if digest(manifest_raw) != self.manifest_sha256 or json.loads(manifest_raw) != self.manifest:
-            raise ValueError('Historical registration manifest changed')
-        records = []
-        for name, expected_hash in self.manifest['files'].items():
-            path = (self.root / name).resolve()
-            if not path.is_relative_to(self.root.resolve()) or not path.is_file():
-                raise ValueError('Historical registration snapshot path is invalid')
-            raw = path.read_bytes()
-            if not raw or len(raw) > 2_000_000:
-                raise ValueError('Historical registration source file is empty or too large')
-            if digest(raw) != expected_hash:
-                raise ValueError('Historical registration snapshot changed')
-            if not name.endswith('.snapshot.json'):
-                continue
-            record = json.loads(raw)
-            _registration_url(record.get('registry'), record.get('identifier'),
-                              record.get('source_url', ''))
-            parsed = urlsplit(record.get('source_url', ''))
-            if (record.get('schema_version') != 1 or parsed.scheme != 'https'
-                    or parsed.hostname not in REGISTRATION_HOSTS):
-                raise ValueError('Historical registration snapshot provenance is invalid')
-            datetime.date.fromisoformat(record['effective_date'])
-            datetime.datetime.fromisoformat(record['captured_at'].replace('Z', '+00:00'))
-            if record.get('registry') not in ('clinicaltrials', 'osf'):
-                raise ValueError('Historical registration registry is unsupported')
-            raw_name = record.get('raw_file')
-            raw_path = (self.root / str(raw_name)).resolve()
-            if (not raw_name or not raw_path.is_relative_to(self.root.resolve())
-                    or not raw_path.is_file() or raw_name not in self.manifest['files']):
-                raise ValueError('Historical registration raw source is missing')
-            official_raw = raw_path.read_bytes()
-            if not official_raw or len(official_raw) > 2_000_000:
-                raise ValueError('Historical registration raw source is empty or too large')
-            if (digest(official_raw) != self.manifest['files'][raw_name]
-                    or digest(official_raw) != record.get('raw_sha256')):
-                raise ValueError('Historical registration raw source changed')
-            if not isinstance(record.get('fields'), dict):
-                raise ValueError('Historical registration snapshot is incomplete')
-            try:
-                official_data = json.loads(official_raw)
-                provider = 'clinicaltrials' if record['registry'] == 'clinicaltrials' else 'osf'
-                derived_fields, derived_version, _, derived_id = parse_adapter(
-                    provider, record['identifier'], official_data)
-            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-                raise ValueError('Historical registration raw source cannot be parsed') from exc
-            if (derived_id is None or derived_id.casefold() != record['identifier'].casefold()
-                    or derived_fields != record['fields']
-                    or derived_version != record.get('record_version')):
-                raise ValueError('Historical registration metadata does not match the pinned raw source')
-            captured_date = datetime.datetime.fromisoformat(
-                record['captured_at'].replace('Z', '+00:00')).date().isoformat()
-            if captured_date > record['effective_date'] and not (
-                    isinstance(record.get('curator_attestation'), str)
-                    and record['curator_attestation'].strip()
-                    and isinstance(record.get('version_locator'), str)
-                    and record['version_locator'].strip()):
-                raise ValueError('Post-date historical capture lacks curator attestation and version locator')
-            records.append(record)
-        return records
-
-    def lookup(self, registry, identifier, as_of):
-        datetime.date.fromisoformat(as_of)
-        matches = [row for row in self._records() if row['registry'] == registry
-                   and row['identifier'].casefold() == identifier.casefold()
-                   and row['effective_date'] <= as_of]
-        if not matches:
-            return {'status':'historical_snapshot_unavailable', 'eligible':False,
-                    'registry':registry, 'identifier':identifier, 'as_of':as_of,
-                    'limitation':'No curated dated snapshot at or before the requested date is in the immutable snapshot set.'}
-        matches.sort(key=lambda row:(row['effective_date'], row['captured_at']))
-        row = matches[-1]
-        captured_date = datetime.datetime.fromisoformat(
-            row['captured_at'].replace('Z', '+00:00')).date().isoformat()
-        if captured_date > as_of and not (row.get('curator_attestation') and row.get('version_locator')):
-            return {'status':'historical_snapshot_unavailable', 'eligible':False,
-                    'registry':registry, 'identifier':identifier, 'as_of':as_of,
-                    'limitation':'The record was captured after the requested date without a pinned historical version attestation.'}
-        evidence_text = '\n'.join(key + ': ' + json.dumps(value, ensure_ascii=False, sort_keys=True)
-                                  for key, value in row['fields'].items())
-        identity = {'registry':registry, 'identifier':identifier, 'as_of':as_of,
-                    'effective_date':row['effective_date'], 'raw_sha256':row['raw_sha256'],
-                    'evidence_text':evidence_text}
-        return {'status':'ok', 'eligible':True, 'provider':registry + '-historical',
-            'identifier':identifier, 'as_of':as_of, 'record_version':row.get('record_version'),
-            'effective_date':row['effective_date'], 'captured_at':row['captured_at'],
-            'source_url':row['source_url'], 'raw_sha256':row['raw_sha256'],
-            'version_locator':row.get('version_locator'),
-            'curator_attestation':row.get('curator_attestation'),
-            'fields':row['fields'], 'evidence_text':evidence_text,
-            'source_id':'historical-' + digest(json.dumps(identity, sort_keys=True))[:20],
-            'limitation':'Curated dated snapshot provenance only. It does not certify historical completeness. Coverage depends on the immutable snapshot set and does not reconstruct omitted attachments or every registry transition.'}
-
-
-def _registration_url(registry, identifier, source_url):
-    parsed = urlsplit(source_url)
-    if parsed.scheme != 'https' or parsed.hostname not in REGISTRATION_HOSTS:
-        raise ValueError('Registration source URL is not an allowed official endpoint')
-    if registry == 'clinicaltrials':
-        if parsed.hostname != 'clinicaltrials.gov' or identifier.upper() not in parsed.path.upper():
-            raise ValueError('ClinicalTrials.gov source URL does not match the registration ID')
-    elif registry == 'osf':
-        expected = '/v2/registrations/' + identifier.lower() + '/'
-        if parsed.hostname != 'api.osf.io' or parsed.path.lower() != expected:
-            raise ValueError('OSF source URL does not match the registration ID')
-    else:
-        raise ValueError('Unsupported registration registry')
-
-
-def curate_registration_snapshot(raw_path, output_root, registry, identifier, captured_at,
-                                  source_url, archive_effective_date=None,
-                                  version_locator=None, curator_attestation=None,
-                                  maximum_bytes=2_000_000):
-    """Create and recheck one immutable snapshot set from official raw JSON."""
-    raw_path, output_root = Path(raw_path), Path(output_root)
-    if output_root.exists() and any(output_root.iterdir()):
-        raise ValueError('Snapshot output directory must be new or empty')
-    raw = raw_path.read_bytes()
-    if not raw or len(raw) > maximum_bytes:
-        raise ValueError('Registration raw response is empty or exceeds the bounded size')
-    _registration_url(registry, identifier, source_url)
-    captured = datetime.datetime.fromisoformat(captured_at.replace('Z', '+00:00'))
-    if captured.tzinfo is None:
-        raise ValueError('captured_at must include a timezone')
-    data = json.loads(raw)
-    provider = 'clinicaltrials' if registry == 'clinicaltrials' else 'osf'
-    fields, version, _, resolved = parse_adapter(provider, identifier, data)
-    if resolved is None or resolved.casefold() != identifier.casefold():
-        raise ValueError('Official raw response does not match the registration ID')
-    normalized = json.dumps(fields, ensure_ascii=False, sort_keys=True)
-    if len(normalized.encode()) > 14_000:
-        raise ValueError('Selected registration fields exceed the model-facing bound')
-    capture_date = captured.date().isoformat()
-    effective_date = archive_effective_date or capture_date
-    datetime.date.fromisoformat(effective_date)
-    if effective_date != capture_date and not (
-            isinstance(version_locator, str) and version_locator.strip()
-            and isinstance(curator_attestation, str) and curator_attestation.strip()):
-        raise ValueError('Historical archive capture requires a version locator and curator attestation')
-    output_root.mkdir(parents=True, exist_ok=True)
-    safe = registry + '-' + re.sub(r'[^A-Za-z0-9_-]', '_', identifier)
-    raw_name, record_name = safe + '.raw.json', safe + '.snapshot.json'
-    raw_out = output_root / raw_name
-    raw_out.write_bytes(raw)
-    record = {'schema_version':1, 'registry':registry, 'identifier':identifier,
-        'effective_date':effective_date, 'captured_at':captured_at,
-        'source_url':source_url, 'record_version':version,
-        'version_locator':version_locator, 'curator_attestation':curator_attestation,
-        'raw_file':raw_name, 'raw_sha256':digest(raw), 'fields':fields,
-        'provenance_status':'curated_snapshot_not_verified_historical_truth'}
-    (output_root / record_name).write_text(json.dumps(record, indent=2, ensure_ascii=False) + '\n')
-    manifest = {'schema_version':1, 'files':{
-        raw_name:digest(raw_out.read_bytes()),
-        record_name:digest((output_root / record_name).read_bytes())}}
-    (output_root / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
-    store = HistoricalRegistrationStore(output_root)
-    store._records()
-    return {'snapshot_directory':str(output_root),
-        'manifest_sha256':digest((output_root / 'manifest.json').read_bytes()),
-        'record_file':record_name, 'raw_file':raw_name,
-        'provenance_status':record['provenance_status']}
-
-
 class TargetedSources:
-    def __init__(self, client, historical_store=None):
+    def __init__(self, client):
         self.client = client
-        self.historical_store = historical_store
 
     def _card(self, provider, identifier, block_id, record, fields, eligible, limitation):
         text = '\n'.join(key + ': ' + json.dumps(value, ensure_ascii=False, sort_keys=True)
                          for key, value in fields.items())
         card = {key:value for key, value in record.items() if key != 'data'}
         card.update(provider=provider, identifier=identifier, manuscript_block_id=block_id,
-            evidence_mode=self.client.mode, cutoff=self.client.cutoff, record_version=None,
+            cutoff=self.client.cutoff, record_version=None,
             source_publication_date=None, fields=fields, evidence_text=text,
             eligible=eligible, limitation=limitation)
-        if self.client.mode == 'historical' and eligible:
-            card.update(status='version_unavailable', eligible=False,
-                        temporal_status='historical_record_not_established')
-            card['limitation'] += ' This live response is not an archived historical record.'
         return self.client.store_card(card)
 
     def search_literature(self, query, block_id, limit=3):
@@ -352,46 +165,3 @@ class TargetedSources:
         result = parse_identifier(kind, identifier, data)
         return self._card('identifier-resolution', kind + ':' + identifier, block_id,
             record, result, result['status'] == 'resolved', result['limitation'])
-
-    def historical_registration(self, registry, identifier, as_of, block_id):
-        as_of_date = datetime.date.fromisoformat(as_of)
-        if self.client.cutoff is not None and as_of_date > datetime.date.fromisoformat(self.client.cutoff):
-            raise ValueError('Historical registration date exceeds the configured evidence cutoff')
-        denied = self.client.reserve_target(block_id, 'historical-registration')
-        if denied:
-            return denied
-        if self.historical_store is None:
-            return {'status':'historical_snapshot_unavailable', 'eligible':False,
-                    'provider':'historical-registration', 'identifier':identifier,
-                    'manuscript_block_id':block_id,
-                    'limitation':'No curated immutable historical snapshot set was configured.'}
-        result = self.historical_store.lookup(registry, identifier, as_of)
-        result.update(manuscript_block_id=block_id, evidence_mode='historical', cutoff=as_of)
-        if not result.get('eligible'):
-            return result
-        result['provider'] = 'historical-registration'
-        result['identifier'] = registry + ':' + identifier
-        result['record_version'] = result.get('record_version') or result.get('effective_date')
-        return self.client.store_card(result)
-
-
-def main(argv=None):
-    parser = argparse.ArgumentParser(description='Curate one bounded registration snapshot set')
-    parser.add_argument('--raw', required=True)
-    parser.add_argument('--output', required=True)
-    parser.add_argument('--registry', required=True, choices=('clinicaltrials','osf'))
-    parser.add_argument('--identifier', required=True)
-    parser.add_argument('--captured-at', required=True)
-    parser.add_argument('--source-url', required=True)
-    parser.add_argument('--archive-effective-date')
-    parser.add_argument('--version-locator')
-    parser.add_argument('--curator-attestation')
-    args = parser.parse_args(argv)
-    result = curate_registration_snapshot(args.raw, args.output, args.registry,
-        args.identifier, args.captured_at, args.source_url,
-        args.archive_effective_date, args.version_locator, args.curator_attestation)
-    print(json.dumps(result, indent=2))
-
-
-if __name__ == '__main__':
-    main()

@@ -58,19 +58,6 @@ class Sources(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_references({'findings': [{'source_evidence': [{'evidence_id': card['evidence_id'], 'quote': 'Homo sapiens'}]}]}, [card])
 
-    def test_current_database_is_not_historical_ground_truth(self):
-        card = self.client(mode='historical', cutoff='2020-01-01').lookup('uniprot', 'P04637', 'b1')
-        self.assertEqual(card['status'], 'version_unavailable')
-        self.assertFalse(card['eligible'])
-        self.assertEqual(card['fields']['organism']['taxonId'], 9606)
-
-    def test_older_publication_does_not_date_current_metadata(self):
-        self.payload = {'message': {'DOI': '10.1234/abc', 'published': {'date-parts': [[2010, 1, 1]]},
-                                    'update-to': [{'type': 'retraction', 'updated': {'date-parts': [[2026]]}}]}}
-        card = self.client(mode='historical', cutoff='2020-01-01').lookup('crossref', '10.1234/abc', 'b1')
-        self.assertEqual(card['status'], 'version_unavailable')
-        self.assertFalse(card['eligible'])
-
     def test_frozen_packet_is_shared_without_network_or_shared_budget(self):
         self.client().lookup('uniprot', 'P04637', 'b1')
         from peerreviewagents.engine.storage import digest

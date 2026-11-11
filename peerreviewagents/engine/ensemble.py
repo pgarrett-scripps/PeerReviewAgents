@@ -119,8 +119,8 @@ def _protocol(model,reviewers,token_budget,policy=None):
     from .models import provider_for
     from .review_policy import get_review_policy
     policy=get_review_policy(policy)
-    return {'provider':provider_for(model),'model':model,'effort':policy.effort,'held_out_runs_authorized':False,
-        'max_calls_per_condition':1,'observed_token_stop':token_budget,'call_timeout_seconds':policy.call_timeout_seconds,
+    return {'provider':provider_for(model),'model':model,'effort':policy.effort,
+        'observed_token_stop':token_budget,'call_timeout_seconds':policy.call_timeout_seconds,
         'max_source_images':10,'image_budget_version':'evidence-v1','mode':'ensemble',
         'reviewers':reviewers,'total_generation_calls':reviewers+1,'token_launch_budget':token_budget,
         'independent_tool_allowance':policy.investigator_tool_limit('independent'),
@@ -129,8 +129,8 @@ def _protocol(model,reviewers,token_budget,policy=None):
 
 
 def debate_reviews(workspace,out,cutoff,records,*,images=(),model=None,
-                   token_budget=750000,evidence_mode='current',cache_roots=(),
-                   source_packet=None,historical_snapshots=None,evidence_memos=(),
+                   token_budget=750000,cache_roots=(),
+                   source_packet=None,evidence_memos=(),
                    synthesis_policy='debate',reused_drafts=False,policy=None):
     """Shared debate implementation for fresh discovery and explicitly recorded reused drafts."""
     from .models import DEFAULT_MODEL
@@ -157,9 +157,8 @@ def debate_reviews(workspace,out,cutoff,records,*,images=(),model=None,
     protocol=_protocol(model,len(records),token_budget,policy)
     if reused_drafts:
         protocol.update(mode='saved-draft-synthesis', total_generation_calls=1, discovery_calls=0)
-    protocol.update(evidence_mode=evidence_mode,
-                    evidence_policy='frozen' if source_packet is not None else 'live',
-                    live_retrieval=source_packet is None, synthesis_policy=synthesis_policy,
+    protocol.update(evidence_policy='frozen' if source_packet is not None else 'live',
+                    synthesis_policy=synthesis_policy,
                     synthesis_preflight=VERSION, synthesis_validation_checks=2)
     memos=[]
     memo_images=[]
@@ -177,9 +176,8 @@ def debate_reviews(workspace,out,cutoff,records,*,images=(),model=None,
             ledger['investigation_context']['focused_evidence_memos']=memos
         write(out/'debate-ledger.json',ledger)
         write(out/'input-reviews.json',records)
-        sources=SourceClient(out/'sources',out/'source-cache',policy.debate_external_requests,evidence_mode,cutoff,
-            frozen_cache=source_packet,
-            frozen_hashes=packet_manifest)
+        sources=SourceClient(out/'sources',out/'source-cache',policy.debate_external_requests,cutoff,
+            frozen_cache=source_packet,frozen_hashes=packet_manifest)
         cards={}
         for cache in cache_roots:
             for path in Path(cache).glob('*'):
@@ -228,9 +226,8 @@ def debate_reviews(workspace,out,cutoff,records,*,images=(),model=None,
                 'tool_limit':policy.debate_tool_calls,'literature_cutoff':cutoff,'evidence_handles':True,
                 'synthesis_ledger':str(out/'debate-ledger.json'),
                 'tool_profile':'domains-v1','source_state':str(out/'sources'),
-                'external_request_limit':policy.debate_external_requests,'evidence_mode':evidence_mode}
+                'external_request_limit':policy.debate_external_requests}
         if source_packet:config.update(source_packet=str(source_packet),source_packet_manifest=packet_manifest)
-        if historical_snapshots:config['historical_snapshots']=str(Path(historical_snapshots).resolve())
         write(out/'execution/workspace/tool-config.json',config)
         write(out/'manifest.json',{'paper_id':paper['id'],'code':source_manifest(Path(__file__).parent),
             'review_input_sha256':digest((out/'input-reviews.json').read_bytes()),
@@ -303,8 +300,7 @@ def debate_reviews(workspace,out,cutoff,records,*,images=(),model=None,
 
 
 def ensemble_review(workspace,output,cutoff,reviewers=2,token_budget=750000,
-                    scaffold_root=None,evidence_mode='current',source_packet=None,
-                    shared_images=None,historical_snapshots=None,model=None,
+                    shared_images=None,model=None,
                     synthesis_policy='debate',policy=None):
     from .models import DEFAULT_MODEL
     from .review_policy import get_review_policy,single_session_refusal
@@ -324,9 +320,7 @@ def ensemble_review(workspace,output,cutoff,reviewers=2,token_budget=750000,
     paper=verify_workspace(root)
     if out==root:raise ValueError('Use a separate output directory')
     protocol=_protocol(model,reviewers,token_budget,policy)
-    protocol.update(evidence_mode=evidence_mode,
-                    evidence_policy='frozen' if source_packet is not None else 'live',
-                    live_retrieval=source_packet is None)
+    protocol.update(evidence_policy='live')
     _prepare(out,protocol)
     call_ceiling=(reviewers+1)*policy.max_attempts
     # One retry per generation call may leave usage no token count covers.
@@ -343,10 +337,8 @@ def ensemble_review(workspace,output,cutoff,reviewers=2,token_budget=750000,
             check_budget(out,token_budget,call_ceiling,allowed_unknown)
             target=out/f'reviewer-{index}'
             write(out/'progress.json',{'status':'running','stage':f'reviewer-{index}','reviewers':reviewers})
-            review(root,target,cutoff,mode='independent',scaffold_root=scaffold_root,
-                evidence_mode=evidence_mode,source_packet=source_packet,
-                shared_images=shared_images,historical_snapshots=historical_snapshots,model=model,
-                policy=policy)
+            review(root,target,cutoff,mode='independent',
+                shared_images=shared_images,model=model,policy=policy)
             path=target/'editor-package.json'
             records.append({'review':read(path),'provenance':{'reviewer_id':f'reviewer-{index}',
                 'paper_id':paper['id'],'source_review_path':str(path),'source_review_sha256':digest(path.read_bytes()),'origin':'fresh_independent_session'}})
@@ -356,8 +348,7 @@ def ensemble_review(workspace,output,cutoff,reviewers=2,token_budget=750000,
         write(out/'progress.json',{'status':'running','stage':stage,'reviewers':reviewers})
         package=debate_reviews(root,out/stage,cutoff,records,images=images,model=model,
             token_budget=token_budget-observed_usage(out)['observed_tokens'],
-            evidence_mode=evidence_mode,cache_roots=[out/f'reviewer-{i}/source-cache' for i in range(1,reviewers+1)],
-            source_packet=source_packet,historical_snapshots=historical_snapshots,
+            cache_roots=[out/f'reviewer-{i}/source-cache' for i in range(1,reviewers+1)],
             synthesis_policy=synthesis_policy,policy=policy)
         write(out/'editor-package.json',package)
         from .reviewer import COMPLETE_WITHOUT_FINDINGS

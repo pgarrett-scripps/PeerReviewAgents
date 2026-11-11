@@ -32,7 +32,6 @@ def capabilities():
             'policies': list(review_policies()),
             'default_policy': DEFAULT_POLICY_NAME,
             'review_policies': policies,
-            'evidence_modes': ['current', 'historical'],
             'evidence_policies': ['none', 'live', 'frozen'],
             'models': list(SUBSCRIPTION_MODELS), 'reasoning_effort': DEFAULT_POLICY.effort,
             'reasoning_efforts': list(APPROVED_EFFORTS),
@@ -91,12 +90,8 @@ class ReviewRequest:
     model: str = DEFAULT_MODEL
     reviewers: int = 2
     token_budget: int = 750000
-    scaffold_root: Path | None = None
     source_images: tuple[Path, ...] = field(default_factory=tuple)
     preset: str | None = None
-    evidence_mode: Literal['current', 'historical'] = 'current'
-    source_packet: Path | None = None
-    source_packet_hashes: tuple[tuple[str, str], ...] = field(default_factory=tuple, init=False)
     synthesis_policy: Literal['debate', 'ordinary'] = 'debate'
     policy: str | None = None
 
@@ -121,15 +116,6 @@ class ReviewRequest:
             if get_review_policy(self.policy).single_session and self.workflow == 'ensemble':
                 raise ValueError(single_session_refusal(
                     self.policy, option='policy', preset='preset', mode="workflow='independent'"))
-        if self.evidence_mode not in ('current', 'historical'):
-            raise ValueError('Evidence mode must be current or historical')
-        if self.source_packet is not None:
-            if self.workflow == 'manuscript-only':
-                raise ValueError('Manuscript-only review cannot receive an external source packet')
-            from .source_packet import source_packet_manifest
-            manifest = source_packet_manifest(self.source_packet)
-            object.__setattr__(self, 'source_packet', Path(self.source_packet).resolve())
-            object.__setattr__(self, 'source_packet_hashes', tuple(sorted(manifest.items())))
         if self.synthesis_policy not in ('debate', 'ordinary'):
             raise ValueError('Synthesis policy must be debate or ordinary')
         if self.workflow != 'ensemble' and self.synthesis_policy != 'debate':
@@ -152,7 +138,6 @@ class SavedDraftSynthesisRequest:
     literature_cutoff: str | None = None
     model: str = DEFAULT_MODEL
     token_budget: int = 750000
-    evidence_mode: Literal['current', 'historical'] = 'current'
     synthesis_policy: Literal['ordinary'] = 'ordinary'
 
     def __post_init__(self):
@@ -172,8 +157,6 @@ class SavedDraftSynthesisRequest:
             raise ValueError('Unsupported Paper Workbench model. No fallback is permitted.')
         if self.synthesis_policy != 'ordinary':
             raise ValueError('Saved draft synthesis supports only the ordinary policy')
-        if self.evidence_mode not in ('current', 'historical'):
-            raise ValueError('Evidence mode must be current or historical')
         if type(self.token_budget) is not int or self.token_budget <= 0:
             raise ValueError('Token launch budget must be a positive integer')
         if len(self.source_images) > 10 or any(not Path(path).is_file() for path in self.source_images):
@@ -263,7 +246,7 @@ def run_saved_draft_synthesis(request: SavedDraftSynthesisRequest):
                          for path in root.glob('*.raw') if path.is_file()})
     package = debate_reviews(workspace, output, request.literature_cutoff,
         records, images=request.source_images, model=request.model, token_budget=request.token_budget,
-        evidence_mode=request.evidence_mode, cache_roots=cache_roots, source_packet=request.source_packet,
+        cache_roots=cache_roots, source_packet=request.source_packet,
         synthesis_policy='ordinary', reused_drafts=True)
     verify_source_packet(request.source_packet, packet_before)
     cache_after = {str(path.resolve()): digest(path.read_bytes()) for root in cache_roots for path in root.glob('*') if path.is_file()}
@@ -326,11 +309,6 @@ def run_review(request: ReviewRequest):
     paper = load_manuscript(workspace)
     source_hash = digest((workspace/'manifest.json').read_bytes())
     resolved_config = resolved_review_config(request)
-    packet_before = dict(request.source_packet_hashes)
-    packet_after = dict(packet_before)
-    if request.source_packet is not None:
-        from .source_packet import verify_source_packet
-        verify_source_packet(request.source_packet, packet_before)
     # A run that completes with every finding quarantined is not the same
     # outcome as a clean one. The engine says which it was; the artifact has to
     # carry it, because an API caller never reads progress.json.
@@ -339,17 +317,12 @@ def run_review(request: ReviewRequest):
         package = run_manuscript_only(request, paper, resolved_config)
         progress = manuscript_only_progress(package)
     else:
-        try:
-            progress = review(workspace, output, request.literature_cutoff,
-                              mode=request.workflow, model=request.model, reviewers=request.reviewers,
-                              token_budget=request.token_budget, scaffold_root=request.scaffold_root,
-                              shared_images=request.source_images, evidence_mode=request.evidence_mode,
-                              source_packet=request.source_packet,
-                              synthesis_policy=request.synthesis_policy,
-                              policy=resolved_config.get('policy'))
-        finally:
-            if request.source_packet is not None:
-                packet_after = verify_source_packet(request.source_packet, packet_before)
+        progress = review(workspace, output, request.literature_cutoff,
+                          mode=request.workflow, model=request.model, reviewers=request.reviewers,
+                          token_budget=request.token_budget,
+                          shared_images=request.source_images,
+                          synthesis_policy=request.synthesis_policy,
+                          policy=resolved_config.get('policy'))
     if not progress:
         # The engine writes the same record to the run directory. Read it back
         # rather than report an unknown status.
@@ -361,8 +334,6 @@ def run_review(request: ReviewRequest):
                 'workflow': request.workflow, 'model_requested': request.model,
                 'resolved_configuration': resolved_config,
                 'resolved_configuration_sha256': digest(json.dumps(resolved_config, sort_keys=True)),
-                'source_packet_manifest_before': packet_before or None,
-                'source_packet_manifest_after': packet_after or None,
                 'engine_source': engine, 'core_source': core_engine,
                 'status': progress.get('status'), 'run_progress': progress,
                 'editor_package': read(output/'editor-package.json'),
@@ -374,8 +345,7 @@ def run_review(request: ReviewRequest):
 
 def review_request_from_preset(name, *, workspace, output,
                                literature_cutoff=None, model=None, token_budget=None,
-                               scaffold_root=None, source_images=(), evidence_mode='current',
-                               source_packet=None, synthesis_policy=None, policy=None):
+                               source_images=(), synthesis_policy=None, policy=None):
     """Construct a request from one named preset, with explicit runtime overrides."""
     preset = get_review_preset(name)
     preset_synthesis = 'ordinary' if preset.synthesis_policy == 'ordinary-synthesis-v1' else 'debate'
@@ -386,8 +356,7 @@ def review_request_from_preset(name, *, workspace, output,
         workflow=preset.workflow, model=model or preset.model or DEFAULT_MODEL,
         reviewers=preset.reviewers,
         token_budget=preset.token_budget if token_budget is None else token_budget,
-        scaffold_root=scaffold_root, source_images=tuple(source_images), preset=name,
-        evidence_mode=evidence_mode, source_packet=source_packet,
+        source_images=tuple(source_images), preset=name,
         synthesis_policy=preset_synthesis if synthesis_policy is None else synthesis_policy,
         policy=preset.policy if policy is None else policy,
     )

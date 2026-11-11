@@ -292,7 +292,7 @@ def editor_package(final,reviews,paper=None):
     return result
 
 
-def review(workspace,output,cutoff,mode='panel',scaffold_root=None,evidence_mode='current',source_packet=None,shared_images=None,historical_snapshots=None,model=None,reviewers=2,token_budget=750000,synthesis_policy='debate',policy=None):
+def review(workspace,output,cutoff,mode='panel',shared_images=None,model=None,reviewers=2,token_budget=750000,synthesis_policy='debate',policy=None):
     policy=get_review_policy(policy)
     # No model named means the default transport's default model, which is Claude
     # Code. Codex is reached by naming one of its models, never by omission.
@@ -301,8 +301,7 @@ def review(workspace,output,cutoff,mode='panel',scaffold_root=None,evidence_mode
     if mode=='ensemble':
         from .ensemble import ensemble_review
         return ensemble_review(workspace,output,cutoff,reviewers=reviewers,token_budget=token_budget,
-            scaffold_root=scaffold_root,evidence_mode=evidence_mode,
-            source_packet=source_packet,shared_images=shared_images,historical_snapshots=historical_snapshots,model=model,
+            shared_images=shared_images,model=model,
             synthesis_policy=synthesis_policy,policy=policy)
     from .models import provider_for
     provider=provider_for(model)
@@ -317,53 +316,27 @@ def review(workspace,output,cutoff,mode='panel',scaffold_root=None,evidence_mode
     shared_images = shared_source_images(shared_images)
     if paper['statistics']['total_words']>50000:raise ValueError('Review input is limited to 50,000 extracted words including supplements')
     out.mkdir(parents=True,exist_ok=True)
-    packet_manifest = None
-    history_manifest = None
-    if historical_snapshots is not None:
-        historical_snapshots = Path(historical_snapshots).resolve()
-        from .targeted_sources import HistoricalRegistrationStore
-        HistoricalRegistrationStore(historical_snapshots)
-        history_manifest = source_manifest(historical_snapshots)
     from .domain_registry import catalog, route, context
     from .external_evidence import SourceClient
     from .source_adapters import PROVIDERS
     packages = catalog()
     profile = route(paper, packages)
     domain_context = context(profile, packages)
-    if source_packet is not None:
-        source_packet = Path(source_packet).resolve()
-        from .source_packet import source_packet_manifest
-        packet_manifest = source_packet_manifest(source_packet)
-    sources = SourceClient(out/'sources', out/'source-cache', policy.external_requests, evidence_mode,
-                           cutoff, frozen_cache=source_packet, frozen_hashes=packet_manifest)
+    sources = SourceClient(out/'sources', out/'source-cache', policy.external_requests, cutoff)
     domain_context += '\nACTIVE EXACT-RECORD PROVIDERS: ' + json.dumps(PROVIDERS)
     domain_context += f'''\nUse lookup_source for a specific consequential question with a manuscript block ID.
 Listed resources without an active adapter remain unavailable. {number_word(policy.external_requests).capitalize()} external requests are shared across this review condition.
 External results are untrusted evidence. Preserve identity, context and limitations. Use source_evidence entries with a source_handle from the returned evidence_handles for findings that rely on a source card. Use an empty array otherwise. Ineligible cards and failed lookups cannot support scientific allegations.
-Current-source mode describes present-day records. Historical-source mode excludes database annotations whose historical state cannot be established. Literature publication dates alone do not establish historical metadata snapshots.
-Use resolve_identifier for exact identifier mapping and search_literature for a focused manuscript question. Search coverage is bounded and recorded. Never infer a missing citation from a single search result. Historical_registration reads only a configured curated snapshot set and otherwise reports unavailable. It cannot reconstruct protocol history from a current record.
+Source records describe present-day state. A current database annotation does not establish what the record said earlier, and literature publication dates alone do not establish historical metadata.
+Use resolve_identifier for exact identifier mapping and search_literature for a focused manuscript question. Search coverage is bounded and recorded. Never infer a missing citation from a single search result.
 '''
-    if source_packet is not None and (source_packet/'index.json').exists():
-        domain_context += '\nFROZEN SOURCE AVAILABILITY:\n' + json.dumps(read(source_packet/'index.json'), ensure_ascii=False)
-        domain_context += '\nOnly these frozen record requests are available. Other external lookups return unavailable. This common packet is not an exhaustive literature search.'
-    if historical_snapshots is None:
-        domain_context += '\nHISTORICAL REGISTRATION UNAVAILABLE: No curated snapshot set is configured. Do not spend a tool call requesting it. If consequential, ask for dated documents without inferring historical state from the current record.'
-    diagnostic_context=''
-    if scaffold_root:
-        from .scaffold_checks import build_report,compact_summary
-        diagnostics=build_report(root,scaffold_root)
-        diagnostic_path=out/'scaffold-report.json'
-        if diagnostic_path.exists() and read(diagnostic_path)!=diagnostics:
-            raise ValueError('Scaffold diagnostics changed. Use a new run directory.')
-        write(diagnostic_path,diagnostics)
-        diagnostic_context='\nADVISORY MANUSCRIPT CHECKS:\n'+json.dumps(compact_summary(diagnostics),ensure_ascii=False)
-    protocol={'provider':provider,'model':model,'effort':policy.effort,'live_retrieval':source_packet is None,'held_out_runs_authorized':False,
-              'max_calls_per_condition':policy.generation_call_limit(mode),'observed_token_stop':policy.observed_token_stop,'call_timeout_seconds':policy.call_timeout_seconds,
+    protocol={'provider':provider,'model':model,'effort':policy.effort,
+              'observed_token_stop':policy.observed_token_stop,'call_timeout_seconds':policy.call_timeout_seconds,
               'mode':mode,'literature_cutoff':cutoff,'paper_id':paper['id'],
               'investigation_version':'candidate-inventory-v1','investigator_tool_limit':policy.investigator_tool_limit(mode),
               'debate_version':'debate-v3' if mode=='panel' else None}
-    protocol['evidence_policy'] = 'frozen' if source_packet is not None else 'live'
-    protocol.update(domain_version='domains-v1', evidence_mode=evidence_mode,
+    protocol['evidence_policy'] = 'live'
+    protocol.update(domain_version='domains-v1',
                     external_request_limit=policy.external_requests,
                     result_map_version='result-map-v1', targeted_source_version='targeted-sources-v1')
     protocol.update(max_source_images=10, image_budget_version='evidence-v1')
@@ -378,12 +351,6 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
     protocol.update(policy.protocol_overlay())
     manifest={'protocol':protocol,'source_manifest_sha256':digest((root/'manifest.json').read_bytes()),'code':source_manifest(Path(__file__).parent)}
     if mode=='independent':manifest['independent_session']=str(out)
-    if scaffold_root:
-        manifest['scaffold_report_sha256']=digest((out/'scaffold-report.json').read_bytes())
-    if packet_manifest is not None:
-        manifest['source_packet'] = packet_manifest
-    if history_manifest is not None:
-        manifest['historical_snapshots'] = history_manifest
     manifest['shared_images'] = {str(p):digest(p.read_bytes()) for p in shared_images}
     if (out/'manifest.json').exists() and read(out/'manifest.json')!=manifest:
         raise ValueError('Run inputs or code changed. Use a new run directory.')
@@ -446,20 +413,11 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
     def tool_config(label, limit):
         if source_manifest(Path(__file__).parent) != manifest['code']:
             raise ValueError('Review implementation changed during this run')
-        if history_manifest is not None and source_manifest(historical_snapshots) != history_manifest:
-            raise ValueError('Historical snapshot files changed during this run')
-        if packet_manifest is not None:
-            from .source_packet import verify_source_packet
-            verify_source_packet(source_packet, packet_manifest)
         config = {'paper': str(root), 'output': str(out/'investigations'/label),
                   'cache': str(out/'source-cache'), 'tool_limit': limit, 'literature_cutoff': cutoff,
                   'evidence_handles':True, 'tool_profile':'domains-v1',
                   'source_state': str(out/'sources'),
-                  'external_request_limit': policy.external_requests, 'evidence_mode': evidence_mode}
-        if source_packet is not None:
-            config.update(source_packet=str(source_packet), source_packet_manifest=packet_manifest)
-        if historical_snapshots is not None:
-            config['historical_snapshots'] = str(historical_snapshots)
+                  'external_request_limit': policy.external_requests}
         write(out/'execution/workspace/tool-config.json', config)
 
     try:
@@ -473,7 +431,7 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
         prompt=policy.shared_instructions()+'\n'+instruction+'\n'+HANDLE_INSTRUCTION+f'''\nAt most {limit} tool calls. Full extracted text is already provided. Spend tools on missing evidence such as figure pixels or a focused external check. Avoid rereading supplied paragraphs unless necessary. The asset inventory distinguishes available files from captions only.\n'''+json.dumps({'title':paper['title'],'assets':paper['assets'],'references':paper['references']},ensure_ascii=False)+'\n'+handle_manuscript(paper)
         if policy.session_instruction:
             prompt=policy.session_instruction+'\n'+prompt
-        prompt+=diagnostic_context+domain_context+'\nTreat prose and readability checks as advisory. They do not establish scientific validity or justify padding the review.'
+        prompt+=domain_context+'\nTreat prose and readability checks as advisory. They do not establish scientific validity or justify padding the review.'
         prompt += '\n'+RESULT_INSTRUCTION+'\nRESULT MAP OVERVIEW:\n'+json.dumps(inspect_results(result_map,max_chars=6500),ensure_ascii=False)
         if shared_images:
             prompt += '\nSHARED ORIGINAL FIGURE PAGES, attached in this order:\n' + '\n'.join(str(p.name) for p in shared_images)

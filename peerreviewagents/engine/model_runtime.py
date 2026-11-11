@@ -139,11 +139,9 @@ def validate_protocol(protocol):
     pinned = PROVIDER_MODELS
     if protocol.get("provider") not in pinned or protocol.get("model") not in pinned[protocol["provider"]]:
         raise StudyBlocked("Unapproved provider or model. No automatic fallback is permitted.")
-    if protocol.get("held_out_runs_authorized"):
-        raise StudyBlocked("This runner is limited to one development paper.")
     if protocol.get("effort") not in APPROVED_EFFORTS:
         raise StudyBlocked("Unapproved reasoning effort. Approved values are low, medium and high.")
-    for key in ("max_calls_per_condition", "observed_token_stop", "call_timeout_seconds"):
+    for key in ("observed_token_stop", "call_timeout_seconds"):
         value = protocol.get(key)
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             raise StudyBlocked(f"Protocol field {key} must be a positive integer.")
@@ -245,7 +243,7 @@ def tool_profile(config):
     if config.get('tool_profile', PROFILE) != PROFILE:
         raise StudyBlocked('Unknown manuscript tool profile')
     preflight = ('validate_synthesis',) if config.get('synthesis_ledger') else ()
-    return 'manuscript_tools.py', (*APPROVED_MANUSCRIPT_TOOLS, 'lookup_source', 'inspect_results', 'record_comparison', 'resolve_identifier', 'historical_registration', *preflight)
+    return 'manuscript_tools.py', (*APPROVED_MANUSCRIPT_TOOLS, 'lookup_source', 'inspect_results', 'record_comparison', 'resolve_identifier', *preflight)
 
 def request_identity(protocol, prompt, schema, tools, images, work):
     request = {
@@ -702,8 +700,6 @@ def _model_call(protocol, out, prompt, schema, *, tools=False, label="call", ima
     effective = effective_rows(prior, pending=(identity, attempt))
     if any(row.get("usage_unknown") or row.get("observed_tokens") is None for row in effective):
         raise StudyBlocked("Prior model usage is unknown. No further model calls are permitted in this attempt directory.")
-    if len(effective) >= protocol["max_calls_per_condition"]:
-        raise StudyBlocked("Pilot call limit reached. Outputs have been saved.")
     if sum(row.get("observed_tokens", 0) for row in prior) >= protocol["observed_token_stop"]:
         raise StudyBlocked("Pilot observed-token stop reached. Outputs have been saved.")
     if attempt > 1 and prepare_attempt is not None:

@@ -53,7 +53,8 @@ class DiscoveryChecks(unittest.TestCase):
                 reviewer.review(root,out,'2025-01-01',mode='self-revision',model='gpt-5.6-terra')
             self.assertEqual([c['config']['tool_limit'] for c in calls],[4,2])
             self.assertEqual(calls[0]['config']['source_state'],calls[1]['config']['source_state'])
-            self.assertEqual(calls[0]['protocol']['max_calls_per_condition'],2)
+            self.assertEqual(calls[0]['protocol']['observed_token_stop'],
+                             calls[1]['protocol']['observed_token_stop'])
             self.assertIn('actual manipulated contrast',calls[0]['prompt'])
             self.assertIn('actual manipulated contrast',calls[1]['prompt'])
             self.assertIn('YOUR PRIOR DRAFT:',calls[1]['prompt'])

@@ -63,8 +63,7 @@ def investigate(workspace, output, cutoff, question, block_ids, model=None):
     selected = packet(paper, block_ids)
     out.mkdir(parents=True, exist_ok=False)
     protocol = {'version': 'focused-investigation-v2', 'provider': provider, 'model': model,
-        'effort': 'medium', 'held_out_runs_authorized': False, 'max_calls_per_condition': 1,
-        'observed_token_stop': 100000, 'call_timeout_seconds': 600,
+        'effort': 'medium', 'observed_token_stop': 100000, 'call_timeout_seconds': 600,
         'tool_limit': 2, 'external_request_limit': 2, 'automatic_retries': False,
         'limitation': 'The observed-token stop is a launch guard, not a hard limit within one session.'}
     write(out/'protocol.json', protocol)
@@ -92,7 +91,7 @@ def investigate(workspace, output, cutoff, question, block_ids, model=None):
           'prompt_characters': len(prompt)})
     config = {'paper': str(root), 'output': str(out/'investigation'), 'cache': str(out/'source-cache'),
               'source_state': str(out/'sources'), 'tool_profile': 'domains-v1', 'evidence_handles': True,
-              'tool_limit': 2, 'external_request_limit': 2, 'evidence_mode': 'current', 'literature_cutoff': cutoff,
+              'tool_limit': 2, 'external_request_limit': 2, 'literature_cutoff': cutoff,
               'manuscript_handles': True}
     write(out/'execution/workspace/tool-config.json', config)
     result = model_call(protocol,out/'execution',prompt,SCHEMA,tools=True,label='focused')

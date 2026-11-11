@@ -119,15 +119,7 @@ def resolved_review_config(request):
         # An explicit policy is a deliberate runtime override, like model and
         # token budget. The resolved record states the policy that actually ran.
         base['policy'] = requested_policy
-    packet = dict(request.source_packet_hashes)
-    from .storage import digest
-    import json
     return {**base, 'workflow': request.workflow, 'reviewers': request.reviewers,
             'model': request.model, 'token_budget': request.token_budget,
-            'evidence_mode': request.evidence_mode,
-            'evidence_policy': ('none' if request.workflow == 'manuscript-only' else
-                                'frozen' if request.source_packet is not None else 'live'),
-            'source_packet_manifest': packet or None,
-            'source_packet_manifest_sha256': (digest(json.dumps(packet, sort_keys=True))
-                                              if packet else None),
+            'evidence_policy': 'none' if request.workflow == 'manuscript-only' else 'live',
             'synthesis_policy': (request.synthesis_policy if request.workflow == 'ensemble' else 'none')}

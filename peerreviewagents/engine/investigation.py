@@ -22,19 +22,18 @@ class Investigation:
         self.result_map = build_result_map(self.paper)
         self.by={b['id']:b for b in self.paper['blocks']}
         self.limit=config.get('tool_limit',8)
-        self.cutoff=config.get('literature_cutoff','2026-01-05')
+        self.cutoff=config.get('literature_cutoff')
         self.calls=0
         self.evidence_handles=config.get('evidence_handles',False)
         self.manuscript_handles=config.get('manuscript_handles',False)
         self.synthesis_preflight = None
         from .external_evidence import SourceClient
         self.sources = SourceClient(config.get('source_state') or str(self.out/'sources'), config['cache'],
-                                    config.get('external_request_limit', 6),
-                                    config.get('evidence_mode', 'current'), self.cutoff,
-                                    frozen_cache=config.get('source_packet'), frozen_hashes=config.get('source_packet_manifest'))
-        from .targeted_sources import TargetedSources, HistoricalRegistrationStore
-        historical = HistoricalRegistrationStore(config['historical_snapshots']) if config.get('historical_snapshots') else None
-        self.targeted = TargetedSources(self.sources, historical)
+                                    config.get('external_request_limit', 6), self.cutoff,
+                                    frozen_cache=config.get('source_packet'),
+                                    frozen_hashes=config.get('source_packet_manifest'))
+        from .targeted_sources import TargetedSources
+        self.targeted = TargetedSources(self.sources)
         if config.get('synthesis_ledger'):
             from .synthesis_validation import SynthesisPreflight
             self.synthesis_preflight = SynthesisPreflight(
@@ -98,14 +97,10 @@ class Investigation:
         return result
 
     def dispatch(self,name,args):
-        if name in ('resolve_identifier', 'historical_registration'):
-            if self.targeted is None:
-                raise ValueError('Targeted sources are not enabled')
+        if name == 'resolve_identifier':
             if args['block_id'] not in self.by:
                 raise ValueError('A source investigation needs a valid manuscript block ID')
-            if name == 'resolve_identifier':
-                return self.targeted.resolve_identifier(args['kind'],args['identifier'],args['block_id'])
-            return self.targeted.historical_registration(args['registry'],args['identifier'],args['as_of'],args['block_id'])
+            return self.targeted.resolve_identifier(args['kind'],args['identifier'],args['block_id'])
         if name == 'inspect_results':
             from .result_map import inspect_results
             if args['block_id'] and args['block_id'] not in self.by:
@@ -190,8 +185,6 @@ def specs(synthesis_preflight=False):
          {'query':{'type':'string'},'block_id':{'type':'string'}}),
         ('resolve_identifier', 'Resolve one exact DOI, PMID, PMCID, NCT or OSF identifier. Identity is separate from scientific support.',
          {'kind':{'type':'string','enum':['doi','pmid','pmcid','nct','osf']},'identifier':{'type':'string'},'block_id':{'type':'string'}}),
-        ('historical_registration', 'Read a configured curated registration snapshot on or before a date. Unavailable when no eligible snapshot exists. Never substitutes the current registry.',
-         {'registry':{'type':'string','enum':['clinicaltrials','osf']},'identifier':{'type':'string'},'as_of':{'type':'string'},'block_id':{'type':'string'}}),
     ]
     from .result_map import DIMENSIONS
     observation = {'type':'object', 'properties':{k:{'type':'string'} for k in

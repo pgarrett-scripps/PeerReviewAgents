@@ -40,8 +40,6 @@ class ReviewRuntime(unittest.TestCase):
             "provider": "codex",
             "model": "gpt-5.6-sol",
             "effort": "medium",
-            "held_out_runs_authorized": False,
-            "max_calls_per_condition": 2,
             "observed_token_stop": 1000,
             "call_timeout_seconds": 30,
         }
@@ -210,11 +208,11 @@ class ReviewRuntime(unittest.TestCase):
                 kwargs["stdout"].write("\n".join(json.dumps(event) for event in events) + "\n")
                 return SimpleNamespace(returncode=1)
 
-            protocol = {**self.protocol, "max_calls_per_condition": 1}
+            protocol = {**self.protocol, "observed_token_stop": 10}
             with patch.object(runtime.subprocess, "run", side_effect=fail) as invoke:
                 with self.assertRaises(runtime.StudyBlocked):
                     runtime.model_call(protocol, out, "first", self.schema)
-                with self.assertRaisesRegex(runtime.StudyBlocked, "call limit"):
+                with self.assertRaisesRegex(runtime.StudyBlocked, "observed-token stop"):
                     runtime.model_call(protocol, out, "second", self.schema)
             self.assertEqual(invoke.call_count, 1)
             self.assertEqual(runtime.jsonl(out / "usage.jsonl")[0]["observed_tokens"], 10)
@@ -302,9 +300,9 @@ class ReviewRuntime(unittest.TestCase):
                 "observed_tokens": 12,
                 "usage_unknown": False,
             })
-            protocol = {**self.protocol, "max_calls_per_condition": 1}
+            protocol = {**self.protocol, "observed_token_stop": 12}
             with patch.object(runtime.subprocess, "run") as invoke:
-                with self.assertRaisesRegex(runtime.StudyBlocked, "call limit"):
+                with self.assertRaisesRegex(runtime.StudyBlocked, "observed-token stop"):
                     runtime.model_call(protocol, out, "new", self.schema)
             invoke.assert_not_called()
             self.assertEqual(runtime.jsonl(out / "usage.jsonl")[0]["observed_tokens"], 12)
@@ -356,8 +354,9 @@ class ReviewRuntime(unittest.TestCase):
 
     def test_invalid_caps_and_effort_are_rejected_before_inference(self):
         variants = [
-            {**self.protocol, "max_calls_per_condition": 0},
+            {**self.protocol, "observed_token_stop": 0},
             {**self.protocol, "observed_token_stop": True},
+            {**self.protocol, "call_timeout_seconds": 0},
             {**self.protocol, "effort": "exhaustive"},
             {**self.protocol, "max_attempts": 0},
             {**self.protocol, "max_attempts": 3},

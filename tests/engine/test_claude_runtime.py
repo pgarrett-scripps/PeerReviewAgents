@@ -72,7 +72,6 @@ class ClaudeRuntime(unittest.TestCase):
         self.addCleanup(environment.stop)
         self.out = self.root / 'execution'
         self.protocol = {'provider': 'claude-code', 'model': MODEL, 'effort': 'medium',
-                         'held_out_runs_authorized': False, 'max_calls_per_condition': 2,
                          'observed_token_stop': 1000, 'call_timeout_seconds': 30}
         self.schema = {'type': 'object'}
 

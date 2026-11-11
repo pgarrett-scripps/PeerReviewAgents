@@ -62,7 +62,7 @@ def evidence_operation(row, supplied_blocks=None):
     name = row.get('tool')
     if name in ('view_page', 'view_supplement'):
         return 'visual_inspection'
-    if name in ('lookup_source', 'search_literature', 'check_citation', 'resolve_identifier', 'historical_registration'):
+    if name in ('lookup_source', 'search_literature', 'check_citation', 'resolve_identifier'):
         return 'external_retrieval'
     if name in ('calculate', 'record_comparison'):
         return 'derived_check'
