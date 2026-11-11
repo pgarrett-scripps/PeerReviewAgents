@@ -409,7 +409,7 @@ def claude_input(prompt, images):
     return json.dumps({"type": "user", "message": {"role": "user", "content": content}}) + "\n"
 
 def claude_stream_problem(event, tools):
-    """Name an event that shows API-key billing, paid extra usage or tools outside the manuscript server."""
+    """Name an event that shows API-key billing or tools outside the manuscript server."""
     if event.get("type") == "system" and event.get("subtype") == "init":
         if event.get("apiKeySource") != "none":
             return "Claude Code did not use the subscription login. Refusing API-backed execution."
@@ -419,10 +419,6 @@ def claude_stream_problem(event, tools):
         if tools and not any(server.get("name") == "manuscript" and server.get("status") == "connected"
                              for server in event.get("mcp_servers") or []):
             return "The manuscript tool server did not connect."
-    if event.get("type") == "rate_limit_event":
-        info = event.get("rate_limit_info") or {}
-        if info.get("isUsingOverage") or info.get("overageStatus") in ("allowed", "allowed_warning"):
-            return "Claude reports that paid extra usage is enabled or in use. Disable it before running reviews."
     return None
 
 def claude_tool_failures(events):
@@ -464,8 +460,8 @@ def claude_failure(events, init, result, limits, model, tools, returncode):
 def claude_failure_is_transient(events, init, result, tools):
     """Whether a failed Claude call may be retried.
 
-    A stream that showed API-key billing, paid overage, an unapproved tool or a
-    disconnected server refused this run, so it is never retried. A session that
+    A stream that showed API-key billing, an unapproved tool or a disconnected
+    server refused this run, so it is never retried. A session that
     never configured itself or never produced a result crashed, which a bounded
     retry may replace.
     """
@@ -507,7 +503,7 @@ def read_events(path):
     return events
 
 def watch_claude_stream(path, process, finished, tools):
-    """Stop a running call as soon as its stream shows API-key billing or paid usage."""
+    """Stop a running call as soon as its stream shows API-key billing or an unapproved tool."""
     pending = ""
     with Path(path).open() as stream:
         while True:
@@ -828,8 +824,9 @@ def _model_call(protocol, out, prompt, schema, *, tools=False, label="call", ima
         raise blocked from exc
     except Exception as exc:
         record["error"] = str(exc)
-        # A refusal is never retried: not an API-key or paid-usage stream, not an
-        # unexpected model, not a failed tool call, not a missing usage report.
+        # A refusal is never retried: not an API-key stream, not an unapproved
+        # tool, not an unexpected model, not a failed tool call, not a missing
+        # usage report.
         record["transient_failure"] = bool(getattr(exc, "transient", False))
         if record["transient_failure"]:
             exc.attempt_launched = attempt

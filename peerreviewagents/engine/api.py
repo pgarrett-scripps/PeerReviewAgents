@@ -147,7 +147,9 @@ class SavedDraftSynthesisRequest:
     output: Path
     source_images: tuple[Path, ...]
     source_packet: Path
-    literature_cutoff: str = field(default_factory=default_literature_cutoff)
+    # The reused drafts were written under one cutoff. None inherits that cutoff
+    # instead of synthesising saved drafts against a later date.
+    literature_cutoff: str | None = None
     model: str = DEFAULT_MODEL
     token_budget: int = 750000
     evidence_mode: Literal['current', 'historical'] = 'current'
@@ -155,6 +157,17 @@ class SavedDraftSynthesisRequest:
 
     def __post_init__(self):
         from datetime import date
+        from .storage import read
+        original_protocol = Path(self.original_output) / 'reviewer-1' / 'protocol.json'
+        if not original_protocol.is_file():
+            raise ValueError('Saved draft synthesis needs the original run reviewer-1 protocol')
+        original_cutoff = read(original_protocol).get('literature_cutoff')
+        date.fromisoformat(str(original_cutoff))
+        if self.literature_cutoff is None:
+            object.__setattr__(self, 'literature_cutoff', original_cutoff)
+        elif self.literature_cutoff != original_cutoff:
+            raise ValueError('Saved draft synthesis must use the original run literature cutoff, '
+                             + str(original_cutoff))
         if self.model not in capabilities()['models']:
             raise ValueError('Unsupported Paper Workbench model. No fallback is permitted.')
         if self.synthesis_policy != 'ordinary':

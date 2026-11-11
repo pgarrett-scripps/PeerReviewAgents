@@ -444,12 +444,48 @@ class AgenticPolicy(unittest.TestCase):
             apply_preset(parser, parser.parse_args(
                 base + ['--preset', 'manuscript-only-single-v1']))
 
+    def test_the_removed_billing_gate_is_not_a_hidden_option(self):
+        """The gate is gone from the parser, not merely ignored."""
+        from peerreviewagents.engine.__main__ import COMMANDS, build_parser
+        parser = build_parser()
+        for argv in (['review', 'paper', 'run', '--billing-confirmation', 'x'],
+                     ['investigate', 'paper', 'run', '--question', 'Does the claim hold?',
+                      '--block', 'b1', '--billing-confirmation', 'x'],
+                     ['confirm-billing', 'run']):
+            with self.subTest(argv=argv), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    parser.parse_args(argv)
+        self.assertNotIn('confirm-billing', COMMANDS)
+
+    def test_a_resumed_run_directory_keeps_its_recorded_cutoff(self):
+        """Continuing a run on a later day is not changed inputs.
+
+        The cutoff is part of the protocol, so filling today's date into an
+        existing run directory would refuse the resume outright."""
+        from peerreviewagents.engine import __main__ as cli
+        from peerreviewagents.engine.__main__ import build_parser, resolve_cutoff
+        parser = build_parser()
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(cli, 'default_literature_cutoff', return_value='2026-11-02'):
+            run = Path(directory) / 'run'
+            run.mkdir()
+            fresh = parser.parse_args(['review', 'paper', str(run)])
+            resolve_cutoff(parser, fresh, fresh.output)
+            self.assertEqual(fresh.literature_cutoff, '2026-11-02')
+            write(run / 'protocol.json', {'literature_cutoff': '2026-09-25'})
+            resumed = parser.parse_args(['review', 'paper', str(run)])
+            resolve_cutoff(parser, resumed, resumed.output)
+            self.assertEqual(resumed.literature_cutoff, '2026-09-25')
+            named = parser.parse_args(['review', 'paper', str(run),
+                                       '--literature-cutoff', '2026-10-06'])
+            resolve_cutoff(parser, named, named.output)
+            self.assertEqual(named.literature_cutoff, '2026-10-06')
+
     def test_the_preset_alone_runs_on_claude_code_with_todays_cutoff(self):
         """``review --preset workspace-agentic-v1 workspace output`` and nothing
         else: no provider, no model, no cutoff. It must reach the engine as one
         agentic Claude Code session dated today."""
-        import datetime
-
+        from peerreviewagents.engine import __main__ as cli
         from peerreviewagents.engine.__main__ import build_parser, dispatch
         parser = build_parser()
         args = parser.parse_args(['review', 'paper', 'run',
@@ -457,11 +493,14 @@ class AgenticPolicy(unittest.TestCase):
         self.assertIsNone(args.literature_cutoff)
         self.assertIsNone(args.model)
         self.assertIsNone(args.provider)
-        with patch.object(reviewer, 'review', return_value={'status': 'complete'}) as call, \
+        # Today's date comes from one function, so the assertion never races the
+        # clock between dispatch and the comparison.
+        with patch.object(cli, 'default_literature_cutoff', return_value='2026-11-02'), \
+             patch.object(reviewer, 'review', return_value={'status': 'complete'}) as call, \
              contextlib.redirect_stdout(io.StringIO()):
             dispatch(parser, args)
         passed = call.call_args
-        self.assertEqual(passed.args[2], datetime.date.today().isoformat())
+        self.assertEqual(passed.args[2], '2026-11-02')
         self.assertEqual(passed.args[3], 'independent')
         self.assertEqual(passed.kwargs['model'], 'claude-sonnet-5-5')
         self.assertEqual((DEFAULT_PROVIDER, DEFAULT_MODEL),
@@ -872,13 +911,15 @@ class BoundedRetry(unittest.TestCase):
                     runtime.model_call(protocol, out, 'prompt', self.schema)
             self.assertEqual(len(calls), 0)
 
-    def test_claude_paid_extra_usage_or_a_tool_problem_is_never_transient(self):
+    def test_a_claude_guard_problem_is_never_transient_but_extra_usage_is_no_problem(self):
         init = {'type': 'system', 'subtype': 'init', 'apiKeySource': 'none',
-                'tools': ['StructuredOutput'], 'claude_code_version': '1.0.0'}
-        overage = {'type': 'rate_limit_event', 'rate_limit_info': {'isUsingOverage': True}}
-        outcome = runtime.assess_claude_stream([init, overage], 'claude-opus-5-5', False, 0)
-        self.assertIn('paid extra usage', outcome['error'])
+                'tools': ['StructuredOutput', 'Bash'], 'claude_code_version': '1.0.0'}
+        outcome = runtime.assess_claude_stream([init], 'claude-opus-5-5', False, 0)
+        self.assertIn('tools outside the approved manuscript server', outcome['error'])
         self.assertFalse(outcome['transient_failure'])
+        overage = {'type': 'rate_limit_event', 'rate_limit_info': {'isUsingOverage': True,
+                                                                   'overageStatus': 'allowed'}}
+        self.assertIsNone(runtime.claude_stream_problem(overage, False))
         crashed = runtime.assess_claude_stream([], 'claude-opus-5-5', False, 1)
         self.assertTrue(crashed['transient_failure'])
         self.assertIn('no session configuration', crashed['error'])

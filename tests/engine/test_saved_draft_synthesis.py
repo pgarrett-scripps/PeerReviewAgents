@@ -33,6 +33,7 @@ class SavedDraftSynthesisTests(unittest.TestCase):
             source_review = reviewer / 'editor-package.json'
             source_review.parent.mkdir(parents=True)
             source_review.write_text('{"summary":"draft-' + str(index) + '"}')
+            write(reviewer / 'protocol.json', {'literature_cutoff': '2026-10-06'})
             (reviewer / 'call.started.json').write_text('{}')
             (reviewer / 'usage.jsonl').write_text(json.dumps({
                 'observed_tokens': tokens, 'usage_unknown': False}) + '\n')
@@ -116,6 +117,19 @@ class SavedDraftSynthesisTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'tool and token budget'):
             self.synthesize(request)
 
+
+    def test_the_cutoff_comes_from_the_original_run_and_a_mismatch_is_refused(self):
+        """Saved drafts were written under one cutoff, so synthesis reuses it."""
+        inherited = SavedDraftSynthesisRequest(**{**self.request.__dict__,
+            'output': self.root / 'inherited', 'literature_cutoff': None})
+        self.assertEqual(inherited.literature_cutoff, '2026-10-06')
+        with self.assertRaisesRegex(ValueError, 'original run literature cutoff'):
+            SavedDraftSynthesisRequest(**{**self.request.__dict__,
+                'output': self.root / 'later', 'literature_cutoff': '2026-11-02'})
+        (self.original / 'reviewer-1' / 'protocol.json').unlink()
+        with self.assertRaisesRegex(ValueError, 'reviewer-1 protocol'):
+            SavedDraftSynthesisRequest(**{**self.request.__dict__,
+                'output': self.root / 'missing'})
 
     def test_rejects_wrong_expected_discovery_count(self):
         artifact_path = self.original / 'core-artifact.json'

@@ -170,16 +170,20 @@ class ClaudeRuntime(unittest.TestCase):
             self.call('second prompt')
         self.assertEqual(len(self.launched()), 1)
 
-    def test_paid_extra_usage_stops_the_call(self):
+    def test_paid_extra_usage_does_not_stop_the_call(self):
+        """How much a run may spend is the account's setting, not the engine's.
+
+        A stream that reports paid extra usage, enabled or in use, runs to
+        completion and records the limits it reported."""
         for info in ({'isUsingOverage': True, 'overageStatus': 'rejected'}, {'overageStatus': 'allowed'},
                      {'overageStatus': 'allowed_warning', 'isUsingOverage': False}):
             with self.subTest(info=info):
                 self.out = self.root / ('execution-' + str(len(self.launched())))
-                self.script([init(), {'type': 'rate_limit_event', 'rate_limit_info': info}, result()], pause=10)
-                started = time.time()
-                with self.assertRaisesRegex(runtime.StudyBlocked, 'extra usage'):
-                    self.call()
-                self.assertLess(time.time() - started, 8)
+                self.script([init(), {'type': 'rate_limit_event', 'rate_limit_info': info}, result()])
+                self.assertEqual(self.call(), {'answer': 'ok'})
+                row = runtime.jsonl(self.out / 'usage.jsonl')[0]
+                self.assertTrue(row['ok'])
+                self.assertEqual(row['subscription_limits'], [info])
 
     def test_unverified_or_substituted_sessions_fail_closed_with_usage_recorded(self):
         cases = [([init(), result()], 'no subscription usage limits'),

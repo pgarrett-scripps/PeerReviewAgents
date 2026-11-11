@@ -75,10 +75,20 @@ def apply_policy(parser,args):
         parser.error(single_session_refusal(args.policy))
 
 
-def resolve_cutoff(parser,args):
-    """Fill today's cutoff when none was named, and reject a malformed one."""
+def resolve_cutoff(parser,args,resume=None):
+    """Fill the cutoff when none was named, and reject a malformed one.
+
+    A run directory that already recorded a protocol keeps that run's cutoff, so
+    continuing an interrupted run on a later day is not refused as changed
+    inputs. Today's date is used only for a directory with no protocol.
+    """
     if args.literature_cutoff is None:
-        args.literature_cutoff=default_literature_cutoff()
+        stored=None
+        if resume is not None:
+            protocol=Path(resume)/'protocol.json'
+            if protocol.is_file():
+                stored=read(protocol).get('literature_cutoff')
+        args.literature_cutoff=stored or default_literature_cutoff()
         return
     import datetime
     try:
@@ -116,7 +126,8 @@ def add_subcommands(sub):
     p=sub.add_parser('review',help='Run one evidence-linked review on a subscription transport')
     p.add_argument('workspace')
     p.add_argument('output')
-    p.add_argument('--literature-cutoff',default=None,help=CUTOFF_HELP)
+    p.add_argument('--literature-cutoff',default=None,
+                   help=CUTOFF_HELP+', or the cutoff an existing run directory already recorded')
     p.add_argument('--mode',choices=('ensemble','independent','plain','workspace','panel','self-revision'),default='ensemble')
     p.add_argument('--reviewers',type=int,default=2,help='Independent discovery reviewers for ensemble mode, from 1 to 16 (default 2)')
     p.add_argument('--token-budget',type=int,default=750000,help='Ensemble observed-token launch ceiling, not a hard cap on a running call')
@@ -171,7 +182,7 @@ def dispatch(parser,args):
         from .annotations import save_review
         print(save_review(args.workspace,read(args.response),args.id)['annotation_counts'])
     elif args.command=='review':
-        resolve_cutoff(parser,args)
+        resolve_cutoff(parser,args,args.output)
         from .reviewer import review
         if args.mode!='ensemble' and (args.reviewers!=2 or args.token_budget!=750000):
             parser.error('--reviewers and --token-budget apply only to ensemble mode')
