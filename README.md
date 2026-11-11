@@ -31,18 +31,16 @@ documents them in full.
 One review on a Claude Code subscription, with no API key:
 
 ```bash
-# 1. Sign in to the claude CLI, turn extra usage off in Claude settings, and
-#    record that the subscription cannot buy paid usage (valid 24 hours).
-peerreview confirm-billing billing.json --provider claude-code --extra-usage-disabled
+# 1. Sign in to the claude CLI. Claude Code is the default transport, so no
+#    provider flag is needed. How much subscription usage a run may spend is
+#    your own account setting; the engine records usage and does not gate it.
 
 # 2. Import the PDF into a verified workspace of source blocks.
 peerreview import manuscript.pdf workspace
 
-# 3. Review it. --literature-cutoff bounds what published work is eligible.
-peerreview review workspace run-output \
-    --provider claude-code \
-    --billing-confirmation billing.json \
-    --literature-cutoff 2026-01-05
+# 3. Review it. --literature-cutoff bounds what published work is eligible and
+#    defaults to today.
+peerreview review workspace run-output
 
 # 4. Write REVIEW.md and REVIEW.txt from the saved run. No model calls.
 peerreview report run-output

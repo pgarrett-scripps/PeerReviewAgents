@@ -57,7 +57,7 @@ def run_manuscript_only(request, paper, resolved_config):
         'tool_access': 'none', 'live_retrieval': False,
         **policy.protocol_overlay(),
     }
-    _prepare(output, request.billing_confirmation, protocol)
+    _prepare(output, protocol)
     prompt = policy.shared_instructions() + '''\nReview the complete supplied manuscript once. Base every finding only on the manuscript and attached source figures. You have no review tools, external sources, other reviews, or hidden evaluation material. Do not claim that an omitted external search establishes an error. The full extracted text is supplied below.\n''' + HANDLE_INSTRUCTION
     prompt += '\nMANUSCRIPT INVENTORY:\n' + json.dumps({
         'title': paper.get('title', ''), 'assets': paper.get('assets', []),

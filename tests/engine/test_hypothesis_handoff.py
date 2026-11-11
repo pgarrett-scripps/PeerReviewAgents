@@ -1,7 +1,6 @@
 """A scoped concern cannot disappear between investigation and debate."""
 import copy
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -128,16 +127,15 @@ class HypothesisHandoffTests(unittest.TestCase):
                 (work/'manuscript.md').write_text('[b1] '+self.paper['blocks'][0]['text'])
                 write(work/'manifest.json',{'files':{name:digest((work/name).read_bytes())
                     for name in ('paper.json','manuscript.md')}})
-                write(root/'billing.json',{'checked_at':time.time(),'no_paid_credits_verified':True})
                 debate_model = {**final_model,'decisions':[]} if lose_note else final_model
                 with patch.object(reviewer,'require_subscription'), patch.object(reviewer,'inspected_images',return_value=[]), patch.object(reviewer,'model_call',side_effect=[first_model,debate_model]) as invoke:
                     if lose_note:
                         with self.assertRaisesRegex(ValueError,'Every issue'):
-                            reviewer.review(work,out,root/'billing.json','2023-01-01')
+                            reviewer.review(work,out,'2023-01-01')
                         self.assertFalse((out/'editor-package.json').exists())
                         self.assertEqual(read(out/'progress.json')['status'],'blocked')
                     else:
-                        reviewer.review(work,out,root/'billing.json','2023-01-01')
+                        reviewer.review(work,out,'2023-01-01')
                         self.assertEqual(read(out/'editor-package.json')['source_hypotheses'][0]['text'],self.note)
                     self.assertEqual(invoke.call_count,2)
                     self.assertIn(self.note,invoke.call_args_list[1].args[2])

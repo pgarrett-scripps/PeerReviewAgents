@@ -90,7 +90,6 @@ def build_parser() -> argparse.ArgumentParser:
             "  report            write REVIEW.md and REVIEW.txt from a run, no model calls\n"
             "  result-map        map reported results to their source blocks\n"
             "  add-review        normalize and save an external review response\n"
-            "  confirm-billing   record that this Claude subscription cannot buy extra usage\n"
             "  checks            record offline prose and readability checks\n\n"
             "Legacy LangGraph panel: `peerreview <manuscript>` or "
             "`peerreview legacy-panel <manuscript>`.\n"

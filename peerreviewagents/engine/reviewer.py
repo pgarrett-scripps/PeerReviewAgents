@@ -5,8 +5,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 from .annotations import verify_workspace,save_review,quarantine_findings
-from .model_runtime import (model_call,require_subscription,source_manifest,jsonl,prepare_retry,
-                            write_launch_verification)
+from .model_runtime import model_call,require_subscription,source_manifest,jsonl,prepare_retry
 from .review_schema import CLARIFICATION_POLICY,number_word
 from .review_policy import get_review_policy
 from .storage import read,write,digest
@@ -293,11 +292,15 @@ def editor_package(final,reviews,paper=None):
     return result
 
 
-def review(workspace,output,billing,cutoff,mode='panel',scaffold_root=None,domain_support=True,evidence_mode='current',source_packet=None,shared_images=None,historical_snapshots=None,model='gpt-5.6-sol',reviewers=2,token_budget=750000,synthesis_policy='debate',policy=None,billing_verified=False,verified_at=None):
+def review(workspace,output,cutoff,mode='panel',scaffold_root=None,domain_support=True,evidence_mode='current',source_packet=None,shared_images=None,historical_snapshots=None,model=None,reviewers=2,token_budget=750000,synthesis_policy='debate',policy=None):
     policy=get_review_policy(policy)
+    # No model named means the default transport's default model, which is Claude
+    # Code. Codex is reached by naming one of its models, never by omission.
+    from .models import DEFAULT_MODEL
+    model=DEFAULT_MODEL if model is None else model
     if mode=='ensemble':
         from .ensemble import ensemble_review
-        return ensemble_review(workspace,output,billing,cutoff,reviewers=reviewers,token_budget=token_budget,
+        return ensemble_review(workspace,output,cutoff,reviewers=reviewers,token_budget=token_budget,
             scaffold_root=scaffold_root,domain_support=domain_support,evidence_mode=evidence_mode,
             source_packet=source_packet,shared_images=shared_images,historical_snapshots=historical_snapshots,model=model,
             synthesis_policy=synthesis_policy,policy=policy)
@@ -313,20 +316,6 @@ def review(workspace,output,billing,cutoff,mode='panel',scaffold_root=None,domai
     result_map = build_result_map(paper) if domain_support else None
     shared_images = shared_source_images(shared_images)
     if paper['statistics']['total_words']>50000:raise ValueError('Review input is limited to 50,000 extracted words including supplements')
-    verification=read(billing)
-    if billing_verified:
-        # An ensemble verifies once at launch and passes billing_verified, because
-        # the Codex allowance record is only valid for five minutes and reviewer 1
-        # can easily run longer than that. The launch moment has to come with it:
-        # the record's freshness is then judged against the launch, not against
-        # now, and the guard stays fail-closed for everything else.
-        if verified_at is None:
-            raise ValueError('A stage that reuses launch billing must be given the launch verification time')
-    else:
-        import time
-        from .billing import verify_billing
-        verify_billing(verification,provider=provider)
-        verified_at=time.time()
     out.mkdir(parents=True,exist_ok=True)
     domain_context = ''
     profile = None
@@ -411,9 +400,7 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
     if result_map is not None:
         write(out/'result-map.json', result_map)
     write(out/'protocol.json',protocol)
-    shutil.copy2(billing,out/'billing_confirmation.json')
-    write_launch_verification(out,provider,verified_at)
-    require_subscription(out,billing_verified=billing_verified)
+    require_subscription(out)
     run_id=digest(json.dumps(manifest,sort_keys=True))[:10]
 
     guards=[]

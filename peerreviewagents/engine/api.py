@@ -4,7 +4,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from .config import get_review_preset, resolved_review_config, review_presets
+from .config import (default_literature_cutoff, get_review_preset, resolved_review_config,
+                     review_presets)
+from .models import DEFAULT_MODEL, DEFAULT_PROVIDER
 from .review_policy import (APPROVED_EFFORTS, DEFAULT_POLICY, DEFAULT_POLICY_NAME,
                             MAX_ATTEMPT_CEILING, get_review_policy, review_policies,
                             single_session_refusal)
@@ -19,7 +21,9 @@ def capabilities():
     efforts_by_policy = {name: record['effort'] for name, record in policies.items()}
     retries_by_policy = {name: record['max_attempts'] > 1 for name, record in policies.items()}
     return {'api_version': API_VERSION, 'artifact_version': 'paper-workbench-run-v1',
-            'workflows': ['manuscript-only', 'independent', 'ensemble'], 'provider': 'codex',
+            'workflows': ['manuscript-only', 'independent', 'ensemble'],
+            'provider': DEFAULT_PROVIDER, 'default_provider': DEFAULT_PROVIDER,
+            'default_model': DEFAULT_MODEL,
             'providers': list(PROVIDER_MODELS),
             'models_by_provider': {name: list(models) for name, models in PROVIDER_MODELS.items()},
             'default_models': dict(DEFAULT_MODELS),
@@ -33,7 +37,7 @@ def capabilities():
             'models': list(SUBSCRIPTION_MODELS), 'reasoning_effort': DEFAULT_POLICY.effort,
             'reasoning_efforts': list(APPROVED_EFFORTS),
             'reasoning_effort_by_policy': efforts_by_policy,
-            'billing': 'verified_subscription_with_bounded_usage_policy',
+            'usage_policy': 'operator_owned_subscription_usage_recorded_not_gated',
             'tool_access': 'workflow-specific',
             'tool_access_by_workflow': {'manuscript-only': 'none',
                                         'independent': 'bounded_manuscript_tools',
@@ -45,7 +49,7 @@ def capabilities():
                              'attempts_by_policy': {name: record['max_attempts']
                                                     for name, record in policies.items()},
                              'retried': 'a launched call that timed out, crashed or lost its transport',
-                             'never_retried': 'any refusal or guard stop, including billing, safety, '
+                             'never_retried': 'any refusal or guard stop, including safety, '
                                               'the call ceiling and the token stop',
                              'per_attempt_receipts': True},
             'invalid_finding_policy': 'quarantined-with-reason-not-run-ending',
@@ -55,9 +59,9 @@ def capabilities():
                                       'discovery_calls': 0, 'tool_allowance': 2},
             'limitations': ['Manuscript-only mode has no review tools or external access.',
                            'Independent mode includes tools and is not a tool-free baseline.',
-                           'Codex and Claude Code subscription sessions are supported. API keys, other providers and arbitrary models are not.',
-                           'The provider key names the default Codex transport. Claude models run through Claude Code.',
-                           'Claude Code runs are a separate condition and do not reproduce Codex study results.',
+                           'Claude Code and Codex subscription sessions are supported. API keys, other providers and arbitrary models are not.',
+                           'The provider key names the default Claude Code transport. Codex runs only when it is selected by name.',
+                           'Codex and Claude Code are separate conditions. Results from one do not reproduce the other.',
                            'Evidence validation establishes provenance, not scientific correctness.']}
 
 
@@ -81,10 +85,10 @@ def validate_review(workspace, response, review_id='external-review'):
 class ReviewRequest:
     workspace: Path
     output: Path
-    billing_confirmation: Path
-    literature_cutoff: str
+    # A run that names no cutoff reviews against everything published so far.
+    literature_cutoff: str = field(default_factory=default_literature_cutoff)
     workflow: Literal['manuscript-only', 'independent', 'ensemble'] = 'ensemble'
-    model: str = 'gpt-5.6-terra'
+    model: str = DEFAULT_MODEL
     reviewers: int = 2
     token_budget: int = 750000
     scaffold_root: Path | None = None
@@ -141,17 +145,29 @@ class SavedDraftSynthesisRequest:
     workspace: Path
     original_output: Path
     output: Path
-    billing_confirmation: Path
-    literature_cutoff: str
     source_images: tuple[Path, ...]
     source_packet: Path
-    model: str = 'gpt-5.6-terra'
+    # The reused drafts were written under one cutoff. None inherits that cutoff
+    # instead of synthesising saved drafts against a later date.
+    literature_cutoff: str | None = None
+    model: str = DEFAULT_MODEL
     token_budget: int = 750000
     evidence_mode: Literal['current', 'historical'] = 'current'
     synthesis_policy: Literal['ordinary'] = 'ordinary'
 
     def __post_init__(self):
         from datetime import date
+        from .storage import read
+        original_protocol = Path(self.original_output) / 'reviewer-1' / 'protocol.json'
+        if not original_protocol.is_file():
+            raise ValueError('Saved draft synthesis needs the original run reviewer-1 protocol')
+        original_cutoff = read(original_protocol).get('literature_cutoff')
+        date.fromisoformat(str(original_cutoff))
+        if self.literature_cutoff is None:
+            object.__setattr__(self, 'literature_cutoff', original_cutoff)
+        elif self.literature_cutoff != original_cutoff:
+            raise ValueError('Saved draft synthesis must use the original run literature cutoff, '
+                             + str(original_cutoff))
         if self.model not in capabilities()['models']:
             raise ValueError('Unsupported Paper Workbench model. No fallback is permitted.')
         if self.synthesis_policy != 'ordinary':
@@ -245,7 +261,7 @@ def run_saved_draft_synthesis(request: SavedDraftSynthesisRequest):
     cache_before = {str(path.resolve()): digest(path.read_bytes()) for root in cache_roots for path in root.glob('*') if path.is_file()}
     raw_hashes = sorted({digest(path.read_bytes()) for root in [*cache_roots, Path(request.source_packet)]
                          for path in root.glob('*.raw') if path.is_file()})
-    package = debate_reviews(workspace, output, request.billing_confirmation, request.literature_cutoff,
+    package = debate_reviews(workspace, output, request.literature_cutoff,
         records, images=request.source_images, model=request.model, token_budget=request.token_budget,
         evidence_mode=request.evidence_mode, cache_roots=cache_roots, source_packet=request.source_packet,
         synthesis_policy='ordinary', reused_drafts=True)
@@ -324,7 +340,7 @@ def run_review(request: ReviewRequest):
         progress = manuscript_only_progress(package)
     else:
         try:
-            progress = review(workspace, output, request.billing_confirmation, request.literature_cutoff,
+            progress = review(workspace, output, request.literature_cutoff,
                               mode=request.workflow, model=request.model, reviewers=request.reviewers,
                               token_budget=request.token_budget, scaffold_root=request.scaffold_root,
                               shared_images=request.source_images, evidence_mode=request.evidence_mode,
@@ -356,8 +372,8 @@ def run_review(request: ReviewRequest):
     return artifact
 
 
-def review_request_from_preset(name, *, workspace, output, billing_confirmation,
-                               literature_cutoff, model=None, token_budget=None,
+def review_request_from_preset(name, *, workspace, output,
+                               literature_cutoff=None, model=None, token_budget=None,
                                scaffold_root=None, source_images=(), evidence_mode='current',
                                source_packet=None, synthesis_policy=None, policy=None):
     """Construct a request from one named preset, with explicit runtime overrides."""
@@ -365,8 +381,9 @@ def review_request_from_preset(name, *, workspace, output, billing_confirmation,
     preset_synthesis = 'ordinary' if preset.synthesis_policy == 'ordinary-synthesis-v1' else 'debate'
     return ReviewRequest(
         workspace=Path(workspace), output=Path(output),
-        billing_confirmation=Path(billing_confirmation), literature_cutoff=literature_cutoff,
-        workflow=preset.workflow, model=preset.model if model is None else model,
+        literature_cutoff=(default_literature_cutoff() if literature_cutoff is None
+                           else literature_cutoff),
+        workflow=preset.workflow, model=model or preset.model or DEFAULT_MODEL,
         reviewers=preset.reviewers,
         token_budget=preset.token_budget if token_budget is None else token_budget,
         scaffold_root=scaffold_root, source_images=tuple(source_images), preset=name,
@@ -380,7 +397,6 @@ def review_request_from_preset(name, *, workspace, output, billing_confirmation,
 class StructuredRequest:
     """One tool-free structured subscription call, suitable for external graders."""
     output: Path
-    billing_confirmation: Path
     model: str
     prompt: str
     schema: dict
@@ -416,7 +432,7 @@ def run_structured(request: StructuredRequest):
                 'observed_token_stop': request.token_budget,
                 'call_timeout_seconds': request.timeout_seconds, 'mode': 'structured',
                 'max_source_images': 10, 'image_budget_version': 'evidence-v1'}
-    _prepare(output, request.billing_confirmation, protocol)
+    _prepare(output, protocol)
     try:
         value = model_call(protocol, output, request.prompt, request.schema, tools=False,
                            label='structured', images=request.source_images)

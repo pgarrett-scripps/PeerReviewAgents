@@ -13,7 +13,7 @@ peerreview import manuscript.pdf workspace --xml manuscript.xml --supplements su
 peerreview verify workspace
 ```
 
-Sources stay local unless you explicitly run a model review. A review sends manuscript text and selected source images to the authenticated Codex or Claude Code subscription for the selected model, and sends focused literature queries to Crossref or Europe PMC.
+Sources stay local unless you explicitly run a model review. A review sends manuscript text and selected source images to the authenticated Claude Code or Codex subscription for the selected model, and sends focused literature queries to Crossref or Europe PMC.
 
 Import structured findings with `peerreview add-review workspace response.json --id review-name`. Findings contain a block ID, exact quote, kind, comment, evidence block IDs, and optional replacement. The schemas in `review_schema.py` are the current reference. Ambiguous anchors remain unplaced comments. Replacements introducing numerical literals are withheld. Overlapping accepted edits and stale source hashes are rejected.
 
@@ -21,13 +21,13 @@ Import structured findings with `peerreview add-review workspace response.json -
 
 `investigation.py` exposes a bounded MCP server for source reads and searches, PDF page and supplementary figure inspection, saved evidence notes, arithmetic, DOI metadata checks, and focused literature searches. Tool logs and retrieved metadata retain provenance. Search defaults to a publication cutoff configured per paper. Abstracts and DOI metadata are not treated as full-text support.
 
-The engine defaults to Terra medium and also supports Sol medium, and supports plain review, workspace investigation, and a panel with a debate pass. No API key, paid credit, fallback model, shell tool, author-code execution, or automatic retry is used. Inputs and code are fingerprinted before inference. Cache identity includes tool configuration, the manuscript manifest, and attached image paths and hashes. Completed calls can be recovered without another inference. Unknown usage and unresolved interrupted calls block further inference in that attempt directory. The observed-token stop is checked before each call. It is not a hard within-call cap.
+The engine defaults to Claude Code and `claude-sonnet-5-5` at medium effort. Codex Terra and Sol remain fully supported, but only when `--provider codex` or a Codex model is named: nothing selects Codex implicitly. The engine supports plain review, workspace investigation, and a panel with a debate pass. No API key, fallback model, shell tool or author-code execution is used. Inputs and code are fingerprinted before inference. Cache identity includes tool configuration, the manuscript manifest, and attached image paths and hashes. Completed calls can be recovered without another inference. Unknown usage and unresolved interrupted calls block further inference in that attempt directory. The observed-token stop is checked before each call. It is not a hard within-call cap.
 
 ```bash
-peerreview review workspace run-output --mode panel --literature-cutoff 2026-01-05 --billing-confirmation billing_confirmation.json
+peerreview review workspace run-output --mode panel --literature-cutoff 2026-01-05
 ```
 
-This command performs model inference. The billing confirmation must come from a current account check, record `no_paid_credits_verified: true`, and contain a Unix `checked_at` timestamp less than 24 hours old. The runner also requires an active ChatGPT subscription login. Claude models instead require a Claude Code subscription login and a record from `peerreview confirm-billing`. Do not fabricate this confirmation or use it to enable paid usage.
+This command performs model inference. It requires a subscription login for the transport it runs on: Claude Code by default, or an active ChatGPT login when a Codex model is named. `--literature-cutoff` is optional and defaults to today. How much subscription usage a run may spend is the operator's own account setting. The engine records every call in `usage.jsonl` for reporting and does not gate on it.
 
 After a run, `peerreview report run-output` writes `REVIEW.md` and `REVIEW.txt` to the run folder. Both contain the run details, the final review and, for ensemble runs, each independent reviewer. The command reads the saved JSON and makes no model calls. It also works on a blocked or stopped run and reports what was saved.
 
@@ -45,7 +45,7 @@ The optional adapter genuinely reuses `readability.metrics` and `prose_check.che
 
 ```bash
 peerreview checks workspace --scaffold-root /path/to/paper-scaffold --output scaffold-report.json
-peerreview review workspace run-output --mode panel --literature-cutoff 2026-01-05 --billing-confirmation billing_confirmation.json --scaffold-root /path/to/paper-scaffold
+peerreview review workspace run-output --mode panel --literature-cutoff 2026-01-05 --scaffold-root /path/to/paper-scaffold
 ```
 
 The checks operate on extracted plain text and skip headings, references, and tables. They include captions and supplementary prose. Their word convention differs from the importer totals. Readability and prose warnings are editorial cues, not evidence of scientific defects. Scaffold's Typst authoring rules and journal limits are not imposed on imported manuscripts.

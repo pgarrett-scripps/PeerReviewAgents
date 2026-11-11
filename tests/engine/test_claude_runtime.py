@@ -10,7 +10,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from peerreviewagents.engine import model_runtime as runtime
-from peerreviewagents.engine.billing import claude_billing_record
 
 FAKE_CLAUDE = '''#!{python}
 import json, os, sys, time
@@ -171,16 +170,20 @@ class ClaudeRuntime(unittest.TestCase):
             self.call('second prompt')
         self.assertEqual(len(self.launched()), 1)
 
-    def test_paid_extra_usage_stops_the_call(self):
+    def test_paid_extra_usage_does_not_stop_the_call(self):
+        """How much a run may spend is the account's setting, not the engine's.
+
+        A stream that reports paid extra usage, enabled or in use, runs to
+        completion and records the limits it reported."""
         for info in ({'isUsingOverage': True, 'overageStatus': 'rejected'}, {'overageStatus': 'allowed'},
                      {'overageStatus': 'allowed_warning', 'isUsingOverage': False}):
             with self.subTest(info=info):
                 self.out = self.root / ('execution-' + str(len(self.launched())))
-                self.script([init(), {'type': 'rate_limit_event', 'rate_limit_info': info}, result()], pause=10)
-                started = time.time()
-                with self.assertRaisesRegex(runtime.StudyBlocked, 'extra usage'):
-                    self.call()
-                self.assertLess(time.time() - started, 8)
+                self.script([init(), {'type': 'rate_limit_event', 'rate_limit_info': info}, result()])
+                self.assertEqual(self.call(), {'answer': 'ok'})
+                row = runtime.jsonl(self.out / 'usage.jsonl')[0]
+                self.assertTrue(row['ok'])
+                self.assertEqual(row['subscription_limits'], [info])
 
     def test_unverified_or_substituted_sessions_fail_closed_with_usage_recorded(self):
         cases = [([init(), result()], 'no subscription usage limits'),
@@ -315,45 +318,35 @@ class ClaudeSubscriptionGuard(unittest.TestCase):
         self.status = {'loggedIn': True, 'authMethod': 'claude.ai', 'apiProvider': 'firstParty',
                        'subscriptionType': 'max'}
 
-    def check(self, status=None, billing='claude'):
-        if billing == 'claude':
-            runtime.write_json(self.root / 'billing_confirmation.json', claude_billing_record(self.status))
-        elif billing is not None:
-            runtime.write_json(self.root / 'billing_confirmation.json', billing)
+    def check(self, status=None, provider='claude-code'):
+        runtime.write_json(self.root / 'protocol.json', {'provider': provider})
         with patch.object(runtime, 'auth_status', return_value=status or self.status):
             return runtime.require_subscription(self.root)
 
-    def test_subscription_login_and_recent_confirmation_are_required(self):
+    def test_a_subscription_login_is_required(self):
         self.assertEqual(self.check()['authMethod'], 'claude.ai')
         for status in ({**self.status, 'loggedIn': False}, {**self.status, 'authMethod': 'api_key'},
                        {**self.status, 'apiProvider': 'bedrock'}):
             with self.subTest(status=status), self.assertRaises(runtime.StudyBlocked):
                 self.check(status)
-        for billing in ({'checked_at': time.time(), 'no_paid_credits_verified': True},
-                        {**claude_billing_record(self.status), 'checked_at': time.time() - 86400},
-                        {**claude_billing_record(self.status), 'extra_usage_disabled': False}):
-            with self.subTest(billing=billing), self.assertRaises(runtime.StudyBlocked):
-                self.check(billing=billing)
-        (self.root / 'billing_confirmation.json').unlink()
-        with self.assertRaisesRegex(runtime.StudyBlocked, 'confirm-billing'):
-            self.check(billing=None)
+        codex = {'loggedIn': True, 'authMethod': 'chatgpt'}
+        self.assertEqual(self.check(codex, provider='codex')['authMethod'], 'chatgpt')
+        with self.assertRaises(runtime.StudyBlocked):
+            self.check(codex)
 
-    def test_confirm_billing_command_records_the_logged_in_subscription(self):
-        from peerreviewagents.engine.__main__ import main
-        output = self.root / 'billing.json'
-        argv = ['paper-workbench', 'confirm-billing', str(output), '--provider', 'claude-code', '--extra-usage-disabled']
-        with patch.object(sys, 'argv', argv), patch.object(runtime, 'auth_status', return_value=self.status), \
-                patch('builtins.print'):
-            main()
-        record = runtime.read_json(output)
-        self.assertEqual((record['provider'], record['subscription_type'], record['extra_usage_disabled']),
-                         ('claude-code', 'max', True))
-        with patch.object(sys, 'argv', argv[:-1]), patch('sys.stderr'), self.assertRaises(SystemExit):
-            main()
-        with patch.object(sys, 'argv', argv), patch('builtins.print'), \
-                patch.object(runtime, 'auth_status', return_value={**self.status, 'authMethod': 'api_key'}):
-            with self.assertRaisesRegex(ValueError, 'subscription'):
-                main()
+    def test_nothing_gates_on_usage_or_reads_a_recorded_allowance(self):
+        """How much usage a run may spend is the operator's setting, not a guard.
+
+        The guard neither reads a recorded allowance nor writes one, so a run
+        cannot be blocked, or waved through, by a file in its own directory.
+        """
+        runtime.write_json(self.root / 'billing_confirmation.json',
+                           {'checked_at': 0, 'no_paid_credits_verified': False})
+        self.assertEqual(self.check()['authMethod'], 'claude.ai')
+        self.assertEqual(sorted(path.name for path in self.root.iterdir()),
+                         ['billing_confirmation.json', 'protocol.json'])
+        self.assertFalse(hasattr(runtime, 'write_launch_verification'))
+        self.assertFalse(hasattr(runtime, 'LAUNCH_VERIFICATION'))
 
 
 class ProviderDefaults(unittest.TestCase):
@@ -365,7 +358,7 @@ class ProviderDefaults(unittest.TestCase):
 
     def selected_model(self, *options, command='review'):
         from peerreviewagents.engine.__main__ import main
-        argv = ['paper-workbench', *self.COMMANDS[command], '--billing-confirmation', 'billing.json',
+        argv = ['paper-workbench', *self.COMMANDS[command],
                 '--literature-cutoff', '2024-01-01', *options]
         with patch.object(sys, 'argv', argv), patch('builtins.print'), \
                 patch(self.TARGETS[command], return_value={'ready_for_adjudication': False}) as call:
@@ -374,10 +367,13 @@ class ProviderDefaults(unittest.TestCase):
 
     def test_provider_without_a_model_uses_its_pinned_default(self):
         from peerreviewagents.engine import capabilities
-        from peerreviewagents.engine.models import DEFAULT_MODELS, provider_for
+        from peerreviewagents.engine.models import DEFAULT_MODELS, DEFAULT_MODEL, DEFAULT_PROVIDER, provider_for
+        self.assertEqual((DEFAULT_PROVIDER, DEFAULT_MODEL), ('claude-code', 'claude-sonnet-5-5'))
         for command in self.COMMANDS:
             with self.subTest(command=command):
-                self.assertEqual(self.selected_model(command=command), 'gpt-5.6-terra')
+                self.assertEqual(self.selected_model(command=command), 'claude-sonnet-5-5')
+                self.assertEqual(self.selected_model('--provider', 'codex', command=command), 'gpt-5.6-terra')
+                self.assertEqual(self.selected_model('--model', 'gpt-5.6-sol', command=command), 'gpt-5.6-sol')
                 self.assertEqual(self.selected_model('--provider', 'claude-code', command=command), 'claude-sonnet-5-5')
                 self.assertEqual(self.selected_model('--model', 'claude-opus-5-5', command=command), 'claude-opus-5-5')
                 self.assertEqual(self.selected_model('--provider', 'claude-code', '--model', 'claude-opus-5-5',

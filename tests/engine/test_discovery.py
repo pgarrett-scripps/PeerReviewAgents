@@ -1,7 +1,6 @@
 """Offline checks for investigation records and guarded review handoff."""
 import copy
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -46,14 +45,12 @@ class DiscoveryChecks(unittest.TestCase):
             write(root/'paper.json', self.paper)
             (root/'manuscript.md').write_text('We studied 5 plants.')
             write(root/'manifest.json', {'files':{n:digest((root/n).read_bytes()) for n in ('paper.json','manuscript.md')}})
-            billing=Path(directory)/'billing.json'
-            write(billing, {'checked_at':time.time(),'no_paid_credits_verified':True})
             calls=[]
             def fake(protocol, execution, prompt, schema, **kwargs):
                 calls.append({'protocol':protocol,'prompt':prompt,'config':read(execution/'workspace/tool-config.json')})
                 return copy.deepcopy(model)
             with patch.object(reviewer,'require_subscription'), patch.object(reviewer,'model_call',side_effect=fake), patch.object(reviewer,'inspected_images',return_value=[]):
-                reviewer.review(root,out,billing,'2025-01-01',mode='self-revision',model='gpt-5.6-terra')
+                reviewer.review(root,out,'2025-01-01',mode='self-revision',model='gpt-5.6-terra')
             self.assertEqual([c['config']['tool_limit'] for c in calls],[4,2])
             self.assertEqual(calls[0]['config']['source_state'],calls[1]['config']['source_state'])
             self.assertEqual(calls[0]['protocol']['max_calls_per_condition'],2)
@@ -161,8 +158,6 @@ class DiscoveryChecks(unittest.TestCase):
             (root / 'manuscript.md').write_text('[b1] We studied 5 plants.')
             files = {name: digest((root / name).read_bytes()) for name in ('paper.json', 'manuscript.md')}
             write(root / 'manifest.json', {'files': files})
-            billing = base / 'billing.json'
-            write(billing, {'checked_at': time.time(), 'no_paid_credits_verified': True})
             seen = []
 
             def fake_call(protocol, execution, prompt, schema, **kwargs):
@@ -173,7 +168,7 @@ class DiscoveryChecks(unittest.TestCase):
             with patch.object(reviewer, 'require_subscription'), \
                     patch.object(reviewer, 'model_call', side_effect=fake_call) as invoke, \
                     patch.object(reviewer, 'inspected_images', return_value=[]):
-                result = reviewer.review(root, out, billing, '2024-01-01')
+                result = reviewer.review(root, out, '2024-01-01')
             self.assertEqual(result['status'], 'complete')
             self.assertEqual(invoke.call_count, 2)
             self.assertEqual(seen[0]['schema'],

@@ -1,12 +1,11 @@
 """Offline checks for the public structured subscription transport."""
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from peerreviewagents.engine import StructuredRequest, run_structured, usage_summary
-from peerreviewagents.engine.storage import write
+from peerreviewagents.engine.models import DEFAULT_MODEL, DEFAULT_PROVIDER
 
 
 class StructuredAPI(unittest.TestCase):
@@ -14,11 +13,9 @@ class StructuredAPI(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
-        self.billing = self.root / 'billing.json'
-        write(self.billing, {'checked_at': time.time(), 'no_paid_credits_verified': True})
 
     def request(self, **overrides):
-        return StructuredRequest(**{'output': self.root / 'run', 'billing_confirmation': self.billing,
+        return StructuredRequest(**{'output': self.root / 'run',
             'model': 'gpt-6-astra', 'prompt': 'Return a grade', 'schema': {'type': 'object'}, **overrides})
 
     def test_unsupported_model_and_invalid_limits_fail_before_inference(self):
@@ -40,17 +37,15 @@ class StructuredAPI(unittest.TestCase):
                 run_structured(request)
             self.assertEqual(call.call_count, 1)
 
-    def test_claude_model_uses_claude_code_with_its_own_billing_record(self):
-        from peerreviewagents.engine.billing import claude_billing_record
+    def test_a_claude_model_runs_through_claude_code_and_is_the_default(self):
         with patch('peerreviewagents.engine.ensemble.require_subscription'), \
              patch('peerreviewagents.engine.model_runtime.model_call', return_value={'score': 1}) as call:
-            with self.assertRaises(ValueError):
-                run_structured(self.request(model='claude-sonnet-5-5'))
-            call.assert_not_called()
-            write(self.billing, claude_billing_record({'loggedIn': True, 'authMethod': 'claude.ai'}))
             run_structured(self.request(model='claude-sonnet-5-5', output=self.root / 'claude-run'))
-        self.assertEqual(call.call_args.args[0]['provider'], 'claude-code')
-        self.assertFalse(call.call_args.kwargs['tools'])
+            self.assertEqual(call.call_args.args[0]['provider'], 'claude-code')
+            self.assertFalse(call.call_args.kwargs['tools'])
+            run_structured(self.request(output=self.root / 'default-run', model=DEFAULT_MODEL))
+        self.assertEqual(call.call_args.args[0]['provider'], DEFAULT_PROVIDER)
+        self.assertEqual(call.call_args.args[0]['model'], 'claude-sonnet-5-5')
 
     def test_source_images_are_validated_and_forwarded_without_tools(self):
         image = self.root / 'figure.png'
@@ -71,10 +66,3 @@ class StructuredAPI(unittest.TestCase):
                 run_structured(request)
         self.assertTrue((request.output / 'usage-summary.json').exists())
         self.assertEqual(usage_summary(request.output)['calls'], 0)
-
-    def test_stale_billing_cannot_start_a_call(self):
-        write(self.billing, {'checked_at': 0, 'no_paid_credits_verified': True})
-        with patch('peerreviewagents.engine.model_runtime.model_call') as call:
-            with self.assertRaises(ValueError):
-                run_structured(self.request())
-            call.assert_not_called()

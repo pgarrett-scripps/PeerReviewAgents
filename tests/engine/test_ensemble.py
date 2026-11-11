@@ -2,14 +2,13 @@
 import copy
 import json
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from peerreviewagents.engine import ensemble,reviewer
-from peerreviewagents.engine.billing import claude_billing_record
 from peerreviewagents.engine.evidence_handles import build_registry
+from peerreviewagents.engine.models import DEFAULT_MODEL,provider_for
 from peerreviewagents.engine.storage import read,write,digest
 
 
@@ -67,9 +66,6 @@ class EnsembleTests(unittest.TestCase):
             root,out=base/'paper',base/'run'
             write(root/'paper.json',self.paper)
             write(root/'manifest.json',{'files':{'paper.json':digest((root/'paper.json').read_bytes())}})
-            write(base/'billing.json',{'checked_at':time.time(),'no_paid_credits_verified':True})
-            if model and model.startswith('claude-'):
-                write(base/'billing.json',claude_billing_record({'loggedIn':True,'authMethod':'claude.ai'}))
             handle=build_registry(self.paper).handles[0].handle_id
             calls=[]
             findings=[]
@@ -105,13 +101,13 @@ class EnsembleTests(unittest.TestCase):
                 if model:options['model']=model
                 if budget<=100:
                     with self.assertRaisesRegex(ValueError,'launch budget'):
-                        ensemble.ensemble_review(root,out,base/'billing.json','2024-01-01',token_budget=budget,**options)
+                        ensemble.ensemble_review(root,out,'2024-01-01',token_budget=budget,**options)
                     self.assertEqual(len(calls),1)
                     self.assertEqual(read(out/'progress.json')['status'],'blocked')
                     return
                 if empty_components:
                     with self.assertRaisesRegex(ValueError,'exactly one treatment'):
-                        ensemble.ensemble_review(root,out,base/'billing.json','2024-01-01',**options)
+                        ensemble.ensemble_review(root,out,'2024-01-01',**options)
                     validation=read(out/'debate/synthesis-validation.json')
                     self.assertFalse(validation['valid'])
                     self.assertEqual({p['issue_id']:p['component_ids'] for p in validation['problems']
@@ -121,7 +117,7 @@ class EnsembleTests(unittest.TestCase):
                     self.assertTrue((out/'debate/responses/debate-model.json').exists())
                     self.assertEqual(read(out/'debate/progress.json')['status'],'blocked')
                     return
-                status=ensemble.ensemble_review(root,out,base/'billing.json','2024-01-01',**options)
+                status=ensemble.ensemble_review(root,out,'2024-01-01',**options)
             expected=2 if count is None else count
             self.assertEqual(status['usage']['calls'],expected+1)
             self.assertEqual(read(out/'editor-package.json')['reviewer_count'],expected)
@@ -142,8 +138,9 @@ class EnsembleTests(unittest.TestCase):
             validation=read(out/'debate/synthesis-validation.json')
             self.assertTrue(validation['valid'])
             self.assertEqual(validation['component_ledger']['accounted_components'],expected)
-            provider='claude-code' if model and model.startswith('claude-') else 'codex'
-            self.assertEqual({(c['provider'],c['model']) for c in calls},{(provider,model or 'gpt-5.6-terra')})
+            expected_model=model or DEFAULT_MODEL
+            self.assertEqual({(c['provider'],c['model']) for c in calls},
+                             {(provider_for(expected_model),expected_model)})
 
     def test_default_two_reviewers_and_one_debate(self):self.simulate()
 
@@ -155,17 +152,7 @@ class EnsembleTests(unittest.TestCase):
 
     def test_claude_model_runs_every_stage_through_claude_code(self):self.simulate(model='claude-sonnet-5-5')
 
-    def test_billing_record_from_the_other_provider_stops_before_inference(self):
-        with tempfile.TemporaryDirectory() as directory:
-            base=Path(directory)
-            write(base/'codex.json',{'checked_at':time.time(),'no_paid_credits_verified':True})
-            write(base/'claude.json',claude_billing_record({'loggedIn':True,'authMethod':'claude.ai'}))
-            with patch.object(ensemble,'require_subscription') as auth,patch.object(ensemble,'model_call') as call:
-                for billing,model in (('codex.json','claude-opus-5-5'),('claude.json','gpt-5.6-terra')):
-                    with self.assertRaises(ValueError):
-                        ensemble._prepare(base/model,base/billing,ensemble._protocol(model,2,750000))
-                auth.assert_not_called()
-                call.assert_not_called()
+    def test_a_codex_model_still_runs_every_stage_through_codex(self):self.simulate(model='gpt-5.6-terra')
 
 
 if __name__=='__main__':unittest.main()

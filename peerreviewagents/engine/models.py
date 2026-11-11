@@ -7,6 +7,11 @@ SUBSCRIPTION_MODELS = CODEX_MODELS + CLAUDE_MODELS
 # Selecting a provider without a model uses its default. Claude defaults to the latest Sonnet
 # because Opus safeguards can refuse biology manuscripts at the first request.
 DEFAULT_MODELS = {"codex": "gpt-5.6-terra", "claude-code": "claude-sonnet-5-5"}
+# The engine runs on a Claude subscription, so Claude Code is the transport every
+# entry point reaches for when none is named. Codex is still fully supported, but
+# only when it is asked for by name: nothing selects it implicitly.
+DEFAULT_PROVIDER = "claude-code"
+DEFAULT_MODEL = DEFAULT_MODELS[DEFAULT_PROVIDER]
 
 
 def provider_for(model):

@@ -1,15 +1,12 @@
 """A bounded evidence memo from a small source packet, not another full review."""
 import json
-import shutil
-import time
 from pathlib import Path
 from .annotations import verify_workspace
-from .billing import verify_billing
 from .domain_registry import route, context
 from .evidence_handles import build_registry
 from .investigation_policy import INSTRUCTION, with_tool_checks, audit_tool_checks
 from .model_runtime import model_call, require_subscription, source_manifest, jsonl
-from .models import CLAUDE_MODELS, provider_for
+from .models import CLAUDE_MODELS, DEFAULT_MODEL, provider_for
 from .review_schema import obj, STRING, STRINGS
 from .source_payload import text_block
 from .storage import read, write, digest
@@ -54,7 +51,8 @@ def packet(paper, block_ids, max_words=4000):
             'scope': 'Selected whole source blocks only. Missing text is not evidence of manuscript omission. Search or read additional source blocks when needed. No prior review or judge decision is source evidence.'}
 
 
-def investigate(workspace, output, billing, cutoff, question, block_ids, model='gpt-5.6-terra'):
+def investigate(workspace, output, cutoff, question, block_ids, model=None):
+    model = DEFAULT_MODEL if model is None else model
     root, out = Path(workspace).resolve(), Path(output).resolve()
     paper = verify_workspace(root)
     if not isinstance(question, str) or not 10 <= len(question.strip()) <= 1600:
@@ -63,11 +61,6 @@ def investigate(workspace, output, billing, cutoff, question, block_ids, model='
         raise ValueError('Select Terra, Sol, or a supported Claude model')
     provider = provider_for(model)
     selected = packet(paper, block_ids)
-    confirmation = read(billing)
-    if provider == 'claude-code':
-        verify_billing(confirmation, provider=provider)
-    elif not confirmation.get('no_paid_credits_verified') or not 0 <= time.time()-confirmation.get('checked_at',0) < 86400:
-        raise ValueError('Recent subscription and zero-paid-credit check required')
     out.mkdir(parents=True, exist_ok=False)
     protocol = {'version': 'focused-investigation-v2', 'provider': provider, 'model': model,
         'effort': 'medium', 'held_out_runs_authorized': False, 'max_calls_per_condition': 1,
@@ -75,7 +68,6 @@ def investigate(workspace, output, billing, cutoff, question, block_ids, model='
         'tool_limit': 2, 'external_request_limit': 2, 'automatic_retries': False,
         'limitation': 'The observed-token stop is a launch guard, not a hard limit within one session.'}
     write(out/'protocol.json', protocol)
-    shutil.copy2(billing, out/'billing_confirmation.json')
     require_subscription(out)
     profile = route(paper)
     prompt = ('Investigate the question below, not the entire paper. Return a concise evidence memo, about 350 words. '

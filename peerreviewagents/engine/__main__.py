@@ -6,21 +6,25 @@
 import argparse
 from pathlib import Path
 
-from .config import get_review_preset, review_presets
-from .models import DEFAULT_MODELS, SUBSCRIPTION_MODELS, provider_for
+from .config import default_literature_cutoff, get_review_preset, review_presets
+from .models import DEFAULT_MODEL, DEFAULT_MODELS, DEFAULT_PROVIDER, SUBSCRIPTION_MODELS, provider_for
 from .review_policy import (DEFAULT_POLICY_NAME, get_review_policy, review_policies,
                             single_session_refusal)
 from .storage import read
 
 MODEL_HELP=('Exact model ID. Without it, the default for --provider is used: '+
-            ', '.join(f'{model} for {provider}' for provider,model in DEFAULT_MODELS.items())+'.')
+            ', '.join(f'{model} for {provider}' for provider,model in DEFAULT_MODELS.items())+
+            f'. Without --provider either, that is {DEFAULT_MODEL} on {DEFAULT_PROVIDER}.')
 
 COMMANDS = ('import', 'verify', 'add-review', 'result-map', 'review', 'investigate',
-            'confirm-billing', 'report', 'checks')
+            'report', 'checks')
+
+CUTOFF_HELP = 'Latest eligible publication date, YYYY-MM-DD. Defaults to today'
 
 
 def add_model_arguments(parser):
-    parser.add_argument('--provider',choices=tuple(DEFAULT_MODELS),help='Subscription transport (default codex)')
+    parser.add_argument('--provider',choices=tuple(DEFAULT_MODELS),
+                        help=f'Subscription transport (default {DEFAULT_PROVIDER})')
     parser.add_argument('--model',choices=SUBSCRIPTION_MODELS,help=MODEL_HELP)
 
 
@@ -29,8 +33,8 @@ def add_policy_arguments(parser):
         help=f'Named review policy (default {DEFAULT_POLICY_NAME}). workspace-agentic-v1 runs one long '
              'high-effort session with a thirty call tool allowance, no finding cap and one bounded retry')
     parser.add_argument('--preset',choices=tuple(review_presets()),
-        help='Named review preset. It pins --mode, --reviewers, --token-budget, --model and --policy, '
-             'so pass it alone')
+        help='Named review preset. It pins --mode, --reviewers, --token-budget and --policy, so pass '
+             'it alone. The model comes from --provider, which defaults to '+DEFAULT_PROVIDER)
 
 
 def apply_preset(parser,args):
@@ -45,11 +49,14 @@ def apply_preset(parser,args):
         parser.error('--preset sets --mode, --reviewers and --token-budget. Pass the preset on its own')
     if args.policy is not None and args.policy!=preset.policy:
         parser.error(f'--policy {args.policy} conflicts with the {preset.policy} policy its preset pins')
-    if args.model is not None and args.model!=preset.model:
+    if preset.model is not None and args.model is not None and args.model!=preset.model:
         parser.error(f'--model {args.model} conflicts with the {preset.model} model its preset pins')
     args.mode,args.reviewers=preset.workflow,preset.reviewers
     args.token_budget,args.policy=preset.token_budget,preset.policy
-    args.model=preset.model
+    # A preset that pins no model leaves --model and --provider to decide, so the
+    # preset alone runs on the default transport instead of a hard-coded one.
+    if preset.model is not None:
+        args.model=preset.model
 
 
 def apply_policy(parser,args):
@@ -68,10 +75,32 @@ def apply_policy(parser,args):
         parser.error(single_session_refusal(args.policy))
 
 
+def resolve_cutoff(parser,args,resume=None):
+    """Fill the cutoff when none was named, and reject a malformed one.
+
+    A run directory that already recorded a protocol keeps that run's cutoff, so
+    continuing an interrupted run on a later day is not refused as changed
+    inputs. Today's date is used only for a directory with no protocol.
+    """
+    if args.literature_cutoff is None:
+        stored=None
+        if resume is not None:
+            protocol=Path(resume)/'protocol.json'
+            if protocol.is_file():
+                stored=read(protocol).get('literature_cutoff')
+        args.literature_cutoff=stored or default_literature_cutoff()
+        return
+    import datetime
+    try:
+        datetime.date.fromisoformat(args.literature_cutoff)
+    except ValueError:
+        parser.error('--literature-cutoff must be a date, YYYY-MM-DD')
+
+
 def resolve_model(parser,args):
     """Fill the provider default and reject a model that belongs to another provider."""
     if args.model is None:
-        args.model=DEFAULT_MODELS[args.provider or 'codex']
+        args.model=DEFAULT_MODELS[args.provider or DEFAULT_PROVIDER]
     elif args.provider and provider_for(args.model)!=args.provider:
         parser.error(f'{args.model} is not a {args.provider} model')
 
@@ -97,8 +126,8 @@ def add_subcommands(sub):
     p=sub.add_parser('review',help='Run one evidence-linked review on a subscription transport')
     p.add_argument('workspace')
     p.add_argument('output')
-    p.add_argument('--billing-confirmation',required=True)
-    p.add_argument('--literature-cutoff',required=True,help='Latest eligible publication date, YYYY-MM-DD')
+    p.add_argument('--literature-cutoff',default=None,
+                   help=CUTOFF_HELP+', or the cutoff an existing run directory already recorded')
     p.add_argument('--mode',choices=('ensemble','independent','plain','workspace','panel','self-revision'),default='ensemble')
     p.add_argument('--reviewers',type=int,default=2,help='Independent discovery reviewers for ensemble mode, from 1 to 16 (default 2)')
     p.add_argument('--token-budget',type=int,default=750000,help='Ensemble observed-token launch ceiling, not a hard cap on a running call')
@@ -115,14 +144,8 @@ def add_subcommands(sub):
     p.add_argument('output')
     p.add_argument('--question',required=True)
     p.add_argument('--block',action='append',required=True,help='Whole source block to include, repeat up to sixteen times')
-    p.add_argument('--billing-confirmation',required=True)
-    p.add_argument('--literature-cutoff',required=True)
+    p.add_argument('--literature-cutoff',default=None,help=CUTOFF_HELP)
     add_model_arguments(p)
-    p=sub.add_parser('confirm-billing',help='Record that this Claude subscription cannot buy paid extra usage')
-    p.add_argument('output')
-    p.add_argument('--provider',choices=('claude-code',),required=True)
-    p.add_argument('--extra-usage-disabled',action='store_true',required=True,
-                   help='Confirm that extra usage is turned off in Claude settings. Valid for 24 hours.')
     p=sub.add_parser('report',help='Write REVIEW.md and REVIEW.txt from a review run, without model calls')
     p.add_argument('run',help='Output folder of a review run')
     p.add_argument('--workspace',help='Reviewed workspace. Found from the run when omitted')
@@ -144,9 +167,10 @@ def build_parser(prog='peerreviewagents.engine'):
 def dispatch(parser,args):
     """Run one parsed engine command. The parser is used only for argument errors."""
     if args.command=='investigate':
+        resolve_cutoff(parser,args)
         resolve_model(parser,args)
         from .focused_investigation import investigate
-        memo=investigate(args.workspace,args.output,args.billing_confirmation,args.literature_cutoff,
+        memo=investigate(args.workspace,args.output,args.literature_cutoff,
                          args.question,args.block,model=args.model)
         print({'ready_for_adjudication':memo['ready_for_adjudication'],'output':str(Path(args.output)/'memo.json')})
     elif args.command=='import':
@@ -158,15 +182,14 @@ def dispatch(parser,args):
         from .annotations import save_review
         print(save_review(args.workspace,read(args.response),args.id)['annotation_counts'])
     elif args.command=='review':
-        import datetime
-        datetime.date.fromisoformat(args.literature_cutoff)
+        resolve_cutoff(parser,args,args.output)
         from .reviewer import review
         if args.mode!='ensemble' and (args.reviewers!=2 or args.token_budget!=750000):
             parser.error('--reviewers and --token-budget apply only to ensemble mode')
         apply_preset(parser,args)
         apply_policy(parser,args)
         resolve_model(parser,args)
-        progress=review(args.workspace,args.output,args.billing_confirmation,args.literature_cutoff,args.mode,args.scaffold_root,
+        progress=review(args.workspace,args.output,args.literature_cutoff,args.mode,args.scaffold_root,
                         domain_support=not args.legacy_tools,evidence_mode=args.evidence_mode,source_packet=args.source_packet,
                         historical_snapshots=args.historical_snapshots,model=args.model,reviewers=args.reviewers,
                         token_budget=args.token_budget,shared_images=args.source_image,policy=args.policy)
@@ -176,13 +199,6 @@ def dispatch(parser,args):
                 or progress.get('review_guard_status')=='all-findings-quarantined'):
             print(GUARD_STATUS_POLICY)
             raise SystemExit(2)
-    elif args.command=='confirm-billing':
-        from .billing import claude_billing_record
-        from .model_runtime import auth_status
-        from .storage import write
-        record=claude_billing_record(auth_status(args.provider))
-        write(args.output,record)
-        print({'output':args.output,'subscription_type':record['subscription_type'],'valid_hours':24})
     elif args.command=='report':
         from .run_report import write_reports
         paths=write_reports(args.run,args.workspace,args.output_dir)
