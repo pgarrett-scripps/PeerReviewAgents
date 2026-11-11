@@ -9,6 +9,7 @@ from unittest.mock import patch
 from peerreviewagents.engine import ensemble,reviewer
 from peerreviewagents.engine.evidence_handles import build_registry
 from peerreviewagents.engine.models import DEFAULT_MODEL,provider_for
+from peerreviewagents.engine.review_policy import get_review_policy
 from peerreviewagents.engine.storage import read,write,digest
 
 
@@ -60,7 +61,12 @@ class EnsembleTests(unittest.TestCase):
             self.assertFalse(ensemble.observed_usage(out)['unknown'])
             with self.assertRaisesRegex(ValueError,'launch budget'):ensemble.check_budget(out,100,3)
 
-    def simulate(self,count=None,budget=750000,empty_components=False,model=None):
+    def simulate(self,count=None,budget=750000,empty_components=False,model=None,policy='standard-v1'):
+        """One whole ensemble run against a fake transport.
+
+        The limits are read back from the policy the run names, so the same
+        mechanics cover the bounded study arm and the agentic default.
+        """
         with tempfile.TemporaryDirectory() as directory:
             base=Path(directory)
             root,out=base/'paper',base/'run'
@@ -98,6 +104,7 @@ class EnsembleTests(unittest.TestCase):
                     patch.object(reviewer,'model_call',side_effect=fake),patch.object(ensemble,'model_call',side_effect=fake), \
                     patch.object(reviewer,'inspected_images',return_value=[]):
                 options={} if count is None else {'reviewers':count}
+                options['policy']=policy
                 if model:options['model']=model
                 if budget<=100:
                     with self.assertRaisesRegex(ValueError,'launch budget'):
@@ -119,15 +126,24 @@ class EnsembleTests(unittest.TestCase):
                     return
                 status=ensemble.ensemble_review(root,out,'2024-01-01',**options)
             expected=2 if count is None else count
+            run_policy=get_review_policy(policy)
+            # No budget was named on this path, so the run started under the
+            # ceiling its own policy needs for reviewers plus synthesis.
+            self.assertEqual(read(out/'protocol.json')['token_launch_budget'],
+                             run_policy.launch_budget(expected+1))
+            self.assertEqual(read(out/'manifest.json')['plan']['review_policy'],run_policy.name)
             self.assertEqual(status['usage']['calls'],expected+1)
             self.assertEqual(read(out/'editor-package.json')['reviewer_count'],expected)
             self.assertEqual(len(read(out/'debate/debate-ledger.json')['issues']),expected)
             self.assertEqual(len({c['config']['source_state'] for c in calls}),expected+1)
             for call in calls[:-1]:
                 self.assertNotIn('Private reviewer request',call['prompt'])
-                self.assertEqual(call['schema']['properties']['findings']['maxItems'],10)
+                self.assertEqual(call['schema']['properties']['findings'].get('maxItems'),
+                                 run_policy.candidate_finding_cap)
             self.assertIn('Private reviewer request',calls[-1]['prompt'])
-            self.assertEqual([c['config']['tool_limit'] for c in calls],[4]*expected+[2])
+            self.assertEqual([c['config']['tool_limit'] for c in calls],
+                             [run_policy.investigator_tool_limit('independent')]*expected
+                             +[run_policy.debate_tool_calls])
             required=[f'r{i}-issue-1' for i in range(1,expected+1)]
             decisions=calls[-1]['schema']['properties']['decisions']
             self.assertEqual((decisions['minItems'],decisions['maxItems']),(expected,expected))
@@ -142,7 +158,12 @@ class EnsembleTests(unittest.TestCase):
             self.assertEqual({(c['provider'],c['model']) for c in calls},
                              {(provider_for(expected_model),expected_model)})
 
-    def test_default_two_reviewers_and_one_debate(self):self.simulate()
+    def test_two_reviewers_and_one_debate_under_the_study_policy(self):self.simulate()
+
+    def test_the_engine_default_runs_the_same_stages_with_the_agentic_allowance(self):
+        """A bare ensemble run: no policy, no budget. It must reach the whole
+        debate, which the study budget's single 750,000 ceiling could refuse."""
+        self.simulate(policy=None)
 
     def test_three_reviewers_and_one_debate(self):self.simulate(3)
 

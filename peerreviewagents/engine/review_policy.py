@@ -7,17 +7,22 @@ numbers suited the bounded study the engine grew out of and they are the reason
 a run reads like a form to fill in rather than an investigation.
 
 A ``ReviewPolicy`` makes them data. ``standard-v1`` holds exactly the previous
-numbers, so existing presets produce byte-identical prompts, schemas and
-protocol records and existing run directories stay resumable.
-``workspace-agentic-v1`` is the forward direction: one long high-effort
-session, a thirty call tool allowance, no finding cap, a two hour limit, and
-one bounded retry if the call fails or times out. ``agentic-v1`` carries the
-same limits on a workflow of several stages, so the default ensemble plus
-debate run gets the agentic allowance in every call. It is what
-``peerreview review`` uses when no policy is named; ``standard-v1`` remains the
-library default and the study budget. Evidence handling does not change: every
-finding is still quoted, anchored and validated, and a finding that fails
-validation is quarantined with a reason instead of ending the run.
+numbers, so a run that names it produces byte-identical prompts, schemas and
+protocol records and an existing run directory made under it stays resumable.
+It is the study budget the paper's arms are compared under, and nothing else.
+``workspace-agentic-v1`` is one long high-effort session: a thirty call tool
+allowance, no finding cap, a two hour limit, and one bounded retry if the call
+fails or times out. ``agentic-v1`` carries the same limits on a workflow of
+several stages, so an ensemble plus debate run gets the agentic allowance in
+every call.
+
+``agentic-v1`` is the default everywhere: the command line, ``ReviewRequest``,
+``run_review``, ``review``, ``ensemble_review`` and ``get_review_policy(None)``
+all mean it. One default, named in one place, so no surface quietly reviews a
+manuscript under the study budget. Every preset still pins its own policy by
+name, so the study arms are unchanged. Evidence handling does not change
+either: every finding is still quoted, anchored and validated, and a finding
+that fails validation is quarantined with a reason instead of ending the run.
 """
 from dataclasses import asdict, dataclass
 from types import MappingProxyType
@@ -98,15 +103,32 @@ class ReviewPolicy:
         from .review_schema import capped_findings
         return capped_findings(base, self.candidate_finding_cap)
 
+    def launch_budget(self, stages=1):
+        """The observed-token ceiling a run of ``stages`` generation calls starts under.
+
+        The ceiling is checked across the whole run directory before each
+        generation call, so one number has to cover every stage: an ensemble
+        needs the room its reviewers and its synthesis each need. The study
+        budget is a fixed whole-run figure by definition, the ceiling the
+        paper's arms were measured under. Any other policy gets its own
+        per-call allowance for each stage, because a single 750,000 ceiling
+        across three agentic stages refuses the debate before it starts.
+        """
+        if self.name == STUDY_POLICY_NAME:
+            return STUDY_LAUNCH_BUDGET
+        return self.observed_token_stop * stages
+
     def protocol_overlay(self):
         """Protocol keys this policy adds.
 
-        The default policy adds none, so an existing run's ``protocol.json``
-        and the identity hash derived from it are unchanged and the run stays
-        resumable. A non-default policy records itself in full, because the
-        protocol is the durable statement of what a run was allowed to do.
+        ``standard-v1`` adds none, so a run made under the engine's original
+        limits keeps the exact ``protocol.json`` it had before review limits
+        became data, and the identity hash derived from it still matches, so
+        the run stays resumable. Every other policy, the default included,
+        records itself in full, because the protocol is the durable statement
+        of what a run was allowed to do.
         """
-        if self.name == DEFAULT_POLICY_NAME:
+        if self.name == STUDY_POLICY_NAME:
             return {}
         return {'review_policy': self.name, 'review_policy_version': POLICY_VERSION,
                 'max_attempts': self.max_attempts, 'review_policy_record': self.record()}
@@ -147,14 +169,17 @@ AGENTIC_PASSES = ReviewPolicy(
     **AGENTIC_LIMITS,
 )
 
-DEFAULT_POLICY_NAME = STANDARD.name
-DEFAULT_POLICY = STANDARD
+# The bounded study budget. It is named by the presets behind the paper's arms
+# and by ``--policy standard-v1``, and it is the one policy that records no
+# protocol overlay, so a run directory made under the engine's original limits
+# stays resumable.
+STUDY_POLICY = STANDARD
+STUDY_POLICY_NAME = STANDARD.name
+STUDY_LAUNCH_BUDGET = 750000
 
-# What ``peerreview review`` runs when no policy is named. The library default
-# above stays ``standard-v1`` so that every existing caller, preset and run
-# directory keeps its byte-identical prompts and stays resumable.
-COMMAND_LINE_POLICY = AGENTIC_PASSES
-COMMAND_LINE_POLICY_NAME = AGENTIC_PASSES.name
+# What a review runs under when no policy is named, on every surface.
+DEFAULT_POLICY = AGENTIC_PASSES
+DEFAULT_POLICY_NAME = AGENTIC_PASSES.name
 
 _POLICIES = MappingProxyType({policy.name: policy
                               for policy in (STANDARD, AGENTIC, AGENTIC_PASSES)})

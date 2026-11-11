@@ -3,6 +3,8 @@ import datetime
 from dataclasses import asdict, dataclass
 from types import MappingProxyType
 
+from .review_policy import DEFAULT_POLICY_NAME
+
 
 CONFIG_VERSION = 'paper-workbench-config-v1'
 
@@ -113,7 +115,9 @@ def resolved_review_config(request):
                                  else 'workspace-and-bounded-evidence-tools'),
             'synthesis_policy': 'audited-debate-v1' if request.workflow == 'ensemble' else 'none',
             'revision_policy': 'findings-only-no-automatic-revision',
-            'policy': 'standard-v1',
+            # A request that names neither a preset nor a policy runs the engine
+            # default, which is the same allowance the command line takes.
+            'policy': DEFAULT_POLICY_NAME,
         }
     else:
         preset = get_review_preset(request.preset)

@@ -292,7 +292,7 @@ def editor_package(final,reviews,paper=None):
     return result
 
 
-def review(workspace,output,cutoff,mode='panel',shared_images=None,model=None,reviewers=2,token_budget=750000,synthesis_policy='debate',policy=None):
+def review(workspace,output,cutoff,mode='panel',shared_images=None,model=None,reviewers=2,token_budget=None,synthesis_policy='debate',policy=None):
     policy=get_review_policy(policy)
     # No model named means the default transport's default model, which is Claude
     # Code. Codex is reached by naming one of its models, never by omission.
@@ -346,8 +346,8 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
     if mode=='independent':
         from .investigation_policy import VERSION
         protocol['tool_investigation_policy']=VERSION
-    # The default policy contributes no keys, so an existing run directory's
-    # manifest still compares equal and stays resumable.
+    # The study policy contributes no keys, so an existing run directory made
+    # under it still compares equal and stays resumable.
     protocol.update(policy.protocol_overlay())
     manifest={'protocol':protocol,'source_manifest_sha256':digest((root/'manifest.json').read_bytes()),'code':source_manifest(Path(__file__).parent)}
     if mode=='independent':manifest['independent_session']=str(out)

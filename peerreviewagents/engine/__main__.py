@@ -9,7 +9,7 @@ from pathlib import Path
 from .config import (default_literature_cutoff, get_review_preset, preset_synthesis_policy,
                      review_presets)
 from .models import DEFAULT_MODEL, DEFAULT_MODELS, DEFAULT_PROVIDER, SUBSCRIPTION_MODELS, provider_for
-from .review_policy import (COMMAND_LINE_POLICY_NAME, DEFAULT_POLICY_NAME, get_review_policy,
+from .review_policy import (DEFAULT_POLICY_NAME, STUDY_POLICY_NAME, get_review_policy,
                             review_policies, single_session_refusal)
 from .storage import read
 
@@ -29,6 +29,13 @@ REVIEW_MODES = ('ensemble', 'independent', 'plain', 'workspace', 'panel', 'self-
 PUBLIC_MODES = ('ensemble', 'independent', 'panel')
 PUBLIC_MODES_METAVAR = '{' + ','.join(PUBLIC_MODES) + '}'
 
+# The one-command form's layout inside the run folder a person names, and the
+# statuses that mean a run spent its calls and produced a review.
+MANUSCRIPT_DIRECTORY = 'manuscript'
+RUN_DIRECTORY = 'review'
+MAX_RUNS = 99
+FINISHED_STATUSES = ('complete', 'complete-without-findings')
+
 
 def add_model_arguments(parser):
     parser.add_argument('--provider',choices=tuple(DEFAULT_MODELS),
@@ -38,9 +45,9 @@ def add_model_arguments(parser):
 
 def add_policy_arguments(parser):
     parser.add_argument('--policy',choices=tuple(review_policies()),
-        help=f'Named review policy (default {COMMAND_LINE_POLICY_NAME}: high effort, a thirty call tool '
+        help=f'Named review policy (default {DEFAULT_POLICY_NAME}: high effort, a thirty call tool '
              'allowance, no finding cap and one bounded retry in every stage). '
-             f'{DEFAULT_POLICY_NAME} is the bounded study budget of at most five findings in about 900 '
+             f'{STUDY_POLICY_NAME} is the bounded study budget of at most five findings in about 900 '
              'words at medium effort. workspace-agentic-v1 is the same agentic allowance for one single '
              'long session, so it needs --mode independent')
     parser.add_argument('--preset',choices=tuple(review_presets()),
@@ -56,7 +63,7 @@ def apply_preset(parser,args):
     if preset.workflow=='manuscript-only':
         parser.error(f'--preset {args.preset} is a manuscript-only workflow. Run it through '
                      'peerreviewagents.engine.api.review_request_from_preset')
-    if (args.mode,args.reviewers,args.token_budget)!=('ensemble',2,750000):
+    if (args.mode,args.reviewers,args.token_budget)!=('ensemble',2,None):
         parser.error('--preset sets --mode, --reviewers and --token-budget. Pass the preset on its own')
     if args.policy is not None and args.policy!=preset.policy:
         parser.error(f'--policy {args.policy} conflicts with the {preset.policy} policy its preset pins')
@@ -74,16 +81,18 @@ def apply_preset(parser,args):
 
 
 def apply_default_policy(args):
-    """Name the command line default policy once a preset has had its say.
+    """Name the default policy once a preset has had its say.
 
-    A review asked for from the command line runs the agentic allowance: high
-    effort, a thirty call tool budget, no finding cap and one bounded retry in
-    every stage. ``--policy standard-v1`` asks for the bounded study budget
+    The engine default is the agentic allowance: high effort, a thirty call
+    tool budget, no finding cap and one bounded retry in every stage. It is the
+    same default ``get_review_policy(None)`` and every request object take, and
+    naming it here puts it in the run's own protocol record rather than leaving
+    it implied. ``--policy standard-v1`` asks for the bounded study budget
     instead, and a preset pins its own policy, which is why this runs after
     ``apply_preset``.
     """
     if args.policy is None:
-        args.policy = COMMAND_LINE_POLICY_NAME
+        args.policy = DEFAULT_POLICY_NAME
 
 
 def apply_policy(parser,args):
@@ -132,6 +141,73 @@ def resolve_model(parser,args):
         parser.error(f'{args.model} is not a {args.provider} model')
 
 
+def looks_like_pdf(path):
+    """A manuscript PDF, by its suffix or by the header a PDF actually has."""
+    if path.suffix.lower()=='.pdf':
+        return True
+    try:
+        with path.open('rb') as handle:
+            return handle.read(5)==b'%PDF-'
+    except OSError:
+        return False
+
+
+def run_progress(run):
+    """Whatever a run directory last recorded about itself."""
+    path=Path(run)/'progress.json'
+    return read(path) if path.is_file() else {}
+
+
+def import_manuscript(parser,source,workspace):
+    """Import the PDF once, and refuse a different PDF in an existing bundle.
+
+    The imported manuscript is immutable and the review is anchored to it, so a
+    second PDF in the same run folder is a mistake rather than a new run. The
+    comparison is against the exact bytes the first import kept.
+    """
+    from .storage import digest
+    supplied=digest(source.read_bytes())
+    original=workspace/'original.pdf'
+    if (workspace/'paper.json').is_file():
+        if original.is_file() and digest(original.read_bytes())!=supplied:
+            parser.error(f'{workspace} already holds a different manuscript. Name a new run folder '
+                         f'for {source}')
+        return False
+    from .ingest import import_paper
+    existed=workspace.exists()
+    try:
+        paper=import_paper(source,workspace)
+    except Exception as error:
+        # A half-imported workspace reads as a manuscript to the next command,
+        # and the original.pdf in it would make the refusal above meaningless.
+        if not existed:
+            from shutil import rmtree
+            rmtree(workspace,ignore_errors=True)
+        parser.error(f'{source} could not be imported: {type(error).__name__}: {error}')
+    print(paper['title'])
+    print(paper['statistics'])
+    return True
+
+
+def run_directory(parser,bundle):
+    """The folder this review writes, leaving every earlier run in place.
+
+    A review directory is never reused: the engine refuses it, and a second run
+    over a finished review would spend the subscription again for a report the
+    folder already has. A finished run therefore stops the command and names
+    its report; a failed or interrupted one is kept and the new attempt runs in
+    ``review-2``, ``review-3`` and so on.
+    """
+    for index in range(1,MAX_RUNS+1):
+        run=bundle/(RUN_DIRECTORY if index==1 else f'{RUN_DIRECTORY}-{index}')
+        if not run.exists():
+            return run
+        if run_progress(run).get('status') in FINISHED_STATUSES:
+            parser.error(f'{run} already holds a finished review, reported in '
+                         f'{bundle/"REVIEW.md"}. Name a different run folder to review again')
+    parser.error(f'{bundle} already holds {MAX_RUNS} review runs. Name a different run folder')
+
+
 def prepare_manuscript(parser,args):
     """Import a PDF named in place of a workspace and return the bundle folder.
 
@@ -141,22 +217,25 @@ def prepare_manuscript(parser,args):
     Naming an existing workspace directory instead keeps exactly the previous
     behaviour and returns ``None``, so no existing run or script changes.
 
-    An already imported bundle is left alone, so re-running the same command
-    resumes the review against the same immutable manuscript.
+    Re-running the same command reuses the import and never reviews the same
+    manuscript twice by accident: see ``run_directory``.
     """
     source=Path(args.workspace)
-    if source.is_dir() or source.suffix.lower()!='.pdf':
+    if source.is_dir():
+        if not (source/'paper.json').is_file():
+            parser.error(f'{args.workspace} is a directory with no paper.json, so it is not an '
+                         'imported manuscript workspace. Name the manuscript PDF instead')
         return None
-    if not source.is_file():
-        parser.error(f'{args.workspace} is neither a manuscript workspace nor a PDF file')
+    if not source.exists():
+        parser.error(f'{args.workspace} does not exist. Name a manuscript PDF, or a workspace '
+                     'directory already imported with peerreview import')
+    if not source.is_file() or not looks_like_pdf(source):
+        parser.error(f'{args.workspace} is not a PDF. Name a manuscript PDF, or a workspace '
+                     'directory already imported with peerreview import')
     bundle=Path(args.output)
-    workspace=bundle/'manuscript'
-    if not (workspace/'paper.json').is_file():
-        from .ingest import import_paper
-        paper=import_paper(source,workspace)
-        print(paper['title'])
-        print(paper['statistics'])
-    args.workspace,args.output=str(workspace),str(bundle/'review')
+    import_manuscript(parser,source,bundle/MANUSCRIPT_DIRECTORY)
+    args.workspace=str(bundle/MANUSCRIPT_DIRECTORY)
+    args.output=str(run_directory(parser,bundle))
     return bundle
 
 
@@ -192,7 +271,9 @@ def add_subcommands(sub):
                         'documented in docs/study-arms.md')
     p.set_defaults(synthesis_policy='debate')
     p.add_argument('--reviewers',type=int,default=2,help='Independent discovery reviewers for ensemble mode, from 1 to 16 (default 2)')
-    p.add_argument('--token-budget',type=int,default=750000,help='Ensemble observed-token launch ceiling, not a hard cap on a running call')
+    p.add_argument('--token-budget',type=int,default=None,
+                   help='Ensemble observed-token launch ceiling for the whole run, not a hard cap on a '
+                        'running call. Defaults to what the review policy needs for its stages')
     add_model_arguments(p)
     add_policy_arguments(p)
     p.add_argument('--source-image',action='append',default=[],help='Original manuscript figure page to attach, at most ten')
@@ -242,23 +323,35 @@ def dispatch(parser,args):
         bundle=prepare_manuscript(parser,args)
         resolve_cutoff(parser,args,args.output)
         from .reviewer import review
-        if args.mode!='ensemble' and (args.reviewers!=2 or args.token_budget!=750000):
+        if args.mode!='ensemble' and (args.reviewers!=2 or args.token_budget is not None):
             parser.error('--reviewers and --token-budget apply only to ensemble mode')
         apply_preset(parser,args)
         apply_default_policy(args)
         apply_policy(parser,args)
         resolve_model(parser,args)
-        progress=review(args.workspace,args.output,args.literature_cutoff,args.mode,
-                        model=args.model,reviewers=args.reviewers,
-                        token_budget=args.token_budget,shared_images=args.source_image,
-                        synthesis_policy=args.synthesis_policy,policy=args.policy)
+        failure=None
+        try:
+            progress=review(args.workspace,args.output,args.literature_cutoff,args.mode,
+                            model=args.model,reviewers=args.reviewers,
+                            token_budget=args.token_budget,shared_images=args.source_image,
+                            synthesis_policy=args.synthesis_policy,policy=args.policy)
+        except Exception as error:
+            # The one-command form owns the whole job, so a run that stops has
+            # to leave a report behind and a cause a person can read. A named
+            # workspace keeps raising, so no existing script loses its traceback.
+            if bundle is None:raise
+            progress,failure=run_progress(args.output),f'{type(error).__name__}: {error}'
         print(progress)
-        if bundle is not None:
-            # The one-command form finishes the job: the reports are written
-            # from the saved run, with no further model calls.
+        if bundle is not None and (Path(args.output)/'protocol.json').is_file():
+            # The reports are written from the saved run, with no further model
+            # calls. A blocked run is reported as blocked rather than left with
+            # no report at all.
             from .run_report import write_reports
             paths=write_reports(args.output,args.workspace,bundle)
             print({kind:str(path) for kind,path in paths.items()})
+        if failure is not None:
+            print('Review did not finish: '+failure)
+            raise SystemExit(1)
         from .reviewer import COMPLETE_WITHOUT_FINDINGS,GUARD_STATUS_POLICY
         if isinstance(progress,dict) and (progress.get('status')==COMPLETE_WITHOUT_FINDINGS
                 or progress.get('review_guard_status')=='all-findings-quarantined'):

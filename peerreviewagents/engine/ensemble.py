@@ -124,13 +124,16 @@ def _protocol(model,reviewers,token_budget,policy=None):
 
 
 def debate_reviews(workspace,out,cutoff,records,*,images=(),model=None,
-                   token_budget=750000,cache_roots=(),evidence_memos=(),
+                   token_budget=None,cache_roots=(),evidence_memos=(),
                    synthesis_policy='debate',reused_drafts=False,policy=None):
     """Shared debate implementation for fresh discovery and explicitly recorded reused drafts."""
     from .models import DEFAULT_MODEL
     from .review_policy import get_review_policy
     model=DEFAULT_MODEL if model is None else model
     policy=get_review_policy(policy)
+    # Same rule as a whole ensemble: no budget named means the ceiling this
+    # policy's stages need, and a named budget is used exactly as given.
+    token_budget=policy.launch_budget(len(records)+1) if token_budget is None else token_budget
     from .ensemble_debate import (ensemble_schema, ensemble_prompt, ordinary_synthesis_prompt, augment_ledger,
                                   normalize_new_decisions, adjudicated_secondary,
                                   audit_only_secondary, attach_adjudicated_secondary,
@@ -285,7 +288,7 @@ def debate_reviews(workspace,out,cutoff,records,*,images=(),model=None,
         raise
 
 
-def ensemble_review(workspace,output,cutoff,reviewers=2,token_budget=750000,
+def ensemble_review(workspace,output,cutoff,reviewers=2,token_budget=None,
                     shared_images=None,model=None,
                     synthesis_policy='debate',policy=None):
     from .models import DEFAULT_MODEL
@@ -293,6 +296,9 @@ def ensemble_review(workspace,output,cutoff,reviewers=2,token_budget=750000,
     from .reviewer import review,inspected_images
     model=DEFAULT_MODEL if model is None else model
     policy=get_review_policy(policy)
+    # No budget named means the one this policy's stages need. A named budget is
+    # the operator's own ceiling and is used exactly as given.
+    token_budget=policy.launch_budget(reviewers+1) if token_budget is None else token_budget
     # The last gate. The CLI and the request object refuse this earlier, and a
     # caller reaching the engine directly must not spend reviewers+1 long
     # high-effort calls for a policy that names one session.
