@@ -28,8 +28,7 @@ class ToolReceipts(unittest.TestCase):
 
     def config(self, root):
         return {'paper': str(root), 'output': str(root/'out'),
-                'cache': str(root/'cache'), 'tool_limit': 3,
-                'allow_literature': False}
+                'cache': str(root/'cache'), 'tool_limit': 3}
 
     def test_calls_receive_ordered_receipts_and_log_failures(self):
         with tempfile.TemporaryDirectory() as temp:

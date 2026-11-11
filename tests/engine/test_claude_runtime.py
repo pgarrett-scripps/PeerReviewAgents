@@ -128,7 +128,8 @@ class ClaudeRuntime(unittest.TestCase):
 
     def test_tools_are_limited_to_the_manuscript_server_with_explicit_approvals(self):
         self.tool_config()
-        tools = ['StructuredOutput'] + [runtime.CLAUDE_TOOL_PREFIX + name for name in runtime.APPROVED_MANUSCRIPT_TOOLS]
+        approved = runtime.tool_profile({})[1]
+        tools = ['StructuredOutput'] + [runtime.CLAUDE_TOOL_PREFIX + name for name in approved]
         self.script([init(tools, servers=[{'name': 'manuscript', 'status': 'connected'}]), LIMITS,
                      *tool_turn('mcp__manuscript__read_blocks'), *tool_turn('StructuredOutput', is_error=True), result()])
         self.assertEqual(self.call(tools=True), {'answer': 'ok'})
@@ -139,7 +140,7 @@ class ClaudeRuntime(unittest.TestCase):
         self.assertEqual(servers['manuscript']['args'], [str(runtime.HERE / 'manuscript_tools.py'),
                                                          str(self.out / 'workspace' / 'tool-config.json')])
         self.assertEqual(argv[argv.index('--allowedTools') + 1].split(','),
-                         [runtime.CLAUDE_TOOL_PREFIX + name for name in runtime.APPROVED_MANUSCRIPT_TOOLS])
+                         [runtime.CLAUDE_TOOL_PREFIX + name for name in approved])
         self.assertEqual(argv[argv.index('--tools') + 1], '')
 
     def test_images_follow_the_prompt_in_order_and_unsupported_files_never_launch(self):

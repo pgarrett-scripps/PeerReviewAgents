@@ -72,12 +72,10 @@ class ReviewPolicy:
     def record(self):
         return {'policy_version': POLICY_VERSION, **asdict(self)}
 
-    def investigator_tool_limit(self, mode, domain_support=True):
-        """Keep the historical mode-derived allowance unless the policy pins one."""
+    def investigator_tool_limit(self, mode):
+        """Keep the mode-derived allowance unless the policy pins one."""
         if self.tool_calls is not None:
             return self.tool_calls
-        if not domain_support:
-            return 3
         return 4 if mode in ('panel', 'self-revision', 'independent') else 6
 
     def generation_call_limit(self, mode):

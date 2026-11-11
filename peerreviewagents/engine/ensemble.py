@@ -129,7 +129,7 @@ def _protocol(model,reviewers,token_budget,policy=None):
 
 
 def debate_reviews(workspace,out,cutoff,records,*,images=(),model=None,
-                   token_budget=750000,domain_support=True,evidence_mode='current',cache_roots=(),
+                   token_budget=750000,evidence_mode='current',cache_roots=(),
                    source_packet=None,historical_snapshots=None,evidence_memos=(),
                    synthesis_policy='debate',reused_drafts=False,policy=None):
     """Shared debate implementation for fresh discovery and explicitly recorded reused drafts."""
@@ -179,7 +179,7 @@ def debate_reviews(workspace,out,cutoff,records,*,images=(),model=None,
         write(out/'input-reviews.json',records)
         sources=SourceClient(out/'sources',out/'source-cache',policy.debate_external_requests,evidence_mode,cutoff,
             frozen_cache=source_packet,
-            frozen_hashes=packet_manifest) if domain_support else None
+            frozen_hashes=packet_manifest)
         cards={}
         for cache in cache_roots:
             for path in Path(cache).glob('*'):
@@ -199,8 +199,7 @@ def debate_reviews(workspace,out,cutoff,records,*,images=(),model=None,
                 ident=card['evidence_id']
                 if ident in cards and cards[ident]!=card:raise ValueError('Conflicting reviewer evidence cards')
                 cards[ident]=card
-        if cards and sources is None:raise ValueError('External cards require domain evidence support')
-        if sources:write(out/'sources/cards.json',list(cards.values()))
+        write(out/'sources/cards.json',list(cards.values()))
         image_paths=[]
         seen=set()
         for entry in [*images,*memo_images]:
@@ -209,14 +208,12 @@ def debate_reviews(workspace,out,cutoff,records,*,images=(),model=None,
             if sha not in seen:image_paths.append(path)
             seen.add(sha)
         if len(image_paths)>10:raise ValueError('Combined source images exceed ten-image ceiling')
-        schema=ensemble_schema(policy)
-        if sources:
-            schema=with_external_evidence(schema)
+        schema=with_external_evidence(ensemble_schema(policy))
         schema=constrain_manuscript_handles(with_evidence_handles(schema),build_registry(paper))
         schema=constrain_ledger_identifiers(schema,ledger)
         card_context=[{**c,'evidence_handles':[h.model_record() for h in source_card_handles(c)]} for c in cards.values()]
         prompt_builder = ensemble_prompt if synthesis_policy == 'debate' else ordinary_synthesis_prompt
-        prompt=prompt_builder(paper,handle_manuscript(paper),ledger,source_cards=card_context if sources else None,
+        prompt=prompt_builder(paper,handle_manuscript(paper),ledger,source_cards=card_context,
                               policy=policy)
         prompt+=INSTRUCTION+component_contract(ledger)
         prompt+='\n'+pooled_candidates(policy)+' Decide every supplied issue.\n'+HANDLE_INSTRUCTION
@@ -229,9 +226,9 @@ def debate_reviews(workspace,out,cutoff,records,*,images=(),model=None,
         stage = 'debate' if synthesis_policy == 'debate' else 'ordinary-synthesis'
         config={'paper':str(root),'output':str(out/'investigations'/stage),'cache':str(out/'source-cache'),
                 'tool_limit':policy.debate_tool_calls,'literature_cutoff':cutoff,'evidence_handles':True,
-                'synthesis_ledger':str(out/'debate-ledger.json')}
-        if sources:config.update(tool_profile='domains-v1',source_state=str(out/'sources'),
-                                 external_request_limit=policy.debate_external_requests,evidence_mode=evidence_mode)
+                'synthesis_ledger':str(out/'debate-ledger.json'),
+                'tool_profile':'domains-v1','source_state':str(out/'sources'),
+                'external_request_limit':policy.debate_external_requests,'evidence_mode':evidence_mode}
         if source_packet:config.update(source_packet=str(source_packet),source_packet_manifest=packet_manifest)
         if historical_snapshots:config['historical_snapshots']=str(Path(historical_snapshots).resolve())
         write(out/'execution/workspace/tool-config.json',config)
@@ -306,7 +303,7 @@ def debate_reviews(workspace,out,cutoff,records,*,images=(),model=None,
 
 
 def ensemble_review(workspace,output,cutoff,reviewers=2,token_budget=750000,
-                    scaffold_root=None,domain_support=True,evidence_mode='current',source_packet=None,
+                    scaffold_root=None,evidence_mode='current',source_packet=None,
                     shared_images=None,historical_snapshots=None,model=None,
                     synthesis_policy='debate',policy=None):
     from .models import DEFAULT_MODEL
@@ -347,7 +344,7 @@ def ensemble_review(workspace,output,cutoff,reviewers=2,token_budget=750000,
             target=out/f'reviewer-{index}'
             write(out/'progress.json',{'status':'running','stage':f'reviewer-{index}','reviewers':reviewers})
             review(root,target,cutoff,mode='independent',scaffold_root=scaffold_root,
-                domain_support=domain_support,evidence_mode=evidence_mode,source_packet=source_packet,
+                evidence_mode=evidence_mode,source_packet=source_packet,
                 shared_images=shared_images,historical_snapshots=historical_snapshots,model=model,
                 policy=policy)
             path=target/'editor-package.json'
@@ -358,7 +355,7 @@ def ensemble_review(workspace,output,cutoff,reviewers=2,token_budget=750000,
         stage = 'debate' if synthesis_policy == 'debate' else 'ordinary-synthesis'
         write(out/'progress.json',{'status':'running','stage':stage,'reviewers':reviewers})
         package=debate_reviews(root,out/stage,cutoff,records,images=images,model=model,
-            token_budget=token_budget-observed_usage(out)['observed_tokens'],domain_support=domain_support,
+            token_budget=token_budget-observed_usage(out)['observed_tokens'],
             evidence_mode=evidence_mode,cache_roots=[out/f'reviewer-{i}/source-cache' for i in range(1,reviewers+1)],
             source_packet=source_packet,historical_snapshots=historical_snapshots,
             synthesis_policy=synthesis_policy,policy=policy)

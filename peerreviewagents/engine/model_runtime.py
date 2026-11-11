@@ -233,17 +233,19 @@ def tool_identity(work, tools):
         "source_manifest_sha256": digest(source.read_bytes()) if source.is_file() else None,
     }
 
+PROFILE = 'domains-v1'
+
 def tool_profile(config):
-    profile = config.get('tool_profile', 'legacy')
+    """Resolve the one approved tool profile.
+
+    ``domains-v1`` is the only profile the engine has. A config may name it or
+    leave it out, but a config naming anything else is refused rather than
+    treated as a server path to run.
+    """
+    if config.get('tool_profile', PROFILE) != PROFILE:
+        raise StudyBlocked('Unknown manuscript tool profile')
     preflight = ('validate_synthesis',) if config.get('synthesis_ledger') else ()
-    if profile == 'legacy':
-        return 'manuscript_tools.py', (*APPROVED_MANUSCRIPT_TOOLS, *preflight)
-    if profile == 'domains-v1':
-        return 'manuscript_tools.py', (*APPROVED_MANUSCRIPT_TOOLS, 'lookup_source', 'inspect_results', 'record_comparison', 'resolve_identifier', 'historical_registration', *preflight)
-    if profile == 'debate-v2':
-        from .debate_evidence import TOOLS
-        return 'debate_tools.py', TOOLS
-    raise StudyBlocked('Unknown manuscript tool profile')
+    return 'manuscript_tools.py', (*APPROVED_MANUSCRIPT_TOOLS, 'lookup_source', 'inspect_results', 'record_comparison', 'resolve_identifier', 'historical_registration', *preflight)
 
 def request_identity(protocol, prompt, schema, tools, images, work):
     request = {

@@ -5,12 +5,10 @@ import json
 import os
 import re
 import subprocess
-import urllib.parse
-import urllib.request
 from pathlib import Path
 from .annotations import verify_workspace
 from .calculator import calculate
-from .storage import digest, read, write
+from .storage import digest, read
 from .source_payload import text_block
 
 
@@ -25,30 +23,23 @@ class Investigation:
         self.by={b['id']:b for b in self.paper['blocks']}
         self.limit=config.get('tool_limit',8)
         self.cutoff=config.get('literature_cutoff','2026-01-05')
-        self.cache=Path(config['cache'])
         self.calls=0
-        self.network_calls=0
-        self.allow_literature=config.get('allow_literature',True)
         self.evidence_handles=config.get('evidence_handles',False)
         self.manuscript_handles=config.get('manuscript_handles',False)
-        self.sources = None
-        self.targeted = None
         self.synthesis_preflight = None
-        if config.get('tool_profile') == 'domains-v1':
-            from .external_evidence import SourceClient
-            self.sources = SourceClient(config['source_state'], config['cache'],
-                                        config.get('external_request_limit', 6),
-                                        config.get('evidence_mode', 'current'), self.cutoff,
-                                        frozen_cache=config.get('source_packet'), frozen_hashes=config.get('source_packet_manifest'))
-            from .targeted_sources import TargetedSources, HistoricalRegistrationStore
-            historical = HistoricalRegistrationStore(config['historical_snapshots']) if config.get('historical_snapshots') else None
-            self.targeted = TargetedSources(self.sources, historical)
-
+        from .external_evidence import SourceClient
+        self.sources = SourceClient(config.get('source_state') or str(self.out/'sources'), config['cache'],
+                                    config.get('external_request_limit', 6),
+                                    config.get('evidence_mode', 'current'), self.cutoff,
+                                    frozen_cache=config.get('source_packet'), frozen_hashes=config.get('source_packet_manifest'))
+        from .targeted_sources import TargetedSources, HistoricalRegistrationStore
+        historical = HistoricalRegistrationStore(config['historical_snapshots']) if config.get('historical_snapshots') else None
+        self.targeted = TargetedSources(self.sources, historical)
         if config.get('synthesis_ledger'):
             from .synthesis_validation import SynthesisPreflight
             self.synthesis_preflight = SynthesisPreflight(
                 read(config['synthesis_ledger']), self.paper, self.out/'synthesis-preflight',
-                lambda: self.sources.cards() if self.sources else None)
+                self.sources.cards)
 
     def audit_tool_discovery(self, event, server_info, tool_names=None):
         """Append the MCP exposure observed by this server process."""
@@ -65,28 +56,11 @@ class Investigation:
             os.fsync(stream.fileno())
 
     def fetch(self, url):
-        if self.sources is not None:
-            record = self.sources.fetch(url)
-            if record['status'] != 'ok':
-                record['unavailable'] = record['status']
-            return record
-        path=self.cache/(digest(url)+'.json')
-        if path.exists():
-            return read(path)
-        if self.network_calls>=3:
-            return {'unavailable':'Literature request allowance exhausted'}
-        self.network_calls+=1
-        try:
-            request=urllib.request.Request(url,headers={'User-Agent':'PRA-workspace-pilot/0.1 (scientific source verification)'})
-            with urllib.request.urlopen(request,timeout=20) as response:
-                raw=response.read(2_000_001)
-            if len(raw)>2_000_000:
-                raise ValueError('Response exceeds literature size limit')
-            result={'source_url':url,'retrieved_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'data':json.loads(raw)}
-            write(path,result)
-            return result
-        except Exception as exc:
-            return {'source_url':url,'unavailable':str(exc),'limitation':'Unavailable evidence does not imply an incorrect or missing citation.'}
+        """Retrieve one allowlisted public record through the shared source client."""
+        record = self.sources.fetch(url)
+        if record['status'] != 'ok':
+            record['unavailable'] = record['status']
+        return record
 
     def call(self,name,args):
         if name == 'validate_synthesis' and self.synthesis_preflight is not None:
@@ -145,8 +119,6 @@ class Investigation:
                 stream.write(json.dumps(result, ensure_ascii=False)+'\n')
             return result
         if name == 'lookup_source':
-            if self.sources is None:
-                raise ValueError('Domain sources are not enabled in this tool profile')
             if args['block_id'] not in self.by:
                 raise ValueError('A source lookup needs a valid manuscript block ID')
             return self.sources.lookup(args['provider'], args['identifier'], args['block_id'])
@@ -192,35 +164,20 @@ class Investigation:
                 match=re.search(r'(?:doi:\s*|https?://(?:dx\.)?doi\.org/)(10\.\d{4,9}/\S+)',ref['raw'],re.I)
                 if match:ref['doi']=match.group(1).rstrip('.,')
             if not ref.get('doi'):return {'reference':ref,'unavailable':'No extracted DOI. Use a focused title search.'}
-            if self.sources is not None:
-                # Bibliography IDs locate metadata checks, not manuscript scientific claims.
-                card = self.sources.lookup('crossref', ref['doi'], ref['id'])
-                if card['status'] == 'not_found':
-                    card = self.sources.lookup('datacite', ref['doi'], ref['id'])
-                return {'reference': ref, 'source_card': card,
-                        'limitation': 'Bibliographic identity only. Compare the returned title and authors with the extracted reference.'}
-            record=self.fetch('https://api.crossref.org/works/'+urllib.parse.quote(ref['doi'],safe=''))
-            data=record.pop('data',{}).get('message',{})
-            return {**record,'reference':ref,'metadata':{k:data[k] for k in ('DOI','title','author','published','type') if k in data},'limitation':'Metadata lookup verifies identity only. It cannot verify support for the manuscript claim.'}
+            # Bibliography IDs locate metadata checks, not manuscript scientific claims.
+            card = self.sources.lookup('crossref', ref['doi'], ref['id'])
+            if card['status'] == 'not_found':
+                card = self.sources.lookup('datacite', ref['doi'], ref['id'])
+            return {'reference': ref, 'source_card': card,
+                    'limitation': 'Bibliographic identity only. Compare the returned title and authors with the extracted reference.'}
         if name=='search_literature':
-            if not self.allow_literature:
-                return {'unavailable':'Literature search is disabled for this blinded pilot. Use manuscript evidence and fixed-reference metadata checks.'}
-            if self.targeted is not None:
-                if args['block_id'] not in self.by:
-                    raise ValueError('A literature investigation needs a valid manuscript block ID')
-                return self.targeted.search_literature(args['query'],args['block_id'])
-            query=args['query']
-            if not query or len(query)>300:raise ValueError('Use a focused query under 300 characters')
-            query='('+query+') AND FIRST_PDATE:[1900-01-01 TO '+self.cutoff+']'
-            source_doi=re.search(r'10\.\d{4,9}/[^\s?]+',self.paper.get('source_url',''))
-            if source_doi:query+=' NOT DOI:'+source_doi.group(0)
-            record=self.fetch('https://www.ebi.ac.uk/europepmc/webservices/rest/search?'+urllib.parse.urlencode({'query':query,'format':'json','resultType':'core','pageSize':3}))
-            data=record.pop('data',{}).get('resultList',{}).get('result',[])
-            return {**record,'results':[{k:r.get(k) for k in ('id','source','doi','title','authorString','firstPublicationDate','abstractText','isOpenAccess')} for r in data], 'cutoff':self.cutoff,'limitation':'Search is bounded and not exhaustive. Abstracts can identify relevant prior work, but cannot establish a missing citation or full-text claim support alone.'}
+            if args['block_id'] not in self.by:
+                raise ValueError('A literature investigation needs a valid manuscript block ID')
+            return self.targeted.search_literature(args['query'],args['block_id'])
         raise ValueError('Unknown investigation tool')
 
 
-def specs(domain_support=False, synthesis_preflight=False):
+def specs(synthesis_preflight=False):
     definitions=[
         ('read_blocks','Read source blocks by stable IDs.',{'ids':{'type':'array','items':{'type':'string'}}}),
         ('search','Search for one short exact contiguous phrase in manuscript and supplements, not a list of keywords. Read known table block IDs directly when available.',{'query':{'type':'string'}}),
@@ -229,33 +186,28 @@ def specs(domain_support=False, synthesis_preflight=False):
         ('view_page','Inspect one original PDF page, including figures.',{'page':{'type':'integer'}}),
         ('view_supplement','Inspect one original supplement PDF page or supplied image preview. IDs are in the asset inventory. Page defaults to 1.',{'id':{'type':'string'},'page':{'type':'integer','minimum':1,'maximum':100}}),
         ('check_citation','Resolve an extracted reference DOI through Crossref. Metadata only.',{'reference_id':{'type':'string'}}),
-        ('search_literature','Focused Europe PMC search with abstracts, limited to work available by the manuscript date. Up to three results.',{'query':{'type':'string'}}),
+        ('search_literature', 'Search one Europe PMC page for a manuscript question. At most three leads with explicit coverage. Results are not an exhaustive literature review.',
+         {'query':{'type':'string'},'block_id':{'type':'string'}}),
+        ('resolve_identifier', 'Resolve one exact DOI, PMID, PMCID, NCT or OSF identifier. Identity is separate from scientific support.',
+         {'kind':{'type':'string','enum':['doi','pmid','pmcid','nct','osf']},'identifier':{'type':'string'},'block_id':{'type':'string'}}),
+        ('historical_registration', 'Read a configured curated registration snapshot on or before a date. Unavailable when no eligible snapshot exists. Never substitutes the current registry.',
+         {'registry':{'type':'string','enum':['clinicaltrials','osf']},'identifier':{'type':'string'},'as_of':{'type':'string'},'block_id':{'type':'string'}}),
     ]
-    if domain_support:
-        definitions = [row if row[0] != 'search_literature' else
-            ('search_literature', 'Search one Europe PMC page for a manuscript question. At most three leads with explicit coverage. Results are not an exhaustive literature review.',
-             {'query':{'type':'string'},'block_id':{'type':'string'}}) for row in definitions]
-        definitions.extend([
-            ('resolve_identifier', 'Resolve one exact DOI, PMID, PMCID, NCT or OSF identifier. Identity is separate from scientific support.',
-             {'kind':{'type':'string','enum':['doi','pmid','pmcid','nct','osf']},'identifier':{'type':'string'},'block_id':{'type':'string'}}),
-            ('historical_registration', 'Read a configured curated registration snapshot on or before a date. Unavailable when no eligible snapshot exists. Never substitutes the current registry.',
-             {'registry':{'type':'string','enum':['clinicaltrials','osf']},'identifier':{'type':'string'},'as_of':{'type':'string'},'block_id':{'type':'string'}}),
-        ])
-        from .result_map import DIMENSIONS
-        observation = {'type':'object', 'properties':{k:{'type':'string'} for k in
-            (*DIMENSIONS, 'block_id', 'quote', 'value')},
-            'required':[*DIMENSIONS, 'block_id', 'quote', 'value'], 'additionalProperties':False}
-        definitions.extend([
-            ('inspect_results', 'Inspect linked claims, tables and figure captions. Empty block_id selects a bounded overview. Missing targets reflect extraction limits.',
-             {'block_id':{'type':'string'}}),
-            ('record_comparison', 'Record two exact textual quantities with model, population, metric, units and scale context. Use unknown for unresolved dimensions. No automatic scientific endorsement.',
-             {'observations':{'type':'array','items':observation,'minItems':2,'maxItems':2}}),
-        ])
-        from .source_adapters import PROVIDERS
-        definitions.append(('lookup_source', 'Retrieve one exact public record linked to a manuscript block. Active providers: ' +
-                            ', '.join(k + ' (' + v[0] + ')' for k, v in PROVIDERS.items()) +
-                            '. Returns dated evidence with limitations. Unlisted providers are unavailable.',
-                            {'provider': {'type': 'string'}, 'identifier': {'type': 'string'}, 'block_id': {'type': 'string'}}))
+    from .result_map import DIMENSIONS
+    observation = {'type':'object', 'properties':{k:{'type':'string'} for k in
+        (*DIMENSIONS, 'block_id', 'quote', 'value')},
+        'required':[*DIMENSIONS, 'block_id', 'quote', 'value'], 'additionalProperties':False}
+    definitions.extend([
+        ('inspect_results', 'Inspect linked claims, tables and figure captions. Empty block_id selects a bounded overview. Missing targets reflect extraction limits.',
+         {'block_id':{'type':'string'}}),
+        ('record_comparison', 'Record two exact textual quantities with model, population, metric, units and scale context. Use unknown for unresolved dimensions. No automatic scientific endorsement.',
+         {'observations':{'type':'array','items':observation,'minItems':2,'maxItems':2}}),
+    ])
+    from .source_adapters import PROVIDERS
+    definitions.append(('lookup_source', 'Retrieve one exact public record linked to a manuscript block. Active providers: ' +
+                        ', '.join(k + ' (' + v[0] + ')' for k, v in PROVIDERS.items()) +
+                        '. Returns dated evidence with limitations. Unlisted providers are unavailable.',
+                        {'provider': {'type': 'string'}, 'identifier': {'type': 'string'}, 'block_id': {'type': 'string'}}))
     if synthesis_preflight:
         definitions.append(('validate_synthesis', 'Validate a complete synthesis draft before submission. Two local checks, separate from the source allowance. No network or scientific endorsement.',
                             {'draft_json': {'type': 'string', 'maxLength': 300000}}))
@@ -276,7 +228,7 @@ def main(config_path):
                 result={'protocolVersion':request['params']['protocolVersion'],'capabilities':{'tools':{}},'serverInfo':server_info}
                 server.audit_tool_discovery('initialize', server_info)
             elif method=='tools/list':
-                available=specs(server.sources is not None, server.synthesis_preflight is not None)
+                available=specs(server.synthesis_preflight is not None)
                 server.audit_tool_discovery('tools/list', {'name':'paper-workspace','version':'0.1.0'},
                                             [tool['name'] for tool in available])
                 result={'tools':available}

@@ -37,7 +37,7 @@ Coverage validation checks that every area appears once and that supplied quotat
 
 The debate receives guarded review suggestions, the coverage record, cited source blocks, and up to three source images inspected by the first reviewer. It has two further evidence lookups. Withheld numerical replacements are passed as author questions. Debate output receives the same guards before entering the editor package. Every input finding has a stable ID. The debate must explicitly retain, merge, reject with reasons, or request verification for each one. Missing, duplicate, or invalid dispositions remain in an unendorsed verification queue. A shared source passage does not establish that two concerns are equivalent. Original suggestions and raw responses remain available, with guarded findings, dispositions, and validation records preserved in the editor package.
 
-`debate_revision.py` provides a versioned component-preserving debate schema, prompt, validator, and editor package. `debate_evidence.py` provides a fixed source-only tool profile with explicit any/all search and bounded claim or experiment context. Every original component receives a treatment, and scientific status is separate from editorial priority. Exact quotations and complete accounting are checked without asserting scientific correctness.
+`debate_revision.py` provides a versioned component-preserving debate schema, prompt, validator, and editor package. Every original component receives a treatment, and scientific status is separate from editorial priority. Exact quotations and complete accounting are checked without asserting scientific correctness.
 
 ## Paper Scaffold checks
 

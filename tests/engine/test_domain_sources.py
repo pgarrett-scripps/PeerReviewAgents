@@ -152,13 +152,13 @@ class Sources(unittest.TestCase):
         fields, _, _, identity = parse('string', '9606:TP53', [{'preferredName': 'TP53', 'ncbiTaxonId': 10090}])
         self.assertIsNone(identity)
 
-    def test_domain_profile_is_explicit_and_legacy_schema_unchanged(self):
+    def test_domain_profile_is_explicit_and_schema_enhancement_is_a_copy(self):
         original = copy.deepcopy(REVIEW)
         enhanced = with_external_evidence(REVIEW)
         self.assertEqual(REVIEW, original)
         self.assertIn('source_evidence', enhanced['properties']['findings']['items']['required'])
-        self.assertNotIn('lookup_source', tool_profile({})[1])
-        self.assertEqual(set(tool_profile({'tool_profile': 'domains-v1'})[1]), {s['name'] for s in specs(True)})
+        self.assertIn('lookup_source', tool_profile({'tool_profile': 'domains-v1'})[1])
+        self.assertEqual(set(tool_profile({'tool_profile': 'domains-v1'})[1]), {s['name'] for s in specs()})
 
 
 class Routing(unittest.TestCase):
