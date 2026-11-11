@@ -66,10 +66,8 @@ dependencies = [
     # would invalidate in-flight runs.
     "rustypaper==0.2.2",
     # peerreviewagents.engine runtime: Pillow renders the page images the
-    # importer attaches to a review, openpyxl reads spreadsheet supplements in
-    # peerreviewagents.engine.table_evidence.
+    # importer attaches to a review.
     "Pillow>=10",
-    "openpyxl>=3.1",
 ]
 
 [project.optional-dependencies]
