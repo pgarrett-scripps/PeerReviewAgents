@@ -9,7 +9,6 @@ from peerreviewagents.engine.source_packet import source_packet_manifest
 from peerreviewagents.engine.storage import digest, write
 from peerreviewagents.engine.model_runtime import source_manifest
 import peerreviewagents.engine
-import peerreviewagents.engine.api as core_api
 
 
 class SavedDraftSynthesisTests(unittest.TestCase):
@@ -56,7 +55,6 @@ class SavedDraftSynthesisTests(unittest.TestCase):
             'resolved_configuration': {'synthesis_policy': 'debate', 'reviewers': 2},
             'source_packet_manifest_after': packet_hashes,
             'engine_source': source_manifest(Path(peerreviewagents.engine.__file__).parent),
-            'core_source': source_manifest(Path(core_api.__file__).parent),
             'usage': {'calls': 3, 'receipts': 3, 'observed_tokens': 90, 'unknown': False}})
         self.request = SavedDraftSynthesisRequest(workspace=self.workspace,
             original_output=self.original, output=self.root / 'ordinary',
@@ -150,12 +148,12 @@ class SavedDraftSynthesisTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'expected discovery count'):
             self.synthesize()
 
-    def test_rejects_original_engine_or_core_drift(self):
+    def test_rejects_original_engine_drift(self):
         artifact_path = self.original / 'core-artifact.json'
         artifact = json.loads(artifact_path.read_text())
-        artifact['core_source'] = {'changed': True}
+        artifact['engine_source'] = {'changed': True}
         write(artifact_path, artifact)
-        with self.assertRaisesRegex(ValueError, 'engine or public core changed'):
+        with self.assertRaisesRegex(ValueError, 'engine changed'):
             self.synthesize()
 
 

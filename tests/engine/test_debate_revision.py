@@ -4,7 +4,7 @@ import unittest
 
 from peerreviewagents.engine.annotations import normalize_review, export_draft
 from peerreviewagents.engine.debate_revision import issue_ledger, validate_revision, revision_package
-from peerreviewagents.engine.model_runtime import tool_profile, APPROVED_MANUSCRIPT_TOOLS, StudyBlocked
+from peerreviewagents.engine.model_runtime import tool_profile, APPROVED_MANUSCRIPT_TOOLS, RunBlocked
 from peerreviewagents.engine.storage import digest
 
 
@@ -154,8 +154,8 @@ class DebateRevisionTests(unittest.TestCase):
         self.assertEqual(server,'manuscript_tools.py')
         self.assertEqual(tools[:len(APPROVED_MANUSCRIPT_TOOLS)],APPROVED_MANUSCRIPT_TOOLS)
         self.assertEqual(tool_profile({}),(server,tools))
-        with self.assertRaises(StudyBlocked):tool_profile({'tool_profile':'/tmp/arbitrary.py'})
-        with self.assertRaises(StudyBlocked):tool_profile({'tool_profile':'debate-v2'})
+        with self.assertRaises(RunBlocked):tool_profile({'tool_profile':'/tmp/arbitrary.py'})
+        with self.assertRaises(RunBlocked):tool_profile({'tool_profile':'debate-v2'})
 
 
 if __name__ == '__main__':

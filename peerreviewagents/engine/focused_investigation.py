@@ -97,8 +97,6 @@ def investigate(workspace, output, cutoff, question, block_ids, model=None):
     result = model_call(protocol,out/'execution',prompt,SCHEMA,tools=True,label='focused')
     write(out/'response.json', result)
     verify_workspace(root)
-    if code != source_manifest(Path(__file__).parent):
-        raise ValueError('Implementation changed during investigation')
     rows = jsonl(out/'investigation/tool-log.jsonl')
     audit = audit_tool_checks(result,rows,set(block_ids))
     result,quote_audit=hydrate_memo_evidence(result,paper,set(block_ids),rows)

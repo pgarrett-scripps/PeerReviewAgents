@@ -188,11 +188,10 @@ def run_saved_draft_synthesis(request: SavedDraftSynthesisRequest):
     source_manifest_sha = digest((workspace / 'manifest.json').read_bytes())
     artifact = read(original / 'core-artifact.json')
     current_engine = source_manifest(Path(__file__).parent)
-    current_core = source_manifest(Path(__file__).parent)
     if (artifact.get('api_version') != API_VERSION or
             artifact.get('artifact_version') != capabilities()['artifact_version'] or
-            artifact.get('engine_source') != current_engine or artifact.get('core_source') != current_core):
-        raise ValueError('Original ensemble engine or public core changed')
+            artifact.get('engine_source') != current_engine):
+        raise ValueError('Original ensemble engine changed')
     if (artifact.get('paper_id') != paper['id'] or artifact.get('source_manifest_sha256') != source_manifest_sha
             or artifact.get('workflow') != 'ensemble' or artifact.get('model_requested') != request.model):
         raise ValueError('Saved drafts do not match the requested manuscript, workflow, or model')
@@ -267,7 +266,7 @@ def run_saved_draft_synthesis(request: SavedDraftSynthesisRequest):
             'discovery_calls': 0, 'synthesis_calls': 1, 'synthesis_tool_allowance': 2,
             'token_launch_budget': request.token_budget, 'evidence_policy': 'frozen'},
         'source_packet_manifest_before': packet_before, 'source_packet_manifest_after': packet_before,
-        'engine_source': current_engine, 'core_source': current_core, 'editor_package': package,
+        'engine_source': current_engine, 'editor_package': package,
         'usage': synthesis_usage, 'usage_scope': 'new_synthesis_stage_only',
         'reused_discovery_usage': reused_discovery_usage,
         'reused_discovery_receipts': discovery_receipts,
@@ -328,17 +327,16 @@ def run_review(request: ReviewRequest):
         # rather than report an unknown status.
         progress = read(output/'progress.json') if (output/'progress.json').exists() else {}
     engine = source_manifest(Path(__file__).parent)
-    core_engine = source_manifest(Path(__file__).parent)
     artifact = {'api_version': API_VERSION, 'artifact_version': 'paper-workbench-run-v1',
                 'paper_id': paper['id'], 'source_manifest_sha256': source_hash,
                 'workflow': request.workflow, 'model_requested': request.model,
                 'resolved_configuration': resolved_config,
                 'resolved_configuration_sha256': digest(json.dumps(resolved_config, sort_keys=True)),
-                'engine_source': engine, 'core_source': core_engine,
+                'engine_source': engine,
                 'status': progress.get('status'), 'run_progress': progress,
                 'editor_package': read(output/'editor-package.json'),
                 'usage': observed_usage(output), 'output_directory': str(output),
-                'limitation': 'A pipeline artifact is not a benchmark score. The benchmark owns blinding, grading and hidden answer keys.'}
+                'limitation': 'A run artifact records what the engine did. It is not a graded score.'}
     write(output/'core-artifact.json', artifact)
     return artifact
 

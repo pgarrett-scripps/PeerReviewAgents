@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from .models import DEFAULT_PROVIDER, PROVIDER_MODELS
 
-class StudyBlocked(RuntimeError):
+class RunBlocked(RuntimeError):
     """A run guard refused. ``transient`` marks the few failures a retry may replace."""
 
     transient = False
@@ -35,7 +35,7 @@ def transient_failure(message):
     Only these may be retried. A refusal, whether billing, model, tool or
     safety, is a verdict about the run and is never retried.
     """
-    blocked = StudyBlocked(message)
+    blocked = RunBlocked(message)
     blocked.transient = True
     return blocked
 
@@ -123,12 +123,12 @@ def require_subscription(root):
     provider = read_json(protocol_path)["provider"] if protocol_path.exists() else DEFAULT_PROVIDER
     status = auth_status(provider)
     if not status.get("loggedIn"):
-        raise StudyBlocked(f"This process cannot access a {provider} subscription login.")
+        raise RunBlocked(f"This process cannot access a {provider} subscription login.")
     accepted = {"chatgpt"} if provider == "codex" else {"claude.ai", "oauth"}
     if status.get("authMethod") not in accepted:
-        raise StudyBlocked("Subscription authentication was not verified. Refusing API-backed execution.")
+        raise RunBlocked("Subscription authentication was not verified. Refusing API-backed execution.")
     if provider != "codex" and status.get("apiProvider") not in (None, "firstParty"):
-        raise StudyBlocked("Claude Code must use the Anthropic subscription login, not a cloud provider.")
+        raise RunBlocked("Claude Code must use the Anthropic subscription login, not a cloud provider.")
     return status
 
 # The approved efforts and the one-retry ceiling are owned by review_policy, so
@@ -138,16 +138,16 @@ from .review_policy import APPROVED_EFFORTS, MAX_ATTEMPT_CEILING  # noqa: E402
 def validate_protocol(protocol):
     pinned = PROVIDER_MODELS
     if protocol.get("provider") not in pinned or protocol.get("model") not in pinned[protocol["provider"]]:
-        raise StudyBlocked("Unapproved provider or model. No automatic fallback is permitted.")
+        raise RunBlocked("Unapproved provider or model. No automatic fallback is permitted.")
     if protocol.get("effort") not in APPROVED_EFFORTS:
-        raise StudyBlocked("Unapproved reasoning effort. Approved values are low, medium and high.")
+        raise RunBlocked("Unapproved reasoning effort. Approved values are low, medium and high.")
     for key in ("observed_token_stop", "call_timeout_seconds"):
         value = protocol.get(key)
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-            raise StudyBlocked(f"Protocol field {key} must be a positive integer.")
+            raise RunBlocked(f"Protocol field {key} must be a positive integer.")
     attempts = protocol.get("max_attempts", 1)
     if isinstance(attempts, bool) or not isinstance(attempts, int) or not 1 <= attempts <= MAX_ATTEMPT_CEILING:
-        raise StudyBlocked("Protocol field max_attempts allows one call or one bounded retry.")
+        raise RunBlocked("Protocol field max_attempts allows one call or one bounded retry.")
 
 def source_manifest(path):
     return {str(p.relative_to(path)): digest(p.read_bytes()) for p in sorted(Path(path).rglob("*"))
@@ -222,7 +222,7 @@ def tool_identity(work, tools):
         return None
     config_path = Path(work) / "tool-config.json"
     if not config_path.exists():
-        raise StudyBlocked("Bounded manuscript tools require tool-config.json before inference.")
+        raise RunBlocked("Bounded manuscript tools require tool-config.json before inference.")
     config = read_json(config_path)
     source = Path(config.get("paper", "")) / "manifest.json"
     return {
@@ -241,7 +241,7 @@ def tool_profile(config):
     treated as a server path to run.
     """
     if config.get('tool_profile', PROFILE) != PROFILE:
-        raise StudyBlocked('Unknown manuscript tool profile')
+        raise RunBlocked('Unknown manuscript tool profile')
     preflight = ('validate_synthesis',) if config.get('synthesis_ledger') else ()
     return 'manuscript_tools.py', (*APPROVED_MANUSCRIPT_TOOLS, 'lookup_source', 'inspect_results', 'record_comparison', 'resolve_identifier', *preflight)
 
@@ -377,7 +377,7 @@ def claude_command(protocol, schema, tools, work):
     """Print mode with no built-in tools, settings files, skills or other MCP servers."""
     schema = claude_schema(schema)
     if len(json.dumps(schema)) > CLAUDE_SCHEMA_LIMIT:
-        raise StudyBlocked("The response schema is too large for the Claude Code command line.")
+        raise RunBlocked("The response schema is too large for the Claude Code command line.")
     command = [shutil.which("claude") or "claude", "-p", "--model", protocol["model"],
                "--effort", protocol["effort"], "--input-format", "stream-json",
                "--output-format", "stream-json", "--verbose",
@@ -401,10 +401,10 @@ def claude_input(prompt, images):
         if media is None and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
             media = "image/webp"
         if media is None:
-            raise StudyBlocked(f"Claude Code accepts PNG, JPEG, GIF or WebP source images. Unsupported: {path.name}")
+            raise RunBlocked(f"Claude Code accepts PNG, JPEG, GIF or WebP source images. Unsupported: {path.name}")
         encoded = base64.b64encode(data).decode()
         if len(encoded) > CLAUDE_IMAGE_LIMIT:
-            raise StudyBlocked(f"Source image exceeds the 5 MB Claude image limit: {path.name}")
+            raise RunBlocked(f"Source image exceeds the 5 MB Claude image limit: {path.name}")
         content.append({"type": "image", "source": {"type": "base64", "media_type": media, "data": encoded}})
     return json.dumps({"type": "user", "message": {"role": "user", "content": content}}) + "\n"
 
@@ -445,7 +445,7 @@ def claude_failure(events, init, result, limits, model, tools, returncode):
     if not limits:
         return "Claude Code reported no subscription usage limits. Refusing unverified execution."
     if claude_tool_failures(events) or result.get("permission_denials"):
-        return "A manuscript tool call failed. Do not score this incomplete run."
+        return "A manuscript tool call failed. This run is incomplete."
     models = result.get("modelUsage") or {}
     if (not same_model(init.get("model"), model) or not models
             or any(not same_model(name, model) and not same_model(usage.get("canonicalModel"), model)
@@ -649,7 +649,7 @@ def _model_call(protocol, out, prompt, schema, *, tools=False, label="call", ima
     image_limit=protocol.get('max_source_images',3)
     image_ceiling=10 if protocol.get('image_budget_version')=='evidence-v1' else 4
     if type(image_limit) is not int or not 1<=image_limit<=image_ceiling or len(images)>image_limit:
-        raise StudyBlocked("Attached source images exceed the bounded protocol allowance")
+        raise RunBlocked("Attached source images exceed the bounded protocol allowance")
     work = out / "workspace"
     work.mkdir(exist_ok=True)
     identity = request_identity(protocol, prompt, schema, tools, images, work)
@@ -674,8 +674,8 @@ def _model_call(protocol, out, prompt, schema, *, tools=False, label="call", ima
             attempt += 1
             continue
         if unknown:
-            raise StudyBlocked("Cached output has unknown usage. Inspect its receipt before continuing.")
-        raise StudyBlocked("A prior attempt failed. Inspect it and use a new attempt directory to retry.")
+            raise RunBlocked("Cached output has unknown usage. Inspect its receipt before continuing.")
+        raise RunBlocked("A prior attempt failed. Inspect it and use a new attempt directory to retry.")
     started_path = out / "calls" / f"{stem}.started.json"
     if started_path.exists():
         started = read_json(started_path)
@@ -685,23 +685,23 @@ def _model_call(protocol, out, prompt, schema, *, tools=False, label="call", ima
             write_json(cache, recovered)
             account_once(out / "usage.jsonl", recovered)
             if recovered.get("usage_unknown"):
-                raise StudyBlocked("Recovered output has unknown usage. Inspect its receipt before continuing.")
+                raise RunBlocked("Recovered output has unknown usage. Inspect its receipt before continuing.")
             return recovered["value"]
-        raise StudyBlocked("An interrupted attempt has no complete recoverable receipt. Inspect it before any new model call.")
+        raise RunBlocked("An interrupted attempt has no complete recoverable receipt. Inspect it before any new model call.")
     if recover_only:
-        raise StudyBlocked("No matching completed request is recoverable. Recovery never launches a model call.")
+        raise RunBlocked("No matching completed request is recoverable. Recovery never launches a model call.")
     reconcile_receipts(out)
     if unresolved_attempts(out):
-        raise StudyBlocked("An earlier interrupted attempt is unresolved. Inspect it before any new model call.")
+        raise RunBlocked("An earlier interrupted attempt is unresolved. Inspect it before any new model call.")
     prior = jsonl(out / "usage.jsonl")
     # An attempt a retry replaced is superseded: its failure is recorded, its
     # tokens still count, but it no longer blocks any later call here. Every
     # other request keeps exactly one effective row, whichever attempt won it.
     effective = effective_rows(prior, pending=(identity, attempt))
     if any(row.get("usage_unknown") or row.get("observed_tokens") is None for row in effective):
-        raise StudyBlocked("Prior model usage is unknown. No further model calls are permitted in this attempt directory.")
+        raise RunBlocked("Prior model usage is unknown. No further model calls are permitted in this attempt directory.")
     if sum(row.get("observed_tokens", 0) for row in prior) >= protocol["observed_token_stop"]:
-        raise StudyBlocked("Pilot observed-token stop reached. Outputs have been saved.")
+        raise RunBlocked("Observed-token stop reached. Outputs have been saved.")
     if attempt > 1 and prepare_attempt is not None:
         # Every guard has passed and this attempt is about to launch, so the
         # caller may now set the replaced attempt's working state aside.
@@ -743,7 +743,7 @@ def _model_call(protocol, out, prompt, schema, *, tools=False, label="call", ima
     try:
         claim_json(started_path, record)
     except FileExistsError as exc:
-        raise StudyBlocked("This request was started by another launcher. Inspect it before continuing.") from exc
+        raise RunBlocked("This request was started by another launcher. Inspect it before continuing.") from exc
     try:
         stdout_path = out / "calls" / f"{stem}.events.jsonl"
         stderr_path = out / "calls" / f"{stem}.stderr.txt"
@@ -756,7 +756,7 @@ def _model_call(protocol, out, prompt, schema, *, tools=False, label="call", ima
             error = outcome.pop("error")
             record.update(outcome)
             if error:
-                raise transient_failure(error) if record["transient_failure"] else StudyBlocked(error)
+                raise transient_failure(error) if record["transient_failure"] else RunBlocked(error)
             record["ok"] = True
             return record["value"]
         with stdout_path.open("w") as stdout, stderr_path.open("w") as stderr:
@@ -793,12 +793,12 @@ def _model_call(protocol, out, prompt, schema, *, tools=False, label="call", ima
                     message = (f"Codex completed the turn and then exited {result.returncode}. "
                                "A completed turn is spent, so it is not retried.")
                 if failures or completed:
-                    raise StudyBlocked(message)
+                    raise RunBlocked(message)
                 raise transient_failure(message)
             tool_calls = [e.get("item", {}) for e in events if e.get("type") == "item.completed"
                           and e.get("item", {}).get("type") == "mcp_tool_call"]
             if any(item.get("status") != "completed" for item in tool_calls):
-                raise StudyBlocked("A manuscript tool call failed. Do not score this incomplete run.")
+                raise RunBlocked("A manuscript tool call failed. This run is incomplete.")
             # Complete manuscript text is in every generation prompt. Tools are
             # optional targeted rereads, PDF page inspection, and calculations.
             # This CLI does not expose the resolved model in JSON events.
@@ -806,9 +806,9 @@ def _model_call(protocol, out, prompt, schema, *, tools=False, label="call", ima
             record["model_verification"] = "Explicit CLI model selection. Resolved model unavailable in event stream."
             value = read_json(answer_path)
             if not isinstance(value, dict):
-                raise StudyBlocked("Codex returned no structured object")
+                raise RunBlocked("Codex returned no structured object")
             if record["usage_unknown"]:
-                raise StudyBlocked("Codex completed but did not report usage. Do not continue this run.")
+                raise RunBlocked("Codex completed but did not report usage. Do not continue this run.")
             record.update(ok=True, value=value)
             return value
     except subprocess.TimeoutExpired as exc:

@@ -411,8 +411,6 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
                                             build_registry(paper))
 
     def tool_config(label, limit):
-        if source_manifest(Path(__file__).parent) != manifest['code']:
-            raise ValueError('Review implementation changed during this run')
         config = {'paper': str(root), 'output': str(out/'investigations'/label),
                   'cache': str(out/'source-cache'), 'tool_limit': limit, 'literature_cutoff': cutoff,
                   'evidence_handles':True, 'tool_profile':'domains-v1',

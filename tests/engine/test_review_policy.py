@@ -793,14 +793,14 @@ class BoundedRetry(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
             with patch.object(runtime.subprocess, 'run', side_effect=run):
-                with self.assertRaisesRegex(runtime.StudyBlocked, 'Codex failed'):
+                with self.assertRaisesRegex(runtime.RunBlocked, 'Codex failed'):
                     runtime.model_call(self.protocol, out, 'prompt', self.schema)
             self.assertEqual(len(calls), 1)
             rows = runtime.jsonl(out / 'usage.jsonl')
             self.assertEqual([row['transient_failure'] for row in rows], [False])
             # The saved refusal stays final, so a rerun never relaunches it either.
             with patch.object(runtime.subprocess, 'run', side_effect=run):
-                with self.assertRaisesRegex(runtime.StudyBlocked, 'prior attempt failed'):
+                with self.assertRaisesRegex(runtime.RunBlocked, 'prior attempt failed'):
                     runtime.model_call(self.protocol, out, 'prompt', self.schema)
             self.assertEqual(len(calls), 1)
 
@@ -810,14 +810,14 @@ class BoundedRetry(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
             with patch.object(runtime.subprocess, 'run', side_effect=run):
-                with self.assertRaisesRegex(runtime.StudyBlocked, 'completed the turn'):
+                with self.assertRaisesRegex(runtime.RunBlocked, 'completed the turn'):
                     runtime.model_call(self.protocol, out, 'prompt', self.schema)
             self.assertEqual(len(calls), 1)
             rows = runtime.jsonl(out / 'usage.jsonl')
             self.assertEqual([row['transient_failure'] for row in rows], [False])
             self.assertEqual([row['observed_tokens'] for row in rows], [5])
             with patch.object(runtime.subprocess, 'run', side_effect=run):
-                with self.assertRaisesRegex(runtime.StudyBlocked, 'prior attempt failed'):
+                with self.assertRaisesRegex(runtime.RunBlocked, 'prior attempt failed'):
                     runtime.model_call(self.protocol, out, 'prompt', self.schema)
             self.assertEqual(len(calls), 1)
 
@@ -866,12 +866,12 @@ class BoundedRetry(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
             with patch.object(runtime.subprocess, 'run', side_effect=run):
-                with self.assertRaises(runtime.StudyBlocked):
+                with self.assertRaises(runtime.RunBlocked):
                     runtime.model_call(self.protocol, out, 'prompt', self.schema)
                 # A crashed attempt has no observable token count, so the saved
                 # receipt refuses the rerun on unknown usage before the spent
                 # attempt limit is even reached. Either way it never relaunches.
-                with self.assertRaisesRegex(runtime.StudyBlocked, 'unknown usage'):
+                with self.assertRaisesRegex(runtime.RunBlocked, 'unknown usage'):
                     runtime.model_call(self.protocol, out, 'prompt', self.schema)
             self.assertEqual(len(calls), 2)
             self.assertEqual([row['attempt'] for row in runtime.jsonl(out / 'usage.jsonl')], [1, 2])
@@ -882,7 +882,7 @@ class BoundedRetry(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
             with patch.object(runtime.subprocess, 'run', side_effect=run):
-                with self.assertRaises(runtime.StudyBlocked):
+                with self.assertRaises(runtime.RunBlocked):
                     runtime.model_call(protocol, out, 'prompt', self.schema)
             self.assertEqual(len(calls), 1)
 
@@ -896,7 +896,7 @@ class BoundedRetry(unittest.TestCase):
                 'request_sha256': 'other', 'observed_tokens': 50, 'attempt': 1,
                 'ok': True, 'usage_unknown': False}) + '\n')
             with patch.object(runtime.subprocess, 'run', side_effect=run):
-                with self.assertRaisesRegex(runtime.StudyBlocked, 'token'):
+                with self.assertRaisesRegex(runtime.RunBlocked, 'token'):
                     runtime.model_call(protocol, out, 'prompt', self.schema)
             self.assertEqual(len(calls), 0)
 

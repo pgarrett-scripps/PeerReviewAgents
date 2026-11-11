@@ -77,7 +77,6 @@ def run_manuscript_only(request, paper, resolved_config):
         'configuration': resolved_config,
         'source_manifest_sha256': digest((root / 'manifest.json').read_bytes()),
         'engine_source': source_manifest(Path(__file__).parent),
-        'core_source': source_manifest(Path(__file__).parent),
         'source_images': {str(path): digest(path.read_bytes()) for path in images},
         'attached_asset_ids': attached_assets,
         'unavailable_assets': unavailable_assets,

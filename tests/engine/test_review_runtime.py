@@ -28,7 +28,7 @@ class ReviewRuntime(unittest.TestCase):
         from peerreviewagents.engine.reviewer import review
         for model in ('gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-6-astra', 'gpt-5.6-luna', 'gpt-5.5'):
             runtime.validate_protocol({**self.protocol, 'model': model})
-        with self.assertRaises(runtime.StudyBlocked):
+        with self.assertRaises(runtime.RunBlocked):
             runtime.validate_protocol({**self.protocol, 'model': 'unknown-model'})
         with self.assertRaisesRegex(ValueError, 'explicitly'):
             review(None, None, None, None, model='unknown-model')
@@ -115,7 +115,7 @@ class ReviewRuntime(unittest.TestCase):
                 return SimpleNamespace(returncode=0)
 
             with patch.object(runtime.subprocess, "run", side_effect=run):
-                with self.assertRaisesRegex(runtime.StudyBlocked, "Codex failed"):
+                with self.assertRaisesRegex(runtime.RunBlocked, "Codex failed"):
                     runtime.model_call(self.protocol, out, "prompt", self.schema)
 
     def test_turn_failed_before_completed_turn_remains_terminal(self):
@@ -154,12 +154,12 @@ class ReviewRuntime(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
             with patch.object(runtime.subprocess, 'run', side_effect=self.successful_run()) as invoke:
-                with self.assertRaisesRegex(runtime.StudyBlocked, 'Recovery never launches'):
+                with self.assertRaisesRegex(runtime.RunBlocked, 'Recovery never launches'):
                     runtime.model_call(self.protocol, out, 'prompt', self.schema, recover_only=True)
                 self.assertEqual(invoke.call_count, 0)
                 runtime.model_call(self.protocol, out, 'prompt', self.schema)
                 self.assertEqual(runtime.model_call(self.protocol, out, 'prompt', self.schema, recover_only=True), {'answer':'ok'})
-                with self.assertRaisesRegex(runtime.StudyBlocked, 'Recovery never launches'):
+                with self.assertRaisesRegex(runtime.RunBlocked, 'Recovery never launches'):
                     runtime.model_call(self.protocol, out, 'changed prompt', self.schema, recover_only=True)
                 self.assertEqual(invoke.call_count, 1)
 
@@ -172,9 +172,9 @@ class ReviewRuntime(unittest.TestCase):
                 return SimpleNamespace(returncode=1)
 
             with patch.object(runtime.subprocess, "run", side_effect=fail) as invoke:
-                with self.assertRaisesRegex(runtime.StudyBlocked, "Codex failed"):
+                with self.assertRaisesRegex(runtime.RunBlocked, "Codex failed"):
                     runtime.model_call(self.protocol, out, "first", self.schema)
-                with self.assertRaisesRegex(runtime.StudyBlocked, "usage is unknown"):
+                with self.assertRaisesRegex(runtime.RunBlocked, "usage is unknown"):
                     runtime.model_call(self.protocol, out, "second", self.schema)
             self.assertEqual(invoke.call_count, 1)
             self.assertTrue(runtime.jsonl(out / "usage.jsonl")[0]["usage_unknown"])
@@ -190,7 +190,7 @@ class ReviewRuntime(unittest.TestCase):
                 return SimpleNamespace(returncode=0)
 
             with patch.object(runtime.subprocess, "run", side_effect=run):
-                with self.assertRaisesRegex(runtime.StudyBlocked, "did not report usage"):
+                with self.assertRaisesRegex(runtime.RunBlocked, "did not report usage"):
                     runtime.model_call(self.protocol, out, "prompt", self.schema)
             row = runtime.jsonl(out / "usage.jsonl")[0]
             self.assertFalse(row["ok"])
@@ -210,9 +210,9 @@ class ReviewRuntime(unittest.TestCase):
 
             protocol = {**self.protocol, "observed_token_stop": 10}
             with patch.object(runtime.subprocess, "run", side_effect=fail) as invoke:
-                with self.assertRaises(runtime.StudyBlocked):
+                with self.assertRaises(runtime.RunBlocked):
                     runtime.model_call(protocol, out, "first", self.schema)
-                with self.assertRaisesRegex(runtime.StudyBlocked, "observed-token stop"):
+                with self.assertRaisesRegex(runtime.RunBlocked, "[Oo]bserved-token stop"):
                     runtime.model_call(protocol, out, "second", self.schema)
             self.assertEqual(invoke.call_count, 1)
             self.assertEqual(runtime.jsonl(out / "usage.jsonl")[0]["observed_tokens"], 10)
@@ -283,7 +283,7 @@ class ReviewRuntime(unittest.TestCase):
             calls.mkdir(parents=True)
             runtime.write_json(calls / "old.started.json", {"request_sha256": "old"})
             with patch.object(runtime.subprocess, "run") as invoke:
-                with self.assertRaisesRegex(runtime.StudyBlocked, "earlier interrupted"):
+                with self.assertRaisesRegex(runtime.RunBlocked, "earlier interrupted"):
                     runtime.model_call(self.protocol, out, "new", self.schema)
             invoke.assert_not_called()
 
@@ -302,7 +302,7 @@ class ReviewRuntime(unittest.TestCase):
             })
             protocol = {**self.protocol, "observed_token_stop": 12}
             with patch.object(runtime.subprocess, "run") as invoke:
-                with self.assertRaisesRegex(runtime.StudyBlocked, "observed-token stop"):
+                with self.assertRaisesRegex(runtime.RunBlocked, "[Oo]bserved-token stop"):
                     runtime.model_call(protocol, out, "new", self.schema)
             invoke.assert_not_called()
             self.assertEqual(runtime.jsonl(out / "usage.jsonl")[0]["observed_tokens"], 12)
@@ -365,7 +365,7 @@ class ReviewRuntime(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with patch.object(runtime.subprocess, "run") as invoke:
                 for protocol in variants:
-                    with self.assertRaises(runtime.StudyBlocked):
+                    with self.assertRaises(runtime.RunBlocked):
                         runtime.model_call(protocol, directory, "prompt", self.schema)
             invoke.assert_not_called()
 
