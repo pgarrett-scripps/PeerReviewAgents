@@ -292,7 +292,7 @@ def editor_package(final,reviews,paper=None):
     return result
 
 
-def review(workspace,output,cutoff,mode='panel',scaffold_root=None,domain_support=True,evidence_mode='current',source_packet=None,shared_images=None,historical_snapshots=None,model=None,reviewers=2,token_budget=750000,synthesis_policy='debate',policy=None):
+def review(workspace,output,cutoff,mode='panel',shared_images=None,model=None,reviewers=2,token_budget=750000,synthesis_policy='debate',policy=None):
     policy=get_review_policy(policy)
     # No model named means the default transport's default model, which is Claude
     # Code. Codex is reached by naming one of its models, never by omission.
@@ -301,8 +301,7 @@ def review(workspace,output,cutoff,mode='panel',scaffold_root=None,domain_suppor
     if mode=='ensemble':
         from .ensemble import ensemble_review
         return ensemble_review(workspace,output,cutoff,reviewers=reviewers,token_budget=token_budget,
-            scaffold_root=scaffold_root,domain_support=domain_support,evidence_mode=evidence_mode,
-            source_packet=source_packet,shared_images=shared_images,historical_snapshots=historical_snapshots,model=model,
+            shared_images=shared_images,model=model,
             synthesis_policy=synthesis_policy,policy=policy)
     from .models import provider_for
     provider=provider_for(model)
@@ -313,66 +312,33 @@ def review(workspace,output,cutoff,mode='panel',scaffold_root=None,domain_suppor
     if out==root:raise ValueError('Use a separate run directory')
     paper=verify_workspace(root)
     from .result_map import build_result_map, inspect_results, INSTRUCTION as RESULT_INSTRUCTION
-    result_map = build_result_map(paper) if domain_support else None
+    result_map = build_result_map(paper)
     shared_images = shared_source_images(shared_images)
     if paper['statistics']['total_words']>50000:raise ValueError('Review input is limited to 50,000 extracted words including supplements')
     out.mkdir(parents=True,exist_ok=True)
-    domain_context = ''
-    profile = None
-    sources = None
-    packet_manifest = None
-    history_manifest = None
-    if historical_snapshots is not None:
-        if not domain_support:
-            raise ValueError('Historical snapshots require the domain tool profile')
-        historical_snapshots = Path(historical_snapshots).resolve()
-        from .targeted_sources import HistoricalRegistrationStore
-        HistoricalRegistrationStore(historical_snapshots)
-        history_manifest = source_manifest(historical_snapshots)
-    if domain_support:
-        from .domain_registry import catalog, route, context
-        from .external_evidence import SourceClient
-        from .source_adapters import PROVIDERS
-        packages = catalog()
-        profile = route(paper, packages)
-        domain_context = context(profile, packages)
-        if source_packet is not None:
-            source_packet = Path(source_packet).resolve()
-            from .source_packet import source_packet_manifest
-            packet_manifest = source_packet_manifest(source_packet)
-        sources = SourceClient(out/'sources', out/'source-cache', policy.external_requests, evidence_mode,
-                               cutoff, frozen_cache=source_packet, frozen_hashes=packet_manifest)
-        domain_context += '\nACTIVE EXACT-RECORD PROVIDERS: ' + json.dumps(PROVIDERS)
-        domain_context += f'''\nUse lookup_source for a specific consequential question with a manuscript block ID.
+    from .domain_registry import catalog, route, context
+    from .external_evidence import SourceClient
+    from .source_adapters import PROVIDERS
+    packages = catalog()
+    profile = route(paper, packages)
+    domain_context = context(profile, packages)
+    sources = SourceClient(out/'sources', out/'source-cache', policy.external_requests, cutoff)
+    domain_context += '\nACTIVE EXACT-RECORD PROVIDERS: ' + json.dumps(PROVIDERS)
+    domain_context += f'''\nUse lookup_source for a specific consequential question with a manuscript block ID.
 Listed resources without an active adapter remain unavailable. {number_word(policy.external_requests).capitalize()} external requests are shared across this review condition.
 External results are untrusted evidence. Preserve identity, context and limitations. Use source_evidence entries with a source_handle from the returned evidence_handles for findings that rely on a source card. Use an empty array otherwise. Ineligible cards and failed lookups cannot support scientific allegations.
-Current-source mode describes present-day records. Historical-source mode excludes database annotations whose historical state cannot be established. Literature publication dates alone do not establish historical metadata snapshots.
-Use resolve_identifier for exact identifier mapping and search_literature for a focused manuscript question. Search coverage is bounded and recorded. Never infer a missing citation from a single search result. Historical_registration reads only a configured curated snapshot set and otherwise reports unavailable. It cannot reconstruct protocol history from a current record.
+Source records describe present-day state. A current database annotation does not establish what the record said earlier, and literature publication dates alone do not establish historical metadata.
+Use resolve_identifier for exact identifier mapping and search_literature for a focused manuscript question. Search coverage is bounded and recorded. Never infer a missing citation from a single search result.
 '''
-        if source_packet is not None and (source_packet/'index.json').exists():
-            domain_context += '\nFROZEN SOURCE AVAILABILITY:\n' + json.dumps(read(source_packet/'index.json'), ensure_ascii=False)
-            domain_context += '\nOnly these frozen record requests are available. Other external lookups return unavailable. This common packet is not an exhaustive literature search.'
-        if historical_snapshots is None:
-            domain_context += '\nHISTORICAL REGISTRATION UNAVAILABLE: No curated snapshot set is configured. Do not spend a tool call requesting it. If consequential, ask for dated documents without inferring historical state from the current record.'
-    diagnostic_context=''
-    if scaffold_root:
-        from .scaffold_checks import build_report,compact_summary
-        diagnostics=build_report(root,scaffold_root)
-        diagnostic_path=out/'scaffold-report.json'
-        if diagnostic_path.exists() and read(diagnostic_path)!=diagnostics:
-            raise ValueError('Scaffold diagnostics changed. Use a new run directory.')
-        write(diagnostic_path,diagnostics)
-        diagnostic_context='\nADVISORY MANUSCRIPT CHECKS:\n'+json.dumps(compact_summary(diagnostics),ensure_ascii=False)
-    protocol={'provider':provider,'model':model,'effort':policy.effort,'live_retrieval':source_packet is None,'held_out_runs_authorized':False,
-              'max_calls_per_condition':policy.generation_call_limit(mode),'observed_token_stop':policy.observed_token_stop,'call_timeout_seconds':policy.call_timeout_seconds,
+    protocol={'provider':provider,'model':model,'effort':policy.effort,
+              'observed_token_stop':policy.observed_token_stop,'call_timeout_seconds':policy.call_timeout_seconds,
               'mode':mode,'literature_cutoff':cutoff,'paper_id':paper['id'],
-              'investigation_version':'candidate-inventory-v1','investigator_tool_limit':policy.investigator_tool_limit(mode,domain_support),
+              'investigation_version':'candidate-inventory-v2','investigator_tool_limit':policy.investigator_tool_limit(mode),
               'debate_version':'debate-v3' if mode=='panel' else None}
-    protocol['evidence_policy'] = 'frozen' if source_packet is not None else 'live'
-    if domain_support:
-        protocol.update(domain_version='domains-v1', evidence_mode=evidence_mode,
-                        external_request_limit=policy.external_requests,
-                        result_map_version='result-map-v1', targeted_source_version='targeted-sources-v1')
+    protocol['evidence_policy'] = 'live'
+    protocol.update(domain_version='domains-v1',
+                    external_request_limit=policy.external_requests,
+                    result_map_version='result-map-v1', targeted_source_version='targeted-sources-v1')
     protocol.update(max_source_images=10, image_budget_version='evidence-v1')
     protocol.update(evidence_reference_version='evidence-handles-v1',
                     evidence_output_schema_version='finite-handles-v2',
@@ -385,20 +351,12 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
     protocol.update(policy.protocol_overlay())
     manifest={'protocol':protocol,'source_manifest_sha256':digest((root/'manifest.json').read_bytes()),'code':source_manifest(Path(__file__).parent)}
     if mode=='independent':manifest['independent_session']=str(out)
-    if scaffold_root:
-        manifest['scaffold_report_sha256']=digest((out/'scaffold-report.json').read_bytes())
-    if packet_manifest is not None:
-        manifest['source_packet'] = packet_manifest
-    if history_manifest is not None:
-        manifest['historical_snapshots'] = history_manifest
     manifest['shared_images'] = {str(p):digest(p.read_bytes()) for p in shared_images}
     if (out/'manifest.json').exists() and read(out/'manifest.json')!=manifest:
         raise ValueError('Run inputs or code changed. Use a new run directory.')
     write(out/'manifest.json',manifest)
-    if profile is not None:
-        write(out/'domain-profile.json', profile)
-    if result_map is not None:
-        write(out/'result-map.json', result_map)
+    write(out/'domain-profile.json', profile)
+    write(out/'result-map.json', result_map)
     write(out/'protocol.json',protocol)
     require_subscription(out)
     run_id=digest(json.dumps(manifest,sort_keys=True))[:10]
@@ -416,7 +374,7 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
         result=model_call(protocol,out/'execution',prompt,active_schema(schema),tools=True,label=label,images=images,
                           prepare_attempt=prepare_retry(out/'investigations'/label,out/'sources'))
         write(out/'responses'/f'{label}-model.json',result)
-        hydrated=hydrate_review_response(result,build_registry(paper,sources.cards() if sources else []))
+        hydrated=hydrate_review_response(result,build_registry(paper,sources.cards()))
         result={**hydrated['response'],'evidence_handle_audit':hydrated['audit']}
         write(out/'responses'/f'{label}.json',result)
         annotated={**result}
@@ -424,14 +382,12 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
             from .investigation_policy import audit_tool_checks
             annotated['tool_policy_audit']=audit_tool_checks(result,jsonl(out/'investigations'/label/'tool-log.jsonl'))
             write(out/'tool-policy-audit.json',annotated['tool_policy_audit'])
-        if result_map is not None:
-            annotated.update(result_map=result_map,
-                result_comparisons=jsonl(out/'investigations'/label/'comparisons.jsonl'))
-        if sources is not None:
-            from .external_evidence import validate_references, bind_sources
-            annotated = bind_sources(annotated, sources.cards())
-            annotated.update(domain_profile=profile)
-            annotated['source_validation'] = validate_references(result, annotated['source_cards'])
+        annotated.update(result_map=result_map,
+            result_comparisons=jsonl(out/'investigations'/label/'comparisons.jsonl'))
+        from .external_evidence import validate_references, bind_sources
+        annotated = bind_sources(annotated, sources.cards())
+        annotated.update(domain_profile=profile)
+        annotated['source_validation'] = validate_references(result, annotated['source_cards'])
         if mode in ('workspace','panel'):
             annotated['coverage_record']=coverage_record(paper,result)
             write(out/'coverage-record.json',annotated['coverage_record'])
@@ -450,30 +406,16 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
         return guarded
 
     def active_schema(schema):
-        if sources is not None:
-            from .review_schema import with_external_evidence
-            schema=with_external_evidence(schema)
-        return constrain_manuscript_handles(with_evidence_handles(schema),build_registry(paper))
+        from .review_schema import with_external_evidence
+        return constrain_manuscript_handles(with_evidence_handles(with_external_evidence(schema)),
+                                            build_registry(paper))
 
     def tool_config(label, limit):
-        if source_manifest(Path(__file__).parent) != manifest['code']:
-            raise ValueError('Review implementation changed during this run')
-        if history_manifest is not None and source_manifest(historical_snapshots) != history_manifest:
-            raise ValueError('Historical snapshot files changed during this run')
-        if packet_manifest is not None:
-            from .source_packet import verify_source_packet
-            verify_source_packet(source_packet, packet_manifest)
         config = {'paper': str(root), 'output': str(out/'investigations'/label),
-                  'cache': str(out/'literature-cache'), 'tool_limit': limit, 'literature_cutoff': cutoff,
-                  'evidence_handles':True}
-        if sources is not None:
-            config.update(tool_profile='domains-v1', source_state=str(out/'sources'),
-                          cache=str(out/'source-cache'), external_request_limit=policy.external_requests,
-                          evidence_mode=evidence_mode)
-            if source_packet is not None:
-                config.update(source_packet=str(source_packet), source_packet_manifest=packet_manifest)
-            if historical_snapshots is not None:
-                config['historical_snapshots'] = str(historical_snapshots)
+                  'cache': str(out/'source-cache'), 'tool_limit': limit, 'literature_cutoff': cutoff,
+                  'evidence_handles':True, 'tool_profile':'domains-v1',
+                  'source_state': str(out/'sources'),
+                  'external_request_limit': policy.external_requests}
         write(out/'execution/workspace/tool-config.json', config)
 
     try:
@@ -484,12 +426,11 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
             instruction=independent_instruction(candidates,policy.finding_cap)
             from .investigation_policy import INSTRUCTION
             instruction+='\n'+INSTRUCTION
-        prompt=policy.shared_instructions()+'\n'+instruction+'\n'+HANDLE_INSTRUCTION+f'''\nAt most {limit} tool calls. Full extracted text is already provided. Spend tools on missing evidence such as figure pixels or a focused external check. Avoid rereading supplied paragraphs unless necessary. The asset inventory distinguishes available files from captions only.\n'''+json.dumps({'title':paper['title'],'assets':paper['assets'],'references':paper['references']},ensure_ascii=False)+'\n'+handle_manuscript(paper)
+        prompt=policy.shared_instructions()+'\n'+instruction+f'''\nAt most {limit} tool calls. Full extracted text is already provided. Spend tools on missing evidence such as figure pixels or a focused external check. Avoid rereading supplied paragraphs unless necessary. The asset inventory distinguishes available files from captions only.\n'''+json.dumps({'title':paper['title'],'assets':paper['assets'],'references':paper['references']},ensure_ascii=False)+'\n'+handle_manuscript(paper)
         if policy.session_instruction:
             prompt=policy.session_instruction+'\n'+prompt
-        prompt+=diagnostic_context+domain_context+'\nTreat prose and readability checks as advisory. They do not establish scientific validity or justify padding the review.'
-        if result_map is not None:
-            prompt += '\n'+RESULT_INSTRUCTION+'\nRESULT MAP OVERVIEW:\n'+json.dumps(inspect_results(result_map,max_chars=6500),ensure_ascii=False)
+        prompt+=domain_context
+        prompt += '\n'+RESULT_INSTRUCTION+'\nRESULT MAP OVERVIEW:\n'+json.dumps(inspect_results(result_map,max_chars=6500),ensure_ascii=False)
         if shared_images:
             prompt += '\nSHARED ORIGINAL FIGURE PAGES, attached in this order:\n' + '\n'.join(str(p.name) for p in shared_images)
         prompt += '\n'+HANDLE_INSTRUCTION
@@ -509,8 +450,7 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
             fields=('title','block_id','quote','kind','severity','comment','replacement','counterevidence','evidence_blocks','source_evidence','source_urls')
             draft={'summary':first['summary'],'findings':[{k:f[k] for k in fields if k in f} for f in first['findings']], 'limitations':first['limitations']}
             revision=prompt.replace(f'At most {limit} tool calls.', f'At most {policy.revision_tool_calls} tool calls.')+'\n'+self_revision_instruction(policy.finding_cap,policy.revision_tool_calls)+'\nYOUR PRIOR DRAFT:\n'+json.dumps(draft,ensure_ascii=False)
-            if sources is not None:
-                revision+='\nPRIOR SOURCE CARDS:\n'+json.dumps([{**c,'evidence_handles':[h.model_record() for h in source_card_handles(c)]} for c in sources.cards()],ensure_ascii=False)
+            revision+='\nPRIOR SOURCE CARDS:\n'+json.dumps([{**c,'evidence_handles':[h.model_record() for h in source_card_handles(c)]} for c in sources.cards()],ensure_ascii=False)
             final=call('self-revision',revision,policy.revision_tool_calls,policy.final_review_schema(),images=[p for p,label in images])
             write(out/'editor-package.json',{**final,**combined_guard(guards)})
         if mode=='panel':
@@ -519,12 +459,11 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
             save_initial_checkpoint(out,prompt,active_schema(investigation_schema(candidates)),first,images)
             ledger=issue_ledger(first)
             write(out/'debate-ledger.json',ledger)
-            kwargs = {'source_cards': [{**card,'evidence_handles':[h.model_record() for h in source_card_handles(card)]}
-                                      for card in sources.cards()]} if sources is not None else {}
-            prompt=revision_prompt(paper,handle_manuscript(paper),ledger,policy=policy,**kwargs)+domain_context+'''\nCoverage records identify examined or unresolved areas, not additional endorsed findings. Validation concerns source identity only. Use remaining lookups for consequential unresolved evidence where useful. A withheld edit must remain an author question unless the source supports a safe replacement.\nATTACHED SOURCE IMAGES:\n'''+ '\n'.join(f'{i+1}: {label}' for i,(path,label) in enumerate(images))
-            if result_map is not None:
-                prompt += '\n'+RESULT_INSTRUCTION+'\nRESULT MAP OVERVIEW:\n'+json.dumps(inspect_results(result_map,max_chars=6500),ensure_ascii=False)
-                prompt += '\nRECORDED COMPARISONS (not independently verified):\n'+json.dumps(first.get('result_comparisons',[]),ensure_ascii=False)
+            source_cards = [{**card,'evidence_handles':[h.model_record() for h in source_card_handles(card)]}
+                            for card in sources.cards()]
+            prompt=revision_prompt(paper,handle_manuscript(paper),ledger,policy=policy,source_cards=source_cards)+domain_context+'''\nCoverage records identify examined or unresolved areas, not additional endorsed findings. Validation concerns source identity only. Use remaining lookups for consequential unresolved evidence where useful. A withheld edit must remain an author question unless the source supports a safe replacement.\nATTACHED SOURCE IMAGES:\n'''+ '\n'.join(f'{i+1}: {label}' for i,(path,label) in enumerate(images))
+            prompt += '\n'+RESULT_INSTRUCTION+'\nRESULT MAP OVERVIEW:\n'+json.dumps(inspect_results(result_map,max_chars=6500),ensure_ascii=False)
+            prompt += '\nRECORDED COMPARISONS (not independently verified):\n'+json.dumps(first.get('result_comparisons',[]),ensure_ascii=False)
             prompt += '\n'+HANDLE_INSTRUCTION
             verify_workspace(root)
             tool_config('debate', policy.debate_tool_calls)
@@ -533,15 +472,14 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
                              tools=True,label='debate',images=[p for p,label in images],
                              prepare_attempt=prepare_retry(out/'investigations/debate',out/'sources'))
             write(out/'responses/debate-model.json',final)
-            hydrated=hydrate_response(final,build_registry(paper,sources.cards() if sources else []))
+            hydrated=hydrate_response(final,build_registry(paper,sources.cards()))
             final={**hydrated['response'],'evidence_handle_audit':hydrated['audit']}
             write(out/'responses/debate.json',final)
-            if sources is not None:
-                from .external_evidence import validate_references, bind_sources
-                final = {**bind_sources(final, sources.cards()), 'domain_profile': profile,
-                         'source_validation': validate_references(final, sources.cards())}
+            from .external_evidence import validate_references, bind_sources
+            final = {**bind_sources(final, sources.cards()), 'domain_profile': profile,
+                     'source_validation': validate_references(final, sources.cards())}
             from .debate_presentation import recover
-            presentation=recover(final,ledger,paper,sources.cards() if sources is not None else None,policy)
+            presentation=recover(final,ledger,paper,sources.cards(),policy)
             write(out/'presentation-audit.json',{k:v for k,v in presentation.items() if k!='recovered'})
             if presentation['recovered'] is not None:
                 final=presentation['recovered']
@@ -557,9 +495,8 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
             guards.append({'stage':'debate',**guard_record(guarded_final)})
             package=revision_package(guarded_final,ledger,structural)
             package['coverage_record']=first['coverage_record']
-            if result_map is not None:
-                package.update(result_map=result_map, result_comparisons=first.get('result_comparisons',[])+
-                    jsonl(out/'investigations/debate/comparisons.jsonl'))
+            package.update(result_map=result_map, result_comparisons=first.get('result_comparisons',[])+
+                jsonl(out/'investigations/debate/comparisons.jsonl'))
             package={**package,**combined_guard(guards)}
             write(out/'editor-package.json',package)
             save_review(root,package,'panel-'+run_id)

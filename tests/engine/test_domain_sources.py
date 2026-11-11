@@ -58,34 +58,6 @@ class Sources(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_references({'findings': [{'source_evidence': [{'evidence_id': card['evidence_id'], 'quote': 'Homo sapiens'}]}]}, [card])
 
-    def test_current_database_is_not_historical_ground_truth(self):
-        card = self.client(mode='historical', cutoff='2020-01-01').lookup('uniprot', 'P04637', 'b1')
-        self.assertEqual(card['status'], 'version_unavailable')
-        self.assertFalse(card['eligible'])
-        self.assertEqual(card['fields']['organism']['taxonId'], 9606)
-
-    def test_older_publication_does_not_date_current_metadata(self):
-        self.payload = {'message': {'DOI': '10.1234/abc', 'published': {'date-parts': [[2010, 1, 1]]},
-                                    'update-to': [{'type': 'retraction', 'updated': {'date-parts': [[2026]]}}]}}
-        card = self.client(mode='historical', cutoff='2020-01-01').lookup('crossref', '10.1234/abc', 'b1')
-        self.assertEqual(card['status'], 'version_unavailable')
-        self.assertFalse(card['eligible'])
-
-    def test_frozen_packet_is_shared_without_network_or_shared_budget(self):
-        self.client().lookup('uniprot', 'P04637', 'b1')
-        from peerreviewagents.engine.storage import digest
-        packet = self.root/'cache'
-        hashes = {p.name: digest(p.read_bytes()) for p in packet.iterdir()}
-        for condition in ('single', 'panel'):
-            client = SourceClient(self.root/condition, self.root/(condition+'-cache'),
-                                  frozen_cache=packet, frozen_hashes=hashes, opener=self.opener)
-            self.assertTrue(client.lookup('uniprot', 'P04637', 'b1')['eligible'])
-            self.assertEqual(client.lookup('uniprot', 'P12345', 'b1')['status'], 'not_in_source_packet')
-        self.assertEqual(len(self.calls), 1)
-        next(packet.glob('*.raw')).write_text('{}')
-        with self.assertRaises(ValueError):
-            client.lookup('uniprot', 'P04637', 'b1')
-
     def test_source_targets_are_shared_across_process_instances(self):
         self.client().lookup('uniprot', 'P04637', 'b1')
         self.client().lookup('uniprot', 'P04637', 'b2')
@@ -152,13 +124,13 @@ class Sources(unittest.TestCase):
         fields, _, _, identity = parse('string', '9606:TP53', [{'preferredName': 'TP53', 'ncbiTaxonId': 10090}])
         self.assertIsNone(identity)
 
-    def test_domain_profile_is_explicit_and_legacy_schema_unchanged(self):
+    def test_domain_profile_is_explicit_and_schema_enhancement_is_a_copy(self):
         original = copy.deepcopy(REVIEW)
         enhanced = with_external_evidence(REVIEW)
         self.assertEqual(REVIEW, original)
         self.assertIn('source_evidence', enhanced['properties']['findings']['items']['required'])
-        self.assertNotIn('lookup_source', tool_profile({})[1])
-        self.assertEqual(set(tool_profile({'tool_profile': 'domains-v1'})[1]), {s['name'] for s in specs(True)})
+        self.assertIn('lookup_source', tool_profile({'tool_profile': 'domains-v1'})[1])
+        self.assertEqual(set(tool_profile({'tool_profile': 'domains-v1'})[1]), {s['name'] for s in specs()})
 
 
 class Routing(unittest.TestCase):

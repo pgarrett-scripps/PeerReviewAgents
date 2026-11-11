@@ -72,7 +72,6 @@ class ClaudeRuntime(unittest.TestCase):
         self.addCleanup(environment.stop)
         self.out = self.root / 'execution'
         self.protocol = {'provider': 'claude-code', 'model': MODEL, 'effort': 'medium',
-                         'held_out_runs_authorized': False, 'max_calls_per_condition': 2,
                          'observed_token_stop': 1000, 'call_timeout_seconds': 30}
         self.schema = {'type': 'object'}
 
@@ -128,7 +127,8 @@ class ClaudeRuntime(unittest.TestCase):
 
     def test_tools_are_limited_to_the_manuscript_server_with_explicit_approvals(self):
         self.tool_config()
-        tools = ['StructuredOutput'] + [runtime.CLAUDE_TOOL_PREFIX + name for name in runtime.APPROVED_MANUSCRIPT_TOOLS]
+        approved = runtime.tool_profile({})[1]
+        tools = ['StructuredOutput'] + [runtime.CLAUDE_TOOL_PREFIX + name for name in approved]
         self.script([init(tools, servers=[{'name': 'manuscript', 'status': 'connected'}]), LIMITS,
                      *tool_turn('mcp__manuscript__read_blocks'), *tool_turn('StructuredOutput', is_error=True), result()])
         self.assertEqual(self.call(tools=True), {'answer': 'ok'})
@@ -139,7 +139,7 @@ class ClaudeRuntime(unittest.TestCase):
         self.assertEqual(servers['manuscript']['args'], [str(runtime.HERE / 'manuscript_tools.py'),
                                                          str(self.out / 'workspace' / 'tool-config.json')])
         self.assertEqual(argv[argv.index('--allowedTools') + 1].split(','),
-                         [runtime.CLAUDE_TOOL_PREFIX + name for name in runtime.APPROVED_MANUSCRIPT_TOOLS])
+                         [runtime.CLAUDE_TOOL_PREFIX + name for name in approved])
         self.assertEqual(argv[argv.index('--tools') + 1], '')
 
     def test_images_follow_the_prompt_in_order_and_unsupported_files_never_launch(self):
@@ -154,7 +154,7 @@ class ClaudeRuntime(unittest.TestCase):
         self.assertEqual([block['type'] for block in content], ['text', 'image', 'image'])
         self.assertEqual([block['source']['media_type'] for block in content[1:]], ['image/png', 'image/jpeg'])
         self.assertEqual(base64.b64decode(content[2]['source']['data']), JPEG)
-        with self.assertRaisesRegex(runtime.StudyBlocked, 'Unsupported'):
+        with self.assertRaisesRegex(runtime.RunBlocked, 'Unsupported'):
             self.call('other prompt', protocol=protocol, images=[text])
         self.assertEqual(len(self.launched()), 1)
         self.assertEqual(runtime.unresolved_attempts(self.out), [])
@@ -162,11 +162,11 @@ class ClaudeRuntime(unittest.TestCase):
     def test_api_key_session_is_stopped_and_blocks_later_calls(self):
         self.script([init(key='ANTHROPIC_API_KEY'), LIMITS, result()], pause=10)
         started = time.time()
-        with self.assertRaisesRegex(runtime.StudyBlocked, 'subscription login'):
+        with self.assertRaisesRegex(runtime.RunBlocked, 'subscription login'):
             self.call()
         self.assertLess(time.time() - started, 8)
         self.assertTrue(self.receipt()['usage_unknown'])
-        with self.assertRaisesRegex(runtime.StudyBlocked, 'usage is unknown'):
+        with self.assertRaisesRegex(runtime.RunBlocked, 'usage is unknown'):
             self.call('second prompt')
         self.assertEqual(len(self.launched()), 1)
 
@@ -198,7 +198,7 @@ class ClaudeRuntime(unittest.TestCase):
             with self.subTest(message=message, index=index):
                 self.out = self.root / f'execution-{index}'
                 self.script(events)
-                with self.assertRaisesRegex(runtime.StudyBlocked, message):
+                with self.assertRaisesRegex(runtime.RunBlocked, message):
                     self.call()
                 row = runtime.jsonl(self.out / 'usage.jsonl')[0]
                 self.assertFalse(row['ok'])
@@ -220,13 +220,13 @@ class ClaudeRuntime(unittest.TestCase):
                     runtime.write_json(self.out / 'workspace' / 'tool-config.json',
                                        {'paper': str(self.root / 'paper')})
                 self.script(events)
-                with self.assertRaisesRegex(runtime.StudyBlocked, message):
+                with self.assertRaisesRegex(runtime.RunBlocked, message):
                     self.call(tools=tools)
 
     def test_timeout_records_unknown_usage(self):
         self.script([init(), LIMITS, result()], pause=10)
         protocol = {**self.protocol, 'call_timeout_seconds': 1}
-        with self.assertRaisesRegex(runtime.StudyBlocked, 'timed out'):
+        with self.assertRaisesRegex(runtime.RunBlocked, 'timed out'):
             self.call(protocol=protocol)
         self.assertTrue(self.receipt()['usage_unknown'])
 
@@ -239,7 +239,7 @@ class ClaudeRuntime(unittest.TestCase):
             'request_sha256': identity, 'started_at': 1, 'model_requested': MODEL, 'tools': False,
             'ok': False, 'usage_unknown': True})
         (calls / f'{identity}.events.jsonl').write_text('\n'.join(json.dumps(e) for e in (init(), LIMITS)) + '\n')
-        with self.assertRaisesRegex(runtime.StudyBlocked, 'no complete recoverable receipt'):
+        with self.assertRaisesRegex(runtime.RunBlocked, 'no complete recoverable receipt'):
             self.call()
         (calls / f'{identity}.events.jsonl').write_text(
             '\n'.join(json.dumps(e) for e in (init(), LIMITS, result({'answer': 'recovered'}))) + '\n')
@@ -254,14 +254,14 @@ class ClaudeRuntime(unittest.TestCase):
             runtime.validate_protocol({**self.protocol, 'model': model})
         for provider, model in (('claude-code', 'claude-fable-5-1'), ('claude-code', 'claude-opus-5'),
                                 ('claude-code', 'gpt-5.6-terra'), ('codex', MODEL), ('anthropic-api', MODEL)):
-            with self.assertRaises(runtime.StudyBlocked):
+            with self.assertRaises(runtime.RunBlocked):
                 runtime.validate_protocol({**self.protocol, 'provider': provider, 'model': model})
         self.assertFalse(self.launches.exists())
 
     def test_oversized_schema_never_launches(self):
         self.script([init(), LIMITS, result()])
         self.schema = {'type': 'object', 'description': 'x' * runtime.CLAUDE_SCHEMA_LIMIT}
-        with self.assertRaisesRegex(runtime.StudyBlocked, 'too large'):
+        with self.assertRaisesRegex(runtime.RunBlocked, 'too large'):
             self.call()
         self.assertFalse(self.launches.exists())
 
@@ -302,11 +302,12 @@ class ClaudeRuntime(unittest.TestCase):
         work = self.root / 'work'
         work.mkdir()
         codex = {**self.protocol, 'provider': 'codex', 'model': 'gpt-5.6-sol'}
-        expected = runtime.digest({'prompt': 'p', 'schema': self.schema, 'tools': None, 'protocol': codex, 'images': []})
-        self.assertEqual(runtime.request_identity(codex, 'p', self.schema, False, [], work), expected)
+        def identity(protocol):
+            return runtime.digest(json.dumps({'prompt': 'p', 'schema': self.schema, 'tools': None,
+                                              'protocol': protocol, 'images': []}, sort_keys=True))
+        self.assertEqual(runtime.request_identity(codex, 'p', self.schema, False, [], work), identity(codex))
         self.assertNotEqual(runtime.request_identity(self.protocol, 'p', self.schema, False, [], work),
-                            runtime.digest({'prompt': 'p', 'schema': self.schema, 'tools': None,
-                                            'protocol': self.protocol, 'images': []}))
+                            identity(self.protocol))
 
 
 class ClaudeSubscriptionGuard(unittest.TestCase):
@@ -327,11 +328,11 @@ class ClaudeSubscriptionGuard(unittest.TestCase):
         self.assertEqual(self.check()['authMethod'], 'claude.ai')
         for status in ({**self.status, 'loggedIn': False}, {**self.status, 'authMethod': 'api_key'},
                        {**self.status, 'apiProvider': 'bedrock'}):
-            with self.subTest(status=status), self.assertRaises(runtime.StudyBlocked):
+            with self.subTest(status=status), self.assertRaises(runtime.RunBlocked):
                 self.check(status)
         codex = {'loggedIn': True, 'authMethod': 'chatgpt'}
         self.assertEqual(self.check(codex, provider='codex')['authMethod'], 'chatgpt')
-        with self.assertRaises(runtime.StudyBlocked):
+        with self.assertRaises(runtime.RunBlocked):
             self.check(codex)
 
     def test_nothing_gates_on_usage_or_reads_a_recorded_allowance(self):

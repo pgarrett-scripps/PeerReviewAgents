@@ -66,45 +66,16 @@ class CoreAPI(unittest.TestCase):
             with self.assertRaises(FileExistsError):run_review(request)
             self.assertEqual(engine.call_count,1)
 
-    def test_frozen_source_packet_is_pinned_passed_and_recorded(self):
-        packet = self.root / 'packet'
-        write(packet / 'index.json', {'records': []})
-        (packet / 'record.raw').write_bytes(b'{}')
-        request = self.request(evidence_mode='historical', source_packet=packet)
+    def test_a_live_review_request_carries_no_frozen_evidence(self):
+        """Live retrieval bounded by the cutoff is the only review evidence path."""
+        request = self.request()
         config = resolved_review_config(request)
-        self.assertEqual(config['evidence_policy'], 'frozen')
-        self.assertEqual(config['evidence_mode'], 'historical')
-        self.assertEqual(set(config['source_packet_manifest']), {'index.json', 'record.raw'})
-        def fake_engine(workspace, output, *args, **kwargs):
-            write(output / 'editor-package.json', {'summary': 'Example', 'findings': []})
-        with patch('peerreviewagents.engine.reviewer.review', side_effect=fake_engine) as engine:
-            result = run_review(request)
-        self.assertEqual(engine.call_args.kwargs['evidence_mode'], 'historical')
-        self.assertEqual(engine.call_args.kwargs['source_packet'], packet.resolve())
-        self.assertEqual(result['source_packet_manifest_before'],
-                         result['source_packet_manifest_after'])
-
-    def test_frozen_source_packet_rejects_structure_and_mutation(self):
-        packet = self.root / 'packet'
-        packet.mkdir()
-        (packet / 'record.raw').write_bytes(b'{}')
-        nested = packet / 'nested'
-        nested.mkdir()
-        with self.assertRaisesRegex(ValueError, 'flat'):
-            self.request(source_packet=packet)
-        nested.rmdir()
-        link = packet / 'link.raw'
-        link.symlink_to(packet / 'record.raw')
-        with self.assertRaisesRegex(ValueError, 'symlinks'):
-            self.request(source_packet=packet)
-        link.unlink()
-        request = self.request(source_packet=packet)
-        def mutate(workspace, output, *args, **kwargs):
-            write(output / 'editor-package.json', {'summary': 'Example', 'findings': []})
-            (packet / 'record.raw').write_bytes(b'changed')
-        with patch('peerreviewagents.engine.reviewer.review', side_effect=mutate):
-            with self.assertRaisesRegex(ValueError, 'changed'):
-                run_review(request)
+        self.assertEqual(config['evidence_policy'], 'live')
+        self.assertNotIn('evidence_mode', config)
+        self.assertNotIn('source_packet_manifest', config)
+        for unsupported in ('evidence_mode', 'source_packet', 'historical_snapshots', 'scaffold_root'):
+            with self.assertRaises(TypeError):
+                self.request(**{unsupported: 'anything'})
 
 
 if __name__=='__main__':unittest.main()

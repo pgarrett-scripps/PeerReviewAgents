@@ -22,25 +22,16 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class SourceClient:
-    def __init__(self, state, cache, limit=6, mode='current', cutoff=None, opener=None,
-                 frozen_cache=None, frozen_hashes=None):
+    def __init__(self, state, cache, limit=6, cutoff=None, opener=None):
         if type(limit) is not int or not 0 <= limit <= 30:
             raise ValueError('External request allowance must be between zero and thirty')
-        if mode not in ('current', 'historical'):
-            raise ValueError('Unknown evidence time mode')
         if cutoff is not None:
             datetime.date.fromisoformat(cutoff)
-        if mode == 'historical' and cutoff is None:
-            raise ValueError('Historical evidence requires a cutoff')
         self.state, self.cache = Path(state), Path(cache)
         self.state.mkdir(parents=True, exist_ok=True)
         self.cache.mkdir(parents=True, exist_ok=True)
-        self.limit, self.mode, self.cutoff = limit, mode, cutoff
+        self.limit, self.cutoff = limit, cutoff
         self.opener = opener or urllib.request.build_opener(NoRedirect()).open
-        self.frozen_cache = Path(frozen_cache) if frozen_cache is not None else None
-        self.frozen_hashes = frozen_hashes
-        if self.frozen_cache is not None and not isinstance(frozen_hashes, dict):
-            raise ValueError('Frozen source packets require an immutable file manifest')
 
     def reserve_target(self, block_id, provider='targeted-source'):
         if not isinstance(block_id, str) or not block_id.strip() or len(block_id) > 160:
@@ -68,7 +59,7 @@ class SourceClient:
                         limitation=(card.get('limitation', '') +
                             ' Normalized selected fields exceeded the 14000-character model-facing limit.').strip())
         identity = {k: card.get(k) for k in ('provider', 'identifier', 'manuscript_block_id',
-                    'evidence_mode', 'cutoff', 'raw_sha256', 'record_version', 'status', 'evidence_text')}
+                    'cutoff', 'raw_sha256', 'record_version', 'status', 'evidence_text')}
         stored = dict(card)
         stored['evidence_id'] = 'source-' + digest(json.dumps(identity, sort_keys=True))[:20]
         with (self.state / 'cards.lock').open('a') as lock:
@@ -86,12 +77,6 @@ class SourceClient:
             raise ValueError('Source endpoint is outside the public provider allowlist')
         key = digest(url)
         meta, raw_path = self.cache / (key + '.json'), self.cache / (key + '.raw')
-        if self.frozen_cache is not None:
-            meta, raw_path = self.frozen_cache / meta.name, self.frozen_cache / raw_path.name
-            if not all(p.name in self.frozen_hashes for p in (meta, raw_path)):
-                return {'status': 'not_in_source_packet', 'source_url': url}
-            if not all(p.is_file() and digest(p.read_bytes()) == self.frozen_hashes[p.name] for p in (meta, raw_path)):
-                raise ValueError('Frozen source packet changed')
         with (self.state / 'requests.lock').open('a') as lock:
             exclusive_lock(lock)
             budget_path = self.state / 'requests.json'
@@ -143,7 +128,7 @@ class SourceClient:
         record = self.fetch(url)
         data = record.pop('data', None)
         card = {**record, 'provider': provider, 'identifier': identifier, 'manuscript_block_id': block_id,
-                'evidence_mode': self.mode, 'cutoff': self.cutoff, 'record_version': None,
+                'cutoff': self.cutoff, 'record_version': None,
                 'source_publication_date': None, 'fields': {}, 'evidence_text': '',
                 'limitation': PROVIDERS[provider][1], 'eligible': False}
         if card['status'] == 'ok':
@@ -156,10 +141,6 @@ class SourceClient:
                     card['status'] = 'identity_mismatch'
                 else:
                     card['eligible'] = True
-                if self.mode == 'historical' and card['eligible']:
-                    card.update(status='version_unavailable', eligible=False,
-                                temporal_status='historical_record_not_established')
-                    card['limitation'] += ' A current record or newly frozen packet does not establish the historical state, even for an older publication.'
                 text = '\n'.join(k + ': ' + json.dumps(v, ensure_ascii=False, sort_keys=True) for k, v in fields.items())
                 if len(text) > 14000:
                     card.update(status='normalized_record_too_large', eligible=False, fields={})

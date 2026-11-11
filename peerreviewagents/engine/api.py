@@ -11,7 +11,7 @@ from .review_policy import (APPROVED_EFFORTS, DEFAULT_POLICY, DEFAULT_POLICY_NAM
                             MAX_ATTEMPT_CEILING, get_review_policy, review_policies,
                             single_session_refusal)
 
-API_VERSION = 'paper-workbench-core-v1'
+API_VERSION = 'paper-workbench-core-v2'
 
 
 def capabilities():
@@ -32,8 +32,7 @@ def capabilities():
             'policies': list(review_policies()),
             'default_policy': DEFAULT_POLICY_NAME,
             'review_policies': policies,
-            'evidence_modes': ['current', 'historical'],
-            'evidence_policies': ['none', 'live', 'frozen'],
+            'evidence_policies': ['none', 'live'],
             'models': list(SUBSCRIPTION_MODELS), 'reasoning_effort': DEFAULT_POLICY.effort,
             'reasoning_efforts': list(APPROVED_EFFORTS),
             'reasoning_effort_by_policy': efforts_by_policy,
@@ -91,12 +90,8 @@ class ReviewRequest:
     model: str = DEFAULT_MODEL
     reviewers: int = 2
     token_budget: int = 750000
-    scaffold_root: Path | None = None
     source_images: tuple[Path, ...] = field(default_factory=tuple)
     preset: str | None = None
-    evidence_mode: Literal['current', 'historical'] = 'current'
-    source_packet: Path | None = None
-    source_packet_hashes: tuple[tuple[str, str], ...] = field(default_factory=tuple, init=False)
     synthesis_policy: Literal['debate', 'ordinary'] = 'debate'
     policy: str | None = None
 
@@ -121,15 +116,6 @@ class ReviewRequest:
             if get_review_policy(self.policy).single_session and self.workflow == 'ensemble':
                 raise ValueError(single_session_refusal(
                     self.policy, option='policy', preset='preset', mode="workflow='independent'"))
-        if self.evidence_mode not in ('current', 'historical'):
-            raise ValueError('Evidence mode must be current or historical')
-        if self.source_packet is not None:
-            if self.workflow == 'manuscript-only':
-                raise ValueError('Manuscript-only review cannot receive an external source packet')
-            from .source_packet import source_packet_manifest
-            manifest = source_packet_manifest(self.source_packet)
-            object.__setattr__(self, 'source_packet', Path(self.source_packet).resolve())
-            object.__setattr__(self, 'source_packet_hashes', tuple(sorted(manifest.items())))
         if self.synthesis_policy not in ('debate', 'ordinary'):
             raise ValueError('Synthesis policy must be debate or ordinary')
         if self.workflow != 'ensemble' and self.synthesis_policy != 'debate':
@@ -141,18 +127,21 @@ class ReviewRequest:
 
 @dataclass(frozen=True)
 class SavedDraftSynthesisRequest:
-    """One ordinary synthesis pass over the immutable drafts from an ensemble run."""
+    """One ordinary synthesis pass over the immutable drafts from an ensemble run.
+
+    The drafts are immutable; the evidence is not frozen with them. This pass
+    retrieves live sources under the original run's cutoff, exactly as a fresh
+    review does, so what it reuses is the discovery drafts and nothing else.
+    """
     workspace: Path
     original_output: Path
     output: Path
     source_images: tuple[Path, ...]
-    source_packet: Path
     # The reused drafts were written under one cutoff. None inherits that cutoff
     # instead of synthesising saved drafts against a later date.
     literature_cutoff: str | None = None
     model: str = DEFAULT_MODEL
     token_budget: int = 750000
-    evidence_mode: Literal['current', 'historical'] = 'current'
     synthesis_policy: Literal['ordinary'] = 'ordinary'
 
     def __post_init__(self):
@@ -172,14 +161,10 @@ class SavedDraftSynthesisRequest:
             raise ValueError('Unsupported Paper Workbench model. No fallback is permitted.')
         if self.synthesis_policy != 'ordinary':
             raise ValueError('Saved draft synthesis supports only the ordinary policy')
-        if self.evidence_mode not in ('current', 'historical'):
-            raise ValueError('Evidence mode must be current or historical')
         if type(self.token_budget) is not int or self.token_budget <= 0:
             raise ValueError('Token launch budget must be a positive integer')
         if len(self.source_images) > 10 or any(not Path(path).is_file() for path in self.source_images):
             raise ValueError('Supply the complete set of at most ten existing source images')
-        from .source_packet import source_packet_manifest
-        source_packet_manifest(self.source_packet)
         date.fromisoformat(self.literature_cutoff)
 
 
@@ -192,7 +177,6 @@ def run_saved_draft_synthesis(request: SavedDraftSynthesisRequest):
     """Reuse a debate run's exact discovery drafts for one ordinary synthesis call."""
     from .ensemble import debate_reviews, observed_usage
     from .model_runtime import source_manifest
-    from .source_packet import source_packet_manifest, verify_source_packet
     from .storage import read, write, digest
     if not isinstance(request, SavedDraftSynthesisRequest):
         raise TypeError('Expected SavedDraftSynthesisRequest')
@@ -205,11 +189,10 @@ def run_saved_draft_synthesis(request: SavedDraftSynthesisRequest):
     source_manifest_sha = digest((workspace / 'manifest.json').read_bytes())
     artifact = read(original / 'core-artifact.json')
     current_engine = source_manifest(Path(__file__).parent)
-    current_core = source_manifest(Path(__file__).parent)
     if (artifact.get('api_version') != API_VERSION or
             artifact.get('artifact_version') != capabilities()['artifact_version'] or
-            artifact.get('engine_source') != current_engine or artifact.get('core_source') != current_core):
-        raise ValueError('Original ensemble engine or public core changed')
+            artifact.get('engine_source') != current_engine):
+        raise ValueError('Original ensemble engine changed')
     if (artifact.get('paper_id') != paper['id'] or artifact.get('source_manifest_sha256') != source_manifest_sha
             or artifact.get('workflow') != 'ensemble' or artifact.get('model_requested') != request.model):
         raise ValueError('Saved drafts do not match the requested manuscript, workflow, or model')
@@ -224,19 +207,17 @@ def run_saved_draft_synthesis(request: SavedDraftSynthesisRequest):
     expected_review_hashes = [row.get('provenance', {}).get('source_review_sha256') for row in records]
     if any(not value for value in expected_review_hashes):
         raise ValueError('Saved drafts lack original review hashes')
+    # The reused row and the original reviewer file must still be the same
+    # review: the hash alone would accept a rewritten row beside an intact file.
     for row, expected in zip(records, expected_review_hashes):
-        if digest(json.dumps(row['review'], ensure_ascii=False, sort_keys=True)) == expected:
-            continue
         source_path = Path(row['provenance'].get('source_review_path', ''))
-        if not source_path.is_file() or digest(source_path.read_bytes()) != expected:
+        if (not source_path.is_file() or digest(source_path.read_bytes()) != expected
+                or row['review'] != read(source_path)):
             raise ValueError('An original input review changed')
     expected_images = stage_manifest.get('images')
     supplied_images = _hash_files(request.source_images)
     if not isinstance(expected_images, dict) or supplied_images != expected_images:
         raise ValueError('Saved draft synthesis requires the complete original image set')
-    packet_before = source_packet_manifest(request.source_packet)
-    if artifact.get('source_packet_manifest_after') != packet_before:
-        raise ValueError('Saved draft synthesis requires the original frozen evidence packet')
     protocol = read(debate_root / 'protocol.json')
     if protocol.get('debate_tool_allowance') != 2 or protocol.get('token_launch_budget') != request.token_budget:
         raise ValueError('Saved draft synthesis must match the original synthesis tool and token budget')
@@ -259,20 +240,18 @@ def run_saved_draft_synthesis(request: SavedDraftSynthesisRequest):
     reused_discovery_usage = {'calls': expected_discovery_calls, 'receipts': expected_discovery_calls,
         'observed_tokens': sum(row['observed_tokens'] for row in discovery_usage), 'unknown': False}
     cache_before = {str(path.resolve()): digest(path.read_bytes()) for root in cache_roots for path in root.glob('*') if path.is_file()}
-    raw_hashes = sorted({digest(path.read_bytes()) for root in [*cache_roots, Path(request.source_packet)]
+    raw_hashes = sorted({digest(path.read_bytes()) for root in cache_roots
                          for path in root.glob('*.raw') if path.is_file()})
     package = debate_reviews(workspace, output, request.literature_cutoff,
         records, images=request.source_images, model=request.model, token_budget=request.token_budget,
-        evidence_mode=request.evidence_mode, cache_roots=cache_roots, source_packet=request.source_packet,
-        synthesis_policy='ordinary', reused_drafts=True)
-    verify_source_packet(request.source_packet, packet_before)
+        cache_roots=cache_roots, synthesis_policy='ordinary', reused_drafts=True)
     cache_after = {str(path.resolve()): digest(path.read_bytes()) for root in cache_roots for path in root.glob('*') if path.is_file()}
     if cache_after != cache_before:
         raise ValueError('Original reviewer evidence cache changed during synthesis')
     package['synthesis_provenance'].update(reused_drafts=True, discovery_calls=0,
         original_core_artifact_sha256=digest((original / 'core-artifact.json').read_bytes()),
         original_input_reviews_sha256=digest(records_path.read_bytes()),
-        original_review_sha256=expected_review_hashes, source_packet_manifest=packet_before,
+        original_review_sha256=expected_review_hashes,
         original_evidence_raw_sha256=raw_hashes, shared_images=supplied_images,
         reused_discovery_receipts=discovery_receipts)
     write(output / 'editor-package.json', package)
@@ -282,9 +261,8 @@ def run_saved_draft_synthesis(request: SavedDraftSynthesisRequest):
         'workflow': 'ensemble', 'execution_scope': 'saved-draft-synthesis', 'model_requested': request.model,
         'resolved_configuration': {'synthesis_policy': 'ordinary', 'reused_drafts': True,
             'discovery_calls': 0, 'synthesis_calls': 1, 'synthesis_tool_allowance': 2,
-            'token_launch_budget': request.token_budget, 'evidence_policy': 'frozen'},
-        'source_packet_manifest_before': packet_before, 'source_packet_manifest_after': packet_before,
-        'engine_source': current_engine, 'core_source': current_core, 'editor_package': package,
+            'token_launch_budget': request.token_budget, 'evidence_policy': 'live'},
+        'engine_source': current_engine, 'editor_package': package,
         'usage': synthesis_usage, 'usage_scope': 'new_synthesis_stage_only',
         'reused_discovery_usage': reused_discovery_usage,
         'reused_discovery_receipts': discovery_receipts,
@@ -326,11 +304,6 @@ def run_review(request: ReviewRequest):
     paper = load_manuscript(workspace)
     source_hash = digest((workspace/'manifest.json').read_bytes())
     resolved_config = resolved_review_config(request)
-    packet_before = dict(request.source_packet_hashes)
-    packet_after = dict(packet_before)
-    if request.source_packet is not None:
-        from .source_packet import verify_source_packet
-        verify_source_packet(request.source_packet, packet_before)
     # A run that completes with every finding quarantined is not the same
     # outcome as a clean one. The engine says which it was; the artifact has to
     # carry it, because an API caller never reads progress.json.
@@ -339,43 +312,34 @@ def run_review(request: ReviewRequest):
         package = run_manuscript_only(request, paper, resolved_config)
         progress = manuscript_only_progress(package)
     else:
-        try:
-            progress = review(workspace, output, request.literature_cutoff,
-                              mode=request.workflow, model=request.model, reviewers=request.reviewers,
-                              token_budget=request.token_budget, scaffold_root=request.scaffold_root,
-                              shared_images=request.source_images, evidence_mode=request.evidence_mode,
-                              source_packet=request.source_packet,
-                              synthesis_policy=request.synthesis_policy,
-                              policy=resolved_config.get('policy'))
-        finally:
-            if request.source_packet is not None:
-                packet_after = verify_source_packet(request.source_packet, packet_before)
+        progress = review(workspace, output, request.literature_cutoff,
+                          mode=request.workflow, model=request.model, reviewers=request.reviewers,
+                          token_budget=request.token_budget,
+                          shared_images=request.source_images,
+                          synthesis_policy=request.synthesis_policy,
+                          policy=resolved_config.get('policy'))
     if not progress:
         # The engine writes the same record to the run directory. Read it back
         # rather than report an unknown status.
         progress = read(output/'progress.json') if (output/'progress.json').exists() else {}
     engine = source_manifest(Path(__file__).parent)
-    core_engine = source_manifest(Path(__file__).parent)
     artifact = {'api_version': API_VERSION, 'artifact_version': 'paper-workbench-run-v1',
                 'paper_id': paper['id'], 'source_manifest_sha256': source_hash,
                 'workflow': request.workflow, 'model_requested': request.model,
                 'resolved_configuration': resolved_config,
                 'resolved_configuration_sha256': digest(json.dumps(resolved_config, sort_keys=True)),
-                'source_packet_manifest_before': packet_before or None,
-                'source_packet_manifest_after': packet_after or None,
-                'engine_source': engine, 'core_source': core_engine,
+                'engine_source': engine,
                 'status': progress.get('status'), 'run_progress': progress,
                 'editor_package': read(output/'editor-package.json'),
                 'usage': observed_usage(output), 'output_directory': str(output),
-                'limitation': 'A pipeline artifact is not a benchmark score. The benchmark owns blinding, grading and hidden answer keys.'}
+                'limitation': 'A run artifact records what the engine did. It is not a graded score.'}
     write(output/'core-artifact.json', artifact)
     return artifact
 
 
 def review_request_from_preset(name, *, workspace, output,
                                literature_cutoff=None, model=None, token_budget=None,
-                               scaffold_root=None, source_images=(), evidence_mode='current',
-                               source_packet=None, synthesis_policy=None, policy=None):
+                               source_images=(), synthesis_policy=None, policy=None):
     """Construct a request from one named preset, with explicit runtime overrides."""
     preset = get_review_preset(name)
     preset_synthesis = 'ordinary' if preset.synthesis_policy == 'ordinary-synthesis-v1' else 'debate'
@@ -386,65 +350,7 @@ def review_request_from_preset(name, *, workspace, output,
         workflow=preset.workflow, model=model or preset.model or DEFAULT_MODEL,
         reviewers=preset.reviewers,
         token_budget=preset.token_budget if token_budget is None else token_budget,
-        scaffold_root=scaffold_root, source_images=tuple(source_images), preset=name,
-        evidence_mode=evidence_mode, source_packet=source_packet,
+        source_images=tuple(source_images), preset=name,
         synthesis_policy=preset_synthesis if synthesis_policy is None else synthesis_policy,
         policy=preset.policy if policy is None else policy,
     )
-
-
-@dataclass(frozen=True)
-class StructuredRequest:
-    """One tool-free structured subscription call, suitable for external graders."""
-    output: Path
-    model: str
-    prompt: str
-    schema: dict
-    token_budget: int = 100000
-    timeout_seconds: int = 900
-    source_images: tuple[Path, ...] = field(default_factory=tuple)
-
-    def __post_init__(self):
-        if self.model not in capabilities()['models']:
-            raise ValueError('Unsupported subscription model. No fallback is permitted.')
-        if not isinstance(self.prompt, str) or not self.prompt.strip():
-            raise ValueError('A nonempty prompt is required')
-        if not isinstance(self.schema, dict) or self.schema.get('type') != 'object':
-            raise ValueError('An object JSON schema is required')
-        for value in (self.token_budget, self.timeout_seconds):
-            if type(value) is not int or value <= 0:
-                raise ValueError('Call limits must be positive integers')
-        if len(self.source_images) > 10 or any(not Path(path).is_file() for path in self.source_images):
-            raise ValueError('Supply at most ten existing structured-call source images')
-
-
-def run_structured(request: StructuredRequest):
-    """Use the shared transport with subscription checks, no tools and no retry."""
-    from .ensemble import _prepare, observed_usage
-    from .model_runtime import model_call
-    from .models import provider_for
-    from .storage import write
-    if not isinstance(request, StructuredRequest):
-        raise TypeError('Expected StructuredRequest')
-    output = Path(request.output).resolve()
-    protocol = {'provider': provider_for(request.model), 'model': request.model, 'effort': 'medium',
-                'held_out_runs_authorized': False, 'max_calls_per_condition': 1,
-                'observed_token_stop': request.token_budget,
-                'call_timeout_seconds': request.timeout_seconds, 'mode': 'structured',
-                'max_source_images': 10, 'image_budget_version': 'evidence-v1'}
-    _prepare(output, protocol)
-    try:
-        value = model_call(protocol, output, request.prompt, request.schema, tools=False,
-                           label='structured', images=request.source_images)
-        artifact = {'api_version': API_VERSION, 'model_requested': request.model,
-                    'value': value, 'usage': observed_usage(output)}
-        write(output / 'structured-artifact.json', artifact)
-        return artifact
-    finally:
-        write(output / 'usage-summary.json', observed_usage(output))
-
-
-def usage_summary(output):
-    """Read durable usage receipts, including failed or interrupted workflows."""
-    from .ensemble import observed_usage
-    return observed_usage(Path(output))

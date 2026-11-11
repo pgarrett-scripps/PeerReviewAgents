@@ -1,17 +1,11 @@
 """Preservation, source scope, and export checks for revised debate."""
 import copy
-import json
-import subprocess
-import sys
-import tempfile
 import unittest
-from pathlib import Path
 
 from peerreviewagents.engine.annotations import normalize_review, export_draft
-from peerreviewagents.engine.debate_evidence import search_source, context_bundle, DebateInvestigation
 from peerreviewagents.engine.debate_revision import issue_ledger, validate_revision, revision_package
-from peerreviewagents.engine.model_runtime import tool_profile, APPROVED_MANUSCRIPT_TOOLS, StudyBlocked
-from peerreviewagents.engine.storage import digest, write
+from peerreviewagents.engine.model_runtime import tool_profile, APPROVED_MANUSCRIPT_TOOLS, RunBlocked
+from peerreviewagents.engine.storage import digest
 
 
 class DebateRevisionTests(unittest.TestCase):
@@ -155,43 +149,13 @@ class DebateRevisionTests(unittest.TestCase):
         bad['findings'].append(copy.deepcopy(self.finding))
         with self.assertRaisesRegex(ValueError,'no preserved'):self.check(bad)
 
-    def test_structured_search_and_unavailable_evidence_scope(self):
-        self.assertEqual(search_source(self.paper,['signal','hypothesis'],'any')['total_matches'],2)
-        self.assertEqual(search_source(self.paper,['signal','hypothesis'],'all')['total_matches'],0)
-        result=search_source(self.paper,['the'],'any',1)
-        self.assertTrue(result['truncated'])
-        self.assertIn('Image pixels',result['scope'])
-        self.assertIn('No match',search_source(self.paper,['missing'])['limitation'])
-        with self.assertRaises(ValueError):search_source(self.paper,['signal'],'regex')
-
-    def test_claim_context_retains_title_abstract_and_counterevidence(self):
-        bundle=context_bundle(self.paper,['b2'],['causal','hypothesis'])
-        self.assertEqual(bundle['title'],'A causal claim')
-        self.assertEqual(bundle['abstract_blocks'][0]['id'],'b3')
-        self.assertEqual(bundle['requested_blocks'][0]['id'],'b2')
-        with self.assertRaises(ValueError):context_bundle(self.paper,['b1-b3'],['signal'])
-
-    def test_profiles_are_fixed_and_legacy_profile_unchanged(self):
-        self.assertEqual(tool_profile({}),('manuscript_tools.py',APPROVED_MANUSCRIPT_TOOLS))
-        self.assertEqual(tool_profile({'tool_profile':'debate-v2'})[0],'debate_tools.py')
-        with self.assertRaises(StudyBlocked):tool_profile({'tool_profile':'/tmp/arbitrary.py'})
-
-    def test_tool_budget_source_only_profile_and_stdio(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root=Path(temp)
-            write(root/'paper.json',self.paper)
-            write(root/'manifest.json',{'files':{'paper.json':digest((root/'paper.json').read_bytes())}})
-            config={'paper':str(root),'output':str(root/'out'),'cache':str(root/'cache'),
-                    'tool_profile':'debate-v2','tool_limit':1,'allow_literature':False}
-            server=DebateInvestigation(config)
-            self.assertIn('request_rejected',server.call('search_literature',{'query':'x'}))
-            self.assertIn('notice',server.call('search_source',{'terms':['signal'],'mode':'any','limit':12}))
-            write(root/'config.json',config)
-            request={'jsonrpc':'2.0','id':1,'method':'tools/list'}
-            proc=subprocess.run([sys.executable,'-m','peerreviewagents.engine.debate_tools',str(root/'config.json')],
-                input=json.dumps(request)+'\n',capture_output=True,text=True,check=True)
-            names={s['name'] for s in json.loads(proc.stdout)['result']['tools']}
-            self.assertEqual(names,{'search_source','claim_context','experiment_context','view_page'})
+    def test_the_domain_profile_is_the_only_accepted_profile(self):
+        server,tools=tool_profile({'tool_profile':'domains-v1'})
+        self.assertEqual(server,'manuscript_tools.py')
+        self.assertEqual(tools[:len(APPROVED_MANUSCRIPT_TOOLS)],APPROVED_MANUSCRIPT_TOOLS)
+        self.assertEqual(tool_profile({}),(server,tools))
+        with self.assertRaises(RunBlocked):tool_profile({'tool_profile':'/tmp/arbitrary.py'})
+        with self.assertRaises(RunBlocked):tool_profile({'tool_profile':'debate-v2'})
 
 
 if __name__ == '__main__':

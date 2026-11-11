@@ -131,12 +131,9 @@ class SynthesisValidationTests(unittest.TestCase):
                                                        'accounted_components': 1, 'complete': True})
 
     def test_tool_exposure_matches_runtime_allowlist_only_for_synthesis(self):
-        self.assertNotIn('validate_synthesis', tool_profile({})[1])
-        for domain in (False, True):
-            config = {'synthesis_ledger': 'ledger.json'}
-            if domain:
-                config['tool_profile'] = 'domains-v1'
-            self.assertEqual(set(tool_profile(config)[1]), {s['name'] for s in specs(domain, True)})
+        self.assertNotIn('validate_synthesis', tool_profile({'tool_profile': 'domains-v1'})[1])
+        config = {'synthesis_ledger': 'ledger.json', 'tool_profile': 'domains-v1'}
+        self.assertEqual(set(tool_profile(config)[1]), {s['name'] for s in specs(True)})
 
 
 class ComponentAccountingTests(unittest.TestCase):

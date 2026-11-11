@@ -50,15 +50,14 @@ def run_manuscript_only(request, paper, resolved_config):
         raise ValueError(f'Manuscript-only review has more than {MAX_SOURCE_IMAGES} unique source images. Prepare a complete bounded image set explicitly.')
     protocol = {
         'provider': provider_for(request.model), 'model': request.model, 'effort': policy.effort,
-        'held_out_runs_authorized': False, 'max_calls_per_condition': 1,
         'observed_token_stop': request.token_budget, 'call_timeout_seconds': policy.call_timeout_seconds,
         'max_source_images': MAX_SOURCE_IMAGES, 'image_budget_version': 'evidence-v1',
-        'mode': 'manuscript-only', 'version': 'manuscript-only-v1',
-        'tool_access': 'none', 'live_retrieval': False,
+        'mode': 'manuscript-only', 'version': 'manuscript-only-v2',
+        'tool_access': 'none',
         **policy.protocol_overlay(),
     }
     _prepare(output, protocol)
-    prompt = policy.shared_instructions() + '''\nReview the complete supplied manuscript once. Base every finding only on the manuscript and attached source figures. You have no review tools, external sources, other reviews, or hidden evaluation material. Do not claim that an omitted external search establishes an error. The full extracted text is supplied below.\n''' + HANDLE_INSTRUCTION
+    prompt = policy.shared_instructions() + '''\nReview the complete supplied manuscript once. Base every finding only on the manuscript and attached source figures. You have no review tools, external sources, other reviews, or hidden evaluation material. Do not claim that an omitted external search establishes an error. The full extracted text is supplied below.\n'''
     prompt += '\nMANUSCRIPT INVENTORY:\n' + json.dumps({
         'title': paper.get('title', ''), 'assets': paper.get('assets', []),
         'references': paper.get('references', []),
@@ -78,7 +77,6 @@ def run_manuscript_only(request, paper, resolved_config):
         'configuration': resolved_config,
         'source_manifest_sha256': digest((root / 'manifest.json').read_bytes()),
         'engine_source': source_manifest(Path(__file__).parent),
-        'core_source': source_manifest(Path(__file__).parent),
         'source_images': {str(path): digest(path.read_bytes()) for path in images},
         'attached_asset_ids': attached_assets,
         'unavailable_assets': unavailable_assets,

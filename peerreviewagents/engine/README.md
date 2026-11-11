@@ -37,7 +37,7 @@ Coverage validation checks that every area appears once and that supplied quotat
 
 The debate receives guarded review suggestions, the coverage record, cited source blocks, and up to three source images inspected by the first reviewer. It has two further evidence lookups. Withheld numerical replacements are passed as author questions. Debate output receives the same guards before entering the editor package. Every input finding has a stable ID. The debate must explicitly retain, merge, reject with reasons, or request verification for each one. Missing, duplicate, or invalid dispositions remain in an unendorsed verification queue. A shared source passage does not establish that two concerns are equivalent. Original suggestions and raw responses remain available, with guarded findings, dispositions, and validation records preserved in the editor package.
 
-`debate_revision.py` provides a versioned component-preserving debate schema, prompt, validator, and editor package. `debate_evidence.py` provides a fixed source-only tool profile with explicit any/all search and bounded claim or experiment context. Every original component receives a treatment, and scientific status is separate from editorial priority. Exact quotations and complete accounting are checked without asserting scientific correctness.
+`debate_revision.py` provides a versioned component-preserving debate schema, prompt, validator, and editor package. Every original component receives a treatment, and scientific status is separate from editorial priority. Exact quotations and complete accounting are checked without asserting scientific correctness.
 
 ## Paper Scaffold checks
 
@@ -45,8 +45,9 @@ The optional adapter genuinely reuses `readability.metrics` and `prose_check.che
 
 ```bash
 peerreview checks workspace --scaffold-root /path/to/paper-scaffold --output scaffold-report.json
-peerreview review workspace run-output --mode panel --literature-cutoff 2026-01-05 --scaffold-root /path/to/paper-scaffold
 ```
+
+The checks are a separate command. A review run never calls them.
 
 The checks operate on extracted plain text and skip headings, references, and tables. They include captions and supplementary prose. Their word convention differs from the importer totals. Readability and prose warnings are editorial cues, not evidence of scientific defects. Scaffold's Typst authoring rules and journal limits are not imposed on imported manuscripts.
 
@@ -54,9 +55,9 @@ Scaffold's bibliography checker requires BibTeX entries and citation keys, so it
 
 ## Headless API
 
-`peerreviewagents.engine.api` is the versioned integration boundary, re-exported from `peerreviewagents.engine` itself. It carries `ReviewRequest`, `capabilities`, `load_manuscript`, `evidence_registry`, `validate_review`, `run_review`, `StructuredRequest`, `run_structured`, `usage_summary`, `review_request_from_preset`, `SavedDraftSynthesisRequest` and `run_saved_draft_synthesis`, with the presets and resolved configuration in `config.py`. Importing it starts no model provider and reads no manuscript.
+`peerreviewagents.engine.api` is the versioned integration boundary, re-exported from `peerreviewagents.engine` itself. It carries `ReviewRequest`, `capabilities`, `load_manuscript`, `evidence_registry`, `validate_review`, `run_review`, `review_request_from_preset`, `SavedDraftSynthesisRequest` and `run_saved_draft_synthesis`, with the presets and resolved configuration in `config.py`. Importing it starts no model provider and reads no manuscript.
 
-Run manifests record a content hash of this package directory under `engine_source` and `core_source`. Both keys are kept for artifact compatibility; after the move into `peerreviewagents.engine` they hash the same directory, so runs started under the previous layout cannot be resumed.
+Run manifests record a content hash of this package directory under `engine_source`. Runs started under the previous layout cannot be resumed.
 
 ## Boundaries
 

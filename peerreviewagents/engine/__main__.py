@@ -133,12 +133,7 @@ def add_subcommands(sub):
     p.add_argument('--token-budget',type=int,default=750000,help='Ensemble observed-token launch ceiling, not a hard cap on a running call')
     add_model_arguments(p)
     add_policy_arguments(p)
-    p.add_argument('--source-image',action='append',default=[],help='Original manuscript figure page to attach, at most three')
-    p.add_argument('--scaffold-root',help='Use offline advisory checks from this Paper Scaffold checkout')
-    p.add_argument('--legacy-tools',action='store_true',help='Use the older fixed tool profile without domain skills')
-    p.add_argument('--evidence-mode',choices=('current','historical'),default='current',help='Current records or cutoff-restricted historical evidence')
-    p.add_argument('--source-packet',help='Frozen source cache for comparison runs, with live source retrieval disabled')
-    p.add_argument('--historical-snapshots',help='Curated, hash-verified registration snapshot directory')
+    p.add_argument('--source-image',action='append',default=[],help='Original manuscript figure page to attach, at most ten')
     p=sub.add_parser('investigate',help='Run one focused evidence investigation with at most two tools')
     p.add_argument('workspace')
     p.add_argument('output')
@@ -189,9 +184,8 @@ def dispatch(parser,args):
         apply_preset(parser,args)
         apply_policy(parser,args)
         resolve_model(parser,args)
-        progress=review(args.workspace,args.output,args.literature_cutoff,args.mode,args.scaffold_root,
-                        domain_support=not args.legacy_tools,evidence_mode=args.evidence_mode,source_packet=args.source_packet,
-                        historical_snapshots=args.historical_snapshots,model=args.model,reviewers=args.reviewers,
+        progress=review(args.workspace,args.output,args.literature_cutoff,args.mode,
+                        model=args.model,reviewers=args.reviewers,
                         token_budget=args.token_budget,shared_images=args.source_image,policy=args.policy)
         print(progress)
         from .reviewer import COMPLETE_WITHOUT_FINDINGS,GUARD_STATUS_POLICY

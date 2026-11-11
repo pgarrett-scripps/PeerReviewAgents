@@ -1,9 +1,16 @@
 """Named review policies, finding quarantine and one bounded retry.
 
-The first tests are the byte-identity proof: every existing mode and stage,
-with and without domain support, must produce exactly the prompts, schemas,
-tool configs and protocol records it produced before review limits became
-data. The digests below were captured from the engine at commit 1658fd2.
+The first tests are the byte-identity proof: every existing mode and stage
+must produce exactly the prompts, schemas, tool configs and protocol records
+it produced before review limits became data. The digests below were captured
+from the engine at commit 1658fd2 and recaptured when the engine cleanup
+removed the study-only evidence options.
+
+They are not a freeze on the prompt text. The reviewer prompt lost its
+duplicated handle instruction and its scaffold-era advisory sentence, and
+``candidate-inventory-v2``, ``manuscript-only-v2`` and ``review-policy-v2``
+record that the text changed. These digests are the matching recapture: an
+unversioned change to any of this text still fails here.
 """
 import contextlib
 import copy
@@ -51,14 +58,10 @@ REPEATED_PAPER = {
 MODES = ('plain', 'workspace', 'self-revision', 'independent')
 
 EXPECTED_DIGESTS = {
-    'independent|domains=False': '07756cb0d32858851f4e94bf1143d9b8c2ffcc3726d01b8a160b546f555f602c',
-    'independent|domains=True': '4a2e9c67b5a1686d069ced6b1103d675fa89d2c815e7da3c52c09ce6c7e08a72',
-    'plain|domains=False': '8838ce808b61d6049b8a1785c9cf0065b8cdbbbc301149bb00dc033f0561579c',
-    'plain|domains=True': 'cd2e162e9f99a4434350d536833bd02808c6954effc17bfa7cdc39dada38cfe6',
-    'self-revision|domains=False': 'ee2172670f8c3a69ff6e7a5fcb1042ae8cc18420122d9cef9861884047c4edf8',
-    'self-revision|domains=True': '4ccce1bf05cb76bd789002346f2d7f3cf2a67dfcde1c4dc7188d40d6f19af333',
-    'workspace|domains=False': 'a49958d043bb2cd43f7ef09ac92b1a7501e9646db8a1f2402bda0a05917bc53b',
-    'workspace|domains=True': '4ba3db7b8b5edd77ecf8e4e47813f17859186c8da4440a427435de7bb9db3ff5',
+    'independent': '3878ff552bb5d65e61454b2c1c763ff9078c0348598a8f5935c2bf19b0c059c2',
+    'plain': '3bb7bdc80744149eb71cbbef52a929b5fc194898859789a1e05ed1e7c3d5010f',
+    'self-revision': 'b88997cc893078edf719f0a2b6877d1e5be4ec1f5c451fea32ebe6e3e35c54a4',
+    'workspace': '19511bbf83f319472e1e40c44e3fd05c5047667d5e5753edcf6af3a77a2709ad',
 }
 
 # The panel, ensemble debate and manuscript-only stages, captured the same way.
@@ -67,14 +70,12 @@ EXPECTED_DIGESTS = {
 RUN_ID = re.compile(r'(?<=[a-z])-[0-9a-f]{10}\b')
 
 STAGE_DIGESTS = {
-    'panel|domains=True': '3a6b831cf6f4f686645add47c276ac5b7ae264a5a202136d514657bd12174764',
-    'panel|domains=False': 'ab36739b95ac2d6c8a6b72d90636ddd63b4950248973e8c189c320e0e3d82b09',
-    'ensemble-debate': 'eea3881f7d43439448b3248e4ed7b59d5216620da79ec75779c931990c4173fd',
-    'manuscript-only': '827799000d7b7a6d5b4c4eba5946e0f0d00fc924c3f9df350bdcecf6b58e12c7',
+    'panel': '12b2be14de469594424842f5ac7440a6a4c1442d2d27001a1cdf6c01f33da9f5',
+    'ensemble-debate': '13b22ecb0f0652635ccfaca6e32b3ec9a8611a9283feb142fa9670edd6bebae7',
+    'manuscript-only': 'eee4558c082201662f046479eab3a2822202e638fb9b497d9aa680fe3ac6c77a',
 }
 
-STAGE_CALLS = {'panel|domains=True': 2, 'panel|domains=False': 2,
-               'ensemble-debate': 1, 'manuscript-only': 1}
+STAGE_CALLS = {'panel': 2, 'ensemble-debate': 1, 'manuscript-only': 1}
 
 
 class Captured(Exception):
@@ -106,7 +107,7 @@ def workspace(directory, paper=PAPER):
     return root, Path(directory) / 'run'
 
 
-def run_review(directory, mode='plain', domain_support=True, policy=None, paper=PAPER,
+def run_review(directory, mode='plain', policy=None, paper=PAPER,
                response=None, **kwargs):
     """Run one review against a fake transport and capture every model call."""
     root, out = workspace(directory, paper)
@@ -123,7 +124,7 @@ def run_review(directory, mode='plain', domain_support=True, policy=None, paper=
     with patch.object(reviewer, 'require_subscription'), \
          patch.object(reviewer, 'model_call', side_effect=fake), \
          patch.object(reviewer, 'inspected_images', return_value=[]):
-        reviewer.review(root, out, '2025-01-01', mode=mode, domain_support=domain_support,
+        reviewer.review(root, out, '2025-01-01', mode=mode,
                         model='gpt-5.6-terra', policy=policy, **kwargs)
     return captured, out, root
 
@@ -143,7 +144,7 @@ def normalize(captured, paths):
     return RUN_ID.sub('-<run>', text)
 
 
-def panel_payload(directory, domain_support=True):
+def panel_payload(directory):
     """Both panel stages: the workspace inventory call and the debate call."""
     root, out = workspace(directory)
     handle = build_registry(PAPER).handles[0].handle_id
@@ -159,8 +160,7 @@ def panel_payload(directory, domain_support=True):
          patch.object(reviewer, 'model_call', side_effect=fake), \
          patch.object(reviewer, 'inspected_images', return_value=[]):
         with contextlib.suppress(Captured):
-            reviewer.review(root, out, '2025-01-01', mode='panel',
-                            domain_support=domain_support, model='gpt-5.6-terra')
+            reviewer.review(root, out, '2025-01-01', mode='panel', model='gpt-5.6-terra')
     return captured, (out, root, directory)
 
 
@@ -206,16 +206,15 @@ def manuscript_only_payload(directory):
 
 
 STAGE_SCENARIOS = {
-    'panel|domains=True': lambda directory: panel_payload(directory, True),
-    'panel|domains=False': lambda directory: panel_payload(directory, False),
+    'panel': panel_payload,
     'ensemble-debate': debate_payload,
     'manuscript-only': manuscript_only_payload,
 }
 
 
-def scenario_digest(mode, domain_support):
+def scenario_digest(mode):
     with tempfile.TemporaryDirectory() as directory:
-        captured, out, root = run_review(directory, mode, domain_support)
+        captured, out, root = run_review(directory, mode)
         text = json.dumps(captured, sort_keys=True, ensure_ascii=False)
         for path in (str(out), str(root), directory):
             text = text.replace(path, '<tmp>')
@@ -231,10 +230,8 @@ def stage_digest(scenario):
 class DefaultPolicyIsUnchanged(unittest.TestCase):
     def test_every_existing_mode_sends_byte_identical_prompts_and_limits(self):
         for mode in MODES:
-            for domain_support in (True, False):
-                key = f'{mode}|domains={domain_support}'
-                with self.subTest(scenario=key):
-                    self.assertEqual(scenario_digest(mode, domain_support), EXPECTED_DIGESTS[key])
+            with self.subTest(scenario=mode):
+                self.assertEqual(scenario_digest(mode), EXPECTED_DIGESTS[mode])
 
     def test_the_panel_debate_and_manuscript_only_stages_are_byte_identical_too(self):
         """The modes above are not every stage: panel, ensemble debate and the
@@ -260,7 +257,6 @@ class DefaultPolicyIsUnchanged(unittest.TestCase):
     def test_default_ensemble_protocol_record_is_explicit_and_unchanged(self):
         self.assertEqual(ensemble._protocol('gpt-5.6-terra', 2, 750000), {
             'provider': 'codex', 'model': 'gpt-5.6-terra', 'effort': 'medium',
-            'held_out_runs_authorized': False, 'max_calls_per_condition': 1,
             'observed_token_stop': 750000, 'call_timeout_seconds': 900,
             'max_source_images': 10, 'image_budget_version': 'evidence-v1', 'mode': 'ensemble',
             'reviewers': 2, 'total_generation_calls': 3, 'token_launch_budget': 750000,
@@ -291,7 +287,7 @@ class AgenticPolicy(unittest.TestCase):
         self.assertIs(get_review_policy('workspace-agentic-v1'), AGENTIC)
         self.assertEqual(AGENTIC.effort, 'high')
         self.assertGreaterEqual(AGENTIC.investigator_tool_limit('independent'), 30)
-        self.assertGreaterEqual(AGENTIC.investigator_tool_limit('plain', domain_support=False), 30)
+        self.assertGreaterEqual(AGENTIC.investigator_tool_limit('plain'), 30)
         self.assertGreater(AGENTIC.call_timeout_seconds, STANDARD.call_timeout_seconds)
         self.assertIsNone(AGENTIC.finding_cap)
         self.assertIsNone(AGENTIC.candidate_finding_cap)
@@ -727,7 +723,6 @@ class QuarantinedFindings(unittest.TestCase):
 class BoundedRetry(unittest.TestCase):
     def setUp(self):
         self.protocol = {'provider': 'codex', 'model': 'gpt-5.6-terra', 'effort': 'medium',
-                         'held_out_runs_authorized': False, 'max_calls_per_condition': 1,
                          'observed_token_stop': 1000, 'call_timeout_seconds': 30,
                          'max_attempts': 2}
         self.schema = {'type': 'object'}
@@ -804,14 +799,14 @@ class BoundedRetry(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
             with patch.object(runtime.subprocess, 'run', side_effect=run):
-                with self.assertRaisesRegex(runtime.StudyBlocked, 'Codex failed'):
+                with self.assertRaisesRegex(runtime.RunBlocked, 'Codex failed'):
                     runtime.model_call(self.protocol, out, 'prompt', self.schema)
             self.assertEqual(len(calls), 1)
             rows = runtime.jsonl(out / 'usage.jsonl')
             self.assertEqual([row['transient_failure'] for row in rows], [False])
             # The saved refusal stays final, so a rerun never relaunches it either.
             with patch.object(runtime.subprocess, 'run', side_effect=run):
-                with self.assertRaisesRegex(runtime.StudyBlocked, 'prior attempt failed'):
+                with self.assertRaisesRegex(runtime.RunBlocked, 'prior attempt failed'):
                     runtime.model_call(self.protocol, out, 'prompt', self.schema)
             self.assertEqual(len(calls), 1)
 
@@ -821,14 +816,14 @@ class BoundedRetry(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
             with patch.object(runtime.subprocess, 'run', side_effect=run):
-                with self.assertRaisesRegex(runtime.StudyBlocked, 'completed the turn'):
+                with self.assertRaisesRegex(runtime.RunBlocked, 'completed the turn'):
                     runtime.model_call(self.protocol, out, 'prompt', self.schema)
             self.assertEqual(len(calls), 1)
             rows = runtime.jsonl(out / 'usage.jsonl')
             self.assertEqual([row['transient_failure'] for row in rows], [False])
             self.assertEqual([row['observed_tokens'] for row in rows], [5])
             with patch.object(runtime.subprocess, 'run', side_effect=run):
-                with self.assertRaisesRegex(runtime.StudyBlocked, 'prior attempt failed'):
+                with self.assertRaisesRegex(runtime.RunBlocked, 'prior attempt failed'):
                     runtime.model_call(self.protocol, out, 'prompt', self.schema)
             self.assertEqual(len(calls), 1)
 
@@ -860,7 +855,7 @@ class BoundedRetry(unittest.TestCase):
 
     def test_a_successful_retry_does_not_block_the_next_call_in_the_run(self):
         run, calls = self.sequence(self.die, self.succeed, self.succeed)
-        protocol = {**self.protocol, 'max_calls_per_condition': 2}
+        protocol = dict(self.protocol)
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
             with patch.object(runtime.subprocess, 'run', side_effect=run):
@@ -877,12 +872,12 @@ class BoundedRetry(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
             with patch.object(runtime.subprocess, 'run', side_effect=run):
-                with self.assertRaises(runtime.StudyBlocked):
+                with self.assertRaises(runtime.RunBlocked):
                     runtime.model_call(self.protocol, out, 'prompt', self.schema)
                 # A crashed attempt has no observable token count, so the saved
                 # receipt refuses the rerun on unknown usage before the spent
                 # attempt limit is even reached. Either way it never relaunches.
-                with self.assertRaisesRegex(runtime.StudyBlocked, 'unknown usage'):
+                with self.assertRaisesRegex(runtime.RunBlocked, 'unknown usage'):
                     runtime.model_call(self.protocol, out, 'prompt', self.schema)
             self.assertEqual(len(calls), 2)
             self.assertEqual([row['attempt'] for row in runtime.jsonl(out / 'usage.jsonl')], [1, 2])
@@ -893,13 +888,13 @@ class BoundedRetry(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
             with patch.object(runtime.subprocess, 'run', side_effect=run):
-                with self.assertRaises(runtime.StudyBlocked):
+                with self.assertRaises(runtime.RunBlocked):
                     runtime.model_call(protocol, out, 'prompt', self.schema)
             self.assertEqual(len(calls), 1)
 
     def test_a_guard_refusal_is_never_retried(self):
         run, calls = self.sequence(self.succeed, self.succeed)
-        protocol = {**self.protocol, 'observed_token_stop': 1, 'max_calls_per_condition': 5}
+        protocol = {**self.protocol, 'observed_token_stop': 1}
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
             write(out / 'usage.jsonl', {})
@@ -907,7 +902,7 @@ class BoundedRetry(unittest.TestCase):
                 'request_sha256': 'other', 'observed_tokens': 50, 'attempt': 1,
                 'ok': True, 'usage_unknown': False}) + '\n')
             with patch.object(runtime.subprocess, 'run', side_effect=run):
-                with self.assertRaisesRegex(runtime.StudyBlocked, 'token'):
+                with self.assertRaisesRegex(runtime.RunBlocked, 'token'):
                     runtime.model_call(protocol, out, 'prompt', self.schema)
             self.assertEqual(len(calls), 0)
 

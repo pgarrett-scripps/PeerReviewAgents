@@ -77,9 +77,6 @@ def investigation_schema(candidate_cap=DEFAULT_CANDIDATE_CAP):
     return capped_findings(INVESTIGATION_REVIEW, candidate_cap)
 
 
-DISCOVERY = discovery_instruction()
-
-
 def coverage_record(paper, response):
     """Check accounting and quotation identity, without endorsing scientific reasoning."""
     blocks = {block['id']: block['text'] for block in paper['blocks']}
