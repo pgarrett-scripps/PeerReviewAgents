@@ -6,9 +6,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from peerreviewagents.engine import model_runtime as runtime
 
 
+@pytest.mark.usefixtures("stubbed_provider_cli")
 class ReviewRuntime(unittest.TestCase):
     def test_shared_source_images_accepts_ten_and_never_truncates(self):
         from peerreviewagents.engine.reviewer import shared_source_images

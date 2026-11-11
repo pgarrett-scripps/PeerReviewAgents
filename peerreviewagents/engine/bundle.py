@@ -89,7 +89,7 @@ def import_manuscript(source,workspace):
             raise BundleError(f'{workspace} already holds a different manuscript. Name a new run '
                               f'folder for {source}')
         return None
-    from .ingest import import_paper
+    from .ingest import PopplerMissing, import_paper
     existed=workspace.exists()
     try:
         return import_paper(source,workspace)
@@ -99,6 +99,10 @@ def import_manuscript(source,workspace):
         if not existed:
             from shutil import rmtree
             rmtree(workspace,ignore_errors=True)
+        # A missing converter is about the machine, not the manuscript: its
+        # own sentence says what to install, so it is passed through whole.
+        if isinstance(error,PopplerMissing):
+            raise BundleError(str(error)) from error
         raise BundleError(f'{source} could not be imported: {type(error).__name__}: {error}') from error
 
 

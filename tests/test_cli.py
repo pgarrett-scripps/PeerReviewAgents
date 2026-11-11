@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -77,6 +78,7 @@ FIXTURE = Path(__file__).parent / "fixtures" / "single-column.pdf"
 
 
 @pytest.mark.skipif(not FIXTURE.is_file(), reason="shared ingestion fixture missing")
+@pytest.mark.skipif(shutil.which("pdftotext") is None, reason="Poppler (pdftotext) not installed")
 def test_a_real_pdf_is_imported_into_the_default_folder(tmp_path, monkeypatch):
     """Everything up to the first model call is real, on a real PDF.
 
@@ -84,6 +86,11 @@ def test_a_real_pdf_is_imported_into_the_default_folder(tmp_path, monkeypatch):
     spending a subscription, and it is the step a person sees fail. So this
     reads the shared ingestion fixture with the installed converter and stubs
     only the review itself.
+
+    It needs the converter it exercises, the same way it needs the fixture:
+    this module also runs on the macOS and Windows installation jobs, which
+    have no Poppler, and there the import cannot be the thing under test. What
+    a person without Poppler is told is pinned in tests/engine/test_cli_review.
     """
     manuscript = tmp_path / "single-column.pdf"
     manuscript.write_bytes(FIXTURE.read_bytes())

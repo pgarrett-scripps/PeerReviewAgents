@@ -31,6 +31,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from peerreviewagents.engine import ensemble, model_runtime as runtime, reviewer
 from peerreviewagents.engine import review_schema
 from peerreviewagents.engine.annotations import quarantine_findings
@@ -766,6 +768,7 @@ class QuarantinedFindings(unittest.TestCase):
                            response=model_response(ambiguous.handle_id))
 
 
+@pytest.mark.usefixtures('stubbed_provider_cli')
 class BoundedRetry(unittest.TestCase):
     def setUp(self):
         self.protocol = {'provider': 'codex', 'model': 'gpt-5.6-terra', 'effort': 'medium',

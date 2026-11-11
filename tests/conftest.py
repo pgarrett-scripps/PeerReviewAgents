@@ -43,3 +43,25 @@ def unreachable_provider_clis(monkeypatch: pytest.MonkeyPatch) -> None:
 def no_provider_cli(monkeypatch: pytest.MonkeyPatch) -> None:
     """Fixture form of :func:`unreachable_provider_clis`."""
     unreachable_provider_clis(monkeypatch)
+
+
+@pytest.fixture
+def stubbed_provider_cli(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Answer the transport's CLI lookup without any provider installed.
+
+    A test that stubs the launch itself still has to get past the lookup that
+    now runs before it, and the lookup only passed on a machine where the
+    provider happened to be installed: every such test failed in CI with "The
+    Codex CLI was not found". The lookup answers with a path that does not
+    exist, so a launch this fixture's user forgot to stub fails as a missing
+    file rather than reaching a real binary.
+    """
+    monkeypatch.setenv("PATH", "")
+    for variable in model_runtime.CLI_OVERRIDES.values():
+        monkeypatch.delenv(variable, raising=False)
+
+    def stubbed(name: str) -> str:
+        assert name in model_runtime.CLI_MISSING, f"unknown provider CLI: {name}"
+        return f"/nonexistent/provider-cli/{name}"
+
+    monkeypatch.setattr(model_runtime, "cli_executable", stubbed)
