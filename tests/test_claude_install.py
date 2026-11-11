@@ -63,12 +63,33 @@ def test_custom_path_install_remains_supported(monkeypatch, clean_home):
 
 
 def test_a_missing_cli_is_reported_as_unauthenticated_rather_than_crashing(clean_home):
-    """The MCP server asks for authentication status before it runs anything."""
+    """`capabilities()` reports the login, so a missing CLI must not crash it."""
     from peerreviewagents.engine.model_runtime import auth_status
 
     status = auth_status("claude-code")
     assert status["loggedIn"] is False
     assert "Claude Desktop alone" in status["error"]
+
+
+def test_the_run_is_blocked_with_the_cause_not_a_generic_login_message(clean_home):
+    """A person reads this sentence and has to be able to act on it.
+
+    "This process cannot access a claude-code subscription login" is true of a
+    missing CLI, a signed-out CLI and a mistyped PEERREVIEW_CLAUDE_PATH alike,
+    and only one of those is fixed by signing in. The reported cause wins.
+    """
+    from peerreviewagents.engine.model_runtime import require_subscription
+
+    with pytest.raises(RunBlocked, match="Claude Desktop alone"):
+        require_subscription(clean_home)
+
+
+def test_an_override_that_is_not_the_cli_blocks_the_run_by_name(monkeypatch, clean_home):
+    monkeypatch.setenv("PEERREVIEW_CLAUDE_PATH", "relative/claude")
+    from peerreviewagents.engine.model_runtime import require_subscription
+
+    with pytest.raises(RunBlocked, match="PEERREVIEW_CLAUDE_PATH"):
+        require_subscription(clean_home)
 
 
 def test_cached_plugin_launches_with_no_path_and_spaces(tmp_path):
@@ -111,9 +132,19 @@ def test_existing_marketplace_is_updated_without_removal(monkeypatch, tmp_path):
     assert not any("remove" in call or "add" in call for call in calls)
 
 
-def test_claude_manifest_versions_match_package():
+def test_client_manifest_versions_match_package():
+    """Every client manifest a release ships, not just the Claude ones.
+
+    The Codex and Pi manifests sat at 0.5.0 for three releases because nothing
+    checked them.
+    """
     import re
 
     version = re.search(r'^version = "([^"]+)"', (ROOT / "pyproject.toml").read_text(), re.M)[1]
-    for relative in [".claude-plugin/plugin.json", "plugins/peer-review-agents/.claude-plugin/plugin.json"]:
-        assert json.loads((ROOT / relative).read_text())["version"] == version
+    for relative in [
+        ".claude-plugin/plugin.json",
+        "plugins/peer-review-agents/.claude-plugin/plugin.json",
+        "plugins/peer-review-agents/.codex-plugin/plugin.json",
+        "integrations/pi/package.json",
+    ]:
+        assert json.loads((ROOT / relative).read_text())["version"] == version, relative

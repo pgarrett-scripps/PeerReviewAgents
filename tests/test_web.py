@@ -25,13 +25,25 @@ PDF = b"%PDF-1.7\nnot a real manuscript\n"
 FINISHED = ("done", "done-without-findings", "error", "cancelled")
 
 
+@pytest.fixture(autouse=True)
+def _stub_both_provider_clis(no_provider_cli):
+    """No test here may reach an installed `claude` or `codex`.
+
+    These tests drive the real job service, so a test that forgets to fake the
+    engine would otherwise start a real review on whichever CLI happens to be
+    installed. Stubbing only one transport is how that last leaked.
+    """
+
+
 def _client(tmp_path, **kwargs) -> TestClient:
+    kwargs.setdefault("host", "127.0.0.1")
     app = create_app(
         output_dir=tmp_path / "reviews",
         upload_dir=tmp_path / "uploads",
         **kwargs,
     )
-    return TestClient(app)
+    # The server answers to its own host only, so the client has to be one.
+    return TestClient(app, base_url="http://127.0.0.1:8765")
 
 
 def _upload(client, name="paper.pdf", content=PDF, **fields):
@@ -254,6 +266,102 @@ def test_the_pages_are_served_and_name_no_token_stream(tmp_path):
     assert "WebSocket" not in client.get("/static/app.js").text
 
 
+def test_no_test_in_this_module_can_reach_a_provider_cli(tmp_path):
+    """The guard the rest of this module relies on, checked rather than assumed.
+
+    A reviewer's run of the web tests hit the real installed `codex` binary
+    because only the `claude` command line was stubbed. Both are unreachable
+    here: by name, by override variable, and at the launch itself.
+    """
+    from peerreviewagents.engine import model_runtime
+
+    for provider in ("claude-code", "codex"):
+        status = model_runtime.auth_status(provider)
+        assert status["loggedIn"] is False
+        assert "not found" in status["error"]
+    with pytest.raises(model_runtime.RunBlocked, match="not found"):
+        model_runtime.require_subscription(tmp_path)
+    with pytest.raises(AssertionError, match="must be stubbed"):
+        model_runtime.subprocess.run(["codex", "--version"])
+
+
+def test_a_post_from_another_origin_does_not_start_a_review(tmp_path, monkeypatch):
+    """A page on any other origin can make the browser of whoever is running
+    this server post to it. The form is same-origin, so an Origin naming
+    another host is never this page and never queues a run."""
+    seen = _fake_review(monkeypatch)
+    client = _client(tmp_path)
+
+    refused = client.post(
+        "/api/reviews",
+        files={"manuscript": ("paper.pdf", PDF, "application/pdf")},
+        headers={"Origin": "http://evil.example"},
+    )
+    assert refused.status_code == 403
+    assert "evil.example" in refused.json()["detail"]
+    assert "options" not in seen
+    assert client.get("/api/reviews").json()["reviews"] == []
+
+    # The page's own post carries this server's origin and is a review.
+    allowed = client.post(
+        "/api/reviews",
+        files={"manuscript": ("paper.pdf", PDF, "application/pdf")},
+        headers={"Origin": "http://127.0.0.1:8765"},
+    )
+    assert allowed.status_code == 200
+    _wait(client, allowed.json()["job_id"])
+
+
+def test_a_request_for_another_host_is_refused_before_a_route_runs(tmp_path):
+    """A DNS name pointed at 127.0.0.1 is how a remote page reaches a local
+    server as a same-origin one. The server answers to its own host only."""
+    app = create_app(
+        output_dir=tmp_path / "reviews",
+        upload_dir=tmp_path / "uploads",
+        host="127.0.0.1",
+    )
+    stranger = TestClient(app, base_url="http://attacker.example")
+    assert stranger.get("/").status_code == 400
+    assert stranger.get("/api/capabilities").status_code == 400
+    assert TestClient(app, base_url="http://localhost:8765").get("/").status_code == 200
+
+
+def test_a_server_bound_to_every_interface_answers_to_any_host(tmp_path):
+    """Asking for 0.0.0.0 is asking to be reached from elsewhere, and such a
+    server cannot know its own name, so the host check is not what stops it."""
+    app = create_app(
+        output_dir=tmp_path / "reviews",
+        upload_dir=tmp_path / "uploads",
+        host="0.0.0.0",  # noqa: S104 - the case under test
+    )
+    assert TestClient(app, base_url="http://somewhere.example").get("/").status_code == 200
+
+
+def test_two_uploads_of_one_filename_are_two_runs(tmp_path, monkeypatch):
+    """Same name, same millisecond: the folder used to collide and the second
+    upload failed on the exclusive create."""
+    _fake_review(monkeypatch)
+    client = _client(tmp_path)
+
+    first = _upload(client).json()["job_id"]
+    second = _upload(client).json()["job_id"]
+    assert first != second
+    uploaded = sorted((tmp_path / "uploads").rglob("paper.pdf"))
+    assert len(uploaded) == 2
+    assert uploaded[0].parent != uploaded[1].parent
+    for job_id in (first, second):
+        assert _wait(client, job_id)["status"] == "done"
+
+
+def test_a_submitted_zero_is_refused_rather_than_read_as_unset(tmp_path):
+    """`or` read a submitted 0 as "not submitted" and ran the default two
+    reviewers instead of refusing a count the engine does not accept."""
+    client = _client(tmp_path)
+    response = _upload(client, reviewers="0")
+    assert response.status_code == 400
+    assert "1 to 16" in response.json()["detail"]
+
+
 def test_serve_threads_its_own_defaults_into_the_app(tmp_path, monkeypatch):
     import peerreviewagents.web as web
     from peerreviewagents.cli import main as cli_main
@@ -270,7 +378,7 @@ def test_serve_threads_its_own_defaults_into_the_app(tmp_path, monkeypatch):
         "peerreview", "serve",
         "--output-dir", str(tmp_path / "out"),
         "--upload-dir", str(tmp_path / "in"),
-        "--input-root", str(tmp_path / "papers"),
+        "--host", "127.0.0.1",
         "--mode", "independent",
         "--reviewers", "3",
         "--provider", "codex",
@@ -281,7 +389,11 @@ def test_serve_threads_its_own_defaults_into_the_app(tmp_path, monkeypatch):
 
     assert captured["output_dir"] == str(tmp_path / "out")
     assert captured["upload_dir"] == str(tmp_path / "in")
-    assert captured["input_roots"] == [str(tmp_path / "papers")]
+    # The bound address reaches the app, which is what it answers to besides
+    # the loopback names. An upload is the only way in, so there is no input
+    # root to thread any more.
+    assert captured["host"] == "127.0.0.1"
+    assert "input_roots" not in captured
     assert captured["defaults"] == {
         "mode": "independent",
         "reviewers": 3,

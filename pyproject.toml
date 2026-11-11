@@ -39,17 +39,17 @@ classifiers = [
     "Topic :: Text Processing :: General",
 ]
 dependencies = [
-    "python-dotenv>=1",
     "tomli>=2; python_version < '3.11'",
     # The local web UI: `peerreview serve` is the browser form of the same
     # review the command line runs. It polls a job for its stage, so there is
-    # no WebSocket, and python-multipart is what receives the uploaded PDF.
+    # no WebSocket and uvicorn needs none of the `standard` extras, and
+    # python-multipart is what receives the uploaded PDF.
     "fastapi>=0.110",
-    "uvicorn[standard]>=0.27",
+    "uvicorn>=0.27",
     "python-multipart>=0.0.9",
-    # Reads PDFs into Markdown. Required, not optional: PDF ingest has no
+    # Reads PDFs into source blocks. Required, not optional: PDF ingest has no
     # fallback, because the one it used to have fused words across column
-    # boundaries and flattened every heading — see peerreviewagents.ingest.
+    # boundaries and flattened every heading — see the README's ingest section.
     # 0.2 is where the converter reports the document's own section tree and
     # typed bibliography; the loader feature-detects and still runs on 0.1.x,
     # but a fresh install should get the version whose sections are read, not
@@ -66,10 +66,13 @@ dependencies = [
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.13,<2"]
-web-test = ["httpx>=0.27"]
-# pyyaml is pulled in transitively today, but tests/test_metadata.py parses
+# `dev` runs the whole suite on its own. tests/test_web.py needs httpx for
+# FastAPI's TestClient and tests/test_mcp_server.py needs the MCP SDK; both
+# used to arrive transitively through dependencies this release deleted, so
+# they are named here rather than left to a second extra nobody passes.
+# pyyaml is also transitive today, but tests/test_metadata.py parses
 # CITATION.cff directly — declare it so CI can't lose it to a dep change.
-dev = ["pytest>=8", "ruff>=0.6", "pyyaml>=6"]
+dev = ["pytest>=8", "ruff>=0.6", "pyyaml>=6", "httpx>=0.27", "mcp>=1.13,<2"]
 
 [project.urls]
 Homepage = "https://github.com/pgarrett-scripps/PeerReviewAgents"

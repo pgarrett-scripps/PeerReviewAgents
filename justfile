@@ -27,7 +27,7 @@ install-extras extras:
 # Install dev/test tooling alongside the project
 install-dev:
     [ -d .venv ] || uv venv
-    uv pip install -e ".[mcp,web-test,dev]"
+    uv pip install -e ".[dev]"
 
 # Sync the venv to match pyproject.toml exactly (drops anything stale)
 sync:
@@ -65,11 +65,11 @@ serve *args:
 
 # Run the test suite (no model calls, no network, no API keys)
 test:
-    uv run --extra dev --extra web-test --extra mcp pytest tests/ -q
+    uv run --extra dev pytest tests/ -q
 
 # Run tests with verbose output
 test-v:
-    uv run --extra dev --extra web-test --extra mcp pytest tests/ -vv
+    uv run --extra dev pytest tests/ -vv
 
 # Run the engine suite alone
 test-engine:

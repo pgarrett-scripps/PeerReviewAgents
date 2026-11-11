@@ -54,9 +54,9 @@ uv venv && source .venv/bin/activate
 uv pip install -e '.[mcp]'
 ```
 
-Dependencies are `rustypaper` (PDF → source blocks), Pillow, FastAPI and
-Uvicorn for the web UI, and `python-dotenv`. No OCR, no paid service beyond the
-subscription you already have, and no provider SDK.
+Dependencies are `rustypaper` (PDF → source blocks), Pillow, and FastAPI and
+Uvicorn for the web UI. No OCR, no paid service beyond the subscription you
+already have, and no provider SDK.
 
 Then sign in to the transport you want to run on. Claude Code is the default,
 so the standalone `claude` CLI signed in to your Claude account is all a review
@@ -168,17 +168,18 @@ one did it. Give it the PDF.
 ## Web UI
 
 ```bash
-peerreview serve                 # http://127.0.0.1:8000
+peerreview serve                 # http://127.0.0.1:8765
 just serve
 ```
 
-Upload a manuscript PDF or point at one under an allowed input root, pick the
-mode, reviewers, provider and literature cutoff, and watch the run. Reviews run
-as background jobs on the same engine the command line uses, so the page polls
-status and reads `REVIEW.md` and the saved artifacts when they land; closing the
-browser does not stop a run. `--output-dir`, `--upload-dir` and the repeatable
-`--input-root` bound what the server may read and write. It is a local tool with
-no authentication: do not expose it to a network you do not control.
+Upload a manuscript PDF, pick the mode, reviewers, provider and literature
+cutoff, and watch the run. Reviews run as background jobs on the same engine the
+command line uses, so the page polls status and reads `REVIEW.md` and the saved
+artifacts when they land; closing the browser does not stop a run.
+`--output-dir` and `--upload-dir` bound what the server may read and write: an
+upload is the only way in, so no path on this machine is reviewable from the
+browser. It answers only to its own host and refuses a cross-origin post, and it
+has no authentication: do not expose it to a network you do not control.
 
 ## Local coding agent plugins
 
@@ -248,9 +249,9 @@ accounting, the Paper Scaffold adapter and the stated boundaries.
 ## Tests
 
 ```bash
-just test                    # uv run pytest tests/ -q
+just test                    # uv run --extra dev pytest tests/ -q
+uv run --extra dev pytest -q # the dev extra alone runs the whole suite
 pytest tests/ -q             # no subscription, no API key, no network
-uv run --extra dev --extra web-test --extra mcp pytest -q
 ```
 
 The suite makes no model calls and no network calls. It covers Unicode anchors,

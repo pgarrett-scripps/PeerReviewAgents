@@ -58,7 +58,7 @@ jobs:
           fi
 
       - name: Install
-        run: pip install --quiet -e '.[web-test,mcp,dev]'
+        run: pip install --quiet -e '.[dev]'
 
       # CI already runs this on every push to main, but a tag can point at a
       # commit CI never saw — and this is the run that becomes permanent.

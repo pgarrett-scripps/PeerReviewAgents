@@ -11,6 +11,16 @@ from peerreviewagents.engine.bundle import ReviewPaths
 from peerreviewagents.mcp import server as mcp_server
 
 
+@pytest.fixture(autouse=True)
+def _stub_both_provider_clis(no_provider_cli):
+    """No test here may reach an installed `claude` or `codex`.
+
+    These tests drive the real job service, so a test that forgets to fake the
+    engine would otherwise start a real review on whichever CLI happens to be
+    installed. Stubbing only one transport is how that last leaked.
+    """
+
+
 def _wait(service: mcp_server.ReviewService, job_id: str) -> dict:
     for _ in range(200):
         status = service.get_status(job_id)

@@ -140,7 +140,11 @@ def require_subscription(root):
     provider = read_json(protocol_path)["provider"] if protocol_path.exists() else DEFAULT_PROVIDER
     status = auth_status(provider)
     if not status.get("loggedIn"):
-        raise RunBlocked(f"This process cannot access a {provider} subscription login.")
+        # A reported cause is the one a person can act on: the CLI is not
+        # installed, or PEERREVIEW_CLAUDE_PATH names something that is not it.
+        # Replacing it with the generic sentence hides the install step.
+        raise RunBlocked(status.get("error")
+                         or f"This process cannot access a {provider} subscription login.")
     accepted = {"chatgpt"} if provider == "codex" else {"claude.ai", "oauth"}
     if status.get("authMethod") not in accepted:
         raise RunBlocked("Subscription authentication was not verified. Refusing API-backed execution.")

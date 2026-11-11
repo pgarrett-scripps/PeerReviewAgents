@@ -236,14 +236,23 @@ def dispatch(parser,args):
         from .annotations import save_review
         print(save_review(args.workspace,read(args.response),args.id)['annotation_counts'])
     elif args.command=='review':
-        paths=prepare_manuscript(parser,args)
-        resolve_cutoff(parser,args,args.output)
+        # Every refusal a person can fix is raised before the manuscript is
+        # imported. An import converts the PDF and writes a run folder, so a
+        # command that was never going to run — a model belonging to the other
+        # transport, a single-session policy on an ensemble, a malformed date —
+        # has to be refused while the folder is still empty.
+        if args.literature_cutoff is not None:
+            resolve_cutoff(parser,args)
         if args.mode!='ensemble' and (args.reviewers!=2 or args.token_budget is not None):
             parser.error('--reviewers and --token-budget apply only to ensemble mode')
         apply_preset(parser,args)
         apply_default_policy(args)
         apply_policy(parser,args)
         resolve_model(parser,args)
+        paths=prepare_manuscript(parser,args)
+        # The run folder exists now, so a run being continued can keep the
+        # cutoff it recorded instead of being refused as changed inputs.
+        resolve_cutoff(parser,args,args.output)
         result=run_bundle_review(paths,args.literature_cutoff,args.mode,
                                  model=args.model,reviewers=args.reviewers,
                                  token_budget=args.token_budget,shared_images=args.source_image,

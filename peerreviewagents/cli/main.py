@@ -18,8 +18,6 @@ from __future__ import annotations
 import argparse
 import sys
 
-from dotenv import load_dotenv
-
 from peerreviewagents.engine.__main__ import COMMANDS, add_subcommands
 from peerreviewagents.engine.__main__ import dispatch as engine_dispatch
 
@@ -42,10 +40,6 @@ def add_serve_arguments(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--upload-dir", dest="upload_dir", default=None,
                    help="Where uploaded manuscripts are stored "
                         "(default: ./.peerreview-uploads)")
-    p.add_argument("--input-root", dest="input_roots", action="append", default=None,
-                   metavar="DIR",
-                   help="A further folder a manuscript may be read from; repeatable. "
-                        "The upload folder is always one.")
     p.add_argument("--mode", dest="mode", default=None,
                    choices=("ensemble", "independent", "panel"),
                    help="Default review mode for the form (default: ensemble)")
@@ -90,7 +84,7 @@ def run_server(args) -> None:
     app = create_app(
         output_dir=args.output_dir,
         upload_dir=args.upload_dir,
-        input_roots=list(args.input_roots or []),
+        host=args.host,
         defaults=defaults,
     )
     print(f"PeerReviewAgents web UI on http://{args.host}:{args.port}")
@@ -98,20 +92,43 @@ def run_server(args) -> None:
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
 
+def first_word(argv: list[str]) -> str | None:
+    """The first argument that is a command name's place, or ``None``.
+
+    An option and the value that follows it are skipped, so the command is
+    looked for where a command can be: ``--mode panel paper.pdf`` names no
+    command, and ``panel`` is the value of ``--mode`` rather than a bad one.
+    A ``--flag=value`` carries its own value, so the token after it is not
+    skipped.
+    """
+    skip = False
+    for argument in argv:
+        if argument.startswith("-"):
+            skip = "=" not in argument
+            continue
+        if skip:
+            skip = False
+            continue
+        return argument
+    return None
+
+
 def review_argv(argv: list[str]) -> list[str]:
     """Read a bare manuscript path as the ``review`` command it stands for.
 
-    ``peerreview manuscript.pdf`` is the one-command review, so a first
-    argument that is not a command and not an option is the manuscript: the
-    review flags that follow it are the review command's own.
+    ``peerreview manuscript.pdf`` is the one-command review, so an invocation
+    that names no command is a review of the manuscript it names, whether the
+    review's own options come before the path or after it. ``--help`` is the
+    top-level parser's, so it is never rewritten into a review.
     """
-    if argv and argv[0] not in COMMANDS and argv[0] != "serve" and not argv[0].startswith("-"):
-        return ["review", *argv]
-    return argv
+    if not argv or any(flag in ("-h", "--help") for flag in argv):
+        return argv
+    if first_word(argv) in (*COMMANDS, "serve"):
+        return argv
+    return ["review", *argv]
 
 
 def run() -> None:
-    load_dotenv()
     parser = build_parser()
     args = parser.parse_args(review_argv(sys.argv[1:]))
     if args.command == "serve":

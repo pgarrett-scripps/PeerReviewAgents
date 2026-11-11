@@ -1,6 +1,6 @@
 {
   "name": "peer-review-agents",
-  "version": "0.5.0+codex.20260902015405",
+  "version": "0.8.0",
   "description": "Run an evidence-linked peer review of a manuscript PDF from Codex.",
   "author": {
     "name": "PeerReviewAgents contributors",

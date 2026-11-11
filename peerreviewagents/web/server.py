@@ -18,14 +18,17 @@ are gone with it.
 from __future__ import annotations
 
 import os
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
-from fastapi import FastAPI, Form, HTTPException, UploadFile
+from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.types import Scope
 
 from ..engine.bundle import PUBLIC_MODES
@@ -40,6 +43,11 @@ _MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 _COPY_CHUNK_BYTES = 1024 * 1024
 _MAX_LISTED_RUNS = 200
 _FINISHED = ("done", "done-without-findings", "error", "cancelled")
+# The loopback names a local tool is reached by. A page on another origin can
+# post a form to this server from the browser of whoever is running it, so a
+# review is only started for a request that came from one of these.
+_LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
+_STATE_CHANGING = ("POST", "PUT", "PATCH", "DELETE")
 
 
 class UploadTooLarge(ValueError):
@@ -148,11 +156,48 @@ def _saved_report(root: Path, name: str) -> Path:
     return report
 
 
+def allowed_hosts(host: str | None) -> list[str]:
+    """The Host header values this server answers to.
+
+    A host bound to every interface cannot know its own name, and asking for
+    that is asking to be reached from elsewhere, so it answers to anything.
+    Anything else answers to the loopback names and to the address it was
+    bound to, which is what blocks a DNS name pointed at 127.0.0.1.
+    """
+    if host in (None, "", "0.0.0.0", "::"):  # noqa: S104 - matched, not bound
+        return ["*"]
+    return sorted({*_LOCAL_HOSTS, host})
+
+
+def _origin_guard(app: FastAPI, hosts: list[str]) -> None:
+    """Refuse a state-changing request that came from another origin.
+
+    A review is started by a form post, and a page on any other origin can
+    make the browser of whoever is running this server send that post. The
+    form is same-origin, so an ``Origin`` naming a different host is never
+    this page: it is refused rather than queued as a run. A request with no
+    ``Origin`` is curl or the engine's own client, which no web page can
+    forge.
+    """
+
+    @app.middleware("http")
+    async def check_origin(request: Request, call_next):
+        origin = request.headers.get("origin")
+        if request.method in _STATE_CHANGING and origin:
+            host = urlsplit(origin).hostname
+            if "*" not in hosts and host not in hosts:
+                return JSONResponse(
+                    {"detail": f"cross-origin request from {origin} refused"},
+                    status_code=403,
+                )
+        return await call_next(request)
+
+
 def create_app(
     *,
     output_dir: str | os.PathLike[str] | None = None,
     upload_dir: str | os.PathLike[str] | None = None,
-    input_roots: list[str | os.PathLike[str]] | None = None,
+    host: str | None = None,
     defaults: dict[str, Any] | None = None,
     max_upload_bytes: int = _MAX_UPLOAD_BYTES,
     max_workers: int = 1,
@@ -160,10 +205,11 @@ def create_app(
     """Build the FastAPI app.
 
     ``output_dir`` is where every review writes its run folder, ``upload_dir``
-    where uploaded manuscripts are kept (it is an input root, so a review can
-    read what the browser just sent), ``input_roots`` any further folders a
-    manuscript may be read from, and ``defaults`` the form values the page
-    opens with (mode, reviewers, provider, model, policy, literature_cutoff).
+    where uploaded manuscripts are kept (it is the one input root: the API and
+    the form take an upload, never a path), ``host`` the address the server is
+    bound to, which is what it will answer to besides the loopback names, and
+    ``defaults`` the form values the page opens with (mode, reviewers,
+    provider, model, policy, literature_cutoff).
     """
     if max_upload_bytes < 1:
         raise ValueError("max_upload_bytes must be positive")
@@ -172,17 +218,21 @@ def create_app(
     output_root = Path(output_dir) if output_dir else Path.cwd() / "reviews"
     output_root.mkdir(parents=True, exist_ok=True)
 
-    roots: list[str | os.PathLike[str]] = [upload_root, *(input_roots or [])]
     app = FastAPI(title="PeerReviewAgents", version="0.8.0")
     app.state.reviews = ReviewService(
         max_workers=max_workers,
-        input_roots=roots,
+        input_roots=[upload_root],
         output_root=output_root,
     )
     app.state.upload_root = upload_root
     app.state.output_root = app.state.reviews.output_root
     app.state.defaults = dict(defaults or {})
     app.state.max_upload_bytes = max_upload_bytes
+
+    hosts = allowed_hosts(host)
+    app.state.allowed_hosts = hosts
+    _origin_guard(app, hosts)
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts)
 
     _register_routes(app)
     return app
@@ -238,22 +288,28 @@ def _register_routes(app: FastAPI) -> None:
                 f"the engine reviews PDFs; {Path(name).suffix or name!r} is not one",
             )
         defaults = app.state.defaults
+        # A submitted number is used as submitted. `or` here would read a
+        # submitted 0 as "not submitted" and silently run the default instead
+        # of refusing a count the engine does not accept.
+        count = _optional_int(reviewers, "reviewers")
+        budget = _optional_int(token_budget, "token_budget")
         options: dict[str, Any] = {
             "mode": mode.strip() or defaults.get("mode") or "ensemble",
-            "reviewers": _optional_int(reviewers, "reviewers")
-            or int(defaults.get("reviewers") or 2),
+            "reviewers": int(defaults.get("reviewers") or 2) if count is None else count,
             "provider": provider.strip() or defaults.get("provider") or None,
             "model": model.strip() or defaults.get("model") or None,
             "policy": policy.strip() or defaults.get("policy") or None,
-            "token_budget": _optional_int(token_budget, "token_budget")
-            or defaults.get("token_budget"),
+            "token_budget": defaults.get("token_budget") if budget is None else budget,
             "literature_cutoff": literature_cutoff.strip()
             or defaults.get("literature_cutoff")
             or None,
         }
 
-        folder = Path(app.state.upload_root) / f"{int(time.time() * 1000):x}"
-        folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # One folder per upload, from the filesystem rather than from the
+        # clock: two uploads of the same filename in the same millisecond
+        # shared a folder, and the second failed on the exclusive create.
+        folder = Path(tempfile.mkdtemp(prefix=f"{int(time.time() * 1000):x}-",
+                                       dir=app.state.upload_root))
         dest = folder / name
         try:
             # Copy off the event loop: a large upload written synchronously

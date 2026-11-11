@@ -31,7 +31,7 @@ jobs:
           cache: pip
 
       - name: Install
-        run: pip install --quiet -e '.[mcp,web-test,dev]'
+        run: pip install --quiet -e '.[dev]'
 
       # The suite stubs the LLM layer, so no provider key is needed and no
       # network call is made. If this ever starts needing a secret, something
@@ -72,7 +72,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install --quiet -e '.[mcp,dev]'
+      - run: pip install --quiet -e '.[dev]'
       - run: pytest tests/test_claude_bootstrap.py tests/test_claude_install.py tests/test_cli.py tests/test_mcp_server.py -q
 
   windows-bootstrap:

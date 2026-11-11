@@ -5,7 +5,6 @@ __pycache__/
 build/
 dist/
 .env
-peerreview.toml
 .venv/
 venv/
 reports/*

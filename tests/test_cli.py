@@ -117,6 +117,56 @@ def test_the_review_flags_reach_the_bare_form_too(tmp_path, monkeypatch, reviewe
     assert reviewed["cutoff"] == "2025-01-31"
 
 
+def test_options_before_the_manuscript_path_are_still_a_review(
+    tmp_path, monkeypatch, reviewed
+):
+    """``peerreview --mode panel paper.pdf`` failed with "invalid choice:
+    'panel'": the bare form only looked at the first argument, so a flag's
+    value was read as the command name. A flag may come first."""
+    manuscript = _pdf(tmp_path)
+
+    _run(["--mode", "panel", str(manuscript)], monkeypatch)
+    assert reviewed["mode"] == "panel"
+
+    _run(["--provider", "codex", "--reviewers", "3", str(manuscript)], monkeypatch)
+    assert reviewed["options"]["model"] == "gpt-5.6-terra"
+    assert reviewed["options"]["reviewers"] == 3
+
+    # `--flag=value` carries its value, so the next argument is the manuscript.
+    _run(["--mode=independent", str(manuscript)], monkeypatch)
+    assert reviewed["mode"] == "independent"
+
+
+def test_options_with_no_manuscript_ask_for_one(monkeypatch):
+    """The refusal names what is missing rather than the mode's value."""
+    monkeypatch.setattr("sys.argv", ["peerreview", "--mode", "panel"])
+    with pytest.raises(SystemExit) as exit_info:
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            cli.run()
+    assert exit_info.value.code == 2
+    assert "paper" in err.getvalue()
+    assert "invalid choice" not in err.getvalue()
+
+
+def test_a_refusal_a_person_can_fix_comes_before_the_import(tmp_path, monkeypatch):
+    """An unknown model used to be reported after the manuscript was imported,
+    so a typo cost the whole import and left a half-made run folder."""
+    manuscript = _pdf(tmp_path)
+    imported = []
+    monkeypatch.setattr(
+        "peerreviewagents.engine.ingest.import_paper",
+        lambda source, workspace: imported.append(workspace),
+    )
+    monkeypatch.setattr("sys.argv", ["peerreview", str(manuscript), "--model", "gpt-4o-mini"])
+    with pytest.raises(SystemExit) as exit_info:
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            cli.run()
+    assert exit_info.value.code == 2
+    assert "gpt-4o-mini" in err.getvalue()
+    assert imported == []
+    assert not (tmp_path / "paper-review").exists()
+
+
 def test_naming_the_run_folder_still_works(tmp_path, monkeypatch, reviewed):
     manuscript = _pdf(tmp_path)
 

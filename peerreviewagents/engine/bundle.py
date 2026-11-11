@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from .storage import digest, read
+from .storage import digest, read, write
 
 # The one-command form's layout inside the run folder a person names, and the
 # statuses that mean a run spent its calls and produced a review.
@@ -258,7 +258,16 @@ def run_bundle_review(paths,literature_cutoff,mode='ensemble',**options):
         progress=review(str(paths.workspace),str(paths.run),literature_cutoff,mode,**options)
     except Exception as error:
         if paths.bundle is None:raise
-        progress,failure=run_progress(paths.run),f'{type(error).__name__}: {error}'
+        failure=f'{type(error).__name__}: {error}'
+        progress=run_progress(paths.run)
+        if not progress.get('status'):
+            # A run blocked before its first call — no subscription login, a
+            # missing CLI — recorded nothing, and the report written from that
+            # said 'Run status: unknown' instead of the cause. Record the cause
+            # as the run's own state, which is what every reader reads.
+            progress={'status':'blocked','error':failure}
+            if Path(paths.run).is_dir():
+                write(Path(paths.run)/'progress.json',progress)
     reports={}
     if paths.bundle is not None and (Path(paths.run)/'protocol.json').is_file():
         # The reports are written from the saved run, with no further model

@@ -1,8 +1,8 @@
 # Local agent integrations
 
-PeerReviewAgents runs on the user's machine. It does not require a hosted PeerReviewAgents service, a PeerReviewAgents account, or a separate model API key when a coding agent provider is selected.
+PeerReviewAgents runs on the user's machine. It does not require a hosted PeerReviewAgents service, a PeerReviewAgents account, or a model API key: the review runs on a signed-in `claude` or `codex` CLI.
 
-The selected coding agent still sends model prompts through its own authenticated service. PeerReviewAgents does not receive those prompts. Manuscripts, checkpoints, and report files remain in local filesystem paths controlled by the user.
+That CLI still sends model prompts through its own authenticated service. PeerReviewAgents does not receive those prompts. Manuscripts, checkpoints, and report files remain in local filesystem paths controlled by the user.
 
 ## Architecture
 
@@ -12,20 +12,20 @@ The integration has three shared parts:
 2. The local `peerreview-mcp` standard input and output server.
 3. The `peer-review-manuscript` Agent Skill.
 
-Each coding agent needs packaging that loads the skill and MCP server. A small subscription adapter is also needed when the review panel should use that agent's authenticated model access.
+Each coding agent needs packaging that loads the skill and MCP server. The review itself runs on one of the engine's two transports, whichever client started it.
 
 ## Compatibility
 
-| Client | Loads local MCP | Loads the skill | Uses client authentication as a review provider | Validation level |
+| Client | Loads local MCP | Loads the skill | Runs the review on | Validation level |
 |---|---:|---:|---:|---|
 | Standalone Claude Code CLI | Yes | Yes | `claude-code` | Live tested on Linux |
 | Claude Desktop Code tab, local sessions | Yes | Yes | `claude-code`, through the standalone CLI | Installer and launch contract tested. Desktop UI not live tested |
 | Codex | Yes | Yes | `codex` | Live tested |
-| Factory Droid | Yes | Yes | `droid` | Unit tested, live CLI not available in the development environment |
-| Pi | Yes, through the packaged MCP adapter | Yes | `pi` | Package and command parsing tested, live login not available in the development environment |
-| Other standard input and output MCP clients | Usually | Client dependent | No | Configuration recipe only |
+| Factory Droid | Yes | Yes | `claude-code` or `codex` | Unit tested, live CLI not available in the development environment |
+| Pi | Yes, through the packaged MCP adapter | Yes | `claude-code` or `codex` | Package and command parsing tested, live login not available in the development environment |
+| Other standard input and output MCP clients | Usually | Client dependent | `claude-code` or `codex` | Configuration recipe only |
 
-Controller support and provider support are different. A client can call the MCP tools while the review panel uses another provider. For example, Pi can start a review whose provider is `codex` if both CLIs are installed and authenticated.
+Which client calls the tools and which transport runs the review are separate choices. The engine's transports are `claude-code` (the default) and `codex`: a review started from Droid or Pi runs on whichever of those two CLIs is installed and signed in, not on the client's own model access. Droid and Pi were review providers through 0.7.x, and that path went with the LangGraph panel in 0.8.0.
 
 ## Prerequisites
 
@@ -161,7 +161,7 @@ Install the runtime and plugin:
 ./scripts/install-local.sh codex
 ```
 
-Start a review with `provider: codex`. The adapter launches a fresh ephemeral `codex exec` process in a temporary directory with a read-only sandbox, user rules disabled, and schema-constrained JSON output.
+Start a review with `provider: codex`. The engine launches a fresh ephemeral `codex exec` process per call in a temporary directory with a read-only sandbox and user rules disabled.
 
 Upgrade by reinstalling after updating the checkout:
 
@@ -184,7 +184,10 @@ Factory Droid accepts Claude Code plugin layouts and translates `.mcp.json` auto
 ./scripts/install-local.sh droid
 ```
 
-Start a review with `provider: droid`. The adapter launches `droid exec` in its default read-only mode, disables built-in skills, and uses an empty temporary working directory. The requested JSON schema is included in the prompt because the Droid CLI does not currently expose its SDK schema option as a command-line flag.
+Droid then calls the same MCP tools as Claude Code, and the review runs on the
+`claude` or `codex` CLI the request names, not on Droid's own model access.
+Droid was a review provider of its own through 0.7.x; that path went with the
+LangGraph panel in 0.8.0.
 
 Upgrade or uninstall:
 
@@ -201,7 +204,10 @@ Install the runtime and Pi package:
 ./scripts/install-local.sh pi
 ```
 
-The Pi package includes the review skill and configures the local MCP server through `pi-mcp-adapter`. Start a review with `provider: pi`. The adapter launches a fresh `pi --mode json` process with tools, extensions, skills, context files, session persistence, and project trust disabled.
+The Pi package includes the review skill and configures the local MCP server
+through `pi-mcp-adapter`. As with Droid, the review itself runs on the `claude`
+or `codex` CLI the request names; Pi was a review provider of its own through
+0.7.x and that path went with the LangGraph panel in 0.8.0.
 
 Upgrade or uninstall:
 
@@ -242,7 +248,7 @@ directory. Use the platform path separator to provide more than one input root.
 - The selected coding agent receives the manuscript content needed for each model turn through its normal authenticated service.
 - PeerReviewAgents does not add telemetry, remote storage, accounts, or billing.
 - Live literature research is off by default in the MCP tool. Enabling it sends research queries to the configured literature services.
-- API-backed providers remain available, but they are optional and require their normal environment variables.
+- There is no API key and no API-backed provider: the review runs only on a signed-in `claude` or `codex` CLI.
 
 ## Troubleshooting
 
@@ -258,18 +264,18 @@ command -v peerreview-mcp
 
 The MCP command waits for protocol input, so a manual launch appears idle. Stop it with `Ctrl+C`.
 
-### A provider executable is missing
+### A transport executable is missing
 
-Run the matching command directly:
+The review runs on one of two CLIs. Run the one the request names directly:
 
 ```bash
 claude --version
 codex --version
-droid --version
-pi --version
 ```
 
-Install and authenticate the missing client, then retry the review.
+Install and authenticate the missing CLI, then retry the review. Set
+`PEERREVIEW_CLAUDE_PATH` or `PEERREVIEW_CODEX_PATH` if it is installed
+somewhere the agent process cannot see.
 
 ### The client is installed but not authenticated
 

@@ -7,6 +7,11 @@
 
 const FINISHED = ["done", "done-without-findings", "error", "cancelled"];
 const POLL_MS = 3000;
+// A review runs for many minutes, so one failed poll — a restarted server, a
+// laptop that slept, a dropped request — is a hiccup rather than the end of
+// the run. Polling backs off and keeps trying up to this many times in a row.
+const MAX_POLL_MS = 60000;
+const MAX_POLL_FAILURES = 8;
 
 function text(node, value) {
   node.textContent = value === null || value === undefined ? "" : String(value);
@@ -220,15 +225,26 @@ async function startJobPage(jobId) {
     }
   });
 
+  let failures = 0;
+
   async function tick() {
     let job;
     try {
       job = await readJson(await fetch(`/api/reviews/${jobId}`));
     } catch (exc) {
-      text(error, exc.message);
+      failures += 1;
+      const spent = failures >= MAX_POLL_FAILURES;
+      text(
+        error,
+        spent
+          ? `${exc.message} — stopped checking. Reload this page to pick the run up again.`
+          : `${exc.message} — retrying.`
+      );
       error.hidden = false;
-      return true;
+      return spent;
     }
+    failures = 0;
+    error.hidden = true;
     text(document.getElementById("subject"), job.manuscript_name || jobId);
     describe(job);
     cancel.hidden = FINISHED.includes(job.status);
@@ -255,9 +271,16 @@ async function startJobPage(jobId) {
   }
 
   if (await tick()) return;
-  const timer = window.setInterval(async () => {
-    if (await tick()) window.clearInterval(timer);
-  }, POLL_MS);
+  let delay = POLL_MS;
+  (function schedule() {
+    window.setTimeout(async () => {
+      if (await tick()) return;
+      // Back off while polls are failing, and go straight back to the normal
+      // interval as soon as one answers.
+      delay = failures ? Math.min(delay * 2, MAX_POLL_MS) : POLL_MS;
+      schedule();
+    }, delay);
+  })();
 }
 
 async function startSavedPage(name) {
