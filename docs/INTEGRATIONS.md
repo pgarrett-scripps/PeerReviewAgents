@@ -229,7 +229,7 @@ Any client that supports local standard input and output MCP servers can use thi
 }
 ```
 
-The client can start and monitor reviews, list journals, and read completed artifacts. Its own subscription will run the panel only if PeerReviewAgents has a tested provider adapter for that client's noninteractive CLI.
+The client can start and monitor reviews, cancel one, and read completed artifacts. The review itself runs on a signed-in Claude Code or Codex CLI, whichever the request names, not on the calling client's own model.
 
 The MCP server reads manuscripts only beneath `PEERREVIEW_MCP_INPUT_ROOTS` and
 writes reports only beneath `PEERREVIEW_MCP_OUTPUT_ROOT`. The input root defaults

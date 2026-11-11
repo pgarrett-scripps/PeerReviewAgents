@@ -2,22 +2,22 @@ cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 title: "PeerReviewAgents"
 abstract: >-
-  PeerReviewAgents is a multi-agent framework for structured manuscript review
-  with large language models. A default run converts a PDF locally, applies an
-  optional desk screen, and sends the manuscript to five specialist reviewers
-  covering scientific validity, quantitative evidence, contribution and prior
-  work, reporting and reproducibility, and ethics. Two parallel auditors check
-  methods completeness and citation support. A meta-reviewer prepares a focused
-  agenda, an advocate and skeptic debate it, and an editor issues an accept,
-  minor revision, major revision, or reject recommendation. A journal scout can
-  optionally suggest publication venues. Each run writes the individual
-  reports, audits, debate, decision letter, usage records, and configuration
-  needed to inspect the process. The framework uses graded Haiku, Sonnet, and
-  Opus routing by default and also supports OpenRouter and OpenAI providers.
-  Optional research tools query scholarly literature sources, while target
-  journal settings and revision rounds support venue-specific and follow-up
-  review. The system is research software for review assistance and evaluation,
-  not a substitute for accountable editorial judgment.
+  PeerReviewAgents produces an evidence-linked peer review of a manuscript PDF.
+  One command imports the PDF locally into immutable source blocks with
+  evidence handles, runs independent reviewers against bounded manuscript and
+  literature tools, and synthesizes their findings through an audited debate in
+  which every original finding must be retained, merged, rejected with reasons,
+  or sent for verification. Every finding carries the source block it is
+  anchored to and the exact quotation it rests on; a quotation that does not
+  match the manuscript is quarantined rather than reported. Reviews run on a
+  signed-in Claude Code or Codex subscription and make no API-key calls. Each
+  run records its manuscript manifest, tool logs, coverage record, and model
+  usage, and the reports are written from that saved JSON without further
+  inference, so a stopped or blocked run still reports what it produced. The
+  command line, a local web UI, an MCP server, and plugins for local coding
+  agents all run the same review. The system is research software for review
+  assistance and evaluation, not a substitute for accountable editorial
+  judgment.
 type: software
 # Garrett, Garcia-Carbonell, and Navarro Garrido contributed equally.
 # CFF 1.2.0 has no field for shared first authorship, so state it in the

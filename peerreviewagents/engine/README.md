@@ -2,7 +2,7 @@
 
 `peerreviewagents.engine` reviews a manuscript in context. It imports a PDF, optionally uses publisher JATS XML for text and references, preserves supplementary table cells, and produces source-linked findings and proposed wording changes. It does not rerun author analyses.
 
-This subpackage is the headless engine that landed in PeerReviewAgents 0.7.0. The LangGraph panel in the rest of the package is legacy. The app layer that used to sit on top of this engine (the local viewer, the revision loop, native Scaffold export, Word review copies) is not part of it.
+This subpackage is the headless engine that landed in PeerReviewAgents 0.7.0 and became the whole program in 0.8.0: the LangGraph panel that used to make up the rest of the package was deleted, and every surface — the command line, the web UI, the MCP server and the local agent plugins — now runs this engine. The panel is frozen at the tag `legacy-langgraph-v0.6.1`. The app layer that used to sit on top of this engine (the local viewer, the revision loop, native Scaffold export, Word review copies) is not part of it.
 
 ## Use
 

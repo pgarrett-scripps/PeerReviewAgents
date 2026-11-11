@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 from pathlib import Path
 
 import pytest
@@ -70,6 +71,38 @@ def test_a_bare_pdf_is_the_one_command_review_beside_the_manuscript(
     assert reviewed["paths"].workspace == bundle / "manuscript"
     assert reviewed["mode"] == "ensemble"
     assert reviewed["options"]["reviewers"] == 2
+
+
+FIXTURE = Path(__file__).parent / "fixtures" / "single-column.pdf"
+
+
+@pytest.mark.skipif(not FIXTURE.is_file(), reason="shared ingestion fixture missing")
+def test_a_real_pdf_is_imported_into_the_default_folder(tmp_path, monkeypatch):
+    """Everything up to the first model call is real, on a real PDF.
+
+    The import is the one thing the bare command does before it starts
+    spending a subscription, and it is the step a person sees fail. So this
+    reads the shared ingestion fixture with the installed converter and stubs
+    only the review itself.
+    """
+    manuscript = tmp_path / "single-column.pdf"
+    manuscript.write_bytes(FIXTURE.read_bytes())
+    seen = {}
+
+    def capture(paths, literature_cutoff, mode="ensemble", **options):
+        seen["paths"] = paths
+        return {"progress": {"status": "complete"}, "reports": {}, "failure": None,
+                **paths.record()}
+
+    monkeypatch.setattr(engine_cli, "run_bundle_review", capture)
+
+    _run([str(manuscript)], monkeypatch)
+
+    bundle = tmp_path / "single-column-review"
+    assert seen["paths"].bundle == bundle
+    paper = json.loads((bundle / "manuscript" / "paper.json").read_text(encoding="utf-8"))
+    assert paper["blocks"]
+    assert (bundle / "manuscript" / "original.pdf").read_bytes() == FIXTURE.read_bytes()
 
 
 def test_the_review_flags_reach_the_bare_form_too(tmp_path, monkeypatch, reviewed):

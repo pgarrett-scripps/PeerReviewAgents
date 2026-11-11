@@ -1,14 +1,18 @@
 """Top-level re-exports for convenience.
 
 Library usage:
-    from peerreviewagents import PeerReviewGraph, get_config, write_reports
 
-These three names are resolved lazily (PEP 562). Importing them eagerly here
-would pull langgraph, textual and fastapi into every ``import
-peerreviewagents.*``, including ``peerreviewagents.engine``, which needs none
-of them. ``from peerreviewagents import PeerReviewGraph`` and
-``peerreviewagents.PeerReviewGraph`` both still work and still cost the same
-imports; only code that never touches these names avoids them.
+    from peerreviewagents import plan_review, review_options, run_review_options
+
+Those three are one review: ``plan_review`` resolves a manuscript PDF into a
+run folder, ``review_options`` validates a request in the same words every
+surface uses, and ``run_review_options`` runs it and writes the reports. The
+command line, the MCP server and the web UI all go through exactly these.
+``capabilities`` reports what this install can run without starting anything.
+
+The names resolve lazily (PEP 562) so that ``import peerreviewagents.engine``
+stays as cheap as it is on its own, and so this module never imports the web
+UI's dependencies for a caller that only wants the engine.
 """
 
 from __future__ import annotations
@@ -16,16 +20,16 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # Static tooling sees the real objects, not the fallback.
-    from .default_config import get_config
-    from .graph.review_graph import PeerReviewGraph
-    from .reports import write_reports
+    from .engine.api import capabilities
+    from .engine.bundle import plan_review, review_options, run_review_options
 
-__all__ = ["PeerReviewGraph", "get_config", "write_reports"]
+__all__ = ["capabilities", "plan_review", "review_options", "run_review_options"]
 
 _LAZY = {
-    "PeerReviewGraph": (".graph.review_graph", "PeerReviewGraph"),
-    "get_config": (".default_config", "get_config"),
-    "write_reports": (".reports", "write_reports"),
+    "capabilities": (".engine.api", "capabilities"),
+    "plan_review": (".engine.bundle", "plan_review"),
+    "review_options": (".engine.bundle", "review_options"),
+    "run_review_options": (".engine.bundle", "run_review_options"),
 }
 
 

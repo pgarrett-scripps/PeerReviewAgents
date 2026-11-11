@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "peerreviewagents"
 version = "0.8.0"
-description = "Multi-agent LLM peer-review framework (an editorial board for manuscripts)"
+description = "Evidence-linked peer review of a manuscript PDF, on a coding-agent subscription"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
 license = "MIT"
@@ -23,7 +23,6 @@ keywords = [
     "peer-review",
     "llm",
     "multi-agent",
-    "langgraph",
     "scholarly-publishing",
     "agents",
 ]
@@ -40,19 +39,14 @@ classifiers = [
     "Topic :: Text Processing :: General",
 ]
 dependencies = [
-    "langgraph>=0.2",
-    "langchain-core>=0.3",
-    "langchain-openai>=0.2",
-    "langchain-anthropic>=0.2",
-    "textual>=0.60",
-    "rich>=13",
-    "pydantic>=2",
     "python-dotenv>=1",
     "tomli>=2; python_version < '3.11'",
+    # The local web UI: `peerreview serve` is the browser form of the same
+    # review the command line runs. It polls a job for its stage, so there is
+    # no WebSocket, and python-multipart is what receives the uploaded PDF.
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
     "python-multipart>=0.0.9",
-    "websockets>=12",
     # Reads PDFs into Markdown. Required, not optional: PDF ingest has no
     # fallback, because the one it used to have fused words across column
     # boundaries and flattened every heading — see peerreviewagents.ingest.
@@ -71,14 +65,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-research = ["arxiv>=2", "requests>=2"]
 mcp = ["mcp>=1.13,<2"]
 web-test = ["httpx>=0.27"]
-# Evaluation harness: fetch a labeled OpenReview corpus and score the
-# pipeline against human reviews. Stats are pure-Python (no scipy);
-# matplotlib is only used to render the paper figure (committed as SVG, so
-# the Typst paper build itself needs no Python).
-eval = ["openreview-py>=1.40", "matplotlib>=3.7"]
 # pyyaml is pulled in transitively today, but tests/test_metadata.py parses
 # CITATION.cff directly — declare it so CI can't lose it to a dep change.
 dev = ["pytest>=8", "ruff>=0.6", "pyyaml>=6"]
@@ -117,8 +105,7 @@ select = ["E4", "E7", "E9", "F", "I"]
 include = ["peerreviewagents*"]
 
 [tool.setuptools.package-data]
-"peerreviewagents.journals" = ["*.toml", "README.md"]
-"peerreviewagents.web" = ["static/*"]
+"peerreviewagents.web" = ["static/*", "static/vendor/*"]
 # The engine reads its domain packs from the installed package, so the
 # manifests, reviewer skills, and fixture cases have to ship in the wheel.
 "peerreviewagents.engine" = [

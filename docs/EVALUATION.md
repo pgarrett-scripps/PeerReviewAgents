@@ -6,6 +6,13 @@
 > The 0.5.0 pipeline is different — five referees, parallel debate rounds, a
 > post-debate synthesizer — and is not what these numbers measured. The
 > protocol is preserved unchanged so the published results stay auditable.
+>
+> **The harness is gone.** `peerreviewagents.eval`, the `just eval-*` recipes
+> and the corpus builder ran this protocol against the LangGraph panel, and
+> were deleted with the panel in 0.8.0. To re-run it, check out the tag
+> `legacy-langgraph-v0.6.1` (or the `v0.7.0` release). The engine's own study
+> design is [`study-arms.md`](study-arms.md), which gives the exact command for
+> each arm.
 
 This protocol characterizes PeerReviewAgents against human OpenReview outcomes
 and a one-call practical baseline. It is a software validation study, not a

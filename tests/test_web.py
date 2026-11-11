@@ -10,7 +10,6 @@ of the LangGraph panel's endpoints.
 
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 
@@ -19,6 +18,7 @@ from fastapi.testclient import TestClient
 
 from peerreviewagents import review_service
 from peerreviewagents.engine.bundle import ReviewPaths
+from peerreviewagents.engine.storage import write
 from peerreviewagents.web import create_app
 
 PDF = b"%PDF-1.7\nnot a real manuscript\n"
@@ -65,10 +65,10 @@ def _fake_review(monkeypatch, *, failure=None, status="complete", report=True):
     def fake_run(paths, options):
         seen["options"] = options
         paths.run.mkdir(parents=True)
-        (paths.run / "progress.json").write_text(
-            json.dumps({"status": status, "stage": "debate", "reviewers": 2}),
-            encoding="utf-8",
-        )
+        # Through the engine's own atomic writer, as every real stage does: the
+        # page polls this file while the run rewrites it, and a plain
+        # write_text truncates first, so a poll can land on an empty file.
+        write(paths.run / "progress.json", {"status": status, "stage": "debate", "reviewers": 2})
         reports = {}
         if report:
             path = paths.bundle / "REVIEW.md"
