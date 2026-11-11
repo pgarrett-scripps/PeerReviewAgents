@@ -10,11 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from peerreviewagents.runtime.subscriptions import (
-    SubscriptionCLIError,
-    _completed,
-    validate_subscription_cli,
-)
+from peerreviewagents.engine.model_runtime import RunBlocked, cli_executable
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location("install_claude", ROOT / "scripts/install-claude.py")
@@ -39,40 +35,40 @@ def clean_home(monkeypatch, tmp_path):
 
 def test_native_cli_is_found_without_shell_path(clean_home):
     binary = make_executable(clean_home / ".local/bin" / ("claude.exe" if os.name == "nt" else "claude"))
-    assert validate_subscription_cli("claude-code") == str(binary)
+    assert cli_executable("claude") == str(binary)
     assert installer.executable("claude") == str(binary)
 
 
 def test_explicit_cli_path_takes_precedence(monkeypatch, clean_home):
     binary = make_executable(clean_home / "custom install" / "claude")
     monkeypatch.setenv("PEERREVIEW_CLAUDE_PATH", str(binary))
-    assert validate_subscription_cli("claude-code") == str(binary)
+    assert cli_executable("claude") == str(binary)
 
 
 def test_invalid_override_does_not_silently_use_another_cli(monkeypatch, clean_home):
     monkeypatch.setenv("PEERREVIEW_CLAUDE_PATH", "relative/claude")
-    with pytest.raises(SubscriptionCLIError, match="executable absolute path"):
-        validate_subscription_cli("claude-code")
+    with pytest.raises(RunBlocked, match="executable absolute path"):
+        cli_executable("claude")
 
 
 def test_missing_cli_explains_desktop_prerequisite(clean_home):
-    with pytest.raises(SubscriptionCLIError, match="Claude Desktop alone"):
-        validate_subscription_cli("claude-code")
+    with pytest.raises(RunBlocked, match="Claude Desktop alone"):
+        cli_executable("claude")
 
 
 def test_custom_path_install_remains_supported(monkeypatch, clean_home):
     make_executable(clean_home / ".local/bin" / ("claude.exe" if os.name == "nt" else "claude"))
     monkeypatch.setattr("shutil.which", lambda name: "/opt/custom/claude")
-    assert validate_subscription_cli("claude-code") == "/opt/custom/claude"
+    assert cli_executable("claude") == "/opt/custom/claude"
 
 
-def test_unlaunchable_cli_produces_actionable_error(monkeypatch):
-    def fail(*args, **kwargs):
-        raise PermissionError("access denied")
+def test_a_missing_cli_is_reported_as_unauthenticated_rather_than_crashing(clean_home):
+    """The MCP server asks for authentication status before it runs anything."""
+    from peerreviewagents.engine.model_runtime import auth_status
 
-    monkeypatch.setattr(subprocess, "run", fail)
-    with pytest.raises(SubscriptionCLIError, match="Could not launch"):
-        _completed(["/missing/claude"], "prompt", 1)
+    status = auth_status("claude-code")
+    assert status["loggedIn"] is False
+    assert "Claude Desktop alone" in status["error"]
 
 
 def test_cached_plugin_launches_with_no_path_and_spaces(tmp_path):
