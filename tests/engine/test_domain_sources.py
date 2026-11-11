@@ -58,21 +58,6 @@ class Sources(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_references({'findings': [{'source_evidence': [{'evidence_id': card['evidence_id'], 'quote': 'Homo sapiens'}]}]}, [card])
 
-    def test_frozen_packet_is_shared_without_network_or_shared_budget(self):
-        self.client().lookup('uniprot', 'P04637', 'b1')
-        from peerreviewagents.engine.storage import digest
-        packet = self.root/'cache'
-        hashes = {p.name: digest(p.read_bytes()) for p in packet.iterdir()}
-        for condition in ('single', 'panel'):
-            client = SourceClient(self.root/condition, self.root/(condition+'-cache'),
-                                  frozen_cache=packet, frozen_hashes=hashes, opener=self.opener)
-            self.assertTrue(client.lookup('uniprot', 'P04637', 'b1')['eligible'])
-            self.assertEqual(client.lookup('uniprot', 'P12345', 'b1')['status'], 'not_in_source_packet')
-        self.assertEqual(len(self.calls), 1)
-        next(packet.glob('*.raw')).write_text('{}')
-        with self.assertRaises(ValueError):
-            client.lookup('uniprot', 'P04637', 'b1')
-
     def test_source_targets_are_shared_across_process_instances(self):
         self.client().lookup('uniprot', 'P04637', 'b1')
         self.client().lookup('uniprot', 'P04637', 'b2')

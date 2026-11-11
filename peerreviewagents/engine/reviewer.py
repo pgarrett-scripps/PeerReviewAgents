@@ -333,7 +333,7 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
     protocol={'provider':provider,'model':model,'effort':policy.effort,
               'observed_token_stop':policy.observed_token_stop,'call_timeout_seconds':policy.call_timeout_seconds,
               'mode':mode,'literature_cutoff':cutoff,'paper_id':paper['id'],
-              'investigation_version':'candidate-inventory-v1','investigator_tool_limit':policy.investigator_tool_limit(mode),
+              'investigation_version':'candidate-inventory-v2','investigator_tool_limit':policy.investigator_tool_limit(mode),
               'debate_version':'debate-v3' if mode=='panel' else None}
     protocol['evidence_policy'] = 'live'
     protocol.update(domain_version='domains-v1',
@@ -429,7 +429,7 @@ Use resolve_identifier for exact identifier mapping and search_literature for a 
         prompt=policy.shared_instructions()+'\n'+instruction+f'''\nAt most {limit} tool calls. Full extracted text is already provided. Spend tools on missing evidence such as figure pixels or a focused external check. Avoid rereading supplied paragraphs unless necessary. The asset inventory distinguishes available files from captions only.\n'''+json.dumps({'title':paper['title'],'assets':paper['assets'],'references':paper['references']},ensure_ascii=False)+'\n'+handle_manuscript(paper)
         if policy.session_instruction:
             prompt=policy.session_instruction+'\n'+prompt
-        prompt+=domain_context+'\nTreat prose and readability checks as advisory. They do not establish scientific validity or justify padding the review.'
+        prompt+=domain_context
         prompt += '\n'+RESULT_INSTRUCTION+'\nRESULT MAP OVERVIEW:\n'+json.dumps(inspect_results(result_map,max_chars=6500),ensure_ascii=False)
         if shared_images:
             prompt += '\nSHARED ORIGINAL FIGURE PAGES, attached in this order:\n' + '\n'.join(str(p.name) for p in shared_images)

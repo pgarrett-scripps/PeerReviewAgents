@@ -124,8 +124,7 @@ def _protocol(model,reviewers,token_budget,policy=None):
 
 
 def debate_reviews(workspace,out,cutoff,records,*,images=(),model=None,
-                   token_budget=750000,cache_roots=(),
-                   source_packet=None,evidence_memos=(),
+                   token_budget=750000,cache_roots=(),evidence_memos=(),
                    synthesis_policy='debate',reused_drafts=False,policy=None):
     """Shared debate implementation for fresh discovery and explicitly recorded reused drafts."""
     from .models import DEFAULT_MODEL
@@ -142,17 +141,12 @@ def debate_reviews(workspace,out,cutoff,records,*,images=(),model=None,
     root,out=Path(workspace).resolve(),Path(out).resolve()
     if synthesis_policy not in ('debate', 'ordinary'):
         raise ValueError('Synthesis policy must be debate or ordinary')
-    packet_manifest = None
-    if source_packet is not None:
-        from .source_packet import source_packet_manifest
-        source_packet = Path(source_packet).resolve()
-        packet_manifest = source_packet_manifest(source_packet)
     validate_options(len(records),token_budget)
     paper=verify_workspace(root)
     protocol=_protocol(model,len(records),token_budget,policy)
     if reused_drafts:
         protocol.update(mode='saved-draft-synthesis', total_generation_calls=1, discovery_calls=0)
-    protocol.update(evidence_policy='frozen' if source_packet is not None else 'live',
+    protocol.update(evidence_policy='live',
                     synthesis_policy=synthesis_policy,
                     synthesis_preflight=VERSION, synthesis_validation_checks=2)
     memos=[]
@@ -171,8 +165,7 @@ def debate_reviews(workspace,out,cutoff,records,*,images=(),model=None,
             ledger['investigation_context']['focused_evidence_memos']=memos
         write(out/'debate-ledger.json',ledger)
         write(out/'input-reviews.json',records)
-        sources=SourceClient(out/'sources',out/'source-cache',policy.debate_external_requests,cutoff,
-            frozen_cache=source_packet,frozen_hashes=packet_manifest)
+        sources=SourceClient(out/'sources',out/'source-cache',policy.debate_external_requests,cutoff)
         cards={}
         for cache in cache_roots:
             for path in Path(cache).glob('*'):
@@ -181,8 +174,7 @@ def debate_reviews(workspace,out,cutoff,records,*,images=(),model=None,
                 if target.exists() and target.read_bytes()!=path.read_bytes():raise ValueError('Conflicting reviewer source cache records')
                 target.parent.mkdir(parents=True,exist_ok=True)
                 shutil.copy2(path,target)
-        evidence_caches=[out/'source-cache']+([Path(source_packet)] if source_packet else [])
-        hashes={digest(p.read_bytes()) for cache in evidence_caches for p in cache.glob('*.raw') if p.is_file()}
+        hashes={digest(p.read_bytes()) for p in (out/'source-cache').glob('*.raw') if p.is_file()}
         for record in records:
             review=record['review']
             validate_references(review,review.get('source_cards',[]))
@@ -222,7 +214,6 @@ def debate_reviews(workspace,out,cutoff,records,*,images=(),model=None,
                 'synthesis_ledger':str(out/'debate-ledger.json'),
                 'tool_profile':'domains-v1','source_state':str(out/'sources'),
                 'external_request_limit':policy.debate_external_requests}
-        if source_packet:config.update(source_packet=str(source_packet),source_packet_manifest=packet_manifest)
         write(out/'execution/workspace/tool-config.json',config)
         write(out/'manifest.json',{'paper_id':paper['id'],'code':source_manifest(Path(__file__).parent),
             'review_input_sha256':digest((out/'input-reviews.json').read_bytes()),

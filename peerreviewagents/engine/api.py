@@ -11,7 +11,7 @@ from .review_policy import (APPROVED_EFFORTS, DEFAULT_POLICY, DEFAULT_POLICY_NAM
                             MAX_ATTEMPT_CEILING, get_review_policy, review_policies,
                             single_session_refusal)
 
-API_VERSION = 'paper-workbench-core-v1'
+API_VERSION = 'paper-workbench-core-v2'
 
 
 def capabilities():
@@ -32,7 +32,7 @@ def capabilities():
             'policies': list(review_policies()),
             'default_policy': DEFAULT_POLICY_NAME,
             'review_policies': policies,
-            'evidence_policies': ['none', 'live', 'frozen'],
+            'evidence_policies': ['none', 'live'],
             'models': list(SUBSCRIPTION_MODELS), 'reasoning_effort': DEFAULT_POLICY.effort,
             'reasoning_efforts': list(APPROVED_EFFORTS),
             'reasoning_effort_by_policy': efforts_by_policy,
@@ -127,12 +127,16 @@ class ReviewRequest:
 
 @dataclass(frozen=True)
 class SavedDraftSynthesisRequest:
-    """One ordinary synthesis pass over the immutable drafts from an ensemble run."""
+    """One ordinary synthesis pass over the immutable drafts from an ensemble run.
+
+    The drafts are immutable; the evidence is not frozen with them. This pass
+    retrieves live sources under the original run's cutoff, exactly as a fresh
+    review does, so what it reuses is the discovery drafts and nothing else.
+    """
     workspace: Path
     original_output: Path
     output: Path
     source_images: tuple[Path, ...]
-    source_packet: Path
     # The reused drafts were written under one cutoff. None inherits that cutoff
     # instead of synthesising saved drafts against a later date.
     literature_cutoff: str | None = None
@@ -161,8 +165,6 @@ class SavedDraftSynthesisRequest:
             raise ValueError('Token launch budget must be a positive integer')
         if len(self.source_images) > 10 or any(not Path(path).is_file() for path in self.source_images):
             raise ValueError('Supply the complete set of at most ten existing source images')
-        from .source_packet import source_packet_manifest
-        source_packet_manifest(self.source_packet)
         date.fromisoformat(self.literature_cutoff)
 
 
@@ -175,7 +177,6 @@ def run_saved_draft_synthesis(request: SavedDraftSynthesisRequest):
     """Reuse a debate run's exact discovery drafts for one ordinary synthesis call."""
     from .ensemble import debate_reviews, observed_usage
     from .model_runtime import source_manifest
-    from .source_packet import source_packet_manifest, verify_source_packet
     from .storage import read, write, digest
     if not isinstance(request, SavedDraftSynthesisRequest):
         raise TypeError('Expected SavedDraftSynthesisRequest')
@@ -206,19 +207,17 @@ def run_saved_draft_synthesis(request: SavedDraftSynthesisRequest):
     expected_review_hashes = [row.get('provenance', {}).get('source_review_sha256') for row in records]
     if any(not value for value in expected_review_hashes):
         raise ValueError('Saved drafts lack original review hashes')
+    # The reused row and the original reviewer file must still be the same
+    # review: the hash alone would accept a rewritten row beside an intact file.
     for row, expected in zip(records, expected_review_hashes):
-        if digest(json.dumps(row['review'], ensure_ascii=False, sort_keys=True)) == expected:
-            continue
         source_path = Path(row['provenance'].get('source_review_path', ''))
-        if not source_path.is_file() or digest(source_path.read_bytes()) != expected:
+        if (not source_path.is_file() or digest(source_path.read_bytes()) != expected
+                or row['review'] != read(source_path)):
             raise ValueError('An original input review changed')
     expected_images = stage_manifest.get('images')
     supplied_images = _hash_files(request.source_images)
     if not isinstance(expected_images, dict) or supplied_images != expected_images:
         raise ValueError('Saved draft synthesis requires the complete original image set')
-    packet_before = source_packet_manifest(request.source_packet)
-    if artifact.get('source_packet_manifest_after') != packet_before:
-        raise ValueError('Saved draft synthesis requires the original frozen evidence packet')
     protocol = read(debate_root / 'protocol.json')
     if protocol.get('debate_tool_allowance') != 2 or protocol.get('token_launch_budget') != request.token_budget:
         raise ValueError('Saved draft synthesis must match the original synthesis tool and token budget')
@@ -241,20 +240,18 @@ def run_saved_draft_synthesis(request: SavedDraftSynthesisRequest):
     reused_discovery_usage = {'calls': expected_discovery_calls, 'receipts': expected_discovery_calls,
         'observed_tokens': sum(row['observed_tokens'] for row in discovery_usage), 'unknown': False}
     cache_before = {str(path.resolve()): digest(path.read_bytes()) for root in cache_roots for path in root.glob('*') if path.is_file()}
-    raw_hashes = sorted({digest(path.read_bytes()) for root in [*cache_roots, Path(request.source_packet)]
+    raw_hashes = sorted({digest(path.read_bytes()) for root in cache_roots
                          for path in root.glob('*.raw') if path.is_file()})
     package = debate_reviews(workspace, output, request.literature_cutoff,
         records, images=request.source_images, model=request.model, token_budget=request.token_budget,
-        cache_roots=cache_roots, source_packet=request.source_packet,
-        synthesis_policy='ordinary', reused_drafts=True)
-    verify_source_packet(request.source_packet, packet_before)
+        cache_roots=cache_roots, synthesis_policy='ordinary', reused_drafts=True)
     cache_after = {str(path.resolve()): digest(path.read_bytes()) for root in cache_roots for path in root.glob('*') if path.is_file()}
     if cache_after != cache_before:
         raise ValueError('Original reviewer evidence cache changed during synthesis')
     package['synthesis_provenance'].update(reused_drafts=True, discovery_calls=0,
         original_core_artifact_sha256=digest((original / 'core-artifact.json').read_bytes()),
         original_input_reviews_sha256=digest(records_path.read_bytes()),
-        original_review_sha256=expected_review_hashes, source_packet_manifest=packet_before,
+        original_review_sha256=expected_review_hashes,
         original_evidence_raw_sha256=raw_hashes, shared_images=supplied_images,
         reused_discovery_receipts=discovery_receipts)
     write(output / 'editor-package.json', package)
@@ -264,8 +261,7 @@ def run_saved_draft_synthesis(request: SavedDraftSynthesisRequest):
         'workflow': 'ensemble', 'execution_scope': 'saved-draft-synthesis', 'model_requested': request.model,
         'resolved_configuration': {'synthesis_policy': 'ordinary', 'reused_drafts': True,
             'discovery_calls': 0, 'synthesis_calls': 1, 'synthesis_tool_allowance': 2,
-            'token_launch_budget': request.token_budget, 'evidence_policy': 'frozen'},
-        'source_packet_manifest_before': packet_before, 'source_packet_manifest_after': packet_before,
+            'token_launch_budget': request.token_budget, 'evidence_policy': 'live'},
         'engine_source': current_engine, 'editor_package': package,
         'usage': synthesis_usage, 'usage_scope': 'new_synthesis_stage_only',
         'reused_discovery_usage': reused_discovery_usage,

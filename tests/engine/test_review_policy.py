@@ -5,6 +5,12 @@ must produce exactly the prompts, schemas, tool configs and protocol records
 it produced before review limits became data. The digests below were captured
 from the engine at commit 1658fd2 and recaptured when the engine cleanup
 removed the study-only evidence options.
+
+They are not a freeze on the prompt text. The reviewer prompt lost its
+duplicated handle instruction and its scaffold-era advisory sentence, and
+``candidate-inventory-v2``, ``manuscript-only-v2`` and ``review-policy-v2``
+record that the text changed. These digests are the matching recapture: an
+unversioned change to any of this text still fails here.
 """
 import contextlib
 import copy
@@ -52,10 +58,10 @@ REPEATED_PAPER = {
 MODES = ('plain', 'workspace', 'self-revision', 'independent')
 
 EXPECTED_DIGESTS = {
-    'independent': 'd101ec5bed4dde2b4c8083493a1d71dd948e507601745da185e0709208109170',
-    'plain': '7eb0718c52f0e0286c1c42f56d0ab11de5d3b5593e6269f72c8218577ad890ca',
-    'self-revision': 'dd8eb43558c33a4fed69acd979e8627e6c5d8db27d1472c6c405e9dd2e89db00',
-    'workspace': 'd796df64d98b12d8a64548dc22f6d9f9d3026f5c4eff4f0203e5ec4f098f11f1',
+    'independent': '3878ff552bb5d65e61454b2c1c763ff9078c0348598a8f5935c2bf19b0c059c2',
+    'plain': '3bb7bdc80744149eb71cbbef52a929b5fc194898859789a1e05ed1e7c3d5010f',
+    'self-revision': 'b88997cc893078edf719f0a2b6877d1e5be4ec1f5c451fea32ebe6e3e35c54a4',
+    'workspace': '19511bbf83f319472e1e40c44e3fd05c5047667d5e5753edcf6af3a77a2709ad',
 }
 
 # The panel, ensemble debate and manuscript-only stages, captured the same way.
@@ -64,9 +70,9 @@ EXPECTED_DIGESTS = {
 RUN_ID = re.compile(r'(?<=[a-z])-[0-9a-f]{10}\b')
 
 STAGE_DIGESTS = {
-    'panel': 'b9ab5b953465a6466b02eb321eeab8dd492b75705742f70f3c132d7c240506db',
+    'panel': '12b2be14de469594424842f5ac7440a6a4c1442d2d27001a1cdf6c01f33da9f5',
     'ensemble-debate': '13b22ecb0f0652635ccfaca6e32b3ec9a8611a9283feb142fa9670edd6bebae7',
-    'manuscript-only': '687c6ed172f37cfab19a0bc1fbc0442b7985462c4822cd73fb6501a4fd341558',
+    'manuscript-only': 'eee4558c082201662f046479eab3a2822202e638fb9b497d9aa680fe3ac6c77a',
 }
 
 STAGE_CALLS = {'panel': 2, 'ensemble-debate': 1, 'manuscript-only': 1}

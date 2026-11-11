@@ -18,7 +18,7 @@ that fails validation is quarantined with a reason instead of ending the run.
 from dataclasses import asdict, dataclass
 from types import MappingProxyType
 
-POLICY_VERSION = 'review-policy-v1'
+POLICY_VERSION = 'review-policy-v2'
 
 APPROVED_EFFORTS = ('low', 'medium', 'high')
 MAX_ATTEMPT_CEILING = 2

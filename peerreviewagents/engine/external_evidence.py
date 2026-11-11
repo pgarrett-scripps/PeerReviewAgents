@@ -22,8 +22,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class SourceClient:
-    def __init__(self, state, cache, limit=6, cutoff=None, opener=None,
-                 frozen_cache=None, frozen_hashes=None):
+    def __init__(self, state, cache, limit=6, cutoff=None, opener=None):
         if type(limit) is not int or not 0 <= limit <= 30:
             raise ValueError('External request allowance must be between zero and thirty')
         if cutoff is not None:
@@ -33,13 +32,6 @@ class SourceClient:
         self.cache.mkdir(parents=True, exist_ok=True)
         self.limit, self.cutoff = limit, cutoff
         self.opener = opener or urllib.request.build_opener(NoRedirect()).open
-        # Only saved-draft synthesis freezes evidence: it replays recorded
-        # drafts against the exact records they cited. A fresh review always
-        # retrieves live, bounded by the cutoff.
-        self.frozen_cache = Path(frozen_cache) if frozen_cache is not None else None
-        self.frozen_hashes = frozen_hashes
-        if self.frozen_cache is not None and not isinstance(frozen_hashes, dict):
-            raise ValueError('Frozen source packets require an immutable file manifest')
 
     def reserve_target(self, block_id, provider='targeted-source'):
         if not isinstance(block_id, str) or not block_id.strip() or len(block_id) > 160:
@@ -85,12 +77,6 @@ class SourceClient:
             raise ValueError('Source endpoint is outside the public provider allowlist')
         key = digest(url)
         meta, raw_path = self.cache / (key + '.json'), self.cache / (key + '.raw')
-        if self.frozen_cache is not None:
-            meta, raw_path = self.frozen_cache / meta.name, self.frozen_cache / raw_path.name
-            if not all(p.name in self.frozen_hashes for p in (meta, raw_path)):
-                return {'status': 'not_in_source_packet', 'source_url': url}
-            if not all(p.is_file() and digest(p.read_bytes()) == self.frozen_hashes[p.name] for p in (meta, raw_path)):
-                raise ValueError('Frozen source packet changed')
         with (self.state / 'requests.lock').open('a') as lock:
             exclusive_lock(lock)
             budget_path = self.state / 'requests.json'

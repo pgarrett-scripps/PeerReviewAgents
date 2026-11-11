@@ -29,9 +29,7 @@ class Investigation:
         self.synthesis_preflight = None
         from .external_evidence import SourceClient
         self.sources = SourceClient(config.get('source_state') or str(self.out/'sources'), config['cache'],
-                                    config.get('external_request_limit', 6), self.cutoff,
-                                    frozen_cache=config.get('source_packet'),
-                                    frozen_hashes=config.get('source_packet_manifest'))
+                                    config.get('external_request_limit', 6), self.cutoff)
         from .targeted_sources import TargetedSources
         self.targeted = TargetedSources(self.sources)
         if config.get('synthesis_ledger'):

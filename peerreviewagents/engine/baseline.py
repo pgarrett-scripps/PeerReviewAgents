@@ -52,7 +52,7 @@ def run_manuscript_only(request, paper, resolved_config):
         'provider': provider_for(request.model), 'model': request.model, 'effort': policy.effort,
         'observed_token_stop': request.token_budget, 'call_timeout_seconds': policy.call_timeout_seconds,
         'max_source_images': MAX_SOURCE_IMAGES, 'image_budget_version': 'evidence-v1',
-        'mode': 'manuscript-only', 'version': 'manuscript-only-v1',
+        'mode': 'manuscript-only', 'version': 'manuscript-only-v2',
         'tool_access': 'none',
         **policy.protocol_overlay(),
     }
