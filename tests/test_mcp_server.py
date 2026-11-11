@@ -258,6 +258,20 @@ def test_all_agent_packages_share_the_same_skill():
     assert claude_skill.read_text(encoding="utf-8") == pi_skill.read_text(encoding="utf-8")
 
 
+def test_the_skill_describes_the_engine_review_the_server_actually_runs():
+    """The skill told agents to pick a target journal, keep research_enabled
+    false and read summary.md and decision_letter.md. None of those exist."""
+    root = Path(__file__).resolve().parents[1]
+    skill = (root / "skills" / "peer-review-manuscript" / "SKILL.md").read_text(encoding="utf-8")
+    for gone in ("target_journal", "research_enabled", "article_type", "summary.md",
+                 "decision_letter.md", "provider: pi", "API key", "list_peer_review_journals"):
+        assert gone not in skill
+    for named in ("start_peer_review", "get_peer_review_status", "list_peer_review_artifacts",
+                  "read_peer_review_artifact", "cancel_peer_review", "REVIEW.md",
+                  "done-without-findings", 'provider: "codex"', "literature_cutoff"):
+        assert named in skill
+
+
 def test_local_plugin_manifests_and_pi_package_are_well_formed():
     root = Path(__file__).resolve().parents[1]
     claude_marketplace = json.loads(
