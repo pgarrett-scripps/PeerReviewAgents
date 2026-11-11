@@ -7,13 +7,17 @@ INSTRUCTION = '''TARGETED INVESTIGATION: Before finalizing, identify one or two 
 Try to disprove a suspected problem as well as support it. A check may confirm the authors or narrow or remove your concern. Report tool_checks with the question, the returned tool_receipt call_index and tool, outcome, and what the returned evidence changes or leaves unresolved. Never invent receipts. save_note alone is not an evidence check. If tools fail or are unavailable, preserve useful review content and state that limitation. An empty tool_checks array is permitted only with an explicit explanation in investigation_summary. It is recorded as an incomplete investigation, not silently accepted as a tools-enabled review.'''
 
 
-def with_tool_checks(schema):
+def with_tool_checks(schema, cap=4):
+    """Add the reported tool checks. ``cap`` is the policy's allowance, None for no cap."""
     result = copy.deepcopy(schema)
-    result['properties']['tool_checks'] = {'type': 'array', 'maxItems': 4,
+    checks = {'type': 'array',
         'items': obj({'question': STRING, 'call_index': {'type': 'integer', 'minimum': 1},
                       'tool': STRING, 'outcome': {'type': 'string',
                       'enum': ['supported', 'narrowed', 'rejected', 'unresolved']},
                       'interpretation': STRING})}
+    if cap is not None:
+        checks = {'type': 'array', 'maxItems': cap, 'items': checks['items']}
+    result['properties']['tool_checks'] = checks
     result['required'].append('tool_checks')
     return result
 

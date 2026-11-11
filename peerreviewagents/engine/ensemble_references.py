@@ -87,9 +87,9 @@ def _repair_quotes(value):
     return revised, receipts
 
 
-def recover(value, ledger, paper, source_cards=None):
+def recover(value, ledger, paper, source_cards=None, policy=None):
     """Recover only uniquely provable final-quote formatting differences."""
-    initial = recover_presentation(value, ledger, paper, source_cards)
+    initial = recover_presentation(value, ledger, paper, source_cards, policy)
     if _error(initial) != DESTINATION_ERROR:
         return initial
     if initial.get('original', {}).get('error') == DESTINATION_ERROR:
@@ -103,7 +103,7 @@ def recover(value, ledger, paper, source_cards=None):
     repaired, reference_receipts = _repair_quotes(working)
     if not reference_receipts:
         return initial
-    checked = recover_presentation(repaired, ledger, paper, source_cards)
+    checked = recover_presentation(repaired, ledger, paper, source_cards, policy)
     all_receipts = prior_receipts + reference_receipts + checked.get('changed_fields', [])
     if checked.get('recovered') is not None:
         recovered = checked['recovered']

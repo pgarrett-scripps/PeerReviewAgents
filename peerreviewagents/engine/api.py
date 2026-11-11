@@ -5,6 +5,9 @@ from pathlib import Path
 from typing import Literal
 
 from .config import get_review_preset, resolved_review_config, review_presets
+from .review_policy import (APPROVED_EFFORTS, DEFAULT_POLICY, DEFAULT_POLICY_NAME,
+                            MAX_ATTEMPT_CEILING, get_review_policy, review_policies,
+                            single_session_refusal)
 
 API_VERSION = 'paper-workbench-core-v1'
 
@@ -12,6 +15,9 @@ API_VERSION = 'paper-workbench-core-v1'
 def capabilities():
     """Advertise supported execution, without starting providers or the UI."""
     from .models import DEFAULT_MODELS, PROVIDER_MODELS, SUBSCRIPTION_MODELS
+    policies = review_policies()
+    efforts_by_policy = {name: record['effort'] for name, record in policies.items()}
+    retries_by_policy = {name: record['max_attempts'] > 1 for name, record in policies.items()}
     return {'api_version': API_VERSION, 'artifact_version': 'paper-workbench-run-v1',
             'workflows': ['manuscript-only', 'independent', 'ensemble'], 'provider': 'codex',
             'providers': list(PROVIDER_MODELS),
@@ -19,15 +25,32 @@ def capabilities():
             'default_models': dict(DEFAULT_MODELS),
             'configuration_version': 'paper-workbench-config-v1',
             'presets': list(review_presets()),
+            'policies': list(review_policies()),
+            'default_policy': DEFAULT_POLICY_NAME,
+            'review_policies': policies,
             'evidence_modes': ['current', 'historical'],
             'evidence_policies': ['none', 'live', 'frozen'],
-            'models': list(SUBSCRIPTION_MODELS), 'reasoning_effort': 'medium',
+            'models': list(SUBSCRIPTION_MODELS), 'reasoning_effort': DEFAULT_POLICY.effort,
+            'reasoning_efforts': list(APPROVED_EFFORTS),
+            'reasoning_effort_by_policy': efforts_by_policy,
             'billing': 'verified_subscription_with_bounded_usage_policy',
             'tool_access': 'workflow-specific',
             'tool_access_by_workflow': {'manuscript-only': 'none',
                                         'independent': 'bounded_manuscript_tools',
                                         'ensemble': 'bounded_manuscript_tools'},
-            'automatic_retries': False,
+            'automatic_retries': retries_by_policy[DEFAULT_POLICY_NAME],
+            'automatic_retries_by_policy': retries_by_policy,
+            'retry_policy': {'default_attempts': DEFAULT_POLICY.max_attempts,
+                             'max_attempts_ceiling': MAX_ATTEMPT_CEILING,
+                             'attempts_by_policy': {name: record['max_attempts']
+                                                    for name, record in policies.items()},
+                             'retried': 'a launched call that timed out, crashed or lost its transport',
+                             'never_retried': 'any refusal or guard stop, including billing, safety, '
+                                              'the call ceiling and the token stop',
+                             'per_attempt_receipts': True},
+            'invalid_finding_policy': 'quarantined-with-reason-not-run-ending',
+            'review_guard_statuses': ['clean', 'partially-quarantined', 'all-findings-quarantined'],
+            'zero_surviving_findings_status': 'complete-without-findings',
             'saved_draft_synthesis': {'policy': 'ordinary', 'generation_calls': 1,
                                       'discovery_calls': 0, 'tool_allowance': 2},
             'limitations': ['Manuscript-only mode has no review tools or external access.',
@@ -71,6 +94,7 @@ class ReviewRequest:
     source_packet: Path | None = None
     source_packet_hashes: tuple[tuple[str, str], ...] = field(default_factory=tuple, init=False)
     synthesis_policy: Literal['debate', 'ordinary'] = 'debate'
+    policy: str | None = None
 
     def __post_init__(self):
         from datetime import date
@@ -86,6 +110,13 @@ class ReviewRequest:
             raise ValueError('Manuscript-only review requires exactly one reviewer')
         if self.preset is not None:
             get_review_preset(self.preset)
+        if self.policy is not None:
+            # The CLI refuses this combination. The request object is the other
+            # way in, so it refuses it too rather than spending three long
+            # high-effort calls on a request that asked for one session.
+            if get_review_policy(self.policy).single_session and self.workflow == 'ensemble':
+                raise ValueError(single_session_refusal(
+                    self.policy, option='policy', preset='preset', mode="workflow='independent'"))
         if self.evidence_mode not in ('current', 'historical'):
             raise ValueError('Evidence mode must be current or historical')
         if self.source_packet is not None:
@@ -247,6 +278,24 @@ def run_saved_draft_synthesis(request: SavedDraftSynthesisRequest):
     return result
 
 
+def manuscript_only_progress(package):
+    """The same status vocabulary the reviewer reports, for the one-call baseline.
+
+    ``run_manuscript_only`` returns the editor package rather than a progress
+    record. The guard status is in it, so the zero-finding outcome is named
+    here the way every other workflow names it.
+    """
+    from .reviewer import COMPLETE_WITHOUT_FINDINGS, GUARD_STATUS_POLICY
+    package = package or {}
+    guard = package.get('review_guard_status', 'clean')
+    progress = {'status': 'complete', 'review_guard_status': guard,
+                'findings_delivered': len(package.get('findings') or []),
+                'quarantined_findings_count': len(package.get('quarantined_findings') or [])}
+    if guard == 'all-findings-quarantined':
+        progress.update(status=COMPLETE_WITHOUT_FINDINGS, guard_status_policy=GUARD_STATUS_POLICY)
+    return progress
+
+
 def run_review(request: ReviewRequest):
     """Explicit inference entry point. Importing or constructing requests is offline."""
     from .reviewer import review
@@ -266,20 +315,29 @@ def run_review(request: ReviewRequest):
     if request.source_packet is not None:
         from .source_packet import verify_source_packet
         verify_source_packet(request.source_packet, packet_before)
+    # A run that completes with every finding quarantined is not the same
+    # outcome as a clean one. The engine says which it was; the artifact has to
+    # carry it, because an API caller never reads progress.json.
     if request.workflow == 'manuscript-only':
         from .baseline import run_manuscript_only
-        run_manuscript_only(request, paper, resolved_config)
+        package = run_manuscript_only(request, paper, resolved_config)
+        progress = manuscript_only_progress(package)
     else:
         try:
-            review(workspace, output, request.billing_confirmation, request.literature_cutoff,
-                   mode=request.workflow, model=request.model, reviewers=request.reviewers,
-                   token_budget=request.token_budget, scaffold_root=request.scaffold_root,
-                   shared_images=request.source_images, evidence_mode=request.evidence_mode,
-                   source_packet=request.source_packet,
-                   synthesis_policy=request.synthesis_policy)
+            progress = review(workspace, output, request.billing_confirmation, request.literature_cutoff,
+                              mode=request.workflow, model=request.model, reviewers=request.reviewers,
+                              token_budget=request.token_budget, scaffold_root=request.scaffold_root,
+                              shared_images=request.source_images, evidence_mode=request.evidence_mode,
+                              source_packet=request.source_packet,
+                              synthesis_policy=request.synthesis_policy,
+                              policy=resolved_config.get('policy'))
         finally:
             if request.source_packet is not None:
                 packet_after = verify_source_packet(request.source_packet, packet_before)
+    if not progress:
+        # The engine writes the same record to the run directory. Read it back
+        # rather than report an unknown status.
+        progress = read(output/'progress.json') if (output/'progress.json').exists() else {}
     engine = source_manifest(Path(__file__).parent)
     core_engine = source_manifest(Path(__file__).parent)
     artifact = {'api_version': API_VERSION, 'artifact_version': 'paper-workbench-run-v1',
@@ -290,6 +348,7 @@ def run_review(request: ReviewRequest):
                 'source_packet_manifest_before': packet_before or None,
                 'source_packet_manifest_after': packet_after or None,
                 'engine_source': engine, 'core_source': core_engine,
+                'status': progress.get('status'), 'run_progress': progress,
                 'editor_package': read(output/'editor-package.json'),
                 'usage': observed_usage(output), 'output_directory': str(output),
                 'limitation': 'A pipeline artifact is not a benchmark score. The benchmark owns blinding, grading and hidden answer keys.'}
@@ -300,7 +359,7 @@ def run_review(request: ReviewRequest):
 def review_request_from_preset(name, *, workspace, output, billing_confirmation,
                                literature_cutoff, model=None, token_budget=None,
                                scaffold_root=None, source_images=(), evidence_mode='current',
-                               source_packet=None, synthesis_policy=None):
+                               source_packet=None, synthesis_policy=None, policy=None):
     """Construct a request from one named preset, with explicit runtime overrides."""
     preset = get_review_preset(name)
     preset_synthesis = 'ordinary' if preset.synthesis_policy == 'ordinary-synthesis-v1' else 'debate'
@@ -313,6 +372,7 @@ def review_request_from_preset(name, *, workspace, output, billing_confirmation,
         scaffold_root=scaffold_root, source_images=tuple(source_images), preset=name,
         evidence_mode=evidence_mode, source_packet=source_packet,
         synthesis_policy=preset_synthesis if synthesis_policy is None else synthesis_policy,
+        policy=preset.policy if policy is None else policy,
     )
 
 

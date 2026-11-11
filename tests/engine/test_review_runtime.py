@@ -358,7 +358,10 @@ class ReviewRuntime(unittest.TestCase):
         variants = [
             {**self.protocol, "max_calls_per_condition": 0},
             {**self.protocol, "observed_token_stop": True},
-            {**self.protocol, "effort": "high"},
+            {**self.protocol, "effort": "exhaustive"},
+            {**self.protocol, "max_attempts": 0},
+            {**self.protocol, "max_attempts": 3},
+            {**self.protocol, "max_attempts": "two"},
         ]
         with tempfile.TemporaryDirectory() as directory:
             with patch.object(runtime.subprocess, "run") as invoke:

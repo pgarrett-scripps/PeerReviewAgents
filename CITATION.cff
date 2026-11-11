@@ -45,7 +45,7 @@ authors:
 repository-code: "https://github.com/pgarrett-scripps/PeerReviewAgents"
 url: "https://github.com/pgarrett-scripps/PeerReviewAgents"
 license: MIT
-version: "0.7.0"
+version: "0.8.0"
 date-released: "2026-09-12"
 keywords:
   - peer review

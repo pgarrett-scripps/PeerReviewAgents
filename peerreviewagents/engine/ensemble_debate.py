@@ -3,11 +3,16 @@ import copy
 import json
 import re
 
-from .debate_revision import DEBATE_REVISION, revision_prompt, validate_revision
+from .debate_revision import debate_revision_schema, revision_prompt, validate_revision
 from .external_evidence import validate_references
-from .review_schema import FINDING, STRING, obj
+from .review_schema import FINDING, STRING, obj, number_word
 
 
+# The reserved identifier space for additions, not a review limit: the runtime
+# assigns new-1 .. new-5, the schema pattern admits exactly those names and
+# _new_issues rejects more. A review policy's finding cap is separate and does
+# not widen this space.
+NEW_CANDIDATE_LIMIT = 5
 NEW_ISSUE = r"^new-[1-5]$"
 NEW_FINDING = copy.deepcopy(FINDING)
 NEW_FINDING['properties']['source_evidence'] = {
@@ -17,35 +22,49 @@ NEW_FINDING['properties']['source_evidence'] = {
 NEW_FINDING['required'].append('source_evidence')
 SECONDARY_FINDING = copy.deepcopy(NEW_FINDING)
 SECONDARY_FINDING_OR_NULL = {'anyOf': [copy.deepcopy(SECONDARY_FINDING), {'type': 'null'}]}
-NEW_COMPONENT = copy.deepcopy(DEBATE_REVISION['properties']['decisions']['items']['properties']['components']['items'])
-NEW_COMPONENT['properties'].pop('component_id')
-NEW_COMPONENT['required'].remove('component_id')
-NEW_DECISION = copy.deepcopy(DEBATE_REVISION['properties']['decisions']['items'])
-NEW_DECISION['properties'].pop('issue_id')
-NEW_DECISION['required'].remove('issue_id')
-NEW_DECISION['properties'].pop('components')
-NEW_DECISION['required'].remove('components')
-NEW_DECISION['properties']['secondary_finding'] = copy.deepcopy(SECONDARY_FINDING_OR_NULL)
-NEW_DECISION['required'].append('secondary_finding')
-NEW_DECISION['properties']['component'] = NEW_COMPONENT
-NEW_DECISION['required'].append('component')
-NEW_CANDIDATE = obj({
-    'issue_id': {'type': 'string', 'pattern': NEW_ISSUE},
-    'finding': NEW_FINDING,
-    'decision': NEW_DECISION,
-})
-ENSEMBLE_DEBATE = copy.deepcopy(DEBATE_REVISION)
-ENSEMBLE_DEBATE['properties']['decisions']['items']['properties']['secondary_finding'] = copy.deepcopy(SECONDARY_FINDING_OR_NULL)
-ENSEMBLE_DEBATE['properties']['decisions']['items']['required'].append('secondary_finding')
-ENSEMBLE_DEBATE['properties']['new_candidates'] = {
-    'type': 'array', 'items': NEW_CANDIDATE, 'maxItems': 5,
-}
-ENSEMBLE_DEBATE['required'].append('new_candidates')
+def _new_candidate(policy=None):
+    """One embedded addition, under the same finding cap as the outer debate."""
+    decision = copy.deepcopy(debate_revision_schema(policy)['properties']['decisions']['items'])
+    component = copy.deepcopy(decision['properties']['components']['items'])
+    component['properties'].pop('component_id')
+    component['required'].remove('component_id')
+    for key in ('issue_id', 'components'):
+        decision['properties'].pop(key)
+        decision['required'].remove(key)
+    decision['properties']['secondary_finding'] = copy.deepcopy(SECONDARY_FINDING_OR_NULL)
+    decision['required'].append('secondary_finding')
+    decision['properties']['component'] = component
+    decision['required'].append('component')
+    return obj({
+        'issue_id': {'type': 'string', 'pattern': NEW_ISSUE},
+        'finding': NEW_FINDING,
+        'decision': decision,
+    })
 
 
-def ensemble_schema():
-    """Return the debate response schema with up to five new candidates."""
-    return copy.deepcopy(ENSEMBLE_DEBATE)
+def _ensemble_debate(policy=None):
+    schema = debate_revision_schema(policy)
+    decision = schema['properties']['decisions']['items']
+    decision['properties']['secondary_finding'] = copy.deepcopy(SECONDARY_FINDING_OR_NULL)
+    decision['required'].append('secondary_finding')
+    schema['properties']['new_candidates'] = {
+        'type': 'array', 'items': _new_candidate(policy), 'maxItems': NEW_CANDIDATE_LIMIT,
+    }
+    schema['required'].append('new_candidates')
+    return schema
+
+
+NEW_CANDIDATE = _new_candidate()
+NEW_COMPONENT = NEW_CANDIDATE['properties']['decision']['properties']['component']
+NEW_DECISION = NEW_CANDIDATE['properties']['decision']
+ENSEMBLE_DEBATE = _ensemble_debate()
+
+
+def ensemble_schema(policy=None):
+    """The debate response schema under one policy, with reserved new candidates."""
+    if policy is None:
+        return copy.deepcopy(ENSEMBLE_DEBATE)
+    return _ensemble_debate(policy)
 
 
 def _identifier_choice(values):
@@ -113,7 +132,7 @@ def normalize_new_decisions(value):
     return result
 
 
-def ensemble_prompt(paper, manuscript, ledger, source_cards=None):
+def ensemble_prompt(paper, manuscript, ledger, source_cards=None, policy=None):
     """Add a narrowly scoped new-finding procedure to the v3 debate prompt."""
     known = [issue['issue_id'] for issue in ledger['issues']]
     procedure = '''\nENSEMBLE NEW-FINDING PROCEDURE:
@@ -122,19 +141,27 @@ Preserve every known issue in the outer decisions array. You may add at most fiv
 Each new candidate must embed its own decision object and one component object. Do not place a new-N decision in the outer decisions array. Do not provide issue_id or component_id inside embedded objects because the runtime assigns new-N and new-N-part-1. Its scientific status may be supported_concern, supported_clarification, or unresolved. A supported new candidate needs decision evidence from the manuscript or an eligible external source. External source cards are optional. If supplied, they must be quoted exactly. If a supported or unresolved new candidate is not selected among final findings, retain it as supporting with its component deferred. Do not invent source records.\n'''
     procedure += '''For every decision, provide secondary_finding. Set it to null unless the issue is a supported or unresolved supporting secondary concern with no preserved component and at least one deferred component. For each such retained concern, provide a complete, author-facing finding with an exact unique manuscript anchor, valid manuscript evidence blocks, and any eligible external evidence used. Its wording must reflect the adjudicated scope, including uncertainty where applicable. Do not include a replacement in a secondary finding. An unresolved discarded hypothesis with no original manuscript finding may instead use omitted presentation with deferred components and a null secondary_finding. That is audit-only, not an author-facing comment. Do not copy an original broad allegation into secondary_finding merely because it was retained in the audit trail. The original candidate remains audit evidence only.\n'''
     procedure+='Before finalizing, briefly check the central claims against the combined review for a consequential gap. Consider design-appropriate issues such as the unit of inference, outcome selection and error control, measurement, and whether conclusions exceed the evidence. These are prompts for investigation, not mandatory criticisms. Add a new candidate only when the manuscript supports a specific concern or actionable uncertainty. Do not manufacture an omission to fill a category.\n'
-    return revision_prompt(paper, manuscript, ledger, source_cards) + procedure
+    return revision_prompt(paper, manuscript, ledger, source_cards, policy) + procedure
 
 
-def ordinary_synthesis_prompt(paper, manuscript, ledger, source_cards=None):
+def ordinary_synthesis_prompt(paper, manuscript, ledger, source_cards=None, policy=None):
     """Reconcile saved reviews directly, without an adversarial reasoning frame."""
+    from .review_policy import get_review_policy
+    limits = get_review_policy(policy)
+    tool_calls = number_word(limits.debate_tool_calls)
+    additions = number_word(NEW_CANDIDATE_LIMIT)
+    selection = ('Select every distinct consequential finding the evidence supports and keep final comments '
+                 f'within {limits.word_budget} words.' if limits.finding_cap is None else
+                 f'Select at most {number_word(limits.finding_cap)} distinct consequential findings and keep '
+                 f'final comments within {limits.word_budget} words.')
     known = [issue['issue_id'] for issue in ledger['issues']]
     cards = '' if source_cards is None else '\nSOURCE CARDS:\n' + json.dumps(source_cards, ensure_ascii=False)
-    return '''Synthesize the supplied independent manuscript reviews into one concise editor report.
-Assess each candidate against the manuscript and supplied evidence. Merge duplicates, narrow overbroad wording, retain distinct supported concerns, and omit claims that the available source material does not support. Do not treat reviewer agreement as proof. Use at most two optional source tool calls when missing context could change a consequential decision.
-Preserve every known issue in the decisions array. The known issue IDs are: ''' + json.dumps(known, ensure_ascii=False) + '''.
+    return f'''Synthesize the supplied independent manuscript reviews into one concise editor report.
+Assess each candidate against the manuscript and supplied evidence. Merge duplicates, narrow overbroad wording, retain distinct supported concerns, and omit claims that the available source material does not support. Do not treat reviewer agreement as proof. Use at most {tool_calls} optional source tool calls when missing context could change a consequential decision.
+Preserve every known issue in the decisions array. The known issue IDs are: ''' + json.dumps(known, ensure_ascii=False) + f'''.
 For every issue, record its scientific status, editorial presentation, evidence, explanation, and the treatment of every supplied component. A preserved component must map to a selected final finding. A resolved component requires source evidence. A deferred component remains available as a secondary concern. Editorial omission does not make a concern scientifically contradicted.
-Select at most five distinct consequential findings and keep final comments within 900 words. Every finding needs an exact unique manuscript anchor and valid evidence blocks. Phrase unresolved matters as specific questions. Do not invent methods, results, numerical values, citations, or author intent.
-You may add at most five genuinely new manuscript-supported candidates using reserved IDs new-1 through new-5. Do not use a new candidate to restate a known issue. Each new candidate needs an exact unique manuscript anchor, evidence blocks, one embedded decision, and one whole-comment component. Keep supported secondary concerns with adjudicated author-facing wording in secondary_finding. Set secondary_finding to null otherwise.
+{selection} Every finding needs an exact unique manuscript anchor and valid evidence blocks. Phrase unresolved matters as specific questions. Do not invent methods, results, numerical values, citations, or author intent.
+You may add at most {additions} genuinely new manuscript-supported candidates using reserved IDs new-1 through new-5. Do not use a new candidate to restate a known issue. Each new candidate needs an exact unique manuscript anchor, evidence blocks, one embedded decision, and one whole-comment component. Keep supported secondary concerns with adjudicated author-facing wording in secondary_finding. Set secondary_finding to null otherwise.
 Return one decision for every known issue and every new candidate. Preserve concrete requested actions when merging. Keep decision explanations brief. The component ledger is an audit record.
 TITLE:
 ''' + paper['title'] + '\nCANDIDATE LEDGER:\n' + json.dumps(ledger, ensure_ascii=False) + cards + '\nFULL MANUSCRIPT:\n' + manuscript
@@ -142,8 +169,9 @@ TITLE:
 
 def _new_issues(value, ledger, paper, source_cards):
     candidates = value.get('new_candidates', [])
-    if not isinstance(candidates, list) or len(candidates) > 5:
-        raise ValueError('New candidates must be an array of at most five records')
+    if not isinstance(candidates, list) or len(candidates) > NEW_CANDIDATE_LIMIT:
+        raise ValueError('New candidates must be an array of at most '
+                         f'{number_word(NEW_CANDIDATE_LIMIT)} records')
     existing = {issue.get('issue_id') for issue in ledger.get('issues', [])}
     identifiers = [candidate.get('issue_id') if isinstance(candidate, dict) else None
                    for candidate in candidates]
@@ -360,7 +388,7 @@ def _validate_new_decisions(value, new_issues):
 
 
 def augment_ledger(value, ledger, paper, source_cards=None, *, validate=True,
-                   require_adjudicated_secondary=False):
+                   require_adjudicated_secondary=False, policy=None):
     """Copy and extend a ledger, with optional deferred v3 validation."""
     if not isinstance(value, dict) or not isinstance(ledger, dict):
         raise ValueError('Ensemble debate requires structured response and ledger records')
@@ -375,7 +403,7 @@ def augment_ledger(value, ledger, paper, source_cards=None, *, validate=True,
     if validate:
         revision_value = copy.deepcopy(value)
         revision_value.pop('new_candidates', None)
-        validate_revision(revision_value, augmented, paper, source_cards)
+        validate_revision(revision_value, augmented, paper, source_cards, policy)
     if ledger != original:
         raise RuntimeError('Ensemble debate must not modify the original ledger')
     return augmented
