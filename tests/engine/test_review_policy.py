@@ -405,13 +405,15 @@ class AgenticPolicy(unittest.TestCase):
         advertised = capabilities()
         self.assertEqual(advertised['reasoning_effort'], STANDARD.effort)
         self.assertEqual(advertised['reasoning_effort_by_policy'],
-                         {'standard-v1': 'medium', 'workspace-agentic-v1': 'high'})
+                         {'standard-v1': 'medium', 'workspace-agentic-v1': 'high',
+                          'agentic-v1': 'high'})
         self.assertFalse(advertised['automatic_retries'])
         self.assertEqual(advertised['automatic_retries_by_policy'],
-                         {'standard-v1': False, 'workspace-agentic-v1': True})
+                         {'standard-v1': False, 'workspace-agentic-v1': True,
+                          'agentic-v1': True})
         self.assertEqual(advertised['retry_policy']['default_attempts'], 1)
         self.assertEqual(advertised['retry_policy']['attempts_by_policy'],
-                         {'standard-v1': 1, 'workspace-agentic-v1': 2})
+                         {'standard-v1': 1, 'workspace-agentic-v1': 2, 'agentic-v1': 2})
         self.assertIn('timed out', advertised['retry_policy']['retried'])
         self.assertIn('refusal', advertised['retry_policy']['never_retried'])
         self.assertTrue(advertised['retry_policy']['per_attempt_receipts'])

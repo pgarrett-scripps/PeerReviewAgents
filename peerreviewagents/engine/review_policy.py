@@ -11,9 +11,13 @@ numbers, so existing presets produce byte-identical prompts, schemas and
 protocol records and existing run directories stay resumable.
 ``workspace-agentic-v1`` is the forward direction: one long high-effort
 session, a thirty call tool allowance, no finding cap, a two hour limit, and
-one bounded retry if the call fails or times out. Evidence handling does not
-change: every finding is still quoted, anchored and validated, and a finding
-that fails validation is quarantined with a reason instead of ending the run.
+one bounded retry if the call fails or times out. ``agentic-v1`` carries the
+same limits on a workflow of several stages, so the default ensemble plus
+debate run gets the agentic allowance in every call. It is what
+``peerreview review`` uses when no policy is named; ``standard-v1`` remains the
+library default and the study budget. Evidence handling does not change: every
+finding is still quoted, anchored and validated, and a finding that fails
+validation is quarantined with a reason instead of ending the run.
 """
 from dataclasses import asdict, dataclass
 from types import MappingProxyType
@@ -22,6 +26,10 @@ POLICY_VERSION = 'review-policy-v2'
 
 APPROVED_EFFORTS = ('low', 'medium', 'high')
 MAX_ATTEMPT_CEILING = 2
+
+AGENTIC_STAGE = '''AGENTIC REVIEW STAGE: This stage is one long investigative pass, not a single quick read. Work through the manuscript the way a careful reviewer with time would. Read it once for the argument, then list the claims the conclusions actually rest on, then check them one at a time against the methods, the tables, the figure pixels and the prior work. Use as many of your permitted tool calls as the manuscript genuinely requires, and prefer a tool call over an assumption whenever a check is available. Try to break your own suspicions before you report them.
+Report every consequential finding you have established, at the length the evidence needs. There is no finding quota in either direction: do not pad the review to look thorough, and do not drop a supported, consequential concern to look concise. Keep quoting, anchoring and validating every finding exactly as instructed. Record what you checked and discarded so the investigation is auditable.
+Other reviewers and a later synthesis stage see your output. Report what you established, not what you expect them to miss.'''
 
 AGENTIC_SESSION = '''AGENTIC SESSION: This is one long investigative session, not a single quick pass. Work through the manuscript the way a careful reviewer with time would. Read it once for the argument, then list the claims the conclusions actually rest on, then check them one at a time against the methods, the tables, the figure pixels and the prior work. Use as many of your permitted tool calls as the manuscript genuinely requires, and prefer a tool call over an assumption whenever a check is available. Try to break your own suspicions before you report them.
 Report every consequential finding you have established, at the length the evidence needs. There is no finding quota in either direction: do not pad the review to look thorough, and do not drop a supported, consequential concern to look concise. Keep quoting, anchoring and validating every finding exactly as instructed. Record what you checked and discarded so the investigation is auditable.'''
@@ -106,8 +114,7 @@ class ReviewPolicy:
 
 STANDARD = ReviewPolicy(name='standard-v1')
 
-AGENTIC = ReviewPolicy(
-    name='workspace-agentic-v1',
+AGENTIC_LIMITS = dict(
     effort='high',
     observed_token_stop=1500000,
     call_timeout_seconds=7200,
@@ -121,14 +128,36 @@ AGENTIC = ReviewPolicy(
     debate_external_requests=8,
     tool_checks=30,
     max_attempts=2,
+)
+
+AGENTIC = ReviewPolicy(
+    name='workspace-agentic-v1',
     session='single-long-agentic-session',
     session_instruction=AGENTIC_SESSION,
+    **AGENTIC_LIMITS,
+)
+
+# The same limits on a workflow that runs more than one stage. Every reviewer
+# call and the synthesis call get the agentic allowance, so an ensemble plus
+# debate run is three long high-effort stages rather than one.
+AGENTIC_PASSES = ReviewPolicy(
+    name='agentic-v1',
+    session='agentic-passes',
+    session_instruction=AGENTIC_STAGE,
+    **AGENTIC_LIMITS,
 )
 
 DEFAULT_POLICY_NAME = STANDARD.name
 DEFAULT_POLICY = STANDARD
 
-_POLICIES = MappingProxyType({policy.name: policy for policy in (STANDARD, AGENTIC)})
+# What ``peerreview review`` runs when no policy is named. The library default
+# above stays ``standard-v1`` so that every existing caller, preset and run
+# directory keeps its byte-identical prompts and stays resumable.
+COMMAND_LINE_POLICY = AGENTIC_PASSES
+COMMAND_LINE_POLICY_NAME = AGENTIC_PASSES.name
+
+_POLICIES = MappingProxyType({policy.name: policy
+                              for policy in (STANDARD, AGENTIC, AGENTIC_PASSES)})
 
 
 def review_policies():

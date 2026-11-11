@@ -1626,7 +1626,7 @@ wheels = [
 
 [[package]]
 name = "peerreviewagents"
-version = "0.5.1"
+version = "0.8.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
@@ -1634,6 +1634,7 @@ dependencies = [
     { name = "langchain-core" },
     { name = "langchain-openai" },
     { name = "langgraph" },
+    { name = "pillow" },
     { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "python-multipart" },
@@ -1679,6 +1680,7 @@ requires-dist = [
     { name = "matplotlib", marker = "extra == 'eval'", specifier = ">=3.7" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.13,<2" },
     { name = "openreview-py", marker = "extra == 'eval'", specifier = ">=1.40" },
+    { name = "pillow", specifier = ">=10" },
     { name = "pydantic", specifier = ">=2" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "python-dotenv", specifier = ">=1" },
@@ -1687,7 +1689,7 @@ requires-dist = [
     { name = "requests", marker = "extra == 'research'", specifier = ">=2" },
     { name = "rich", specifier = ">=13" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
-    { name = "rustypaper", specifier = ">=0.2" },
+    { name = "rustypaper", specifier = "==0.2.2" },
     { name = "textual", specifier = ">=0.60" },
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.27" },
@@ -2417,15 +2419,15 @@ wheels = [
 
 [[package]]
 name = "rustypaper"
-version = "0.2.0"
+version = "0.2.2"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/42/af/f29b3c4de845caed9eb2243baaad8720c564ce76dd0b15c65542b4df3120/rustypaper-0.2.0.tar.gz", hash = "sha256:b1be8dc81e673f0e2889717760e813cfc13c5f1fc198955f4bd233410c464db9", size = 157781, upload-time = "2026-08-13T18:37:14.608Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a6/97/3166b44ee81340a0552e7a1f40203d7f17e195e6f73b20fdef4c14eb07dc/rustypaper-0.2.2.tar.gz", hash = "sha256:06a5b704b50b049942c688fc44f9203ecd55f92fb7260d78c57c68c786045c48", size = 162153, upload-time = "2026-10-11T20:45:55.132Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0d/a6/6a71430c6f00a8dd68dcd1f078bdf55fcda770e557187262844e635f7bfc/rustypaper-0.2.0-cp39-abi3-macosx_10_12_x86_64.whl", hash = "sha256:61587b794e919e7bd56ea6db0d50fb451865fe3a09daba9177758391f6c1497d", size = 1158972, upload-time = "2026-08-13T18:37:06.213Z" },
-    { url = "https://files.pythonhosted.org/packages/57/ab/55c501bfb93eb0f27de03cdac235f349e526b990d9bccdb0f58dc04f0700/rustypaper-0.2.0-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:77d1ba53ffd80847cf462e2d881e99eb1847e0495747fa2e1e9da8bde7e2f7cd", size = 1090886, upload-time = "2026-08-13T18:37:08.218Z" },
-    { url = "https://files.pythonhosted.org/packages/fa/87/2c986cff7170c253ac96fa5ae0d18f81843ef40cefa94c99a354d83da3cd/rustypaper-0.2.0-cp39-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:ee57ca167f61d7aa7e816c7d837b935fd75e7d6890836dfffd43c7a88b8e15fa", size = 1175883, upload-time = "2026-08-13T18:37:09.963Z" },
-    { url = "https://files.pythonhosted.org/packages/d4/f4/12555c00323c073621431aa89b7d66da3011ff5643c3d2f2a9e9919c0314/rustypaper-0.2.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:f6285619177744bede73f7848e212ec48da28bfd5d009f771c76533367780816", size = 1232783, upload-time = "2026-08-13T18:37:11.61Z" },
-    { url = "https://files.pythonhosted.org/packages/df/86/75ddc81a29791188f6c2bd418361055226ed43a4706960fcbc334eed7ff7/rustypaper-0.2.0-cp39-abi3-win_amd64.whl", hash = "sha256:3f1c68c3bd6ad0b4bd05a420d1f6d31eb87ebb0636b0590177a424edadaa68a5", size = 1082665, upload-time = "2026-08-13T18:37:13.015Z" },
+    { url = "https://files.pythonhosted.org/packages/38/50/5579d5fc58c37c125d14091ae3367eb3a4890d51427bae06f541e81e752a/rustypaper-0.2.2-cp39-abi3-macosx_10_12_x86_64.whl", hash = "sha256:9e0c4eee58c7b783643593850a6fbd4928df28c9ca57f5b267d112be899ed221", size = 1427515, upload-time = "2026-10-11T20:45:47.604Z" },
+    { url = "https://files.pythonhosted.org/packages/64/e2/a742bd6575c524a98d4fbfea4295bf518512b272dcca8bebf7cdd186baa9/rustypaper-0.2.2-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:76f0790a6938322f0eeb2916ea0924e389b5c8ce430bbaac57581809a7cca43b", size = 1348859, upload-time = "2026-10-11T20:45:49.266Z" },
+    { url = "https://files.pythonhosted.org/packages/b0/36/86e4e7d111440abc0c7570b19d426d6d7b3a9fce8af286851b19cf449b33/rustypaper-0.2.2-cp39-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:287dcf0c8aa008438610ca0b3b58678297c09e1d9d94ded0cbb48563dc02c79a", size = 1455283, upload-time = "2026-10-11T20:45:50.872Z" },
+    { url = "https://files.pythonhosted.org/packages/0f/24/2a310b48b431c86e0d86f75e0257d1e40de82ecec57e95b358063146dbf3/rustypaper-0.2.2-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:36ebd16808c77fa325db80660ad92b28de61bd3c4f3f67593e32ac57c94979b9", size = 1525755, upload-time = "2026-10-11T20:45:52.334Z" },
+    { url = "https://files.pythonhosted.org/packages/66/c9/2f4a36c7d1c6999cf8444a1f6068a52e74c84ab1ecbc260f4697cab28545/rustypaper-0.2.2-cp39-abi3-win_amd64.whl", hash = "sha256:b4f0763113af74cbf50e09bc52d91817b465248c2f4e945830c72811d437d16d", size = 1370041, upload-time = "2026-10-11T20:45:53.786Z" },
 ]
 
 [[package]]

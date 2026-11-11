@@ -8,8 +8,8 @@ from pathlib import Path
 
 from .config import default_literature_cutoff, get_review_preset, review_presets
 from .models import DEFAULT_MODEL, DEFAULT_MODELS, DEFAULT_PROVIDER, SUBSCRIPTION_MODELS, provider_for
-from .review_policy import (DEFAULT_POLICY_NAME, get_review_policy, review_policies,
-                            single_session_refusal)
+from .review_policy import (COMMAND_LINE_POLICY_NAME, DEFAULT_POLICY_NAME, get_review_policy,
+                            review_policies, single_session_refusal)
 from .storage import read
 
 MODEL_HELP=('Exact model ID. Without it, the default for --provider is used: '+
@@ -30,8 +30,11 @@ def add_model_arguments(parser):
 
 def add_policy_arguments(parser):
     parser.add_argument('--policy',choices=tuple(review_policies()),
-        help=f'Named review policy (default {DEFAULT_POLICY_NAME}). workspace-agentic-v1 runs one long '
-             'high-effort session with a thirty call tool allowance, no finding cap and one bounded retry')
+        help=f'Named review policy (default {COMMAND_LINE_POLICY_NAME}: high effort, a thirty call tool '
+             'allowance, no finding cap and one bounded retry in every stage). '
+             f'{DEFAULT_POLICY_NAME} is the bounded study budget of at most five findings in about 900 '
+             'words at medium effort. workspace-agentic-v1 is the same agentic allowance for one single '
+             'long session, so it needs --mode independent')
     parser.add_argument('--preset',choices=tuple(review_presets()),
         help='Named review preset. It pins --mode, --reviewers, --token-budget and --policy, so pass '
              'it alone. The model comes from --provider, which defaults to '+DEFAULT_PROVIDER)
@@ -57,6 +60,19 @@ def apply_preset(parser,args):
     # preset alone runs on the default transport instead of a hard-coded one.
     if preset.model is not None:
         args.model=preset.model
+
+
+def apply_default_policy(args):
+    """Name the command line default policy once a preset has had its say.
+
+    A review asked for from the command line runs the agentic allowance: high
+    effort, a thirty call tool budget, no finding cap and one bounded retry in
+    every stage. ``--policy standard-v1`` asks for the bounded study budget
+    instead, and a preset pins its own policy, which is why this runs after
+    ``apply_preset``.
+    """
+    if args.policy is None:
+        args.policy = COMMAND_LINE_POLICY_NAME
 
 
 def apply_policy(parser,args):
@@ -182,6 +198,7 @@ def dispatch(parser,args):
         if args.mode!='ensemble' and (args.reviewers!=2 or args.token_budget!=750000):
             parser.error('--reviewers and --token-budget apply only to ensemble mode')
         apply_preset(parser,args)
+        apply_default_policy(args)
         apply_policy(parser,args)
         resolve_model(parser,args)
         progress=review(args.workspace,args.output,args.literature_cutoff,args.mode,
