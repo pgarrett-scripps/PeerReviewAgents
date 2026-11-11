@@ -31,7 +31,6 @@ class ReviewPresetTests(unittest.TestCase):
     def request(self, **overrides):
         values = {
             'workspace': self.workspace, 'output': self.root / 'run',
-            'billing_confirmation': self.root / 'billing.json',
             'literature_cutoff': '2026-09-25', 'workflow': 'manuscript-only',
             'reviewers': 1,
         }
@@ -51,16 +50,13 @@ class ReviewPresetTests(unittest.TestCase):
         self.assertEqual(presets['workspace-agentic-v1']['policy'], 'workspace-agentic-v1')
         independent = review_request_from_preset(
             'workspace-independent-v1', workspace=self.workspace,
-            output=self.root / 'independent', billing_confirmation=self.root / 'billing.json',
-            literature_cutoff='2026-09-25')
+            output=self.root / 'independent', literature_cutoff='2026-09-25')
         ensemble = review_request_from_preset(
             'workspace-ensemble-v1', workspace=self.workspace,
-            output=self.root / 'ensemble', billing_confirmation=self.root / 'billing.json',
-            literature_cutoff='2026-09-25')
+            output=self.root / 'ensemble', literature_cutoff='2026-09-25')
         ordinary = review_request_from_preset(
             'workspace-ensemble-ordinary-v1', workspace=self.workspace,
-            output=self.root / 'ordinary', billing_confirmation=self.root / 'billing.json',
-            literature_cutoff='2026-09-25')
+            output=self.root / 'ordinary', literature_cutoff='2026-09-25')
         self.assertEqual((independent.workflow, independent.reviewers), ('independent', 1))
         self.assertEqual((ensemble.workflow, ensemble.reviewers), ('ensemble', 2))
         self.assertEqual((ordinary.workflow, ordinary.reviewers, ordinary.synthesis_policy),
@@ -68,14 +64,12 @@ class ReviewPresetTests(unittest.TestCase):
         self.assertEqual(resolved_review_config(ensemble)['evidence_policy'], 'live')
         self.assertEqual(ReviewRequest(
             workspace=self.workspace, output=self.root / 'default',
-            billing_confirmation=self.root / 'billing.json',
             literature_cutoff='2026-09-25').workflow, 'ensemble')
         self.assertIn('manuscript-only', capabilities()['workflows'])
         with self.assertRaises(ValueError):
             review_request_from_preset(
                 'workspace-ensemble-v1', workspace=self.workspace,
-                output=self.root / 'invalid', billing_confirmation=self.root / 'billing.json',
-                literature_cutoff='2026-09-25', token_budget=0)
+                output=self.root / 'invalid', literature_cutoff='2026-09-25', token_budget=0)
 
     def test_preset_topology_cannot_be_silently_changed(self):
         request = self.request(preset='workspace-ensemble-v1')

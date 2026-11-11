@@ -10,7 +10,7 @@ Use the Peer Review Agents MCP tools to start a review, monitor it, and read its
 ## Start a review
 
 1. Resolve the manuscript to an absolute local path.
-2. Choose the provider for the active client. Use `claude-code` in Claude Code, `codex` in Codex, `droid` in Factory Droid, and `pi` in Pi.
+2. Choose the provider for the active client. Use `claude-code` in Claude Code, `codex` in Codex, `droid` in Factory Droid, and `pi` in Pi. `claude-code` is the default when none is named.
 3. Ask for a target journal only when venue-specific review matters. Use `general` otherwise.
 4. Call `start_peer_review`. Keep `research_enabled` false unless the user explicitly wants live literature searches.
 5. Tell the user the returned job ID. Do not wait in one long tool call.

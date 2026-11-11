@@ -59,14 +59,14 @@ class SavedDraftSynthesisTests(unittest.TestCase):
             'usage': {'calls': 3, 'receipts': 3, 'observed_tokens': 90, 'unknown': False}})
         self.request = SavedDraftSynthesisRequest(workspace=self.workspace,
             original_output=self.original, output=self.root / 'ordinary',
-            billing_confirmation=self.root / 'billing.json', literature_cutoff='2026-10-06',
+            literature_cutoff='2026-10-06', model='gpt-5.6-terra',
             source_images=(self.image,), source_packet=self.packet, token_budget=123)
 
     def tearDown(self):
         self.temporary.cleanup()
 
     def synthesize(self, request=None):
-        def fake(workspace, output, billing, cutoff, records, **kwargs):
+        def fake(workspace, output, cutoff, records, **kwargs):
             Path(output).mkdir(parents=True)
             (Path(output) / 'call.started.json').write_text('{}')
             (Path(output) / 'usage.jsonl').write_text(json.dumps({

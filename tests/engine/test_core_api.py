@@ -27,7 +27,7 @@ class CoreAPI(unittest.TestCase):
 
     def request(self,**overrides):
         return ReviewRequest(**{'workspace':self.workspace,'output':self.root/'run',
-            'billing_confirmation':self.root/'billing.json','literature_cutoff':'2026-09-25',**overrides})
+            'literature_cutoff':'2026-09-25',**overrides})
 
     def test_import_does_not_start_or_import_provider_or_web_server(self):
         code='import sys, peerreviewagents.engine; assert "peerreviewagents.engine.server" not in sys.modules; assert "peerreviewagents.engine.model_runtime" not in sys.modules'

@@ -22,7 +22,7 @@ import threading
 import time
 
 from pathlib import Path
-from .models import PROVIDER_MODELS
+from .models import DEFAULT_PROVIDER, PROVIDER_MODELS
 
 class StudyBlocked(RuntimeError):
     """A run guard refused. ``transient`` marks the few failures a retry may replace."""
@@ -94,7 +94,7 @@ def clean_env():
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     return env
 
-def auth_status(provider="claude-code"):
+def auth_status(provider=DEFAULT_PROVIDER):
     if provider == "codex":
         result = subprocess.run([shutil.which("codex") or "codex", "login", "status"],
                                 capture_output=True, text=True, env=clean_env(), timeout=30)
@@ -111,66 +111,24 @@ def auth_status(provider="claude-code"):
         return {"loggedIn": False, "error": "Cannot read Claude authentication status"}
     return {key: status.get(key) for key in ("loggedIn", "authMethod", "apiProvider", "subscriptionType")}
 
-# One launch verifies billing; its later stages reuse that one verification
-# instead of re-reading a record that expires while the first stage is running.
-LAUNCH_VERIFICATION = "billing_verification.json"
-VERIFIED_LAUNCH_WINDOW = 86400
+def require_subscription(root):
+    """Confirm this process reaches a subscription login for the run's provider.
 
-def write_launch_verification(root, provider, verified_at=None):
-    """Record the launch-time billing verification that later stages may reuse."""
-    moment = time.time() if verified_at is None else verified_at
-    write_json(Path(root) / LAUNCH_VERIFICATION,
-               {"policy": "launch-verified-billing-v1", "provider": provider,
-                "verified_at": moment, "window_seconds": VERIFIED_LAUNCH_WINDOW})
-    return moment
-
-def launch_verified_at(root):
-    """When this run verified billing. Fail closed if that cannot be established."""
-    path = Path(root) / LAUNCH_VERIFICATION
-    if not path.exists():
-        raise StudyBlocked("A later stage cannot claim verified billing without the launch verification record.")
-    moment = read_json(path).get("verified_at")
-    if isinstance(moment, bool) or not isinstance(moment, (int, float)):
-        raise StudyBlocked("The launch billing verification record is unreadable. Re-verify billing.")
-    if not 0 <= time.time() - moment <= VERIFIED_LAUNCH_WINDOW:
-        raise StudyBlocked("The launch billing verification is too old. Re-verify billing and start a new run.")
-    return moment
-
-def require_subscription(root, billing_verified=False):
-    """Confirm this process may spend subscription usage in ``root``.
-
-    The login, authentication method, cloud provider and the presence of a
-    billing record are checked every time. ``billing_verified`` only moves the
-    freshness check back to the moment this run verified billing, so a long
-    first stage cannot age a later stage of the same run out of its record.
+    The login, the authentication method and, for Claude Code, the absence of a
+    cloud API provider are checked every time. How much usage a run may spend is
+    the operator's own setting, not this engine's: usage is recorded in
+    ``usage.jsonl`` for reporting and nothing here gates on it.
     """
     protocol_path = Path(root) / "protocol.json"
-    provider = read_json(protocol_path)["provider"] if protocol_path.exists() else "claude-code"
-    reference = launch_verified_at(root) if billing_verified else None
+    provider = read_json(protocol_path)["provider"] if protocol_path.exists() else DEFAULT_PROVIDER
     status = auth_status(provider)
     if not status.get("loggedIn"):
         raise StudyBlocked(f"This process cannot access a {provider} subscription login.")
     accepted = {"chatgpt"} if provider == "codex" else {"claude.ai", "oauth"}
     if status.get("authMethod") not in accepted:
         raise StudyBlocked("Subscription authentication was not verified. Refusing API-backed execution.")
-    billing_path = Path(root) / "billing_confirmation.json"
-    from .billing import verify_billing
-    if provider == "codex":
-        if not billing_path.exists():
-            raise StudyBlocked("Record current Codex subscription usage before execution.")
-        try:
-            verify_billing(read_json(billing_path), now=reference)
-        except ValueError as error:
-            raise StudyBlocked(str(error)) from error
-        return status
-    if status.get("apiProvider") not in (None, "firstParty"):
+    if provider != "codex" and status.get("apiProvider") not in (None, "firstParty"):
         raise StudyBlocked("Claude Code must use the Anthropic subscription login, not a cloud provider.")
-    if not billing_path.exists():
-        raise StudyBlocked("Confirm paid extra usage is disabled in Claude settings, then record it with confirm-billing.")
-    try:
-        verify_billing(read_json(billing_path), now=reference, provider="claude-code")
-    except ValueError as error:
-        raise StudyBlocked(str(error)) from error
     return status
 
 # The approved efforts and the one-retry ceiling are owned by review_policy, so

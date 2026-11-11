@@ -29,6 +29,7 @@ from peerreviewagents.engine.debate_revision import debate_revision_schema, revi
 from peerreviewagents.engine.ensemble_debate import NEW_CANDIDATE_LIMIT, ensemble_schema
 from peerreviewagents.engine.evidence_handles import build_registry
 from peerreviewagents.engine.investigation_policy import with_tool_checks
+from peerreviewagents.engine.models import DEFAULT_MODEL, DEFAULT_PROVIDER
 from peerreviewagents.engine.review_policy import (AGENTIC, AGENTIC_SESSION, DEFAULT_POLICY_NAME,
                                                    POLICY_VERSION, STANDARD, ReviewPolicy,
                                                    get_review_policy, review_policies)
@@ -96,21 +97,19 @@ def model_response(*handles, titles=None):
 
 
 def workspace(directory, paper=PAPER):
-    """Write one minimal verified manuscript workspace and a billing record."""
+    """Write one minimal verified manuscript workspace."""
     root = Path(directory) / 'paper'
     write(root / 'paper.json', paper)
     (root / 'manuscript.md').write_text(paper['blocks'][0]['text'])
     write(root / 'manifest.json', {'files': {
         name: digest((root / name).read_bytes()) for name in ('paper.json', 'manuscript.md')}})
-    billing = Path(directory) / 'billing.json'
-    write(billing, {'checked_at': time.time(), 'no_paid_credits_verified': True})
-    return root, Path(directory) / 'run', billing
+    return root, Path(directory) / 'run'
 
 
 def run_review(directory, mode='plain', domain_support=True, policy=None, paper=PAPER,
                response=None, **kwargs):
     """Run one review against a fake transport and capture every model call."""
-    root, out, billing = workspace(directory, paper)
+    root, out = workspace(directory, paper)
     handle = build_registry(paper).handles[0].handle_id
     value = response if response is not None else model_response(handle)
     captured = []
@@ -124,7 +123,7 @@ def run_review(directory, mode='plain', domain_support=True, policy=None, paper=
     with patch.object(reviewer, 'require_subscription'), \
          patch.object(reviewer, 'model_call', side_effect=fake), \
          patch.object(reviewer, 'inspected_images', return_value=[]):
-        reviewer.review(root, out, billing, '2025-01-01', mode=mode, domain_support=domain_support,
+        reviewer.review(root, out, '2025-01-01', mode=mode, domain_support=domain_support,
                         model='gpt-5.6-terra', policy=policy, **kwargs)
     return captured, out, root
 
@@ -146,7 +145,7 @@ def normalize(captured, paths):
 
 def panel_payload(directory, domain_support=True):
     """Both panel stages: the workspace inventory call and the debate call."""
-    root, out, billing = workspace(directory)
+    root, out = workspace(directory)
     handle = build_registry(PAPER).handles[0].handle_id
     captured = []
 
@@ -160,14 +159,14 @@ def panel_payload(directory, domain_support=True):
          patch.object(reviewer, 'model_call', side_effect=fake), \
          patch.object(reviewer, 'inspected_images', return_value=[]):
         with contextlib.suppress(Captured):
-            reviewer.review(root, out, billing, '2025-01-01', mode='panel',
+            reviewer.review(root, out, '2025-01-01', mode='panel',
                             domain_support=domain_support, model='gpt-5.6-terra')
     return captured, (out, root, directory)
 
 
 def debate_payload(directory, policy=None):
     """The ensemble synthesis call over two recorded independent reviews."""
-    root, out, billing = workspace(directory)
+    root, out = workspace(directory)
     captured = []
     base = {'title': 'Count', 'kind': 'question', 'severity': 'moderate', 'block_id': 'b1',
             'quote': 'We studied 5 plants.', 'evidence_blocks': ['b1'], 'replacement': '',
@@ -182,21 +181,21 @@ def debate_payload(directory, policy=None):
     with patch.object(ensemble, 'require_subscription'), \
          patch.object(ensemble, 'model_call', side_effect=fake):
         with contextlib.suppress(Captured):
-            ensemble.debate_reviews(root, out, billing, '2025-01-01', records,
+            ensemble.debate_reviews(root, out, '2025-01-01', records,
                                     model='gpt-5.6-terra', policy=policy)
     return captured, (out, root, directory)
 
 
 def manuscript_only_payload(directory):
     """The single tool-free manuscript-only call."""
-    root, out, billing = workspace(directory)
+    root, out = workspace(directory)
     captured = []
 
     def fake(protocol, execution, prompt, schema, **options):
         record_stage(captured, protocol, execution, prompt, schema, **options)
         raise Captured()
 
-    request = ReviewRequest(workspace=root, output=out, billing_confirmation=billing,
+    request = ReviewRequest(workspace=root, output=out,
                             literature_cutoff='2025-01-01', workflow='manuscript-only',
                             reviewers=1, model='gpt-5.6-terra')
     with patch.object(ensemble, 'require_subscription'), \
@@ -393,19 +392,17 @@ class AgenticPolicy(unittest.TestCase):
             root = Path(directory)
             request = review_request_from_preset(
                 'workspace-agentic-v1', workspace=root / 'paper', output=root / 'run',
-                billing_confirmation=root / 'billing.json', literature_cutoff='2026-09-25')
+                literature_cutoff='2026-09-25')
             self.assertEqual((request.workflow, request.reviewers, request.policy),
                              ('independent', 1, 'workspace-agentic-v1'))
             self.assertEqual(request.token_budget, 1500000)
             self.assertEqual(resolved_review_config(request)['policy'], 'workspace-agentic-v1')
             explicit = ReviewRequest(workspace=root / 'paper', output=root / 'run',
-                                     billing_confirmation=root / 'billing.json',
                                      literature_cutoff='2026-09-25', workflow='independent',
                                      reviewers=1, policy='workspace-agentic-v1')
             self.assertEqual(resolved_review_config(explicit)['policy'], 'workspace-agentic-v1')
             with self.assertRaisesRegex(ValueError, 'Unknown review policy'):
                 ReviewRequest(workspace=root / 'paper', output=root / 'run',
-                              billing_confirmation=root / 'billing.json',
                               literature_cutoff='2026-09-25', policy='nonexistent-v1')
 
     def test_the_api_advertises_the_retry_and_guard_policy_per_policy(self):
@@ -430,8 +427,7 @@ class AgenticPolicy(unittest.TestCase):
     def test_the_cli_exposes_the_preset_and_the_policy(self):
         from peerreviewagents.engine.__main__ import apply_preset, build_parser
         parser = build_parser()
-        base = ['review', 'paper', 'run', '--billing-confirmation', 'b.json',
-                '--literature-cutoff', '2026-09-25']
+        base = ['review', 'paper', 'run', '--literature-cutoff', '2026-09-25']
         args = parser.parse_args(base + ['--preset', 'workspace-agentic-v1'])
         apply_preset(parser, args)
         self.assertEqual((args.mode, args.reviewers, args.token_budget, args.policy),
@@ -448,17 +444,49 @@ class AgenticPolicy(unittest.TestCase):
             apply_preset(parser, parser.parse_args(
                 base + ['--preset', 'manuscript-only-single-v1']))
 
-    def test_the_cli_pins_the_preset_model_and_refuses_an_agentic_ensemble(self):
-        from peerreviewagents.engine.__main__ import apply_policy, apply_preset, build_parser
+    def test_the_preset_alone_runs_on_claude_code_with_todays_cutoff(self):
+        """``review --preset workspace-agentic-v1 workspace output`` and nothing
+        else: no provider, no model, no cutoff. It must reach the engine as one
+        agentic Claude Code session dated today."""
+        import datetime
+
+        from peerreviewagents.engine.__main__ import build_parser, dispatch
         parser = build_parser()
-        base = ['review', 'paper', 'run', '--billing-confirmation', 'b.json',
-                '--literature-cutoff', '2026-09-25']
+        args = parser.parse_args(['review', 'paper', 'run',
+                                  '--preset', 'workspace-agentic-v1'])
+        self.assertIsNone(args.literature_cutoff)
+        self.assertIsNone(args.model)
+        self.assertIsNone(args.provider)
+        with patch.object(reviewer, 'review', return_value={'status': 'complete'}) as call, \
+             contextlib.redirect_stdout(io.StringIO()):
+            dispatch(parser, args)
+        passed = call.call_args
+        self.assertEqual(passed.args[2], datetime.date.today().isoformat())
+        self.assertEqual(passed.args[3], 'independent')
+        self.assertEqual(passed.kwargs['model'], 'claude-sonnet-5-5')
+        self.assertEqual((DEFAULT_PROVIDER, DEFAULT_MODEL),
+                         ('claude-code', 'claude-sonnet-5-5'))
+        self.assertEqual(passed.kwargs['policy'], 'workspace-agentic-v1')
+        self.assertEqual(passed.kwargs['reviewers'], 1)
+        self.assertEqual(passed.kwargs['token_budget'], 1500000)
+
+    def test_the_cli_leaves_the_preset_model_open_and_refuses_an_agentic_ensemble(self):
+        from peerreviewagents.engine.__main__ import (apply_policy, apply_preset, build_parser,
+                                                      resolve_model)
+        parser = build_parser()
+        base = ['review', 'paper', 'run', '--literature-cutoff', '2026-09-25']
         args = parser.parse_args(base + ['--preset', 'workspace-agentic-v1'])
         apply_preset(parser, args)
-        self.assertEqual(args.model, get_review_preset('workspace-agentic-v1').model)
-        with self.assertRaises(SystemExit):
-            apply_preset(parser, parser.parse_args(
-                base + ['--preset', 'workspace-agentic-v1', '--model', 'gpt-5.6-sol']))
+        # The preset pins no model, so the default transport decides.
+        self.assertIsNone(get_review_preset('workspace-agentic-v1').model)
+        self.assertIsNone(args.model)
+        resolve_model(parser, args)
+        self.assertEqual(args.model, DEFAULT_MODEL)
+        named = parser.parse_args(base + ['--preset', 'workspace-agentic-v1',
+                                          '--model', 'gpt-5.6-sol'])
+        apply_preset(parser, named)
+        resolve_model(parser, named)
+        self.assertEqual(named.model, 'gpt-5.6-sol')
         # The policy names one long investigative session, so it is refused on
         # the default ensemble, which would have run three long calls instead.
         with self.assertRaises(SystemExit):
@@ -479,8 +507,8 @@ class AgenticPolicy(unittest.TestCase):
         long calls for a policy that names one session.
         """
         with tempfile.TemporaryDirectory() as directory:
-            root, out, billing = workspace(directory)
-            common = dict(workspace=root, output=out, billing_confirmation=billing,
+            root, out = workspace(directory)
+            common = dict(workspace=root, output=out,
                           literature_cutoff='2025-01-01', policy='workspace-agentic-v1')
             with self.assertRaisesRegex(ValueError, 'one long investigative session'):
                 ReviewRequest(**common, workflow='ensemble')
@@ -488,10 +516,10 @@ class AgenticPolicy(unittest.TestCase):
             self.assertEqual(independent.policy, 'workspace-agentic-v1')
             # The engine is the last gate, for a caller that reaches it directly.
             with self.assertRaisesRegex(ValueError, 'one long investigative session'):
-                ensemble.ensemble_review(root, out, billing, '2025-01-01',
+                ensemble.ensemble_review(root, out, '2025-01-01',
                                          policy='workspace-agentic-v1')
             with self.assertRaisesRegex(ValueError, 'one long investigative session'):
-                reviewer.review(root, out, billing, '2025-01-01', mode='ensemble',
+                reviewer.review(root, out, '2025-01-01', mode='ensemble',
                                 policy=AGENTIC)
             self.assertFalse(out.exists())
 
@@ -594,7 +622,7 @@ class QuarantinedFindings(unittest.TestCase):
     def test_the_command_line_exits_non_zero_when_nothing_survived(self):
         from peerreviewagents.engine.__main__ import build_parser, dispatch
         parser = build_parser()
-        args = parser.parse_args(['review', 'paper', 'run', '--billing-confirmation', 'b.json',
+        args = parser.parse_args(['review', 'paper', 'run',
                                   '--literature-cutoff', '2026-09-25', '--mode', 'plain'])
         empty = {'status': reviewer.COMPLETE_WITHOUT_FINDINGS, 'findings_delivered': 0,
                  'quarantined_findings_count': 2,
@@ -629,11 +657,10 @@ class QuarantinedFindings(unittest.TestCase):
             return run
 
         with tempfile.TemporaryDirectory() as directory:
-            root, out, billing = workspace(directory)
+            root, out = workspace(directory)
             for index, progress in enumerate((empty, delivered)):
                 target = out.with_name(f'run-{index}')
                 request = ReviewRequest(workspace=root, output=target,
-                                        billing_confirmation=billing,
                                         literature_cutoff='2025-01-01')
                 with patch.object(reviewer, 'review', side_effect=engine(progress)):
                     artifact = run_api_review(request)
@@ -845,7 +872,7 @@ class BoundedRetry(unittest.TestCase):
                     runtime.model_call(protocol, out, 'prompt', self.schema)
             self.assertEqual(len(calls), 0)
 
-    def test_a_claude_billing_or_tool_problem_is_never_transient(self):
+    def test_claude_paid_extra_usage_or_a_tool_problem_is_never_transient(self):
         init = {'type': 'system', 'subtype': 'init', 'apiKeySource': 'none',
                 'tools': ['StructuredOutput'], 'claude_code_version': '1.0.0'}
         overage = {'type': 'rate_limit_event', 'rate_limit_info': {'isUsingOverage': True}}
@@ -877,7 +904,7 @@ class BoundedRetry(unittest.TestCase):
         either, or a timed-out agentic attempt hands its replacement a budget
         it never used."""
         with tempfile.TemporaryDirectory() as directory:
-            root, out, billing = workspace(directory)
+            root, out = workspace(directory)
             handle = build_registry(PAPER).handles[0].handle_id
             seen = {}
 
@@ -895,7 +922,7 @@ class BoundedRetry(unittest.TestCase):
             with patch.object(reviewer, 'require_subscription'), \
                  patch.object(reviewer, 'model_call', side_effect=fake), \
                  patch.object(reviewer, 'inspected_images', return_value=[]):
-                reviewer.review(root, out, billing, '2025-01-01', mode='plain',
+                reviewer.review(root, out, '2025-01-01', mode='plain',
                                 model='gpt-5.6-terra')
             archived = Path(seen['archived'])
             self.assertEqual(archived.name, 'plain.attempt1')
@@ -915,7 +942,7 @@ class BoundedRetry(unittest.TestCase):
         agentic synthesis inherited the failed attempt's tool log, its
         synthesis-preflight receipts and its spent source requests."""
         with tempfile.TemporaryDirectory() as directory:
-            root, out, billing = workspace(directory)
+            root, out = workspace(directory)
             seen = {}
             base = {'title': 'Count', 'kind': 'question', 'severity': 'moderate', 'block_id': 'b1',
                     'quote': 'We studied 5 plants.', 'evidence_blocks': ['b1'], 'replacement': '',
@@ -933,7 +960,7 @@ class BoundedRetry(unittest.TestCase):
             with patch.object(ensemble, 'require_subscription'), \
                  patch.object(ensemble, 'model_call', side_effect=fake):
                 with self.assertRaises(Captured):
-                    ensemble.debate_reviews(root, out, billing, '2025-01-01', records,
+                    ensemble.debate_reviews(root, out, '2025-01-01', records,
                                             model='gpt-5.6-terra')
             self.assertEqual(Path(seen['archived']).name, 'debate.attempt1')
             self.assertTrue((out / 'investigations' / 'debate.attempt1' /
@@ -942,93 +969,7 @@ class BoundedRetry(unittest.TestCase):
             self.assertEqual(read(out / 'sources' / 'requests.attempt1.json')['requests'], ['a', 'b'])
 
 
-class BillingVerifiedOnce(unittest.TestCase):
-    def aged_codex_record(self, age=600):
-        """A good included-allowance snapshot, older than the five minute window."""
-        checked = time.time() - age
-        return {'policy': 'included-allowance-v1', 'checked_at': checked,
-                'source': 'Codex app get_usage_limits', 'purchases_authorized': False,
-                'resets_authorized': False,
-                'usage_snapshot': {'rateLimits': {
-                    'planType': 'pro', 'spendControlReached': False,
-                    'primary': {'usedPercent': 5, 'resetsAt': checked + 86400}}}}
-
-    def codex_login(self):
-        return patch.object(runtime, 'auth_status',
-                            return_value={'loggedIn': True, 'authMethod': 'chatgpt'})
-
-    def test_a_later_stage_reuses_the_launch_verification_without_a_second_check(self):
-        from peerreviewagents.engine.billing import verify_billing
-        record = self.aged_codex_record()
-        with self.assertRaisesRegex(ValueError, 'five minutes'):
-            verify_billing(record, provider='codex')
-        self.assertEqual(verify_billing(record, now=record['checked_at'] + 10),
-                         'included-allowance-v1')
-        moment = record['checked_at'] + 10
-        protocol = ensemble._protocol('gpt-5.6-terra', 2, 750000)
-        with tempfile.TemporaryDirectory() as directory:
-            billing = Path(directory) / 'billing.json'
-            write(billing, record)
-            with self.codex_login():
-                with self.assertRaisesRegex(ValueError, 'five minutes'):
-                    ensemble._prepare(Path(directory) / 'unverified', billing, protocol)
-                with self.assertRaisesRegex(ValueError, 'launch verification time'):
-                    ensemble._prepare(Path(directory) / 'no-time', billing, protocol, verified=True)
-                staged = Path(directory) / 'verified'
-                self.assertEqual(ensemble._prepare(staged, billing, protocol, verified=True,
-                                                   verified_at=moment), moment)
-            self.assertEqual(read(staged / 'billing_confirmation.json'), record)
-            self.assertEqual(read(staged / runtime.LAUNCH_VERIFICATION),
-                             {'policy': 'launch-verified-billing-v1', 'provider': 'codex',
-                              'verified_at': moment, 'window_seconds': runtime.VERIFIED_LAUNCH_WINDOW})
-            # Reuse moves the freshness check back to the launch, nothing else.
-            with patch.object(runtime, 'auth_status', return_value={'loggedIn': False}):
-                with self.assertRaisesRegex(runtime.StudyBlocked, 'subscription login'):
-                    runtime.require_subscription(staged, billing_verified=True)
-
-    def test_a_reviewer_stage_reuses_the_launch_verification(self):
-        record = self.aged_codex_record()
-        moment = record['checked_at'] + 10
-        with tempfile.TemporaryDirectory() as directory:
-            root, out, billing = workspace(directory)
-            write(billing, record)
-            handle = build_registry(PAPER).handles[0].handle_id
-            with self.codex_login(), \
-                 patch.object(reviewer, 'model_call', return_value=model_response(handle)), \
-                 patch.object(reviewer, 'inspected_images', return_value=[]):
-                with self.assertRaisesRegex(ValueError, 'five minutes'):
-                    reviewer.review(root, out, billing, '2025-01-01', mode='plain',
-                                    model='gpt-5.6-terra')
-                with self.assertRaisesRegex(ValueError, 'launch verification time'):
-                    reviewer.review(root, Path(directory) / 'no-time', billing, '2025-01-01',
-                                    mode='plain', model='gpt-5.6-terra', billing_verified=True)
-                reused = Path(directory) / 'reused'
-                progress = reviewer.review(root, reused, billing, '2025-01-01', mode='plain',
-                                           model='gpt-5.6-terra', billing_verified=True,
-                                           verified_at=moment)
-            self.assertEqual(progress['status'], 'complete')
-            self.assertEqual(read(reused / runtime.LAUNCH_VERIFICATION)['verified_at'], moment)
-
-    def test_a_reused_verification_fails_closed(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / 'run'
-            root.mkdir()
-            with self.assertRaisesRegex(runtime.StudyBlocked, 'without the launch verification'):
-                runtime.launch_verified_at(root)
-            runtime.write_launch_verification(root, 'codex', time.time() - 90000)
-            with self.assertRaisesRegex(runtime.StudyBlocked, 'too old'):
-                runtime.launch_verified_at(root)
-            write(root / runtime.LAUNCH_VERIFICATION, {'verified_at': 'yesterday'})
-            with self.assertRaisesRegex(runtime.StudyBlocked, 'unreadable'):
-                runtime.launch_verified_at(root)
-            write(root / 'protocol.json', {'provider': 'codex'})
-            with self.codex_login():
-                with self.assertRaisesRegex(runtime.StudyBlocked, 'unreadable'):
-                    runtime.require_subscription(root, billing_verified=True)
-                runtime.write_launch_verification(root, 'codex')
-                with self.assertRaisesRegex(runtime.StudyBlocked, 'Record current Codex'):
-                    runtime.require_subscription(root, billing_verified=True)
-
+class SubscriptionCheckedPerStage(unittest.TestCase):
     def ensemble_transport(self, clock, jump):
         """A fake transport for both ensemble stages that advances the clock.
 
@@ -1066,50 +1007,34 @@ class BillingVerifiedOnce(unittest.TestCase):
 
         return fake, labels
 
-    def test_the_whole_ensemble_passes_the_real_guard_as_the_clock_advances(self):
-        """End to end with the real guard: nothing about billing is patched out.
-
-        Every call here takes longer than the five minute freshness window of
-        the included-allowance record, which is what a real stage does and what
-        the launch verification exists for. The launch moment is the only one
-        judged against that window, so the run completes while each of the
-        three stages still runs the rest of the guard, and the 24 hour launch
-        window still refuses a run that outlives it.
-        """
-        record = self.aged_codex_record(age=0)
+    def test_the_whole_ensemble_passes_the_real_login_guard_on_every_stage(self):
+        """End to end with the real guard: only the transport and the login
+        probe are patched out. Every stage checks the subscription login for
+        itself, and a long run is no longer refused for outliving a launch
+        window: nothing is written that gates on recorded usage."""
         real, clock, auth = time.time, [0.0], []
 
         def auth_status(provider):
             auth.append(provider)
-            return {'loggedIn': True, 'authMethod': 'chatgpt'}
+            return {'loggedIn': True, 'authMethod': 'claude.ai', 'apiProvider': None}
 
         with tempfile.TemporaryDirectory() as directory:
-            root, out, billing = workspace(directory)
-            write(billing, record)
-            fake, labels = self.ensemble_transport(clock, 400)
+            root, out = workspace(directory)
+            fake, labels = self.ensemble_transport(clock, 50000)
             with patch.object(runtime, 'auth_status', side_effect=auth_status), \
                  patch('time.time', lambda: real() + clock[0]), \
                  patch.object(reviewer, 'model_call', side_effect=fake), \
                  patch.object(ensemble, 'model_call', side_effect=fake), \
                  patch.object(reviewer, 'inspected_images', return_value=[]):
-                progress = ensemble.ensemble_review(root, out, billing, '2025-01-01')
-                self.assertEqual(progress['status'], 'complete')
-                self.assertEqual(labels, ['independent', 'independent', 'ensemble-debate'])
-                # The launch check plus one real guard call per stage.
-                self.assertEqual(auth, ['codex'] * 4)
-                moment = read(out / 'reviewer-1' / runtime.LAUNCH_VERIFICATION)['verified_at']
-                for stage in ('reviewer-1', 'reviewer-2', 'debate'):
-                    self.assertEqual(
-                        read(out / stage / runtime.LAUNCH_VERIFICATION)['verified_at'], moment)
-                self.assertLess(moment, real() + clock[0] - 300)
-                # A run that drags past the launch window is refused, not reused.
-                clock[0] = 0.0
-                slow, _ = self.ensemble_transport(clock, 50000)
-                with patch.object(reviewer, 'model_call', side_effect=slow), \
-                     patch.object(ensemble, 'model_call', side_effect=slow):
-                    with self.assertRaisesRegex(runtime.StudyBlocked, 'too old'):
-                        ensemble.ensemble_review(root, Path(directory) / 'slow', billing,
-                                                 '2025-01-01')
+                progress = ensemble.ensemble_review(root, out, '2025-01-01')
+            self.assertEqual(progress['status'], 'complete')
+            self.assertEqual(labels, ['independent', 'independent', 'ensemble-debate'])
+            # The launch check plus one real guard call per stage, all on the
+            # default transport, with no model or provider named anywhere.
+            self.assertEqual(auth, [DEFAULT_PROVIDER] * 4)
+            self.assertEqual(read(out / 'protocol.json')['model'], DEFAULT_MODEL)
+            self.assertEqual(sorted(path.name for path in out.rglob('*.json')
+                                    if 'billing' in path.name or 'verification' in path.name), [])
 
 
 if __name__ == '__main__':

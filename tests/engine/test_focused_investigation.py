@@ -1,6 +1,5 @@
 import copy
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -10,6 +9,7 @@ from peerreviewagents.engine.evidence_handles import build_registry
 from peerreviewagents.engine.supplement_view import supplement_page
 from peerreviewagents.engine.storage import write, digest
 from peerreviewagents.engine.investigation_policy import evidence_operation
+from peerreviewagents.engine.models import DEFAULT_MODEL, DEFAULT_PROVIDER
 
 
 class FocusedInvestigationTests(unittest.TestCase):
@@ -38,7 +38,6 @@ class FocusedInvestigationTests(unittest.TestCase):
             paper=self.paper()
             write(root/'paper.json',paper)
             write(root/'manifest.json',{'files':{'paper.json':digest((root/'paper.json').read_bytes())}})
-            write(root/'billing.json',{'checked_at':time.time(),'no_paid_credits_verified':True})
             response={'answer':'Narrow the claim.','counterevidence':'Defense.','status':'narrowed',
                       'limitations':[],'investigation_summary':'Inspected a source.',
                       'manuscript_handles':['invented-handle'],
@@ -52,32 +51,31 @@ class FocusedInvestigationTests(unittest.TestCase):
                     'tool_receipt':{'call_index':1,'tool':'read_blocks'}}})+'\n')
                 return copy.deepcopy(response)
             with patch('peerreviewagents.engine.focused_investigation.require_subscription'), patch('peerreviewagents.engine.focused_investigation.model_call',side_effect=call) as model:
-                result=investigate(root,root/'out',root/'billing.json','2026-09-25','Does the source support the claim?',['b1'])
+                result=investigate(root,root/'out','2026-09-25','Does the source support the claim?',['b1'])
                 self.assertFalse(result['ready_for_adjudication'])
                 self.assertTrue(result['tool_policy_audit']['complete'])
                 with self.assertRaises(FileExistsError):
-                    investigate(root,root/'out',root/'billing.json','2026-09-25','Does the source support the claim?',['b1'])
+                    investigate(root,root/'out','2026-09-25','Does the source support the claim?',['b1'])
                 self.assertEqual(model.call_count,1)
 
-    def test_claude_model_requires_its_own_billing_record_and_provider(self):
-        from peerreviewagents.engine.billing import claude_billing_record
+    def test_an_unnamed_model_is_claude_code_and_an_unknown_one_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)
             write(root/'paper.json',self.paper())
             write(root/'manifest.json',{'files':{'paper.json':digest((root/'paper.json').read_bytes())}})
-            write(root/'codex.json',{'checked_at':time.time(),'no_paid_credits_verified':True})
-            write(root/'claude.json',claude_billing_record({'loggedIn':True,'authMethod':'claude.ai'}))
             question='Does the source support the claim?'
             with patch('peerreviewagents.engine.focused_investigation.require_subscription'), \
                     patch('peerreviewagents.engine.focused_investigation.model_call',side_effect=RuntimeError('stop')) as model:
                 with self.assertRaises(ValueError):
-                    investigate(root,root/'first',root/'codex.json','2026-09-25',question,['b1'],model='claude-opus-5-5')
-                self.assertFalse((root/'first').exists())
-                with self.assertRaises(ValueError):
-                    investigate(root,root/'second',root/'claude.json','2026-09-25',question,['b1'],model='claude-fable-5-1')
+                    investigate(root,root/'second','2026-09-25',question,['b1'],model='claude-fable-5-1')
+                self.assertFalse((root/'second').exists())
                 with self.assertRaisesRegex(RuntimeError,'stop'):
-                    investigate(root,root/'third',root/'claude.json','2026-09-25',question,['b1'],model='claude-opus-5-5')
-                self.assertEqual(model.call_args.args[0]['provider'],'claude-code')
+                    investigate(root,root/'third','2026-09-25',question,['b1'])
+                self.assertEqual(model.call_args.args[0]['provider'],DEFAULT_PROVIDER)
+                self.assertEqual(model.call_args.args[0]['model'],DEFAULT_MODEL)
+                with self.assertRaisesRegex(RuntimeError,'stop'):
+                    investigate(root,root/'fourth','2026-09-25',question,['b1'],model='gpt-5.6-terra')
+                self.assertEqual(model.call_args.args[0]['provider'],'codex')
 
     def test_handles_require_exposure_and_preserve_exact_text(self):
         paper=self.paper()
