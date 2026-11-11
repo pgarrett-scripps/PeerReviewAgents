@@ -90,6 +90,15 @@ def get_review_preset(name):
         raise ValueError('Unknown Paper Workbench review preset') from error
 
 
+def preset_synthesis_policy(preset):
+    """The synthesis a preset asks a run for, in the request's own vocabulary.
+
+    A preset records the durable policy name; a request and the command line
+    name the stage. One function so every surface agrees on the mapping.
+    """
+    return 'ordinary' if preset.synthesis_policy == 'ordinary-synthesis-v1' else 'debate'
+
+
 def resolved_review_config(request):
     """Resolve one request into a durable, versioned configuration record."""
     if request.preset is None:
@@ -108,7 +117,7 @@ def resolved_review_config(request):
         }
     else:
         preset = get_review_preset(request.preset)
-        expected_synthesis = 'ordinary' if preset.synthesis_policy == 'ordinary-synthesis-v1' else 'debate'
+        expected_synthesis = preset_synthesis_policy(preset)
         if ((request.workflow, request.reviewers) != (preset.workflow, preset.reviewers)
                 or request.synthesis_policy != expected_synthesis):
             raise ValueError('Request workflow, reviewer count, and synthesis policy do not match its preset')

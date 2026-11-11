@@ -4,8 +4,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from .config import (default_literature_cutoff, get_review_preset, resolved_review_config,
-                     review_presets)
+from .config import (default_literature_cutoff, get_review_preset, preset_synthesis_policy,
+                     resolved_review_config, review_presets)
 from .models import DEFAULT_MODEL, DEFAULT_PROVIDER
 from .review_policy import (APPROVED_EFFORTS, DEFAULT_POLICY, DEFAULT_POLICY_NAME,
                             MAX_ATTEMPT_CEILING, get_review_policy, review_policies,
@@ -342,7 +342,7 @@ def review_request_from_preset(name, *, workspace, output,
                                source_images=(), synthesis_policy=None, policy=None):
     """Construct a request from one named preset, with explicit runtime overrides."""
     preset = get_review_preset(name)
-    preset_synthesis = 'ordinary' if preset.synthesis_policy == 'ordinary-synthesis-v1' else 'debate'
+    preset_synthesis = preset_synthesis_policy(preset)
     return ReviewRequest(
         workspace=Path(workspace), output=Path(output),
         literature_cutoff=(default_literature_cutoff() if literature_cutoff is None

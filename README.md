@@ -35,16 +35,26 @@ One review on a Claude Code subscription, with no API key:
 #    provider flag is needed. How much subscription usage a run may spend is
 #    your own account setting; the engine records usage and does not gate it.
 
-# 2. Import the PDF into a verified workspace of source blocks.
-peerreview import manuscript.pdf workspace
-
-# 3. Review it. --literature-cutoff bounds what published work is eligible and
-#    defaults to today.
-peerreview review workspace run-output
-
-# 4. Write REVIEW.md and REVIEW.txt from the saved run. No model calls.
-peerreview report run-output
+# 2. Review the PDF. One command imports it into a verified workspace of source
+#    blocks, runs the review, and writes REVIEW.md and REVIEW.txt.
+#    --literature-cutoff bounds what published work is eligible, and defaults
+#    to today.
+peerreview review manuscript.pdf run-output
 ```
+
+`run-output` then holds the immutable manuscript in `manuscript/`, the run
+itself in `review/`, and the two reports beside them. The three steps are still
+separate commands when you want them to be — `peerreview import`,
+`peerreview review <workspace> <run>` on an already imported workspace, and
+`peerreview report <run>`, which rewrites the reports from saved JSON with no
+model calls.
+
+The default review is the agentic ensemble: two independent reviewers at high
+effort with a thirty call tool allowance and no finding cap, then an audited
+debate synthesis. `--policy standard-v1` asks for the bounded study budget
+instead. [`docs/study-arms.md`](docs/study-arms.md) gives the exact command for
+every ablation arm, including the modes and the manuscript-only baseline that
+`--help` does not list.
 
 The headless API for embedding the engine is `peerreviewagents.engine.api`.
 

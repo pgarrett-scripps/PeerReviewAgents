@@ -6,7 +6,8 @@
 import argparse
 from pathlib import Path
 
-from .config import default_literature_cutoff, get_review_preset, review_presets
+from .config import (default_literature_cutoff, get_review_preset, preset_synthesis_policy,
+                     review_presets)
 from .models import DEFAULT_MODEL, DEFAULT_MODELS, DEFAULT_PROVIDER, SUBSCRIPTION_MODELS, provider_for
 from .review_policy import (COMMAND_LINE_POLICY_NAME, DEFAULT_POLICY_NAME, get_review_policy,
                             review_policies, single_session_refusal)
@@ -20,6 +21,13 @@ COMMANDS = ('import', 'verify', 'add-review', 'result-map', 'review', 'investiga
             'report', 'checks')
 
 CUTOFF_HELP = 'Latest eligible publication date, YYYY-MM-DD. Defaults to today'
+
+# Every accepted review mode, and the three worth choosing between on the
+# command line. plain, workspace and self-revision are study instruments: they
+# still run, and docs/study-arms.md names the command for each arm.
+REVIEW_MODES = ('ensemble', 'independent', 'plain', 'workspace', 'panel', 'self-revision')
+PUBLIC_MODES = ('ensemble', 'independent', 'panel')
+PUBLIC_MODES_METAVAR = '{' + ','.join(PUBLIC_MODES) + '}'
 
 
 def add_model_arguments(parser):
@@ -56,6 +64,9 @@ def apply_preset(parser,args):
         parser.error(f'--model {args.model} conflicts with the {preset.model} model its preset pins')
     args.mode,args.reviewers=preset.workflow,preset.reviewers
     args.token_budget,args.policy=preset.token_budget,preset.policy
+    # The preset's synthesis policy is part of what it pins. Without this the
+    # ordinary-synthesis arm could be named but never actually ran.
+    args.synthesis_policy=preset_synthesis_policy(preset)
     # A preset that pins no model leaves --model and --provider to decide, so the
     # preset alone runs on the default transport instead of a hard-coded one.
     if preset.model is not None:
@@ -121,6 +132,34 @@ def resolve_model(parser,args):
         parser.error(f'{args.model} is not a {args.provider} model')
 
 
+def prepare_manuscript(parser,args):
+    """Import a PDF named in place of a workspace and return the bundle folder.
+
+    ``peerreview review manuscript.pdf run-output`` is the whole review: the PDF
+    is imported into ``run-output/manuscript``, the review runs in
+    ``run-output/review``, and the two reports are written into ``run-output``.
+    Naming an existing workspace directory instead keeps exactly the previous
+    behaviour and returns ``None``, so no existing run or script changes.
+
+    An already imported bundle is left alone, so re-running the same command
+    resumes the review against the same immutable manuscript.
+    """
+    source=Path(args.workspace)
+    if source.is_dir() or source.suffix.lower()!='.pdf':
+        return None
+    if not source.is_file():
+        parser.error(f'{args.workspace} is neither a manuscript workspace nor a PDF file')
+    bundle=Path(args.output)
+    workspace=bundle/'manuscript'
+    if not (workspace/'paper.json').is_file():
+        from .ingest import import_paper
+        paper=import_paper(source,workspace)
+        print(paper['title'])
+        print(paper['statistics'])
+    args.workspace,args.output=str(workspace),str(bundle/'review')
+    return bundle
+
+
 def add_subcommands(sub):
     """Attach every engine command to an existing argparse subparser group."""
     p=sub.add_parser('import',help='Import a PDF into a manuscript workspace of source blocks')
@@ -139,12 +178,19 @@ def add_subcommands(sub):
     p=sub.add_parser('result-map',help='Map reported results to their source blocks')
     p.add_argument('workspace')
     p.add_argument('--output',required=True)
-    p=sub.add_parser('review',help='Run one evidence-linked review on a subscription transport')
-    p.add_argument('workspace')
-    p.add_argument('output')
+    p=sub.add_parser('review',help='Review a manuscript PDF, or an imported workspace, end to end')
+    p.add_argument('workspace',metavar='paper',
+                   help='Manuscript PDF to import and review, or an already imported workspace')
+    p.add_argument('output',help='Run folder. For a PDF it holds manuscript/, review/ and the reports')
     p.add_argument('--literature-cutoff',default=None,
                    help=CUTOFF_HELP+', or the cutoff an existing run directory already recorded')
-    p.add_argument('--mode',choices=('ensemble','independent','plain','workspace','panel','self-revision'),default='ensemble')
+    # Every mode the engine has is still accepted. Only the three a person
+    # should choose between are advertised; the study arms that use the others
+    # are written out command by command in docs/study-arms.md.
+    p.add_argument('--mode',choices=REVIEW_MODES,default='ensemble',metavar=PUBLIC_MODES_METAVAR,
+                   help='Review workflow (default ensemble). The remaining study modes are '
+                        'documented in docs/study-arms.md')
+    p.set_defaults(synthesis_policy='debate')
     p.add_argument('--reviewers',type=int,default=2,help='Independent discovery reviewers for ensemble mode, from 1 to 16 (default 2)')
     p.add_argument('--token-budget',type=int,default=750000,help='Ensemble observed-token launch ceiling, not a hard cap on a running call')
     add_model_arguments(p)
@@ -193,6 +239,7 @@ def dispatch(parser,args):
         from .annotations import save_review
         print(save_review(args.workspace,read(args.response),args.id)['annotation_counts'])
     elif args.command=='review':
+        bundle=prepare_manuscript(parser,args)
         resolve_cutoff(parser,args,args.output)
         from .reviewer import review
         if args.mode!='ensemble' and (args.reviewers!=2 or args.token_budget!=750000):
@@ -203,8 +250,15 @@ def dispatch(parser,args):
         resolve_model(parser,args)
         progress=review(args.workspace,args.output,args.literature_cutoff,args.mode,
                         model=args.model,reviewers=args.reviewers,
-                        token_budget=args.token_budget,shared_images=args.source_image,policy=args.policy)
+                        token_budget=args.token_budget,shared_images=args.source_image,
+                        synthesis_policy=args.synthesis_policy,policy=args.policy)
         print(progress)
+        if bundle is not None:
+            # The one-command form finishes the job: the reports are written
+            # from the saved run, with no further model calls.
+            from .run_report import write_reports
+            paths=write_reports(args.output,args.workspace,bundle)
+            print({kind:str(path) for kind,path in paths.items()})
         from .reviewer import COMPLETE_WITHOUT_FINDINGS,GUARD_STATUS_POLICY
         if isinstance(progress,dict) and (progress.get('status')==COMPLETE_WITHOUT_FINDINGS
                 or progress.get('review_guard_status')=='all-findings-quarantined'):
