@@ -63,6 +63,37 @@ def append_json(path, value):
         stream.flush()
         os.fsync(stream.fileno())
 
+# A desktop install has no terminal PATH: the MCP server is launched by Claude
+# Code itself, or by a GUI, so the coding-agent command may be invisible to
+# ``shutil.which``. scripts/install-claude.py therefore writes the absolute
+# path it installed into PEERREVIEW_CLAUDE_PATH, and the native install
+# directory is tried as a last resort. An override must be an absolute
+# executable: a bare name would resolve against the run directory.
+CLI_OVERRIDES={'claude':'PEERREVIEW_CLAUDE_PATH','codex':'PEERREVIEW_CODEX_PATH'}
+CLI_MISSING={'claude':'The standalone Claude Code CLI was not found. Install it from '
+                      'https://code.claude.com/docs/en/quickstart and run claude to sign in. '
+                      'Claude Desktop alone does not install the terminal command. For a custom '
+                      'location, set PEERREVIEW_CLAUDE_PATH to its absolute path.',
+             'codex':'The Codex CLI was not found. Install it and sign in with ChatGPT, or set '
+                     'PEERREVIEW_CODEX_PATH to its absolute path.'}
+
+def cli_executable(name):
+    """The coding-agent command to launch, or ``RunBlocked`` naming the fix."""
+    override=os.environ.get(CLI_OVERRIDES[name])
+    if override:
+        candidate=Path(override).expanduser()
+        if candidate.is_absolute() and candidate.is_file() and os.access(candidate,os.X_OK):
+            return str(candidate)
+        raise RunBlocked(f'{CLI_OVERRIDES[name]} must name an executable absolute path to the '
+                         f'{name} command line.')
+    found=shutil.which(name)
+    if found:
+        return found
+    native=Path.home()/'.local'/'bin'/(f'{name}.exe' if os.name=='nt' else name)
+    if native.is_file() and os.access(native,os.X_OK):
+        return str(native)
+    raise RunBlocked(CLI_MISSING[name])
+
 def clean_env():
     env = dict(os.environ)
     for key in list(env):
@@ -80,14 +111,15 @@ def clean_env():
     return env
 
 def auth_status(provider=DEFAULT_PROVIDER):
+    try:
+        executable = cli_executable("codex" if provider == "codex" else "claude")
+    except RunBlocked as missing:
+        return {"loggedIn": False, "error": str(missing)}
     if provider == "codex":
-        result = subprocess.run([shutil.which("codex") or "codex", "login", "status"],
+        result = subprocess.run([executable, "login", "status"],
                                 capture_output=True, text=True, env=clean_env(), timeout=30)
         logged_in = result.returncode == 0 and "Logged in using ChatGPT" in result.stdout + result.stderr
         return {"loggedIn": logged_in, "authMethod": "chatgpt" if logged_in else "unverified"}
-    executable = shutil.which("claude")
-    if not executable:
-        return {"loggedIn": False, "error": "Claude Code CLI is missing"}
     result = subprocess.run([executable, "auth", "status"], capture_output=True,
                             text=True, env=clean_env(), timeout=30)
     try:
@@ -108,7 +140,11 @@ def require_subscription(root):
     provider = read_json(protocol_path)["provider"] if protocol_path.exists() else DEFAULT_PROVIDER
     status = auth_status(provider)
     if not status.get("loggedIn"):
-        raise RunBlocked(f"This process cannot access a {provider} subscription login.")
+        # A reported cause is the one a person can act on: the CLI is not
+        # installed, or PEERREVIEW_CLAUDE_PATH names something that is not it.
+        # Replacing it with the generic sentence hides the install step.
+        raise RunBlocked(status.get("error")
+                         or f"This process cannot access a {provider} subscription login.")
     accepted = {"chatgpt"} if provider == "codex" else {"claude.ai", "oauth"}
     if status.get("authMethod") not in accepted:
         raise RunBlocked("Subscription authentication was not verified. Refusing API-backed execution.")
@@ -363,7 +399,7 @@ def claude_command(protocol, schema, tools, work):
     schema = claude_schema(schema)
     if len(json.dumps(schema)) > CLAUDE_SCHEMA_LIMIT:
         raise RunBlocked("The response schema is too large for the Claude Code command line.")
-    command = [shutil.which("claude") or "claude", "-p", "--model", protocol["model"],
+    command = [cli_executable("claude"), "-p", "--model", protocol["model"],
                "--effort", protocol["effort"], "--input-format", "stream-json",
                "--output-format", "stream-json", "--verbose",
                "--json-schema", json.dumps(schema), "--system-prompt", CLAUDE_SYSTEM_PROMPT,
@@ -703,7 +739,7 @@ def _model_call(protocol, out, prompt, schema, *, tools=False, label="call", ima
         schema_path = out / "calls" / f"{stem}.schema.json"
         answer_path = out / "calls" / f"{stem}.answer.json"
         write_json(schema_path, schema)
-        command = [shutil.which("codex") or "codex", "exec", "--ephemeral",
+        command = [cli_executable("codex"), "exec", "--ephemeral",
                    "--sandbox", "read-only", "--ignore-user-config", "--ignore-rules",
                    "--skip-git-repo-check", "--color", "never", "--json",
                    "--output-schema", str(schema_path), "--output-last-message", str(answer_path),

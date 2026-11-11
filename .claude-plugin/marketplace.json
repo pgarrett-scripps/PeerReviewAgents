@@ -3,12 +3,12 @@
   "owner": {
     "name": "PeerReviewAgents contributors"
   },
-  "description": "Local multi-agent scholarly peer review",
+  "description": "Local evidence-linked scholarly peer review",
   "plugins": [
     {
       "name": "peer-review-agents",
       "source": "./plugins/peer-review-agents",
-      "description": "Run the PeerReviewAgents pipeline with an authenticated local coding agent",
+      "description": "Review a manuscript PDF with the PeerReviewAgents engine, on an authenticated local coding agent subscription",
       "category": "research",
       "tags": ["peer-review", "research", "manuscripts", "mcp"]
     }

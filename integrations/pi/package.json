@@ -1,6 +1,6 @@
 {
   "name": "peer-review-agents-pi",
-  "version": "0.5.0",
+  "version": "0.8.0",
   "description": "Local PeerReviewAgents tools and skill for Pi",
   "license": "MIT",
   "type": "module",

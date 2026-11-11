@@ -1,10 +1,10 @@
-"""FastAPI-based web UI for PeerReviewAgents.
+"""FastAPI web UI for the evidence-linked review engine.
 
-A single-job, in-memory server that accepts a manuscript upload, runs it
-through the LangGraph pipeline in a background thread, and streams agent
-lifecycle / token events to a browser over WebSocket. The browser
-renders a 2D "office" with one sprite per agent so the reviewing
-process is legible to a human watcher.
+A manuscript PDF is uploaded, reviewed in a background thread by
+:mod:`peerreviewagents.review_service` — the same service the MCP server runs
+on — and reported as ``REVIEW.md``, which the page renders. Progress is the
+stage the run records; there is no token stream and no per-agent sprite,
+because the engine runs each stage as one long model call.
 """
 
 from .server import create_app

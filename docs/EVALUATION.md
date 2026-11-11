@@ -6,6 +6,13 @@
 > The 0.5.0 pipeline is different — five referees, parallel debate rounds, a
 > post-debate synthesizer — and is not what these numbers measured. The
 > protocol is preserved unchanged so the published results stay auditable.
+>
+> **The harness is gone.** `peerreviewagents.eval`, the `just eval-*` recipes
+> and the corpus builder ran this protocol against the LangGraph panel, and
+> were deleted with the panel in 0.8.0. To re-run it, check out the tag
+> `legacy-langgraph-v0.6.1` (or the `v0.7.0` release). The engine's own study
+> design is [`study-arms.md`](study-arms.md), which gives the exact command for
+> each arm.
 
 This protocol characterizes PeerReviewAgents against human OpenReview outcomes
 and a one-call practical baseline. It is a software validation study, not a
@@ -32,103 +39,32 @@ The decision endpoint collapses `accept`/`minor` to accept-leaning and
 `major`/`reject` to reject-leaning. This is declared before running and is not a
 claim that journal revision verdicts equal conference accept/reject decisions.
 
-## Install and inspect the venue
+## How it was run
 
-```bash
-pip install -e '.[eval,dev]'
-python -m peerreviewagents.eval inspect --venue ICLR.cc/2026/Conference
-```
+The steps below are the protocol as executed, not commands to type: the
+`peerreviewagents.eval` module they were typed into no longer exists.
 
-Confirm the venue and rating field from `inspect`; do not rely on a guessed
-schema. Then fetch a balanced corpus. Choose a model whose documented training
-snapshot predates the venue decisions when possible.
+1. **Inspect the venue.** The venue and its actual rating field were read from
+   OpenReview rather than guessed from a schema.
+2. **Fetch a balanced corpus** of 20 papers, 10 accepted and 10 rejected, with
+   the PDFs, `corpus.jsonl` and a `corpus_manifest.json` of SHA-256 hashes. The
+   model was chosen so its documented training snapshot predated the venue
+   decisions where possible, and the residual leakage risk was recorded in the
+   manifest.
+3. **Freeze the plan** before any model run: the endpoints, and the four papers
+   deterministically selected for the three-run repeatability subset, were
+   committed as `protocol.json`. The runner refused any configuration whose
+   digest differed from it.
+4. **Run both conditions** on identical flags — one model for every role,
+   literature search disabled, the post-decision journal recommender omitted
+   because it could not affect an endpoint. The runner verified the corpus
+   hashes before every batch and was resumable per `(paper_id, repeat)`.
+5. **Analyze** each condition's runs, then compare them, with deterministic
+   paper-level bootstrap intervals.
 
-```bash
-python -m peerreviewagents.eval fetch \
-  --venue ICLR.cc/2026/Conference \
-  --rating-field rating \
-  --limit 20 \
-  --out data/eval/iclr-2026 \
-  --leakage-note 'Model snapshot and conference-decision timing assessed before running.'
-```
+PDF redistribution follows the source venue's terms; hashes and source URLs can
+be archived even where the PDFs cannot. The raw JSONL, manifests, protocol,
+reports and figure source are the publication artifact.
 
-`fetch` writes `corpus.jsonl`, downloaded PDFs, and `corpus_manifest.json` with
-SHA-256 hashes. For an older corpus, create the manifest explicitly:
-
-```bash
-python -m peerreviewagents.eval freeze --dir data/eval/iclr-2026 \
-  --leakage-note 'Retrospective corpus; training-data leakage remains possible.'
-```
-
-Freeze endpoints and deterministically select the repeatability subset:
-
-```bash
-python -m peerreviewagents.eval plan --dir data/eval/iclr-2026 \
-  --repeat-papers 4 --repeats 3 --seed 20260815 \
-  --provider openrouter --model VENDOR/MODEL --single-model --offline \
-  --journal ml-conference --article-type conference-paper --strictness 3
-```
-
-Commit `corpus.jsonl`, `corpus_manifest.json`, and `protocol.json` before model
-runs. The runner refuses a configuration whose digest differs from the frozen
-protocol. PDF redistribution must follow the source venue's terms; hashes and
-source URLs can be archived even when PDFs cannot be redistributed.
-
-## Run both conditions
-
-Use exactly the same flags for both conditions. `--single-model` clears role
-model-routing tables, `--offline` disables literature search, and evaluation
-runs automatically omit the post-decision journal recommender because it cannot
-affect an endpoint.
-
-```bash
-python -m peerreviewagents.eval run --dir data/eval/iclr-2026 \
-  --mode system --runs-out data/eval/iclr-2026/runs_system.jsonl \
-  --provider openrouter --model VENDOR/MODEL --single-model --offline \
-  --journal ml-conference --article-type conference-paper --strictness 3
-
-python -m peerreviewagents.eval run --dir data/eval/iclr-2026 \
-  --mode single-llm --runs-out data/eval/iclr-2026/runs_single_llm.jsonl \
-  --provider openrouter --model VENDOR/MODEL --single-model --offline \
-  --journal ml-conference --article-type conference-paper --strictness 3
-```
-
-For repeatability, rerun only the four IDs printed by `plan`, increasing the full
-workflow file to three runs per selected paper:
-
-```bash
-python -m peerreviewagents.eval run --dir data/eval/iclr-2026 \
-  --mode system --runs-out data/eval/iclr-2026/runs_system.jsonl \
-  --repeats 3 --only ID1,ID2,ID3,ID4 \
-  --provider openrouter --model VENDOR/MODEL --single-model --offline \
-  --journal ml-conference --article-type conference-paper --strictness 3
-```
-
-The runner is resumable. It verifies corpus hashes before every batch and skips
-successful `(paper_id, repeat)` pairs already on disk.
-
-## Analyze
-
-```bash
-python -m peerreviewagents.eval metrics --dir data/eval/iclr-2026 \
-  --runs data/eval/iclr-2026/runs_system.jsonl \
-  --out data/eval/iclr-2026/report_system
-
-python -m peerreviewagents.eval metrics --dir data/eval/iclr-2026 \
-  --runs data/eval/iclr-2026/runs_single_llm.jsonl \
-  --out data/eval/iclr-2026/report_single_llm
-
-python -m peerreviewagents.eval compare --dir data/eval/iclr-2026 \
-  --system-runs data/eval/iclr-2026/runs_system.jsonl \
-  --baseline-runs data/eval/iclr-2026/runs_single_llm.jsonl \
-  --out data/eval/iclr-2026/comparison
-
-python -m peerreviewagents.eval figure --dir data/eval/iclr-2026 \
-  --runs data/eval/iclr-2026/runs_system.jsonl \
-  --out data/eval/iclr-2026/evaluation
-```
-
-Reports include deterministic paper-level bootstrap intervals. Preserve the raw
-JSONL, manifests, protocol, reports, and figure source as the publication
-artifact. A significant or favorable difference does not isolate the effect of
-agentic structure because the conditions use different amounts of computation.
+A significant or favorable difference does not isolate the effect of agentic
+structure, because the conditions use different amounts of computation.

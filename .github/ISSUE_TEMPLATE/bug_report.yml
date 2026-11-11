@@ -15,19 +15,20 @@ body:
     attributes:
       label: How to reproduce
       description: |
-        The exact command, and the manuscript type (PDF / Markdown / LaTeX / DOCX).
-        Please don't attach an unpublished manuscript — a description of its shape
-        (page count, sections present) is usually enough.
+        The exact command. Please don't attach an unpublished manuscript — a
+        description of its shape (page count, sections present, whether it has
+        publisher XML) is usually enough.
       render: shell
-      placeholder: peerreview paper.pdf --no-tui --provider anthropic
+      placeholder: peerreview paper.pdf --mode ensemble --reviewers 2
     validations:
       required: true
 
   - type: input
     id: provider
     attributes:
-      label: Provider and model
-      placeholder: openrouter / anthropic/claude-sonnet-5
+      label: Transport and model
+      description: The subscription the run used, from `--provider` and `--model`.
+      placeholder: claude-code / claude-sonnet-5-5
     validations:
       required: true
 
@@ -43,7 +44,7 @@ body:
     id: logs
     attributes:
       label: Traceback or relevant output
-      description: Scrub any API keys before pasting.
+      description: Scrub any tokens or paths you would rather not publish before pasting.
       render: shell
     validations:
       required: false

@@ -10,11 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from peerreviewagents.runtime.subscriptions import (
-    SubscriptionCLIError,
-    _completed,
-    validate_subscription_cli,
-)
+from peerreviewagents.engine.model_runtime import RunBlocked, cli_executable
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location("install_claude", ROOT / "scripts/install-claude.py")
@@ -39,40 +35,61 @@ def clean_home(monkeypatch, tmp_path):
 
 def test_native_cli_is_found_without_shell_path(clean_home):
     binary = make_executable(clean_home / ".local/bin" / ("claude.exe" if os.name == "nt" else "claude"))
-    assert validate_subscription_cli("claude-code") == str(binary)
+    assert cli_executable("claude") == str(binary)
     assert installer.executable("claude") == str(binary)
 
 
 def test_explicit_cli_path_takes_precedence(monkeypatch, clean_home):
     binary = make_executable(clean_home / "custom install" / "claude")
     monkeypatch.setenv("PEERREVIEW_CLAUDE_PATH", str(binary))
-    assert validate_subscription_cli("claude-code") == str(binary)
+    assert cli_executable("claude") == str(binary)
 
 
 def test_invalid_override_does_not_silently_use_another_cli(monkeypatch, clean_home):
     monkeypatch.setenv("PEERREVIEW_CLAUDE_PATH", "relative/claude")
-    with pytest.raises(SubscriptionCLIError, match="executable absolute path"):
-        validate_subscription_cli("claude-code")
+    with pytest.raises(RunBlocked, match="executable absolute path"):
+        cli_executable("claude")
 
 
 def test_missing_cli_explains_desktop_prerequisite(clean_home):
-    with pytest.raises(SubscriptionCLIError, match="Claude Desktop alone"):
-        validate_subscription_cli("claude-code")
+    with pytest.raises(RunBlocked, match="Claude Desktop alone"):
+        cli_executable("claude")
 
 
 def test_custom_path_install_remains_supported(monkeypatch, clean_home):
     make_executable(clean_home / ".local/bin" / ("claude.exe" if os.name == "nt" else "claude"))
     monkeypatch.setattr("shutil.which", lambda name: "/opt/custom/claude")
-    assert validate_subscription_cli("claude-code") == "/opt/custom/claude"
+    assert cli_executable("claude") == "/opt/custom/claude"
 
 
-def test_unlaunchable_cli_produces_actionable_error(monkeypatch):
-    def fail(*args, **kwargs):
-        raise PermissionError("access denied")
+def test_a_missing_cli_is_reported_as_unauthenticated_rather_than_crashing(clean_home):
+    """`capabilities()` reports the login, so a missing CLI must not crash it."""
+    from peerreviewagents.engine.model_runtime import auth_status
 
-    monkeypatch.setattr(subprocess, "run", fail)
-    with pytest.raises(SubscriptionCLIError, match="Could not launch"):
-        _completed(["/missing/claude"], "prompt", 1)
+    status = auth_status("claude-code")
+    assert status["loggedIn"] is False
+    assert "Claude Desktop alone" in status["error"]
+
+
+def test_the_run_is_blocked_with_the_cause_not_a_generic_login_message(clean_home):
+    """A person reads this sentence and has to be able to act on it.
+
+    "This process cannot access a claude-code subscription login" is true of a
+    missing CLI, a signed-out CLI and a mistyped PEERREVIEW_CLAUDE_PATH alike,
+    and only one of those is fixed by signing in. The reported cause wins.
+    """
+    from peerreviewagents.engine.model_runtime import require_subscription
+
+    with pytest.raises(RunBlocked, match="Claude Desktop alone"):
+        require_subscription(clean_home)
+
+
+def test_an_override_that_is_not_the_cli_blocks_the_run_by_name(monkeypatch, clean_home):
+    monkeypatch.setenv("PEERREVIEW_CLAUDE_PATH", "relative/claude")
+    from peerreviewagents.engine.model_runtime import require_subscription
+
+    with pytest.raises(RunBlocked, match="PEERREVIEW_CLAUDE_PATH"):
+        require_subscription(clean_home)
 
 
 def test_cached_plugin_launches_with_no_path_and_spaces(tmp_path):
@@ -115,9 +132,19 @@ def test_existing_marketplace_is_updated_without_removal(monkeypatch, tmp_path):
     assert not any("remove" in call or "add" in call for call in calls)
 
 
-def test_claude_manifest_versions_match_package():
+def test_client_manifest_versions_match_package():
+    """Every client manifest a release ships, not just the Claude ones.
+
+    The Codex and Pi manifests sat at 0.5.0 for three releases because nothing
+    checked them.
+    """
     import re
 
     version = re.search(r'^version = "([^"]+)"', (ROOT / "pyproject.toml").read_text(), re.M)[1]
-    for relative in [".claude-plugin/plugin.json", "plugins/peer-review-agents/.claude-plugin/plugin.json"]:
-        assert json.loads((ROOT / relative).read_text())["version"] == version
+    for relative in [
+        ".claude-plugin/plugin.json",
+        "plugins/peer-review-agents/.claude-plugin/plugin.json",
+        "plugins/peer-review-agents/.codex-plugin/plugin.json",
+        "integrations/pi/package.json",
+    ]:
+        assert json.loads((ROOT / relative).read_text())["version"] == version, relative

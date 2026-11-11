@@ -396,6 +396,31 @@ class TheOneCommandReview(unittest.TestCase):
         self.assertIn('could not be imported', noise.getvalue())
         self.assertFalse((self.bundle / 'manuscript').exists())
 
+    def test_a_machine_without_poppler_is_told_what_to_install(self):
+        """The import died as ``FileNotFoundError: ... 'pdftotext'``, which a
+        person on a fresh machine cannot act on: it names neither the package
+        nor the command that installs it."""
+        def absent(command, *args, **kwargs):
+            raise FileNotFoundError(2, 'No such file or directory', command[0])
+
+        with patch.object(ingest.subprocess, 'run', side_effect=absent):
+            with self.assertRaises(ingest.PopplerMissing) as refusal:
+                ingest.page_text(self.pdf)
+        self.assertIn('Poppler (pdftotext) is not installed', str(refusal.exception))
+        self.assertIn('poppler-utils', str(refusal.exception))
+
+        parser = build_parser()
+        args = parser.parse_args(['review', str(self.pdf), str(self.bundle), *CUTOFF])
+        with patch.object(ingest, 'import_paper',
+                          side_effect=ingest.PopplerMissing(ingest.POPPLER_MISSING)), \
+             patch.object(reviewer, 'review') as reviewed, \
+             self.assertRaises(SystemExit), \
+             contextlib.redirect_stderr(io.StringIO()) as noise:
+            dispatch(parser, args)
+        reviewed.assert_not_called()
+        self.assertIn('Poppler (pdftotext) is not installed', noise.getvalue())
+        self.assertNotIn('FileNotFoundError', noise.getvalue())
+
     def test_a_workspace_directory_keeps_the_previous_behaviour(self):
         """A directory is reviewed in place: no import, no bundle, no report."""
         workspace = self.root / 'workspace'

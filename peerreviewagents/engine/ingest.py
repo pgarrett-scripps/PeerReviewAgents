@@ -10,6 +10,29 @@ import zipfile
 from pathlib import Path
 from .storage import digest, write
 
+POPPLER_MISSING = ('Poppler (pdftotext) is not installed. Install it with `brew install poppler` '
+                   'on macOS, `sudo apt install poppler-utils` on Debian or Ubuntu, or '
+                   '`choco install poppler` on Windows, then run the command again.')
+
+
+class PopplerMissing(OSError):
+    """Poppler is absent from this machine, which is the operator's to fix.
+
+    The import died as ``FileNotFoundError: [Errno 2] ... 'pdftotext'``, which
+    reads like a missing manuscript rather than a missing package, so a person
+    on a fresh machine had nothing to act on.
+    """
+
+
+def page_text(pdf):
+    """The manuscript's text layer, one entry per page, as Poppler lays it out."""
+    try:
+        extracted = subprocess.run(['pdftotext', '-layout', str(pdf), '-'],
+                                   check=True, capture_output=True, text=True).stdout
+    except FileNotFoundError as error:
+        raise PopplerMissing(POPPLER_MISSING) from error
+    return extracted.split('\f')
+
 
 def text_of(element):
     return re.sub(r'\s+', ' ', ''.join(element.itertext())).strip() if element is not None else ''
@@ -33,7 +56,7 @@ def import_paper(pdf, output, xml=None, title=None, source_url='', supplements=N
     markdown, doc = rustypaper.convert(str(pdf))
     write(output / 'converter.json', doc)
     (output / 'converter.md').write_text(markdown)
-    raw_pages = subprocess.run(['pdftotext', '-layout', str(pdf), '-'], check=True, capture_output=True, text=True).stdout.split('\f')
+    raw_pages = page_text(pdf)
     if raw_pages and not raw_pages[-1].strip():
         raw_pages.pop()
     normalized_pages = [norm(page) for page in raw_pages]
