@@ -31,12 +31,24 @@ Install the extra the planter needs:
 
 ```sh
 python scripts/stage_a/corpus.py roster                      # ~12 PDFs
+python scripts/stage_a/corpus.py refill --per-field 6        # top each field up
+python scripts/stage_a/corpus.py audit                       # usable PDFs per field
+python scripts/stage_a/corpus.py audit --repair              # refetch what is not one
 python scripts/stage_a/plant.py <pdf> --kind statistic       # plus the key
 python scripts/stage_a/matrix.py --dry-run                   # the run order
 python scripts/stage_a/matrix.py --stage pilot               # real reviews
 python scripts/stage_a/matrix.py --rescore                   # re-score, run nothing
 python scripts/stage_a/score.py <run folder> --key <key.json>
 ```
+
+A candidate comes down from the [PMC Open Access Subset on AWS Open
+Data](https://registry.opendata.aws/pmc-oa-opendata/), which serves the file
+rather than a page about it, and is kept only if it begins with `%PDF`: the
+first corpus fetch saved twenty "Preparing to download" interstitials and bot
+challenges under `.pdf` names, all served with status 200. A file on disk that
+is not a PDF counts as missing, so `refill` replaces it, and `audit --repair`
+asks the bucket again for each one by the PMCID in its own name. `audit` says
+what is usable per field before anything is planted in it.
 
 `--rescore` exists because the scoring rule is written down and gets corrected:
 when it does, every run already on disk is scored again by the new rule and

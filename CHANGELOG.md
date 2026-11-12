@@ -179,6 +179,28 @@ including 32 test modules, and nothing was left behind as a shim.
 
 ### Fixed
 
+- The Stage A corpus fetch asked a web page for a file, so 20 of the 41
+  candidates on disk were HTML saved under a `.pdf` name: PMC's "Preparing to
+  download" interstitial and a bot challenge, both served with status 200, and
+  both unplantable. `corpus.py` now fetches an article from the PMC Open Access
+  Subset on AWS Open Data, which serves the file itself: it lists the article's
+  prefix, takes its own PDF rather than a supplement, and prefers the newest
+  version. Every download is checked for `%PDF` before anything is written,
+  verified bytes are renamed into place from a temporary name, a page or a
+  refused request is retried once and then the candidate is dropped by name,
+  and a file already on disk counts only if it is a PDF — so a saved
+  interstitial is refetched instead of trusted. The publisher URL and OpenAlex
+  remain as later routes for a paper outside the subset, and OpenAlex is
+  resolved only if it is reached. `corpus.py refill` tops each field up to a
+  quota without fetching a paper another field already holds, and
+  `corpus.py audit` counts the usable PDFs per field and names the rest, and
+  `audit --repair` asks the bucket again for each file that is not a PDF, by
+  the PMCID in its own name — which recovered all 20 of the saved pages. A
+  truncated search response no longer ends a refill either: JSON is asked for
+  up to three times and a field whose search cannot be read is given up on by
+  itself.
+  `tests/stage_a/test_corpus.py` covers all of it offline against a fake
+  network.
 - The `follow-up` skill compared two runs by `finding_uid`, which can never
   match across them: a paper's id is a digest of its PDF and is part of the
   uid, so a revised file renames every finding, and the interchangeable core
