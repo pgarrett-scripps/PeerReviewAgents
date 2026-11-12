@@ -1,8 +1,0 @@
-{
-  "name": "prspike",
-  "version": "0.0.1",
-  "description": "0.9 build step 1: proves a workflow script, one tool-restricted subagent and the peerreview MCP server run in a headless Claude Code session.",
-  "author": {
-    "name": "PeerReviewAgents"
-  }
-}

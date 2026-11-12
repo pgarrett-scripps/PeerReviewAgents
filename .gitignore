@@ -20,7 +20,8 @@ reports/*
 # Evaluation corpus + runs (PDFs, jsonl, reports)
 data/
 
-# Default run folder for plugins/prspike/spike.sh
+# Local run folders for the pra plugin review
+.pra-run/
 .spike-run/
 
 # Local agent/editor settings
