@@ -253,10 +253,12 @@ launcher.
 | `review_main(argv, prog=...)` | that command as a function: JSON on stdout, exit code returned |
 | `report_main(argv)` | `peerreview report` as a function, same contract |
 | `read_run(path)` | read any run folder: status, cause, findings, costs |
+| `locate_run(path)`, `NotARunFolder` | `(run folder, review folder)` from either spelling, and the error both it and `read_run` raise for a folder that is not a run |
 | `write_reports(run, workspace=None, output_dir=None)` | re-render `REVIEW.md` and `REVIEW.txt`, offline |
 | `import_paper(pdf, workspace)` | import a PDF into a manuscript workspace, no model call |
 | `verify_workspace(workspace)` | re-check an import against its own manifest, returns the paper |
 | `export_draft(paper, review, decisions)` | apply the accepted anchored edits to a copy of the blocks |
+| `peerreviewagents.workspace` | the workspace tools an app needs to write files the engine reads back: `digest`, `read_json`, `write_json`, `normalize_review`, `save_review`, `words`, `text_of` |
 | `plugin_directory()` | the `pra` plugin that ships inside this package, for `claude --plugin-dir` |
 | `claude_code_version()` | what `claude --version` prints, or `None` when Claude Code is not on this PATH |
 | `review_parser(prog=...)`, `report_parser(prog=...)` | the real parsers behind the two commands, for checking a wrapper's own options against them |

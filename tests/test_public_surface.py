@@ -834,6 +834,77 @@ def test_a_damaged_provider_code_map_and_probe_are_named_in_problems(tmp_path):
     assert 'provider' in named and 'code map' in named and 'probe' in named, run['problems']
 
 
+def test_locating_a_run_and_its_error_are_public(tmp_path):
+    """An app that lists run folders no longer imports `runs` to resolve one."""
+    assert peerreviewagents.locate_run is runs.locate
+    assert peerreviewagents.NotARunFolder is runs.NotARunFolder
+
+    review = complete_run(tmp_path)
+    root, found = peerreviewagents.locate_run(review.parent)
+
+    assert (root, found) == (review.parent.resolve(), review.resolve())
+    assert peerreviewagents.locate_run(review)[1] == review.resolve()
+    with pytest.raises(peerreviewagents.NotARunFolder):
+        peerreviewagents.locate_run(tmp_path)
+
+
+def test_the_workspace_helpers_are_the_engine_s_own_objects():
+    """An app that writes what the engine reads must use the engine's own tools."""
+    from peerreviewagents import workspace
+    from peerreviewagents.engine import annotations, ingest, storage
+
+    assert workspace.digest is storage.digest
+    assert workspace.read_json is storage.read
+    assert workspace.write_json is storage.write
+    assert workspace.save_review is annotations.save_review
+    assert workspace.normalize_review is annotations.normalize_review
+    assert workspace.words is ingest.words
+    assert workspace.text_of is ingest.text_of
+    assert set(workspace.__all__) == {'digest', 'read_json', 'write_json', 'save_review',
+                                      'normalize_review', 'words', 'text_of'}
+    for name in workspace.__all__:
+        assert callable(getattr(workspace, name)), name
+
+
+def test_a_workspace_written_through_the_public_module_is_one_the_engine_verifies(tmp_path):
+    """The round trip: write with these names, and `verify_workspace` accepts it."""
+    from peerreviewagents import verify_workspace, workspace
+
+    text = 'The cohort of 12 samples was 🧠 imaged twice.'
+    paper = {'id': 'paper-1', 'source_sha256': 'ab' * 32,
+             'blocks': [{'id': 'b1', 'text': text, 'sha256': workspace.digest(text)}]}
+    root = tmp_path / 'workspace'
+    workspace.write_json(root / 'paper.json', paper)
+    workspace.write_json(root / 'manifest.json', {
+        'files': {'paper.json': workspace.digest((root / 'paper.json').read_bytes())}})
+
+    assert verify_workspace(root)['id'] == 'paper-1'
+    assert workspace.read_json(root / 'paper.json') == paper
+
+    response = {'findings': [
+        {'title': 'Name the unit', 'block_id': 'b1', 'quote': '12 samples',
+         'kind': 'question', 'evidence_blocks': ['b1'], 'comment': 'donors or scans?'}]}
+    saved = workspace.save_review(root, response, 'r1')
+
+    assert saved['findings'][0]['placement'] == 'anchored'
+    assert workspace.read_json(root / 'reviews' / 'r1.json') == saved
+    # The same review again is the same file, not a second one and not an error.
+    assert workspace.save_review(root, response, 'r1') == saved
+    assert workspace.normalize_review(paper, response, 'r2')['findings'][0]['id'] == 'r2-1'
+
+
+def test_the_two_text_helpers_read_text_the_way_the_import_does():
+    import xml.etree.ElementTree as ET
+
+    from peerreviewagents import workspace
+
+    element = ET.fromstring('<p>The cohort of  12\n samples <i>was</i> imaged.</p>')
+
+    assert workspace.text_of(element) == 'The cohort of 12 samples was imaged.'
+    assert workspace.text_of(None) == ''
+    assert workspace.words("12 samples, don't re-count") == ['12', 'samples', "don't", 're-count']
+
+
 def test_one_agent_that_ran_two_tasks_is_one_row(tmp_path):
     """The recorder ingests and later writes the review; that is one agent."""
     review = complete_run(tmp_path)

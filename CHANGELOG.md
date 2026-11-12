@@ -98,6 +98,21 @@ including 32 test modules, and nothing was left behind as a shim.
   `plugin.starter.claude_version`, `plugin.starter.build_parser` and
   `cli.main.COMMANDS`/`cli.main.report_parser`, which an integration was still
   importing from private modules.
+- `locate_run(path)` and `NotARunFolder` on the top level: the run-folder
+  resolution `read_run` and `write_reports` do first — `(run folder, review
+  folder)` from either spelling, a symlinked `review/` refused by name — and
+  the error all three raise, for an app that lists a directory of runs before
+  reading any of them. They were `runs.locate` and `runs.NotARunFolder`.
+- `peerreviewagents.workspace`, the workspace tools an application needs to
+  write files the engine reads back and verifies: `digest`, `read_json`,
+  `write_json`, `normalize_review`, `save_review`, `words` and `text_of`. Each
+  is the engine's own object under a name that says what it is, so there is no
+  second digest, second JSON writer or second review normalisation to disagree
+  with the engine about what a workspace holds. The first application to keep
+  its own revisions beside a workspace was importing all seven from
+  `engine.storage`, `engine.annotations` and `engine.ingest`. The
+  whole-workspace operations stay on the top level: `import_paper`,
+  `verify_workspace`, `export_draft`.
 - `peerreviewagents.names`, a module that imports nothing, holding the names an
   integration needs as constants: `RUN_DIRECTORY`, `MANUSCRIPT_DIRECTORY`,
   `RUN_STATUSES`, `COMPLETE_STATUSES`, `CLI_COMMANDS` and
