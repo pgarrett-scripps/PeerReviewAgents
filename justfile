@@ -8,18 +8,15 @@ default:
     @just --list
 
 # --- Install ----------------------------------------------------------------
+# The venv has to be `.venv` here: the plugin launches its MCP server as
+# `${CLAUDE_PROJECT_DIR}/.venv/bin/python`.
 
 # Create the uv-managed venv and install the project (editable)
 install:
     [ -d .venv ] || uv venv
     uv pip install -e .
 
-# Install with the MCP extra (the MCP server and the agent plugins)
-install-mcp:
-    [ -d .venv ] || uv venv
-    uv pip install -e ".[mcp]"
-
-# Install with a chosen extras group: `just install-extras mcp`
+# Install with a chosen extras group: `just install-extras dev`
 install-extras extras:
     [ -d .venv ] || uv venv
     uv pip install -e ".[{{extras}}]"
@@ -38,32 +35,21 @@ clean-venv:
     rm -rf .venv
 
 # --- Run --------------------------------------------------------------------
-# These recipes spend subscription usage. `just review paper.pdf` is the whole
-# review: it imports the PDF, runs it and writes REVIEW.md beside it.
+# `just review paper.pdf run/` spends subscription usage: it imports the PDF,
+# runs the pra plugin over it in a headless Claude Code session, and writes
+# REVIEW.md into the run folder.
 
-# Review a manuscript PDF end to end (pass extra peerreview flags after the path)
-review path *args:
-    uv run peerreview {{path}} {{args}}
+# Review a manuscript PDF end to end (pass extra review flags after the folder)
+review path out *args:
+    uv run peerreview review {{path}} {{out}} {{args}}
 
-# Import a PDF into a manuscript workspace, with no model calls
-import path workspace:
-    uv run peerreview import {{path}} {{workspace}}
-
-# Verify an imported workspace against its manifest (no model calls)
-verify workspace:
-    uv run peerreview verify {{workspace}}
-
-# Rewrite REVIEW.md and REVIEW.txt from a finished or stopped run (no model calls)
+# Rewrite REVIEW.md and REVIEW.txt from a finished or blocked run (no model calls)
 report run:
     uv run peerreview report {{run}}
 
-# Launch the FastAPI web UI (upload a PDF, watch the run, read the report)
-serve *args:
-    uv run peerreview serve {{args}}
-
 # --- Quality ----------------------------------------------------------------
 
-# Run the test suite (no model calls, no network, no API keys)
+# Run the test suite (no model calls, no network, no subscription)
 test:
     uv run --extra dev pytest tests/ -q
 
@@ -71,7 +57,7 @@ test:
 test-v:
     uv run --extra dev pytest tests/ -vv
 
-# Run the engine suite alone
+# Run the manuscript-workspace suite alone
 test-engine:
     uv run --extra dev pytest tests/engine -q
 
@@ -96,14 +82,10 @@ check: lint fmt-check test
 
 # --- Housekeeping -----------------------------------------------------------
 
-# Remove what `just serve` wrote (review runs and uploaded manuscripts)
-clean-reviews:
-    rm -rf reviews/ .peerreview-uploads/
-
 # Remove caches and build artifacts
 clean:
     rm -rf .pytest_cache .ruff_cache build dist *.egg-info
     find . -type d -name __pycache__ -prune -exec rm -rf {} +
 
-# Full wipe: caches, review runs, and venv
-clean-all: clean clean-reviews clean-venv
+# Full wipe: caches and venv
+clean-all: clean clean-venv

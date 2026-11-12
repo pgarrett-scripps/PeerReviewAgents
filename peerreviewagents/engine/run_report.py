@@ -1,12 +1,21 @@
-"""Readable Markdown and plain-text reports of a review run, written from its saved JSON."""
+"""Readable Markdown and plain-text reports of a review run, written from its saved JSON.
+
+Nothing here makes a model call. Everything on the page comes from files the run
+wrote about itself: ``protocol.json`` for the arm and the agent slots,
+``runtime.json`` and the usage receipts for what the run really spent, and
+``editor-package.json`` for the review.
+"""
 import textwrap
 from pathlib import Path
 
 from .storage import read
+from .usage import agent_rows, observed_usage, runtime_usage
 
 WIDTH = 88
+MANUSCRIPT = 'manuscript'
 NOTICE = ('This review was generated automatically. Exact quotations and issue accounting were validated. '
           'Scientific correctness was not.')
+AGENT_COLUMNS = ('Agent', 'Model', 'Server calls', 'Session calls', 'Tokens', 'State')
 
 
 def _optional(path):
@@ -15,11 +24,11 @@ def _optional(path):
 
 
 def find_workspace(run):
-    """Locate the reviewed workspace through a tool configuration saved with the run."""
-    for config in sorted(Path(run).glob('**/execution/workspace/tool-config.json')):
-        paper = read(config).get('paper')
-        if paper and (Path(paper) / 'paper.json').is_file():
-            return Path(paper)
+    """Locate the reviewed workspace: the manuscript folder the run imported into."""
+    run = Path(run)
+    for candidate in (run.parent / MANUSCRIPT, run / MANUSCRIPT):
+        if (candidate / 'paper.json').is_file():
+            return candidate
     return None
 
 
@@ -30,29 +39,81 @@ def _reviewer_packages(run):
             if (path / 'editor-package.json').is_file()]
 
 
-def _final_review(run, mode):
-    """Ensemble, independent, panel and self-revision runs save an editor package. Plain and workspace runs do not."""
-    for path in (run / 'editor-package.json', run / 'responses' / f'{mode}-guarded.json'):
-        if path.is_file():
-            return read(path)
-    return None
+def _final_review(run):
+    """The editor's pooled package. An arm that runs without an editor writes none."""
+    path = run / 'editor-package.json'
+    return read(path) if path.is_file() else None
 
 
-def _workflow(protocol, reviewers, synthesis):
-    if protocol.get('mode') == 'ensemble':
-        policy = 'ordinary' if synthesis is not None and synthesis.name == 'ordinary-synthesis' else 'debate'
-        count = protocol.get('reviewers') or reviewers
-        return f'Ensemble: {count} independent reviewers, then one {policy} synthesis'
-    return f"{protocol.get('mode', 'unknown')} review"
+def _workflow(protocol):
+    """What the arm really ran, as the server's own plan recorded it."""
+    plan = protocol.get('plan') or {}
+    arm = protocol.get('arm') or protocol.get('mode') or 'unknown'
+    specialists = plan.get('specialists') or []
+    parts = [f"{plan.get('reviewers') or protocol.get('reviewers') or 0} core reviewer(s)",
+             f'{len(specialists)} specialist track(s)' if specialists else 'no specialist track',
+             *(['one revision pass'] if plan.get('revision') else []),
+             'an editor' if plan.get('editor') else 'no editor']
+    return f'{arm}: ' + ', '.join(parts)
 
 
-def _ledger(validation):
-    ledger = (validation or {}).get('component_ledger')
-    if not ledger:
+def _duration(seconds):
+    """Wall time in minutes and seconds, or nothing when the run never recorded it."""
+    if not isinstance(seconds, (int, float)):
         return None
-    verdict = 'valid' if validation.get('valid') else 'invalid'
-    return (f"{ledger.get('accounted_components')} of {ledger.get('expected_components')} components "
-            f'accounted, synthesis {verdict}')
+    whole = round(float(seconds))
+    return f'{whole // 60} min {whole % 60} s' if whole >= 60 else f'{whole} s'
+
+
+def _total(rows, key):
+    """The sum of one numeric column, or nothing when no agent reported it."""
+    values = [row[key] for row in rows if isinstance(row.get(key), (int, float))]
+    return f'{sum(values):,}' if values else None
+
+
+def _tokens(runtime, usage):
+    """What the run spent, from the session's own stream, with receipts as fallback.
+
+    ``runtime.json`` is the stream's accounting and the number to publish. The
+    usage receipts are the mid-run guard and answer for a run whose session
+    ended before the starter could write a runtime file.
+    """
+    total, source = runtime.get('tokens_total'), 'session stream'
+    if not total:
+        total, source = usage['observed_tokens'], 'usage receipts'
+    if not total:
+        return None
+    text = f'{total:,} ({source})'
+    return text + '; some usage is unknown' if usage.get('unknown') else text
+
+
+def _agent_label(row):
+    attempt = row.get('attempt') or 1
+    return row['slot'] if attempt == 1 else f"{row['slot']}#{attempt}"
+
+
+def _agent_table(agents):
+    """One row per agent slot, so the model each one ran as is on the page.
+
+    The models are pinned per agent in the plugin's own agent files, so there is
+    no single model for a run and the table is the only honest answer. The slot
+    name carries the role and the track already (``core-2``, ``spec-stats``,
+    ``editor``), so neither gets a column of its own: the table has to stay
+    inside the plain-text report's width.
+
+    ``Server calls`` is what the server served that agent, which is the count
+    the ledger bounds. ``Session calls`` is every tool call Claude Code saw it
+    make, which is larger and is the session's count rather than the server's.
+    """
+    if not agents:
+        return []
+    body = [[_agent_label(row),
+             row.get('model') or 'not recorded',
+             row.get('tool_calls') if row.get('tool_calls') is not None else '—',
+             row.get('session_calls') if row.get('session_calls') is not None else '—',
+             f"{row['tokens']:,}" if isinstance(row.get('tokens'), int) else '—',
+             row.get('state') or '—'] for row in agents]
+    return [('heading2', 'Agents'), ('table', list(AGENT_COLUMNS), body)]
 
 
 def _location(finding):
@@ -94,7 +155,6 @@ def _review(heading, review):
 
 def report_blocks(run, workspace=None):
     """Collect the run details, final review and each independent reviewer as renderable blocks."""
-    from .ensemble import observed_usage
     run = Path(run).resolve()
     protocol = _optional(run / 'protocol.json')
     if protocol is None:
@@ -107,31 +167,43 @@ def report_blocks(run, workspace=None):
     if paper and paper_id and paper.get('id') != paper_id:
         raise ValueError('The workspace does not match the reviewed manuscript')
     reviewers = _reviewer_packages(run)
-    synthesis = next((run / name for name in ('debate', 'ordinary-synthesis') if (run / name).is_dir()), None)
-    first = _optional(run / 'reviewer-1' / 'protocol.json') or {}
     progress = _optional(run / 'progress.json') or {}
     status = progress.get('status', 'unknown')
     if status == 'running':
         status += ' (last recorded state, the run may have stopped)'
+    runtime = runtime_usage(run) or {}
     usage = observed_usage(run)
-    tokens = f"{usage['observed_tokens']:,}" + (' recorded, some usage is unknown' if usage['unknown'] else '')
+    agents = agent_rows(run, protocol)
+    models = sorted({row['model'] for row in agents if row.get('model')})
+    if runtime.get('blocked_reason'):
+        status = f"{status}: {runtime['blocked_reason']}"
     fields = [('Paper', (paper or {}).get('title')), ('Paper ID', paper_id),
               ('Source', (paper or {}).get('source_url')),
-              ('Workflow', _workflow(protocol, len(reviewers), synthesis)),
-              ('Model', f"{protocol.get('model')} ({protocol.get('provider')}, {protocol.get('effort')} effort)"),
-              ('Literature cutoff', protocol.get('literature_cutoff') or first.get('literature_cutoff')),
-              ('Run status', status), ('Model calls', usage['calls']), ('Observed tokens', tokens),
-              ('Component ledger', _ledger(_optional(synthesis / 'synthesis-validation.json') if synthesis else None)),
+              ('Workflow', _workflow(protocol)),
+              ('Models', ', '.join(models) or None),
+              ('Literature cutoff', protocol.get('literature_cutoff')),
+              ('Run status', status),
+              ('Agents', len(agents) or None),
+              ('Server tool calls', _total(agents, 'tool_calls')),
+              ('Session tool calls', _total(agents, 'session_calls')),
+              ('Tokens', _tokens(runtime, usage)),
+              ('Wall time', _duration(runtime.get('wall_seconds'))),
+              ('Claude Code', runtime.get('claude_code_version')),
               ('Run folder', str(run))]
     title = f"Review: {paper['title']}" if paper and paper.get('title') else f'Review run {run.name}'
     blocks = [('title', title), ('fields', [(key, value) for key, value in fields if value not in (None, '')])]
-    final = _final_review(run, protocol.get('mode'))
+    if usage.get('usage_limitation'):
+        blocks.append(('labeled', 'Usage limitation', usage['usage_limitation']))
+    for limit in runtime.get('rate_limits') or []:
+        blocks.append(('labeled', 'Rate limit', str(limit.get('reason'))))
+    blocks += _agent_table(agents)
+    final = _final_review(run)
     if final or reviewers:
         blocks.append(('paragraph', NOTICE))
     if progress.get('error') and progress.get('status') != 'complete':
         blocks.append(('labeled', 'Run error', progress['error']))
-    heading = 'Final review (synthesis)' if protocol.get('mode') == 'ensemble' or reviewers or synthesis else 'Review'
-    blocks += _review(heading, final) if final else [('heading2', heading), ('paragraph', 'No final review was produced.')]
+    blocks += (_review('Final review (editor)', final) if final else
+               [('heading2', 'Review'), ('paragraph', 'No final review was produced.')])
     for number, review in reviewers:
         blocks += _review(f'Reviewer {number} (independent)', review)
     return blocks
@@ -149,6 +221,11 @@ def render_markdown(blocks):
         elif kind == 'fields':
             lines += ['| Detail | Value |', '| --- | --- |']
             lines += [f'| {key} | {_cell(value)} |' for key, value in content[0]] + ['']
+        elif kind == 'table':
+            headers, rows = content
+            lines += ['| ' + ' | '.join(_cell(head) for head in headers) + ' |',
+                      '| ' + ' | '.join('---' for _ in headers) + ' |']
+            lines += ['| ' + ' | '.join(_cell(value) for value in row) + ' |' for row in rows] + ['']
         elif kind == 'inline':
             lines += [' · '.join(f'**{key}:** {value}' for key, value in content[0]), '']
         elif kind == 'paragraph':
@@ -184,6 +261,15 @@ def render_text(blocks, width=WIDTH):
             pad = max(len(key) for key, _ in content[0]) + 2
             for key, value in content[0]:
                 lines += _wrap(' '.join(str(value).split()), f'{key + ":":<{pad}}', ' ' * pad, width)
+            lines.append('')
+        elif kind == 'table':
+            cells = [[_cell(value) for value in row] for row in (content[0], *content[1])]
+            pad = [max(len(row[column]) for row in cells) for column in range(len(content[0]))]
+            for index, row in enumerate(cells):
+                lines.append('  '.join(value.ljust(pad[column])
+                                       for column, value in enumerate(row)).rstrip())
+                if index == 0:
+                    lines.append('  '.join('-' * size for size in pad))
             lines.append('')
         elif kind == 'inline':
             lines += _wrap(' | '.join(f'{key}: {value}' for key, value in content[0]), width=width) + ['']

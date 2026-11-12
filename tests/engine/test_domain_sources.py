@@ -1,5 +1,4 @@
 """Behavioral contracts for routing, source identity, budgets and evidence transport."""
-import copy
 import io
 import json
 import tempfile
@@ -11,9 +10,6 @@ from peerreviewagents.engine.domain_registry import catalog, route, context
 from peerreviewagents.engine.external_evidence import SourceClient, validate_references
 from peerreviewagents.engine.source_adapters import request, parse
 from peerreviewagents.engine.storage import read
-from peerreviewagents.engine.model_runtime import tool_profile
-from peerreviewagents.engine.investigation import specs
-from peerreviewagents.engine.review_schema import REVIEW, with_external_evidence
 
 
 class Sources(unittest.TestCase):
@@ -123,14 +119,6 @@ class Sources(unittest.TestCase):
         self.assertIsNone(date)
         fields, _, _, identity = parse('string', '9606:TP53', [{'preferredName': 'TP53', 'ncbiTaxonId': 10090}])
         self.assertIsNone(identity)
-
-    def test_domain_profile_is_explicit_and_schema_enhancement_is_a_copy(self):
-        original = copy.deepcopy(REVIEW)
-        enhanced = with_external_evidence(REVIEW)
-        self.assertEqual(REVIEW, original)
-        self.assertIn('source_evidence', enhanced['properties']['findings']['items']['required'])
-        self.assertIn('lookup_source', tool_profile({'tool_profile': 'domains-v1'})[1])
-        self.assertEqual(set(tool_profile({'tool_profile': 'domains-v1'})[1]), {s['name'] for s in specs()})
 
 
 class Routing(unittest.TestCase):

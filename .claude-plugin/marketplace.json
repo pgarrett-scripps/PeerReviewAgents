@@ -6,9 +6,9 @@
   "description": "Local evidence-linked scholarly peer review",
   "plugins": [
     {
-      "name": "peer-review-agents",
-      "source": "./plugins/peer-review-agents",
-      "description": "Review a manuscript PDF with the PeerReviewAgents engine, on an authenticated local coding agent subscription",
+      "name": "pra",
+      "source": "./plugins/pra",
+      "description": "Review a manuscript PDF with N core reviewers, six specialist tracks and an editor, every finding anchored to a quotation, on a Claude Code subscription login",
       "category": "research",
       "tags": ["peer-review", "research", "manuscripts", "mcp"]
     }

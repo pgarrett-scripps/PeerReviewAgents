@@ -10,9 +10,11 @@
 > **The harness is gone.** `peerreviewagents.eval`, the `just eval-*` recipes
 > and the corpus builder ran this protocol against the LangGraph panel, and
 > were deleted with the panel in 0.8.0. To re-run it, check out the tag
-> `legacy-langgraph-v0.6.1` (or the `v0.7.0` release). The engine's own study
-> design is [`study-arms.md`](study-arms.md), which gives the exact command for
-> each arm.
+> `legacy-langgraph-v0.6.1` (or the `v0.7.0` release). The current study design
+> is [`study-arms.md`](study-arms.md), which gives the exact command for each
+> arm; since 0.9 an arm is a workflow — which agents run — and the review
+> itself runs as the `pra` Claude Code plugin, so neither the harness nor the
+> conditions below can be reproduced on a current checkout.
 
 This protocol characterizes PeerReviewAgents against human OpenReview outcomes
 and a one-call practical baseline. It is a software validation study, not a

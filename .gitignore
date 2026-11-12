@@ -12,10 +12,11 @@ reports/*
 .pytest_cache/
 .ruff_cache/
 
-# User-uploaded manuscripts (web UI drop zone)
-.peerreview-uploads/
 .peerreview-checkpoints/
 .peerreview-checkpoints-*/
+
+# Written by whichever client last resolved the MCP server list
+.mcp.json.lock
 
 # Evaluation corpus + runs (PDFs, jsonl, reports)
 data/

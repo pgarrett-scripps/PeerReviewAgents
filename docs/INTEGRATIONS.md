@@ -1,300 +1,153 @@
-# Local agent integrations
+# Integrations
 
-PeerReviewAgents runs on the user's machine. It does not require a hosted PeerReviewAgents service, a PeerReviewAgents account, or a model API key: the review runs on a signed-in `claude` or `codex` CLI.
+There is one integration in 0.9: the `pra` plugin for Claude Code. It is also
+the only way a review runs, whether you start it from the command line or from
+inside a session, so there is nothing to wire up twice.
 
-That CLI still sends model prompts through its own authenticated service. PeerReviewAgents does not receive those prompts. Manuscripts, checkpoints, and report files remain in local filesystem paths controlled by the user.
+```
+peerreview review            plugins/pra            peerreviewagents.plugin.server
+  (the command)      →     (workflow, agents,   →   (22 MCP tools, the ledger,
+                            skills, .mcp.json)       the run files)
+```
 
-## Architecture
+The command launches a headless Claude Code session on the plugin. A session
+you drive yourself loads the same plugin and the same server. Either way the
+server owns the manuscript, the agent identities, the tool allowances, the
+budgets and the files.
 
-The integration has three shared parts:
+## Requirements
 
-1. The Python peer-review pipeline.
-2. The local `peerreview-mcp` standard input and output server.
-3. The `peer-review-manuscript` Agent Skill.
+- The standalone Claude Code CLI, signed in to a subscription, with `claude` on
+  `PATH`. Claude Desktop alone does not install it; see
+  [the quickstart](https://code.claude.com/docs/en/quickstart).
+- A checkout of this repository with its virtual environment at `.venv`. The
+  plugin's `.mcp.json` launches `${CLAUDE_PROJECT_DIR}/.venv/bin/python -m
+  peerreviewagents.plugin.server`, and `${CLAUDE_PROJECT_DIR}` is the package
+  root the run starts from, so the venv has to be in that one place.
+- No API key. A run strips `ANTHROPIC_API_KEY` from the session's environment
+  and never passes `--bare`, so it cannot silently fall back to one.
 
-Each coding agent needs packaging that loads the skill and MCP server. The review itself runs on one of the engine's two transports, whichever client started it.
-
-## Compatibility
-
-| Client | Loads local MCP | Loads the skill | Runs the review on | Validation level |
-|---|---:|---:|---:|---|
-| Standalone Claude Code CLI | Yes | Yes | `claude-code` | Live tested on Linux |
-| Claude Desktop Code tab, local sessions | Yes | Yes | `claude-code`, through the standalone CLI | Installer and launch contract tested. Desktop UI not live tested |
-| Codex | Yes | Yes | `codex` | Live tested |
-| Factory Droid | Yes | Yes | `claude-code` or `codex` | Unit tested, live CLI not available in the development environment |
-| Pi | Yes, through the packaged MCP adapter | Yes | `claude-code` or `codex` | Package and command parsing tested, live login not available in the development environment |
-| Other standard input and output MCP clients | Usually | Client dependent | `claude-code` or `codex` | Configuration recipe only |
-
-Which client calls the tools and which transport runs the review are separate choices. The engine's transports are `claude-code` (the default) and `codex`: a review started from Droid or Pi runs on whichever of those two CLIs is installed and signed in, not on the client's own model access. Droid and Pi were review providers through 0.7.x, and that path went with the LangGraph panel in 0.8.0.
-
-## Prerequisites
-
-- Python 3.10 through 3.13. The Claude shell installers provision this automatically.
-- One supported coding agent CLI installed and authenticated.
-- `uv` is recommended. A user-level `pip` installation is the fallback.
-
-From a cloned checkout, install the local runtime:
+## From the command line
 
 ```bash
-./scripts/install-local.sh runtime
+peerreview review manuscript.pdf run-output
 ```
 
-This installs `peerreview` and `peerreview-mcp` as user-level commands. It does not install or configure an agent plugin.
+Before spending anything, the starter runs a throwaway session and reads its
+start-up event: the review only begins once that event shows the `pra` plugin
+loaded, the `peerreview` server **connected**, and every tool the agents are
+allowed to call present. What it saw is written to
+`run-output/review/startup.json` either way, and a failed probe is a `blocked`
+run with its reasons, not a traceback.
 
-## Claude Code and Claude Desktop
+## Inside a Claude Code session
 
-Use the standalone Claude Code CLI. VS Code and its Claude extension are not required.
-The Claude Desktop Code tab can host the plugin, but PRA runs the review panel
-through the separately installed, signed-in `claude` command. Installing Desktop
-alone does not provide that command, as explained in
-[Anthropic's Desktop setup guide](https://code.claude.com/docs/en/desktop-quickstart).
-
-### Install on a new computer
-
-1. Install the [standalone Claude Code CLI](https://code.claude.com/docs/en/quickstart).
-2. Open a terminal and run `claude` once to sign in with the account that will run the reviews.
-3. Run the shared installer below. It detects your operating system. Python and uv are installed
-   automatically when needed. No administrator access or manual Python setup is required.
-
-Use the same command on **macOS, Linux, or Windows with Git Bash**. From a checkout:
+From a checkout:
 
 ```bash
-bash scripts/install-claude.sh
+claude --plugin-dir /absolute/path/to/PeerReviewAgents/plugins/pra
 ```
 
-Without a checkout, download and run the standalone installer:
+Or add the repository as a local marketplace and install it by name:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/pgarrett-scripps/PeerReviewAgents/main/scripts/install-claude.sh -o /tmp/install-pra-claude.sh &&
-bash /tmp/install-pra-claude.sh
+claude plugin marketplace add /absolute/path/to/PeerReviewAgents
+claude plugin install pra@peer-review-agents-local
 ```
 
-The standalone script downloads the repository itself. Re-run it to upgrade.
-On Windows, the script automatically handles native Windows paths and runtime setup.
-It uses the [official uv installer](https://docs.astral.sh/uv/reference/installer/)
-and [uv-managed Python](https://docs.astral.sh/uv/guides/install-python/), without editing shell profiles.
-PRA still runs on Python internally, but users do not need to manage it.
+Then ask for one of its three skills:
 
-<details>
-<summary>Windows without Bash</summary>
+| Skill | What it runs |
+| --- | --- |
+| `peer-review-manuscript` | a full review: core reviewers, specialists, editor |
+| `check-draft` | the specialist tracks you name on a draft of your own |
+| `follow-up` | what changed since a previous run of the same paper |
 
-Windows does not include Bash by default. If Git Bash is unavailable, run this in
-PowerShell instead. There is no need to install Bash or WSL:
+The agents may call only the server's tools — the allow list the starter passes
+is `Workflow`, `Skill`, `TodoWrite` and the 22 `peerreview` tools, and nothing
+else. No `Read`, `Write`, `Edit`, `Bash`, `WebSearch` or `WebFetch` reaches a
+reviewer, which is why a quotation cannot come from anywhere but a source
+block.
 
-```powershell
-$installer = Join-Path $env:TEMP "install-pra-claude.ps1"
-Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/pgarrett-scripps/PeerReviewAgents/main/scripts/install-claude.ps1" -OutFile $installer -ErrorAction Stop
-powershell -NoProfile -ExecutionPolicy Bypass -File $installer
-```
+## Other MCP clients
 
-From a checkout, use `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-claude.ps1`.
-This launches the same native Windows setup used by the Bash entry point.
-It works with Windows PowerShell 5.1 or later.
-Its optional flags are `-Claude`, `-Runtime`, `-DataDir`, `-ConfigureOnly`, and `-Help`.
+The server is a plugin server. It takes `--plugin-root`, derives a per-run salt
+for agent tokens, and expects the workflow to claim slots in order, so pointing
+another client at it directly gives you the tools without the protocol that
+makes them meaningful. There is no supported generic-client configuration in
+0.9, and the standalone `peerreview-mcp` server that offered one was deleted
+with the rest of the 0.8 surface.
 
-</details>
+If you want a review from another client, have it run `peerreview review` as a
+subprocess and read the run folder. The command is the integration boundary.
 
-The installer creates a dedicated PRA environment, installs the MCP extra, and
-registers `peer-review-agents@peer-review-agents-configured` for the current user.
+## What 0.9 removed
 
-The generated plugin stores absolute paths to `peerreview-mcp` and `claude`, so
-Desktop does not need to inherit your terminal's PATH. Paths containing spaces
-are supported. No editor extension path is discovered or required.
+| Gone | Where it still exists |
+| --- | --- |
+| `peerreview-mcp`, the standalone MCP server | the `v0.8.0` release |
+| The Codex plugin and the Codex provider | the `v0.8.0` release |
+| Factory Droid and Pi packages | the `v0.8.0` release |
+| The desktop installers (`scripts/install-claude.*`) | the `v0.8.0` release |
+| The local web UI (`peerreview serve`) | the `v0.8.0` release |
+| The LangGraph panel | the `legacy-langgraph-v0.6.1` tag |
 
-4. Restart Claude Desktop or start a new Claude Code session. In Desktop, select
-   the Code tab, a Local session, and the folder containing the manuscript.
-5. Enable the configured plugin in the plugin manager and ask it to review the
-   manuscript. Use `provider: claude-code` and `model: default`.
-
-If an older `peer-review-agents@peer-review-agents-local` plugin is enabled,
-disable it to avoid duplicate tools. The installer leaves other plugins and
-settings intact. Desktop Code and the Desktop Chat tab have separate MCP
-configuration, as described in the
-[Desktop reference](https://code.claude.com/docs/en/desktop#shared-configuration).
-
-### Custom installations and upgrades
-
-For executables in custom locations, pass their absolute paths:
-
-```bash
-bash scripts/install-claude.sh --claude /path/to/claude --runtime /path/to/peerreview-mcp
-```
-
-The same flags work on all supported platforms. In Git Bash, Windows paths such as
-`"C:/Program Files/Claude/claude.exe"` and `/c/Users/name/.local/bin/claude.exe` are accepted.
-`--runtime` uses an existing PRA installation instead of installing another copy.
-Omit it for the managed environment. Re-run the installer after pulling repository
-updates to upgrade the runtime and refresh the cached plugin, then restart Claude.
-The `bash scripts/install-local.sh claude` shortcut invokes this same installer
-and forwards custom installer options.
-
-The adapter also finds native CLI installations in `~/.local/bin` when that
-directory is absent from PATH. `PEERREVIEW_CLAUDE_PATH` selects a custom executable.
-An invalid override fails explicitly instead of silently using a different CLI.
-
-For source development, after installing the MCP extra and making its command
-available on PATH, load the repository directly:
-
-```bash
-claude --plugin-dir /absolute/path/to/PeerReviewAgents
-```
-
-Each review turn uses `claude -p` with tools disabled, safe mode enabled, no
-session persistence, and schema-constrained JSON output. Use an up-to-date CLI
-that supports these flags. The installer does not copy credentials from an IDE.
-
-Uninstall the configured plugin:
-
-```bash
-claude plugin uninstall peer-review-agents@peer-review-agents-configured
-claude plugin marketplace remove peer-review-agents-configured
-```
-
-The installer prints its data directory. Remove that directory to remove the
-managed PRA environment and generated marketplace once the plugin is uninstalled.
-
-## Codex
-
-Install the runtime and plugin:
-
-```bash
-./scripts/install-local.sh codex
-```
-
-Start a review with `provider: codex`. The engine launches a fresh ephemeral `codex exec` process per call in a temporary directory with a read-only sandbox and user rules disabled.
-
-Upgrade by reinstalling after updating the checkout:
-
-```bash
-./scripts/install-local.sh runtime
-codex plugin add peer-review-agents@peer-review-agents-local
-```
-
-Uninstall the plugin:
-
-```bash
-codex plugin remove peer-review-agents@peer-review-agents-local
-```
-
-## Factory Droid
-
-Factory Droid accepts Claude Code plugin layouts and translates `.mcp.json` automatically. Install the same local marketplace:
-
-```bash
-./scripts/install-local.sh droid
-```
-
-Droid then calls the same MCP tools as Claude Code, and the review runs on the
-`claude` or `codex` CLI the request names, not on Droid's own model access.
-Droid was a review provider of its own through 0.7.x; that path went with the
-LangGraph panel in 0.8.0.
-
-Upgrade or uninstall:
-
-```bash
-droid plugin update peer-review-agents@peer-review-agents-local --scope user
-droid plugin uninstall peer-review-agents@peer-review-agents-local --scope user
-```
-
-## Pi
-
-Install the runtime and Pi package:
-
-```bash
-./scripts/install-local.sh pi
-```
-
-The Pi package includes the review skill and configures the local MCP server
-through `pi-mcp-adapter`. As with Droid, the review itself runs on the `claude`
-or `codex` CLI the request names; Pi was a review provider of its own through
-0.7.x and that path went with the LangGraph panel in 0.8.0.
-
-Upgrade or uninstall:
-
-```bash
-pi update /absolute/path/to/PeerReviewAgents/integrations/pi
-pi remove /absolute/path/to/PeerReviewAgents/integrations/pi
-```
-
-## Generic MCP clients
-
-Any client that supports local standard input and output MCP servers can use this configuration after the runtime is installed:
-
-```json
-{
-  "mcpServers": {
-    "peer-review-agents": {
-      "command": "peerreview-mcp",
-      "args": [],
-      "env": {
-        "PEERREVIEW_MCP_INPUT_ROOTS": "/absolute/path/to/manuscripts",
-        "PEERREVIEW_MCP_OUTPUT_ROOT": "/absolute/path/to/reports"
-      }
-    }
-  }
-}
-```
-
-The client can start and monitor reviews, cancel one, and read completed artifacts. The review itself runs on a signed-in Claude Code or Codex CLI, whichever the request names, not on the calling client's own model.
-
-The MCP server reads manuscripts only beneath `PEERREVIEW_MCP_INPUT_ROOTS` and
-writes reports only beneath `PEERREVIEW_MCP_OUTPUT_ROOT`. The input root defaults
-to the server's working directory and the output root defaults to its `reports/`
-directory. Use the platform path separator to provide more than one input root.
+None of it was kept as a shim. A client built against 0.8's MCP tools or
+`peerreviewagents.engine.api` has to move to `peerreview review` and the run
+folder.
 
 ## Data handling
 
-- PDF conversion, orchestration, checkpoints, and report generation run locally.
-- The selected coding agent receives the manuscript content needed for each model turn through its normal authenticated service.
-- PeerReviewAgents does not add telemetry, remote storage, accounts, or billing.
-- Live literature research is off by default in the MCP tool. Enabling it sends research queries to the configured literature services.
-- There is no API key and no API-backed provider: the review runs only on a signed-in `claude` or `codex` CLI.
+- PDF conversion, the ledger, the run files and the reports are local.
+- The Claude Code session receives the manuscript text and page images it is
+  asked for, through its normal authenticated subscription service.
+- PeerReviewAgents adds no telemetry, no remote storage, no account and no
+  billing of its own.
+- Literature and identifier lookups are live HTTP requests to public scholarly
+  services, bounded by a per-run external-request budget, and removed entirely
+  from the `manuscript-only` arm. Every lookup is recorded with the identity it
+  resolved.
+- There is no API key and no API-backed provider: the review runs only on a
+  signed-in `claude` CLI.
 
 ## Troubleshooting
 
-### The MCP server does not start
+### The probe says the plugin was not loaded
 
-For Claude Code or Desktop, re-run the installer above and restart the app.
-It prints the absolute runtime and Claude paths configured in the plugin.
-For other clients, confirm the command is installed and visible to the agent process:
+`claude --plugin-dir` has to point at `plugins/pra`, not at the repository
+root. Check `run-output/review/startup.json`: it records the plugins, MCP
+servers, agents and slash commands the session reported.
+
+### The probe says the server did not connect
+
+The server is launched as `${CLAUDE_PROJECT_DIR}/.venv/bin/python`. Confirm
+that interpreter exists and has the project installed:
 
 ```bash
-command -v peerreview-mcp
+.venv/bin/python -c "import peerreviewagents.plugin.server"
 ```
 
-The MCP command waits for protocol input, so a manual launch appears idle. Stop it with `Ctrl+C`.
+A missing MCP SDK is the usual cause on an old environment. It is a dependency
+in 0.9, so `pip install -e .` installs it; re-run that after upgrading.
 
-### A transport executable is missing
-
-The review runs on one of two CLIs. Run the one the request names directly:
+### `claude` is missing or not signed in
 
 ```bash
 claude --version
-codex --version
 ```
 
-Install and authenticate the missing CLI, then retry the review. Set
-`PEERREVIEW_CLAUDE_PATH` or `PEERREVIEW_CODEX_PATH` if it is installed
-somewhere the agent process cannot see.
+Install and authenticate it, then retry. A run with no `claude` on `PATH` is a
+`blocked` run whose reason says so.
 
-### The client is installed but not authenticated
+### The run is `blocked`
 
-Open the client normally and complete its login flow. PeerReviewAgents never reads or copies the client's credential files.
+That is an outcome, not a crash. `runtime.json` holds the reason — a rate
+limit, a breached token ceiling, the wall-clock limit, a missing stage — and
+`peerreview report <run>` renders what was saved. Rate limits are recorded with
+the time the session reported, so a blocked run says when it can be retried.
 
-### A background review disappears
+### A review stopped when I closed the terminal
 
-Jobs are held by the running MCP server process. Restarting or reinstalling the plugin starts a new server and clears its in-memory job list. Completed report files remain on disk.
-
-### Remove the Python runtime
-
-For an installation created by `uv`:
-
-```bash
-uv tool uninstall peerreviewagents
-```
-
-For the fallback user-level `pip` installation:
-
-```bash
-python3 -m pip uninstall peerreviewagents
-```
+The review is that process. It is not a background job and there is no server
+holding it; re-run the command. Everything the server had already written
+stays on disk, and `peerreview report` reads it.

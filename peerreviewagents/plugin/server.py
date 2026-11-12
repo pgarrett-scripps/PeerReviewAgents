@@ -239,8 +239,37 @@ class Run:
                         ' '.join(str(raw.get('title', '')).split()).casefold()])
         return digest(key)[:16]
 
+    def cited_blocks(self, stored, corroborating):
+        """Every block a finding points at: its anchor, its evidence, its corroboration."""
+        ids = [stored.get('block_id'), *(stored.get('evidence_blocks') or [])]
+        if isinstance(corroborating, dict):
+            ids.append(corroborating.get('block_id'))
+        elif corroborating:
+            ids.append(corroborating)
+        return [block_id for block_id in ids if block_id]
+
+    def printed_numbers(self, stored, corroborating):
+        """Every number the manuscript prints in the blocks this finding cites.
+
+        The quoted sentence is one sentence of its block, and a reviewer
+        quoting a claim rarely quotes every number the claim combines: the
+        other half is usually two rows up in the same table. What a receipt has
+        to answer for is that its numbers come from the paper, not that they sit
+        inside the quotation marks, so the whole text of every cited block
+        counts — and no text that the finding does not cite.
+        """
+        printed = set(re.findall(NUMERIC, stored.get('quote', '')))
+        for block_id in self.cited_blocks(stored, corroborating):
+            printed |= set(re.findall(NUMERIC, self.blocks.get(block_id, {}).get('text', '')))
+        return printed
+
     def basis(self, agent, stored, receipt_id, corroborating):
         """``computed``, ``two-quotes`` or ``judgement``, decided here from receipts.
+
+        A receipt is ``computed`` when every number it works on is printed in
+        the blocks the finding cites. A number that appears in none of them came
+        from somewhere the server cannot check — the agent's own prose, or a
+        figure read by eye — and that is judgement however the arithmetic looks.
 
         A figure reading is judgement whatever else it carries: a number read off
         pixels is not a guard-checked number, so it can never be ``computed``.
@@ -250,14 +279,13 @@ class Run:
             return 'judgement', 'A reading taken from a figure is judgement.'
         receipt = agent.receipts.get(receipt_id) if receipt_id else None
         if receipt:
-            quoted = set(re.findall(NUMERIC, stored.get('quote', '')))
-            for block_id in stored.get('evidence_blocks', []):
-                quoted |= set(re.findall(NUMERIC, self.blocks.get(block_id, {}).get('text', '')))
+            printed = self.printed_numbers(stored, corroborating)
             inputs = set(re.findall(NUMERIC, receipt['expression']))
-            if inputs and inputs <= quoted:
-                return 'computed', 'Arithmetic receipt over numbers quoted from the paper.'
-            return ('judgement', 'The receipt uses numbers that are not in the quoted passages: '
-                    + ', '.join(sorted(inputs - quoted)))
+            if inputs and inputs <= printed:
+                return 'computed', ('Arithmetic receipt over numbers printed in the blocks this '
+                                    'finding cites.')
+            return ('judgement', 'The receipt uses numbers that none of the cited blocks print: '
+                    + ', '.join(sorted(inputs - printed)))
         if corroborating:
             return 'two-quotes', ('Two guard-checked passages. This shows both exist; it does not '
                                   'prove they conflict.')

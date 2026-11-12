@@ -2,17 +2,18 @@
 
 Library usage:
 
-    from peerreviewagents import plan_review, review_options, run_review_options
+    from peerreviewagents import review, import_paper, write_reports
 
-Those three are one review: ``plan_review`` resolves a manuscript PDF into a
-run folder, ``review_options`` validates a request in the same words every
-surface uses, and ``run_review_options`` runs it and writes the reports. The
-command line, the MCP server and the web UI all go through exactly these.
-``capabilities`` reports what this install can run without starting anything.
+:func:`review` is the whole review: it starts one headless Claude Code session
+on the ``pra`` plugin, enforces the token ceilings from the session's own
+stream, and writes the run folder. It is exactly what ``peerreview review``
+runs. :func:`import_paper` imports a PDF into a manuscript workspace without
+any model call, and :func:`write_reports` renders ``REVIEW.md`` and
+``REVIEW.txt`` from a run folder, also without any model call.
 
-The names resolve lazily (PEP 562) so that ``import peerreviewagents.engine``
-stays as cheap as it is on its own, and so this module never imports the web
-UI's dependencies for a caller that only wants the engine.
+The names resolve lazily (PEP 562) so that ``import peerreviewagents`` stays as
+cheap as it is on its own, and so a caller that only wants to read a run never
+imports the launcher.
 """
 
 from __future__ import annotations
@@ -20,16 +21,16 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # Static tooling sees the real objects, not the fallback.
-    from .engine.api import capabilities
-    from .engine.bundle import plan_review, review_options, run_review_options
+    from .engine.ingest import import_paper
+    from .engine.run_report import write_reports
+    from .plugin.starter import review
 
-__all__ = ["capabilities", "plan_review", "review_options", "run_review_options"]
+__all__ = ["review", "import_paper", "write_reports"]
 
 _LAZY = {
-    "capabilities": (".engine.api", "capabilities"),
-    "plan_review": (".engine.bundle", "plan_review"),
-    "review_options": (".engine.bundle", "review_options"),
-    "run_review_options": (".engine.bundle", "run_review_options"),
+    "review": (".plugin.starter", "review"),
+    "import_paper": (".engine.ingest", "import_paper"),
+    "write_reports": (".engine.run_report", "write_reports"),
 }
 
 

@@ -1,14 +1,12 @@
 """Bounded manuscript investigation with cached literature provenance."""
 import base64
-import datetime
 import json
-import os
 import re
 import subprocess
 from pathlib import Path
 from .annotations import verify_workspace
 from .calculator import calculate
-from .storage import digest, read
+from .storage import digest
 from .source_payload import text_block
 
 
@@ -24,33 +22,11 @@ class Investigation:
         self.limit=config.get('tool_limit',8)
         self.cutoff=config.get('literature_cutoff')
         self.calls=0
-        self.evidence_handles=config.get('evidence_handles',False)
-        self.manuscript_handles=config.get('manuscript_handles',False)
-        self.synthesis_preflight = None
         from .external_evidence import SourceClient
         self.sources = SourceClient(config.get('source_state') or str(self.out/'sources'), config['cache'],
                                     config.get('external_request_limit', 6), self.cutoff)
         from .targeted_sources import TargetedSources
         self.targeted = TargetedSources(self.sources)
-        if config.get('synthesis_ledger'):
-            from .synthesis_validation import SynthesisPreflight
-            self.synthesis_preflight = SynthesisPreflight(
-                read(config['synthesis_ledger']), self.paper, self.out/'synthesis-preflight',
-                self.sources.cards)
-
-    def audit_tool_discovery(self, event, server_info, tool_names=None):
-        """Append the MCP exposure observed by this server process."""
-        record = {
-            'timestamp': datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            'event': event,
-            'server': server_info,
-        }
-        if tool_names is not None:
-            record['tools'] = list(tool_names)
-        with (self.out/'tool-discovery.jsonl').open('a') as stream:
-            stream.write(json.dumps(record, ensure_ascii=False)+'\n')
-            stream.flush()
-            os.fsync(stream.fileno())
 
     def fetch(self, url):
         """Retrieve one allowlisted public record through the shared source client."""
@@ -60,38 +36,17 @@ class Investigation:
         return record
 
     def call(self,name,args):
-        if name == 'validate_synthesis' and self.synthesis_preflight is not None:
-            return self.synthesis_preflight.call(args.get('draft_json'))
         self.calls+=1
         if self.calls>self.limit:
             return {'notice':'Tool allowance exhausted. Finish from existing evidence.'}
         try:
             result=self.dispatch(name,args)
-            if self.evidence_handles:
-                result=self.attach_handles(result)
-            if self.manuscript_handles and name in ('read_blocks','search'):
-                from .evidence_handles import build_registry
-                blocks=result.get('blocks',result.get('matches',[]))
-                result['manuscript_handles']=[h.model_record() for h in build_registry({'blocks':blocks}).handles]
         except (ValueError,KeyError,TypeError,ArithmeticError,SyntaxError,StopIteration,subprocess.SubprocessError) as exc:
             result={'request_rejected':str(exc)}
         result['tool_receipt']={'call_index':self.calls,'tool':name}
         log={ 'tool':name,'arguments':args,'result':{k:v for k,v in result.items() if k!='image'}}
         with (self.out/'tool-log.jsonl').open('a') as stream:
             stream.write(json.dumps(log,ensure_ascii=False)+'\n')
-        return result
-
-    @staticmethod
-    def attach_handles(value):
-        """Expose immutable external spans without changing stored source cards."""
-        from .evidence_handles import source_card_handles
-        if isinstance(value,list):
-            return [Investigation.attach_handles(item) for item in value]
-        if not isinstance(value,dict):
-            return value
-        result={key:Investigation.attach_handles(item) for key,item in value.items()}
-        if 'evidence_id' in value and 'evidence_text' in value:
-            result['evidence_handles']=[h.model_record() for h in source_card_handles(value)]
         return result
 
     def dispatch(self,name,args):
@@ -168,69 +123,3 @@ class Investigation:
                 raise ValueError('A literature investigation needs a valid manuscript block ID')
             return self.targeted.search_literature(args['query'],args['block_id'])
         raise ValueError('Unknown investigation tool')
-
-
-def specs(synthesis_preflight=False):
-    definitions=[
-        ('read_blocks','Read source blocks by stable IDs.',{'ids':{'type':'array','items':{'type':'string'}}}),
-        ('search','Search for one short exact contiguous phrase in manuscript and supplements, not a list of keywords. Read known table block IDs directly when available.',{'query':{'type':'string'}}),
-        ('calculate','Bounded numeric arithmetic on reported values. Functions include mean, sum, sqrt, log, exp, round. No code or data reruns.',{'expression':{'type':'string'}}),
-        ('save_note','Save a source-linked hypothesis or contradiction check to the investigation ledger.',{'text':{'type':'string'},'evidence_blocks':{'type':'array','items':{'type':'string'}}}),
-        ('view_page','Inspect one original PDF page, including figures.',{'page':{'type':'integer'}}),
-        ('view_supplement','Inspect one original supplement PDF page or supplied image preview. IDs are in the asset inventory. Page defaults to 1.',{'id':{'type':'string'},'page':{'type':'integer','minimum':1,'maximum':100}}),
-        ('check_citation','Resolve an extracted reference DOI through Crossref. Metadata only.',{'reference_id':{'type':'string'}}),
-        ('search_literature', 'Search one Europe PMC page for a manuscript question. At most three leads with explicit coverage. Results are not an exhaustive literature review.',
-         {'query':{'type':'string'},'block_id':{'type':'string'}}),
-        ('resolve_identifier', 'Resolve one exact DOI, PMID, PMCID, NCT or OSF identifier. Identity is separate from scientific support.',
-         {'kind':{'type':'string','enum':['doi','pmid','pmcid','nct','osf']},'identifier':{'type':'string'},'block_id':{'type':'string'}}),
-    ]
-    from .result_map import DIMENSIONS
-    observation = {'type':'object', 'properties':{k:{'type':'string'} for k in
-        (*DIMENSIONS, 'block_id', 'quote', 'value')},
-        'required':[*DIMENSIONS, 'block_id', 'quote', 'value'], 'additionalProperties':False}
-    definitions.extend([
-        ('inspect_results', 'Inspect linked claims, tables and figure captions. Empty block_id selects a bounded overview. Missing targets reflect extraction limits.',
-         {'block_id':{'type':'string'}}),
-        ('record_comparison', 'Record two exact textual quantities with model, population, metric, units and scale context. Use unknown for unresolved dimensions. No automatic scientific endorsement.',
-         {'observations':{'type':'array','items':observation,'minItems':2,'maxItems':2}}),
-    ])
-    from .source_adapters import PROVIDERS
-    definitions.append(('lookup_source', 'Retrieve one exact public record linked to a manuscript block. Active providers: ' +
-                        ', '.join(k + ' (' + v[0] + ')' for k, v in PROVIDERS.items()) +
-                        '. Returns dated evidence with limitations. Unlisted providers are unavailable.',
-                        {'provider': {'type': 'string'}, 'identifier': {'type': 'string'}, 'block_id': {'type': 'string'}}))
-    if synthesis_preflight:
-        definitions.append(('validate_synthesis', 'Validate a complete synthesis draft before submission. Two local checks, separate from the source allowance. No network or scientific endorsement.',
-                            {'draft_json': {'type': 'string', 'maxLength': 300000}}))
-    return [{'name':name,'description':desc,'inputSchema':{'type':'object','properties':props,'required':['id'] if name=='view_supplement' else list(props),'additionalProperties':False},
-             'annotations':{'readOnlyHint':False,'destructiveHint':False,'idempotentHint':False,'openWorldHint':name in ('check_citation','search_literature','lookup_source')}} for name,desc,props in definitions]
-
-
-def main(config_path):
-    import sys
-    server=Investigation(read(config_path))
-    for line in sys.stdin:
-        request=json.loads(line)
-        if 'id' not in request:continue
-        try:
-            method=request['method']
-            if method=='initialize':
-                server_info={'name':'paper-workspace','version':'0.1.0'}
-                result={'protocolVersion':request['params']['protocolVersion'],'capabilities':{'tools':{}},'serverInfo':server_info}
-                server.audit_tool_discovery('initialize', server_info)
-            elif method=='tools/list':
-                available=specs(server.synthesis_preflight is not None)
-                server.audit_tool_discovery('tools/list', {'name':'paper-workspace','version':'0.1.0'},
-                                            [tool['name'] for tool in available])
-                result={'tools':available}
-            elif method=='ping':result={}
-            elif method=='tools/call':
-                params=request['params']
-                body=server.call(params['name'],params.get('arguments',{}))
-                result={'content':[{'type':'image','data':body['image'],'mimeType':'image/png'},
-                                   {'type':'text','text':json.dumps({k:v for k,v in body.items() if k!='image'},ensure_ascii=False)}] if 'image' in body else [{'type':'text','text':json.dumps(body,ensure_ascii=False)}]}
-            else:raise ValueError('Unsupported method')
-            response={'jsonrpc':'2.0','id':request['id'],'result':result}
-        except (ValueError,KeyError,TypeError,StopIteration) as exc:
-            response={'jsonrpc':'2.0','id':request['id'],'error':{'code':-32602,'message':str(exc)}}
-        print(json.dumps(response),flush=True)

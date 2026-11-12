@@ -15,7 +15,7 @@ import stat
 import sys
 from pathlib import Path
 
-from peerreviewagents.cli.main import plugin_route, review_argv
+from peerreviewagents.cli.main import review_argv
 from peerreviewagents.plugin import starter
 
 FIXTURE = Path(__file__).resolve().parent / 'fixtures' / 'single-column.pdf'
@@ -67,25 +67,31 @@ def install_stub(tmp_path, monkeypatch):
     return log
 
 
-# -- the two routes ---------------------------------------------------------
+# -- the one route ----------------------------------------------------------
 
 
-def test_only_arm_sends_review_to_the_plugin_route():
-    assert plugin_route(['review', 'paper.pdf', 'out']) is False
-    assert plugin_route(['review', 'paper.pdf', 'out', '--reviewers', '3']) is False
-    assert plugin_route(['review', 'paper.pdf', 'out', '--arm', 'single']) is True
-    assert plugin_route(['review', 'paper.pdf', 'out', '--arm=single']) is True
-    assert plugin_route(['review', '--arm', 'single', '--help']) is False
-    assert plugin_route(['import', 'paper.pdf', '--arm', 'single']) is False
-    assert plugin_route([]) is False
+def test_there_is_one_route_and_the_starter_owns_it(monkeypatch):
+    """0.9 chose between two engines on ``--arm``. There is one engine now.
 
+    So the starter takes the ``review`` command word itself, whether the user
+    typed it or the CLI added it to a bare manuscript path, and ``--arm`` is an
+    ordinary option rather than the switch that picked which engine ran.
+    """
+    assert not hasattr(starter, 'handles')
+    seen = {}
 
-def test_a_bare_pdf_with_an_arm_still_reaches_the_plugin_route():
-    rewritten = review_argv(['paper.pdf', 'out', '--arm', 'single'])
-    assert rewritten[0] == 'review'
-    assert plugin_route(rewritten) is True
-    assert starter.handles(rewritten) is True
-    assert starter.handles(['review', 'paper.pdf', 'out']) is False
+    def fake_review(pdf, out, **options):
+        seen.update(pdf=pdf, out=out, options=options)
+        return {'status': 'complete', 'stage': 'session'}
+
+    monkeypatch.setattr(starter, 'review', fake_review)
+    assert starter.main(review_argv(['paper.pdf', 'out', '--arm', 'single'])) == 0
+    assert (seen['pdf'], seen['out']) == ('paper.pdf', 'out')
+    assert seen['options']['arm'] == 'single'
+
+    assert starter.main(['review', 'paper.pdf', 'out']) == 0
+    assert seen['options']['arm'] == 'full-two-track'
+
 
 
 # -- the launch -------------------------------------------------------------
@@ -112,8 +118,9 @@ def test_the_plugin_folder_is_the_one_that_ships():
 def test_no_claude_on_path_is_a_blocked_run_not_a_traceback(tmp_path, monkeypatch):
     monkeypatch.setenv('PATH', str(tmp_path / 'empty'))
     out = tmp_path / 'run'
-    code = starter.review(str(FIXTURE), str(out), arm='single')
-    assert code == 2
+    summary = starter.review(str(FIXTURE), str(out), arm='single')
+    assert (summary['status'], summary['stage']) == ('blocked', 'startup')
+    assert starter.exit_code(summary) == 2, 'nothing was spent: that is its own exit code'
     startup = json.loads((out / 'review' / 'startup.json').read_text())
     assert startup['problems']
     assert startup['tools_expected']
@@ -141,8 +148,12 @@ def test_the_stub_run_is_launched_the_way_the_spec_requires(tmp_path, monkeypatc
         {'status': 'complete', 'findings_delivered': 4, 'quarantined_findings_count': 0,
          'stages': {'missing': []}}))
 
-    code = starter.review(str(FIXTURE), str(out), reviewers=3, arm='full-two-track')
-    assert code == 0
+    summary = starter.review(str(FIXTURE), str(out), reviewers=3, arm='full-two-track')
+    assert starter.exit_code(summary) == 0
+    assert summary['status'] == 'complete'
+    assert summary['tokens_total'] == 124000
+    assert summary['models'] == ['claude-haiku-5-5', 'claude-sonnet-5-5']
+    assert summary['findings_delivered'] == 4
 
     calls = [json.loads(line) for line in log.read_text().splitlines()]
     assert len(calls) == 2, 'the probe runs first, then the review'
@@ -172,8 +183,8 @@ def test_the_stub_run_is_launched_the_way_the_spec_requires(tmp_path, monkeypatc
 def test_a_complete_run_is_not_claimed_when_the_server_wrote_no_progress(tmp_path, monkeypatch):
     install_stub(tmp_path, monkeypatch)
     out = tmp_path / 'run'
-    code = starter.review(str(FIXTURE), str(out), arm='single')
-    assert code == 1
+    summary = starter.review(str(FIXTURE), str(out), arm='single')
+    assert starter.exit_code(summary) == 1
     runtime = json.loads((out / 'review' / 'runtime.json').read_text())
     assert runtime['status'] == 'blocked'
     assert runtime['blocked_reason'] == 'the server wrote no progress file'
@@ -224,6 +235,19 @@ def test_a_retry_is_accounted_separately_from_its_first_attempt():
                                   {'label': 'core-1', 'tokens': 200, 'attempt': 2}]))
     assert sorted(accounting.agents) == ['core-1', 'core-1#2']
     assert accounting.total_tokens() == 300
+
+
+def test_an_unnamed_placeholder_row_is_not_an_agent():
+    """The stream emits rows for agents it has not named yet; they carry no usage.
+
+    Inventing a label for one puts an agent in the run record that never ran,
+    and the report then lists five empty `agent-N` rows beside the real slots.
+    """
+    accounting = starter.Accounting(1_000_000, 1_000_000)
+    accounting.on_event(progress([{'state': 'pending'}, {'tokens': 0},
+                                  {'label': 'core-1', 'tokens': 90}]))
+    assert sorted(accounting.agents) == ['core-1']
+    assert accounting.total_tokens() == 90
 
 
 def test_progress_carried_under_the_task_key_is_still_read():

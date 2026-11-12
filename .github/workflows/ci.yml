@@ -33,9 +33,10 @@ jobs:
       - name: Install
         run: pip install --quiet -e '.[dev]'
 
-      # The suite stubs the LLM layer, so no provider key is needed and no
-      # network call is made. If this ever starts needing a secret, something
-      # has leaked into the test path.
+      # A review runs in a headless Claude Code session on a subscription
+      # login, which CI has none of: the suite stubs the `claude` CLI and makes
+      # no model call and no network call. If this ever starts needing a
+      # secret, something has leaked into the test path.
       - name: Test
         run: pytest tests/ -q
 
@@ -55,12 +56,12 @@ jobs:
 
       # `ruff format --check` is deliberately not enforced. The codebase is
       # hand-formatted in places the formatter would flatten (aligned literal
-      # tables, grouped kwargs), and adopting it would reformat 70 of 117
-      # files in one mechanical diff. If you want it, run `ruff format .` as
+      # tables, grouped kwargs), and adopting it would reformat most of the
+      # tree in one mechanical diff. If you want it, run `ruff format .` as
       # its own commit and add the check back here.
 
-  claude-portability:
-    name: Claude installation (${{ matrix.os }})
+  portability:
+    name: Suite on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -73,14 +74,7 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install --quiet -e '.[dev]'
-      - run: pytest tests/test_claude_bootstrap.py tests/test_claude_install.py tests/test_cli.py tests/test_mcp_server.py -q
-
-  windows-bootstrap:
-    name: Windows bootstrap without Python
-    runs-on: windows-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install and connect using PowerShell and the shared Bash entry point
-        shell: powershell
-        run: .\scripts\test-windows-bootstrap.ps1
+      # The starter builds a `claude` command line and the server writes the
+      # run folder, so path handling is what differs off Linux. The whole
+      # suite is offline, so there is no reason to run less of it here.
+      - run: pytest tests/ -q

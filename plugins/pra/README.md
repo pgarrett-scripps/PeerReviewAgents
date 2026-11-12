@@ -25,8 +25,9 @@ can only ask it for text and hand it findings.
 peerreview review <manuscript.pdf> <run folder> [--reviewers N] [--arm NAME]
 ```
 
-`--arm` is what tells this 0.9 route apart from the 0.8 engine's `review`
-while both exist. The starter probes a throwaway session first: a run only
+That is the only way to run a review in 0.9: the Python orchestration the 0.8
+engine used is deleted, and `--arm` is an ordinary option that picks which
+agents run. The starter probes a throwaway session first: a run only
 starts once the start-up event shows the plugin loaded, `peerreview`
 connected, and every tool the agents are allowed to call present. It never
 uses `--bare`, which skips plugin sync and reads an API key; this runs on a
@@ -97,10 +98,13 @@ stats 5 — of which the editor put 8 in the body, 45 in the appendix, and ruled
 by name on all 4 escalations. For comparison the 0.8.0 run of the same paper
 delivered 11 findings for 1,462,572 tokens.
 
-Of the 53, 7 earned `two-quotes` and none earned `computed`, despite 17
-`calculate` calls: a receipt only counts when its numbers appear in the
-quotation itself, and a reviewer quoting one sentence rarely quotes every
-number it combined.
+Of the 53, 7 earned `two-quotes` and, as the run was stored, none earned
+`computed` despite 17 `calculate` calls: the rule then counted a receipt only
+when its numbers appeared in the quoted sentence, and a reviewer quoting one
+sentence rarely quotes every number it combined. 0.9 widened the rule to the
+blocks a finding cites, which earns that run one `computed` finding: the stats
+specialist's confidence-interval asymmetry check, whose one unquoted input (the
+estimate, 0.1044) sits in the same block `b0048` the finding is anchored to.
 
 A rate limit, a breached budget or a missing stage leaves the run `blocked`.
 That is an outcome recorded in `runtime.json` and `progress.json`, not an error

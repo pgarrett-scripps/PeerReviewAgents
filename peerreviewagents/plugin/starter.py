@@ -1,7 +1,7 @@
 """Start one plugin review in a headless Claude Code session and account for it.
 
 The server owns the review; this starter owns the launch and the accounting.
-It does four things a workflow script cannot:
+It does five things a workflow script cannot:
 
 * **Probes first.** A run is only started once a throwaway session's start-up
   event shows the plugin loaded and ``peerreview`` connected with its tools
@@ -16,6 +16,9 @@ It does four things a workflow script cannot:
   ``system/task_progress`` carries each agent's tokens, tool calls, state and
   model, so a per-agent or per-run token ceiling is enforced here, and the model
   each agent actually ran as is recorded rather than taken from its own word.
+* **Renders the reports last.** The recorder writes ``REVIEW.md`` from inside
+  the session, before any of that accounting exists on disk. The starter writes
+  the reports again afterwards, so the header can state real totals.
 
 A rate limit, a breached budget or a missing stage leaves the run ``blocked``,
 which is an outcome and not an error to paper over.
@@ -34,7 +37,14 @@ import time
 from pathlib import Path
 
 from ..engine.storage import read, write
-from .server import ARMS, DEFAULT_ARM, RUN_DIRECTORY, SPECIALIST_TRACKS, TOOLS
+from .server import (
+    ARMS,
+    DEFAULT_ARM,
+    MANUSCRIPT_DIRECTORY,
+    RUN_DIRECTORY,
+    SPECIALIST_TRACKS,
+    TOOLS,
+)
 
 SERVER = 'peerreview'
 PLUGIN = 'pra'
@@ -208,10 +218,16 @@ class Accounting:
         if rows is None:
             rows = ((event.get('task') or {}).get('workflow_progress')
                     or (event.get('data') or {}).get('workflow_progress') or [])
-        for index, row in enumerate(rows):
+        for row in rows:
             if not isinstance(row, dict):
                 continue
-            key = str(row.get('label') or row.get('agentType') or f'agent-{index}')
+            key = row.get('label') or row.get('agentType')
+            if not key:
+                # The stream emits a placeholder row for an agent it has not
+                # named yet. It carries no usage, so inventing an `agent-N`
+                # label for it only puts an empty agent in the run record.
+                continue
+            key = str(key)
             if row.get('attempt') and int(row.get('attempt') or 1) > 1:
                 key = f"{key}#{row['attempt']}"
             record = self.agents.setdefault(key, {'label': key})
@@ -277,6 +293,24 @@ def finish(review, status, reason, accounting, wall, result):
                              'error': reason or current.get('error'), 'updated': now()})
 
 
+def rerender(review, workspace=None):
+    """Render REVIEW.md again, now that the run's own accounting is on disk.
+
+    The recorder writes the reports from inside the session, which is before
+    this starter has written ``runtime.json`` or a single usage receipt: that
+    copy can only report no tokens and no models. This is the first moment the
+    whole accounting exists, so the reports are written once more over the top.
+    """
+    if not (review / 'protocol.json').is_file():
+        return None
+    try:
+        from ..engine.run_report import write_reports
+        paths = write_reports(review, workspace, review)
+        return {key: str(value) for key, value in paths.items()}
+    except Exception as exc:  # noqa: BLE001 - a report must never lose a finished review
+        return {'error': str(exc)}
+
+
 def prompt_for(pdf, out, reviewers, arm, cutoff, tracks):
     text = (f'Use the peer-review-manuscript skill from the {PLUGIN} plugin. Review the '
             f'manuscript at {pdf} and write the run folder to {out}. Use {reviewers} core '
@@ -293,6 +327,16 @@ def prompt_for(pdf, out, reviewers, arm, cutoff, tracks):
 def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, tracks=None,
            per_agent_tokens=PER_AGENT_TOKENS, per_run_tokens=PER_RUN_TOKENS,
            wall_timeout=WALL_TIMEOUT, directory=None, cwd=None):
+    """Run one review and return its summary.
+
+    The summary is a dict, not an exit code: ``status``, ``blocked_reason``,
+    the run and review folders, the arm, the wall time, the tokens in total and
+    per agent, the models each slot ran on, and the counts the server recorded.
+    ``stage`` says how far the run got — ``startup`` means the probe refused to
+    launch a session and no usage was spent. :func:`exit_code` turns it into a
+    process status, and nothing here prints: the command prints, a library
+    caller reads the dict and the run folder.
+    """
     if arm not in ARMS:
         raise SystemExit(f'Unknown arm {arm}. Arms: ' + ', '.join(sorted(ARMS)))
     source = Path(pdf).resolve()
@@ -310,10 +354,12 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     write(review_dir / 'startup.json', {'probe': found['raw'], 'problems': problems,
                                         'tools_expected': list(tool_names()), 'at': now()})
     if problems:
-        finish(review_dir, 'blocked', 'the start-up probe failed: ' + '; '.join(problems),
+        reason = 'the start-up probe failed: ' + '; '.join(problems)
+        finish(review_dir, 'blocked', reason,
                Accounting(per_agent_tokens, per_run_tokens), 0.0, None)
-        print(json.dumps({'status': 'blocked', 'reason': problems}, indent=2))
-        return 2
+        return {'status': 'blocked', 'blocked_reason': reason, 'stage': 'startup',
+                'probe_problems': problems, 'run': str(root), 'review': str(review_dir),
+                'arm': arm, 'reviewers': reviewers}
 
     accounting = Accounting(per_agent_tokens, per_run_tokens)
     started = time.monotonic()
@@ -341,11 +387,14 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
                        else 'the server wrote no progress file')
             status = status or 'blocked'
     finish(review_dir, status, blocked, accounting, wall, result)
+    report = rerender(review_dir, root / MANUSCRIPT_DIRECTORY)
     summary = {
         'status': status,
         'blocked_reason': blocked,
+        'stage': 'session',
         'run': str(root),
         'review': str(review_dir),
+        'report': report,
         'arm': arm,
         'reviewers': reviewers,
         'wall_seconds': round(wall, 1),
@@ -362,8 +411,18 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
         summary['findings_delivered'] = done.get('findings_delivered')
         summary['quarantined'] = done.get('quarantined_findings_count')
         summary['stages'] = done.get('stages')
-    print(json.dumps(summary, indent=2))
-    return 0 if status in ('complete', 'complete-without-findings') else 1
+    return summary
+
+
+def exit_code(summary):
+    """What the command exits with: 0 reviewed, 2 never started, 1 anything else.
+
+    A start-up probe that refuses to launch is worth its own code, because no
+    subscription usage was spent and the fix is on this machine.
+    """
+    if summary.get('status') in ('complete', 'complete-without-findings'):
+        return 0
+    return 2 if summary.get('stage') == 'startup' else 1
 
 
 def build_parser():
@@ -393,17 +452,12 @@ def main(argv=None):
     if argv and argv[0] == 'review':
         argv = argv[1:]
     args = build_parser().parse_args(argv)
-    return review(args.workspace, args.output, reviewers=args.reviewers, arm=args.arm,
-                  literature_cutoff=args.literature_cutoff, tracks=args.track,
-                  per_agent_tokens=args.per_agent_tokens, per_run_tokens=args.per_run_tokens,
-                  wall_timeout=args.timeout, directory=args.plugin_dir)
-
-
-def handles(argv):
-    """True when ``peerreview review`` was asked for the plugin route, by ``--arm``."""
-    if not argv or argv[0] != 'review':
-        return False
-    return any(flag == '--arm' or flag.startswith('--arm=') for flag in argv)
+    summary = review(args.workspace, args.output, reviewers=args.reviewers, arm=args.arm,
+                     literature_cutoff=args.literature_cutoff, tracks=args.track,
+                     per_agent_tokens=args.per_agent_tokens, per_run_tokens=args.per_run_tokens,
+                     wall_timeout=args.timeout, directory=args.plugin_dir)
+    print(json.dumps(summary, indent=2))
+    return exit_code(summary)
 
 
 if __name__ == '__main__':

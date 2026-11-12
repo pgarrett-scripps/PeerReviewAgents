@@ -204,7 +204,50 @@ def test_only_a_receipt_over_quoted_numbers_earns_computed(tmp_path):
     judged = srv.submit_finding(token, title='Numbers from nowhere', block_id=block, quote=quote,
                                 comment='...', severity='minor', calculate_receipt=off_paper)
     assert judged['basis'] == 'judgement'
-    assert 'not in the quoted passages' in judged['basis_reason']
+    assert 'none of the cited blocks print' in judged['basis_reason']
+    assert '987654' in judged['basis_reason']
+
+
+def quote_without(run, number, exclude):
+    """A uniquely anchorable passage whose whole block never prints ``number``."""
+    for index in range(len(run.paper['blocks'])):
+        block, quote = quote_from(run, index)
+        text = run.paper['blocks'][index].get('text') or ''
+        if block != exclude and number not in text:
+            return block, quote
+    raise AssertionError('every block in this fixture prints that number')
+
+
+def test_a_receipt_over_numbers_elsewhere_in_a_cited_block_earns_computed(tmp_path):
+    """The numbers a receipt checks rarely sit in the sentence worth quoting.
+
+    A reviewer quotes the sentence that makes the claim and cites the block
+    that prints the figures behind it — a results paragraph, a table row. That
+    receipt is still arithmetic over what the manuscript printed, so it earns
+    ``computed``; the narrower rule, which read only the quoted sentence,
+    called it judgement and lost the strongest findings in a run. What is not
+    widened is the guarantee: a number that appears in none of the blocks the
+    finding cites still earns nothing.
+    """
+    open_run(tmp_path, arm='single')
+    token = srv.claim_agent('core-1')['agent_token']
+    run = srv.current()
+    numeric_block, _, number = numeric_quote(run)
+    block, quote = quote_without(run, number, exclude=numeric_block)
+    receipt = srv.calculate(token, f'{number} + {number}')['receipt']
+
+    cited = srv.submit_finding(token, title='The totals do not add up', block_id=block,
+                               quote=quote, comment='The figures it cites sum to something else.',
+                               severity='moderate', evidence_blocks=[numeric_block],
+                               calculate_receipt=receipt)
+    assert cited['basis'] == 'computed'
+    assert 'blocks this finding cites' in cited['basis_reason']
+
+    uncited = srv.submit_finding(token, title='The totals do not add up either', block_id=block,
+                                 quote=quote, comment='Same arithmetic, nothing cited for it.',
+                                 severity='minor', calculate_receipt=receipt)
+    assert uncited['basis'] == 'judgement'
+    assert number in uncited['basis_reason']
 
 
 def test_two_anchored_quotes_earn_two_quotes_and_claim_nothing_more(tmp_path):

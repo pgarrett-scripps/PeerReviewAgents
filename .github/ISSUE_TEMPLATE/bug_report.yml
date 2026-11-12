@@ -19,16 +19,19 @@ body:
         description of its shape (page count, sections present, whether it has
         publisher XML) is usually enough.
       render: shell
-      placeholder: peerreview paper.pdf --mode ensemble --reviewers 2
+      placeholder: peerreview review paper.pdf run-output --reviewers 3
     validations:
       required: true
 
   - type: input
-    id: provider
+    id: claude_code
     attributes:
-      label: Transport and model
-      description: The subscription the run used, from `--provider` and `--model`.
-      placeholder: claude-code / claude-sonnet-5-5
+      label: Claude Code version
+      description: >-
+        `claude --version`. A review runs in a headless Claude Code session on a
+        subscription login, so this is the transport. If the run was `blocked`,
+        paste the reason from `<run>/review/runtime.json` below.
+      placeholder: 2.1.322
     validations:
       required: true
 

@@ -3,21 +3,23 @@ message: "If you use this software, please cite it as below."
 title: "PeerReviewAgents"
 abstract: >-
   PeerReviewAgents produces an evidence-linked peer review of a manuscript PDF.
-  One command imports the PDF locally into immutable source blocks with
-  evidence handles, runs independent reviewers against bounded manuscript and
-  literature tools, and synthesizes their findings through an audited debate in
-  which every original finding must be retained, merged, rejected with reasons,
-  or sent for verification. Every finding carries the source block it is
-  anchored to and the exact quotation it rests on; a quotation that does not
-  match the manuscript is quarantined rather than reported. Reviews run on a
-  signed-in Claude Code or Codex subscription and make no API-key calls. Each
-  run records its manuscript manifest, tool logs, coverage record, and model
-  usage, and the reports are written from that saved JSON without further
+  One command imports the PDF locally into immutable source blocks, then runs a
+  Claude Code plugin workflow over them: several core reviewers and six
+  specialist tracks work in parallel and in isolation, and an editor pools what
+  they found into one package with a decision and a reason for every finding.
+  The plugin's own server owns the manuscript, the agent identities, the tool
+  allowances, the budgets and the run files, so no agent's account of its own
+  work is taken on trust. Every finding carries the source block it is anchored
+  to and the exact quotation it rests on; a quotation that does not match the
+  manuscript is quarantined rather than reported, and the server, not the
+  agent, decides whether a finding rests on arithmetic over printed values, on
+  a second corroborating quotation, or on judgment. Reviews run on a signed-in
+  Claude Code subscription and make no API-key calls. Each run records its
+  manuscript manifest, stage ledger, provenance hashes, per-agent models and
+  token usage, and the reports are written from that saved JSON without further
   inference, so a stopped or blocked run still reports what it produced. The
-  command line, a local web UI, an MCP server, and plugins for local coding
-  agents all run the same review. The system is research software for review
-  assistance and evaluation, not a substitute for accountable editorial
-  judgment.
+  system is research software for review assistance and evaluation, not a
+  substitute for accountable editorial judgment.
 type: software
 # Garrett, Garcia-Carbonell, and Navarro Garrido contributed equally.
 # CFF 1.2.0 has no field for shared first authorship, so state it in the
@@ -45,8 +47,8 @@ authors:
 repository-code: "https://github.com/pgarrett-scripps/PeerReviewAgents"
 url: "https://github.com/pgarrett-scripps/PeerReviewAgents"
 license: MIT
-version: "0.8.0"
-date-released: "2026-09-12"
+version: "0.9.0"
+date-released: "2026-11-11"
 keywords:
   - peer review
   - large language models

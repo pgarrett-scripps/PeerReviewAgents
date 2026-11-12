@@ -94,9 +94,10 @@ jobs:
         run: |
           python -m venv /tmp/fresh
           wheel=$(find dist -name '*.whl' -print -quit)
-          /tmp/fresh/bin/pip install --quiet "${wheel}[mcp]"
+          /tmp/fresh/bin/pip install --quiet "${wheel}"
           /tmp/fresh/bin/python -c "
-          import peerreviewagents, peerreviewagents.cli.main, peerreviewagents.mcp.server
+          import peerreviewagents, peerreviewagents.cli.main
+          import peerreviewagents.plugin.server, peerreviewagents.plugin.starter
           print('import ok:', peerreviewagents.__name__)
           "
           /tmp/fresh/bin/peerreview --help >/dev/null
