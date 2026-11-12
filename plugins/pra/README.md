@@ -87,6 +87,21 @@ quotation. The verdict is two axes in words, never a number.
 <run>/review/usage/<slot>/    the stream's own usage record
 ```
 
+## The first real run
+
+One `full-two-track` run with 3 reviewers, on the same FTLD-TDP manuscript the
+0.8.0 live run used: complete, 4 minutes 7 seconds, 636,299 tokens over
+11 agents, 89 tool calls. 53 findings stored and none quarantined — core 17,
+field 7, methods-reporting 6, figures-tables 6, citations 6, consistency 6,
+stats 5 — of which the editor put 8 in the body, 45 in the appendix, and ruled
+by name on all 4 escalations. For comparison the 0.8.0 run of the same paper
+delivered 11 findings for 1,462,572 tokens.
+
+Of the 53, 7 earned `two-quotes` and none earned `computed`, despite 17
+`calculate` calls: a receipt only counts when its numbers appear in the
+quotation itself, and a reviewer quoting one sentence rarely quotes every
+number it combined.
+
 A rate limit, a breached budget or a missing stage leaves the run `blocked`.
 That is an outcome recorded in `runtime.json` and `progress.json`, not an error
 to paper over.
