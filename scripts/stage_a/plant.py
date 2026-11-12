@@ -528,7 +528,16 @@ def plan_fake_doi(blocks: list, references: list) -> list:
             'check': {'original_doi': doi, 'printed_doi': altered,
                       'in_parsed_reference_list': in_references,
                       'block_kind': block.get('kind')},
-            'must_mention': [altered.split('/', 1)[1]],
+            # Either suffix shows the reviewer resolved this DOI: the printed
+            # one, which is the value that does not exist, or the real one,
+            # which is nowhere in the altered paper and can only come from a
+            # lookup. The pilot's citations specialist reported exactly the
+            # second shape — "the DOI printed for ref 6 returns 404 … the
+            # preprint with this title is 10.1101/2020.04.23.20076042 (the last
+            # digits differ)" — and demanding the fake digits scored that as a
+            # miss.
+            'must_mention': [altered.split('/', 1)[1], doi.split('/', 1)[1]],
+            'mention_rule': 'any',
             'sentence': tidy(text[max(0, start - 300):start + 200]),
         })
     # A parsed reference first, then the longest DOI, which is the one least
@@ -772,10 +781,13 @@ def answer_key(slug: str, kind: str, original: Path, altered: Path, before: dict
             'blocks': blocks,
             'quotes': [edit['quote_after'] for edit in edits if edit['quote_after']],
             'must_mention': list(dict.fromkeys(plan['must_mention'])),
-            # Every planted value, not any of them: each rule carries the
-            # altered number together with the number it now contradicts, and a
-            # finding that names only one of the two has not shown the error.
-            'mention_rule': 'all',
+            # Every planted value by default, not any of them: the numeric
+            # rules carry the altered number together with the number it now
+            # contradicts, and a finding that names only one of the two has not
+            # shown the error. A rule says `any` when its values are two ways
+            # of showing the same single error, as a fake DOI's printed suffix
+            # and real suffix are.
+            'mention_rule': plan.get('mention_rule', 'all'),
         },
     }
 

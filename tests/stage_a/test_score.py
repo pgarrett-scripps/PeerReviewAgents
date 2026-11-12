@@ -230,11 +230,39 @@ def test_a_sample_size_must_stand_on_its_own(tmp_path):
     assert score.score(plain, KEY)['caught'] is True
 
 
+DOI_KEY = {
+    'paper': 'epidemiology-pmc7611074', 'kind': 'fake-doi', 'rule': 'doi',
+    'detect': {'blocks': ['b0094'], 'quotes': ['Reference 41. 10.1101/2020.04.23.20076486'],
+               'must_mention': ['2020.04.23.20076486', '2020.04.23.20076042'],
+               'mention_rule': 'any'},
+}
+
+
 def test_a_fake_doi_key_is_matched_on_the_suffix(tmp_path):
-    key = {'paper': 'epidemiology-pmc7611074', 'kind': 'fake-doi', 'rule': 'doi',
-           'detect': {'blocks': ['b0094'], 'quotes': ['Reference 41. 10.1101/2020.04.23.20076486'],
-                      'must_mention': ['2020.04.23.20076486'], 'mention_rule': 'all'}}
     run = write_run(tmp_path / 'run', [finding(
         block_id='b0094', track='literature', slot='specialist-literature',
         comment='The DOI 10.1101/2020.04.23.20076486 does not resolve to a registered record.')])
-    assert score.score(run, key)['caught'] is True
+    assert score.score(run, DOI_KEY)['caught'] is True
+
+
+def test_naming_the_real_doi_instead_of_the_fake_one_is_a_catch(tmp_path):
+    """The pilot's citations specialist caught it this way and scored as a miss.
+
+    It reported that the printed DOI returns 404 and gave the DOI the preprint
+    actually has, saying only that the last digits differ. The real suffix is
+    nowhere in the altered paper, so naming it is a lookup and not a quote, and
+    demanding the planted digits instead threw away a correct catch.
+    """
+    run = write_run(tmp_path / 'run', [finding(
+        block_id='b0094', track='citations', slot='spec-citations',
+        title='Ref 6 has a wrong DOI',
+        comment='The DOI printed for ref 6 returns 404 in Crossref. The preprint with this '
+                'title is 10.1101/2020.04.23.20076042; the last digits differ.')])
+    assert score.score(run, DOI_KEY)['caught'] is True
+
+
+def test_a_complaint_about_the_reference_list_naming_no_doi_is_not_a_catch(tmp_path):
+    run = write_run(tmp_path / 'run', [finding(
+        block_id='b0094', track='citations', slot='spec-citations',
+        comment='Several references are preprints and the DOIs were not checked.')])
+    assert score.score(run, DOI_KEY)['caught'] is False

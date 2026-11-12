@@ -67,6 +67,13 @@ the right thing:
   to stand on its own as a number: `.72` is not the `72` of `72%`, and not the
   `72.18` of some other calculation's receipt.
 
+A key says `any` instead of `all` when its values are two ways of showing one
+error. A fake DOI is the case: the printed suffix, which resolves to nothing,
+and the real suffix, which is nowhere in the altered paper and can only come
+from a lookup. The pilot's citations specialist reported the second shape — the
+printed DOI returns 404, the preprint's DOI is this one, the last digits differ
+— and that is a catch.
+
 Quoting the altered sentence while saying something else about it is a near miss,
 not a catch. Near misses are recorded too, because they are what tell an agent
 brief that it looked in the right place and did not run the check.

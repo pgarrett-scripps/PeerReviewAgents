@@ -86,7 +86,10 @@ def test_a_doi_keeps_its_prefix_and_its_length():
     original, altered = plan['edits'][0]['original'], plan['edits'][0]['altered']
     assert original.startswith('10.12688/') and altered.startswith('10.12688/')
     assert len(original) == len(altered) and original != altered
-    assert plan['must_mention'] == [altered.split('/', 1)[1]]
+    # Either suffix counts: the printed one, which resolves to nothing, or the
+    # real one, which is not in the altered paper and so comes from a lookup.
+    assert plan['must_mention'] == [altered.split('/', 1)[1], original.split('/', 1)[1]]
+    assert plan['mention_rule'] == 'any'
 
 
 def test_a_doi_printed_twice_is_refused():
