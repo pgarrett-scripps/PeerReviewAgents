@@ -48,6 +48,10 @@ import tempfile
 import unicodedata
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from root import MissingRoot, resolve_root  # noqa: E402
+
 KINDS = ('statistic', 'table-cell', 'sample-size', 'fake-doi')
 
 # Characters of surrounding text kept with an edit, for finding the one place
@@ -826,8 +830,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('pdf', help='the original PDF')
     parser.add_argument('--kind', choices=KINDS, help='which error to plant')
     parser.add_argument('--slug', default='', help='the name used for the copy and the key')
-    parser.add_argument('--root', default='/home/ty/pra-stage-a',
-                        help='where the altered copies, keys and imports live')
+    parser.add_argument('--root', default='',
+                        help='where the altered copies, keys and imports live: a '
+                             'directory outside this repository, defaulting to '
+                             '$PRA_STAGE_A_ROOT and to nothing else')
     parser.add_argument('--candidate', type=int, default=0,
                         help='which candidate of that kind to use (default: the best)')
     parser.add_argument('--survey', action='store_true',
@@ -839,7 +845,11 @@ def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     pdf = Path(args.pdf).resolve()
     slug = args.slug or pdf.stem
-    root = Path(args.root)
+    try:
+        root = resolve_root(args.root)
+    except MissingRoot as missing:
+        print(missing, file=sys.stderr)
+        return 2
     if args.survey:
         paper = import_into(pdf, root / 'imports' / slug)
         print(json.dumps({'paper': slug, 'title': paper.get('title'),

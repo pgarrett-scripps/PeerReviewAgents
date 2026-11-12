@@ -44,8 +44,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import score as scoring  # noqa: E402
+from root import MissingRoot, resolve_root  # noqa: E402
 
-ROOT = Path('/home/ty/pra-stage-a')
 ARMS = ('single', 'reviewers-only', 'full-two-track')
 CEILING = 20_000_000
 # The brief's expectation, for the progress line: about 12 million in total.
@@ -359,7 +359,10 @@ def drive(root: Path, stages=STAGES, control_slugs=(), peerreview='peerreview',
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog='matrix.py', description='Run and score the Stage A matrix, one review at a time.')
-    parser.add_argument('--root', default=str(ROOT))
+    parser.add_argument('--root', default='',
+                        help='the Stage A data directory, outside this repository; '
+                             'defaults to $PRA_STAGE_A_ROOT, and there is no '
+                             'default beyond that')
     parser.add_argument('--stage', action='append', choices=list(STAGES),
                         help='repeatable; the default is every stage in order')
     parser.add_argument('--control', action='append', default=[],
@@ -384,8 +387,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+    try:
+        root = resolve_root(args.root)
+    except MissingRoot as missing:
+        print(missing, file=sys.stderr)
+        return 2
     stages = tuple(args.stage or [stage for stage in STAGES if stage != 'rerun'])
-    state = drive(Path(args.root), stages, tuple(args.control),
+    state = drive(root, stages, tuple(args.control),
                   args.peerreview, args.ceiling, args.timeout, args.dry_run,
                   args.only, args.limit, args.rescore,
                   tuple(args.rerun_paper), args.tag)

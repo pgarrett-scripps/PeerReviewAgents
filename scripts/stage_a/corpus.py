@@ -31,7 +31,10 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-ROOT = Path('/home/ty/pra-stage-a')
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from root import MissingRoot, resolve_root  # noqa: E402
+
 AGENT = 'stage-a-corpus/1.0'
 SEARCH = 'https://www.ebi.ac.uk/europepmc/webservices/rest/search'
 OPENALEX = 'https://api.openalex.org/works/doi:'
@@ -194,7 +197,10 @@ def build_parser() -> argparse.ArgumentParser:
         prog='corpus.py', description='Fetch the Stage A corpus of open-access papers.')
     parser.add_argument('what', choices=('roster', 'search'),
                         help='roster: the papers Stage A used. search: find more.')
-    parser.add_argument('--root', default=str(ROOT), help='where the corpus lives')
+    parser.add_argument('--root', default='',
+                        help='where the corpus lives: a directory outside this '
+                             'repository, defaulting to $PRA_STAGE_A_ROOT and to '
+                             'nothing else')
     parser.add_argument('--field', default='', help='one field, for search or a partial roster')
     parser.add_argument('--rows', type=int, default=25, help='search results to ask for')
     parser.add_argument('--with-pdf-urls', action='store_true',
@@ -205,7 +211,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     if args.what == 'roster':
-        rows = download_roster(Path(args.root), args.field)
+        try:
+            root = resolve_root(args.root)
+        except MissingRoot as missing:
+            print(missing, file=sys.stderr)
+            return 2
+        rows = download_roster(root, args.field)
         for row in rows:
             print(f'{row["slug"]:28} {row.get("kind") or "control":11} {row["state"]}')
         return 0 if all(row['state'] in ('downloaded', 'already here') for row in rows) else 1

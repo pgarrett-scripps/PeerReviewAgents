@@ -6,10 +6,17 @@ written rule whether any finding caught it — and what the catch cost in tokens
 and minutes, in three arms: `single`, `reviewers-only` and `full-two-track`.
 
 The papers, the altered copies, the answer keys and the run folders are **not in
-this repository**. They live under `/home/ty/pra-stage-a/`, because they are
-tens of megabytes of other people's PDFs and gigabytes of run output. What is in
+this repository**. They live in a data directory outside it, because they are
+tens of megabytes of other people's PDFs and gigabytes of run output, and
+because an answer key is only worth having while it stays private. What is in
 the repository is the four scripts that make them and the results table in
 [`docs/stage-a-results.md`](../../docs/stage-a-results.md).
+
+Every script that touches that directory takes it from `--root`, or from the
+`PRA_STAGE_A_ROOT` environment variable, and has no default: with neither set
+it prints one line and stops rather than guessing a path:
+
+    export PRA_STAGE_A_ROOT=~/pra-stage-a    # or pass --root to each script
 
     corpus.py    fetch the papers: CC BY, open access, real statistics and tables
     plant.py     plant one error of a known kind in one paper, and write the key
