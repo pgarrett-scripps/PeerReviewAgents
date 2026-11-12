@@ -128,9 +128,32 @@ def review_argv(argv: list[str]) -> list[str]:
     return ["review", *argv]
 
 
+def plugin_route(argv: list[str]) -> bool:
+    """True when ``review`` was asked for the plugin route, which ``--arm`` names.
+
+    The 0.9 plugin review and the 0.8 engine review share the ``review``
+    command for now. ``--arm`` belongs to the plugin route alone, and the engine
+    parser has no such option, so an invocation carrying it can only mean the
+    plugin. ``--help`` stays with the top-level parser.
+    """
+    if not argv or argv[0] != "review":
+        return False
+    if any(flag in ("-h", "--help") for flag in argv):
+        return False
+    return any(flag == "--arm" or flag.startswith("--arm=") for flag in argv)
+
+
 def run() -> None:
+    argv = review_argv(sys.argv[1:])
+    if plugin_route(argv):
+        # `--arm` names a study arm, which only the 0.9 plugin route has, so it
+        # is what tells the two routes apart while both are here. The 0.8
+        # review is untouched: without `--arm` nothing below changes.
+        from peerreviewagents.plugin.starter import main as plugin_main
+
+        raise SystemExit(plugin_main(argv))
     parser = build_parser()
-    args = parser.parse_args(review_argv(sys.argv[1:]))
+    args = parser.parse_args(argv)
     if args.command == "serve":
         run_server(args)
         return
