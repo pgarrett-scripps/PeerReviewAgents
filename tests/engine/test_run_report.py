@@ -92,13 +92,18 @@ def run(tmp_path):
     write(usage / 'core-1-1.started.json', {'label': 'core-1'})
     (usage / 'usage.jsonl').write_text(
         json.dumps({'label': 'core-1', 'request_sha256': 'r1', 'attempt': 1,
-                    'observed_tokens': 61794, 'usage_unknown': False}) + '\n')
+                    'observed_tokens': 61794, 'usage_unknown': False}) + '\n',
+        encoding='utf-8')
     return review
 
 
 def reports(run, **options):
     paths = write_reports(run, **options)
-    return paths['markdown'].read_text(), paths['text'].read_text()
+    # The report is written as UTF-8 and the header uses an em dash for a value
+    # the run never recorded; read in the platform encoding it comes back
+    # mangled, which is how this read failed on Windows and nowhere else.
+    return (paths['markdown'].read_text(encoding='utf-8'),
+            paths['text'].read_text(encoding='utf-8'))
 
 
 def rows(markdown):
@@ -157,7 +162,7 @@ def test_the_agent_table_names_the_model_each_agent_ran_as(run):
 
 def test_a_retry_is_labelled_as_one_and_an_unplanned_agent_is_still_shown(run):
     """A slot the protocol never recorded is a discrepancy worth seeing, not a tidy-up."""
-    runtime = json.loads((run / 'runtime.json').read_text())
+    runtime = json.loads((run / 'runtime.json').read_text(encoding='utf-8'))
     runtime['agents'] = [{'label': 'core-1#2', 'attempt': 2, 'tokens': 1000, 'toolCalls': 3,
                           'model': 'claude-sonnet-5-5', 'state': 'done'},
                          {'label': 'ghost-1', 'tokens': 500, 'toolCalls': 1, 'state': 'failed'}]
@@ -171,7 +176,7 @@ def test_a_retry_is_labelled_as_one_and_an_unplanned_agent_is_still_shown(run):
 
 def test_tokens_fall_back_to_the_usage_receipts_when_the_stream_wrote_none(run):
     """A session killed before the starter wrote its totals still has the receipts."""
-    runtime = json.loads((run / 'runtime.json').read_text())
+    runtime = json.loads((run / 'runtime.json').read_text(encoding='utf-8'))
     del runtime['tokens_total']
     write(run / 'runtime.json', runtime)
 
@@ -181,7 +186,7 @@ def test_tokens_fall_back_to_the_usage_receipts_when_the_stream_wrote_none(run):
 def test_usage_the_run_cannot_account_for_is_said_so_in_the_header(run):
     """A started attempt with no receipt makes the token total a lower bound."""
     write(run / 'usage' / 'core-2' / 'core-2-1.started.json', {'label': 'core-2'})
-    runtime = json.loads((run / 'runtime.json').read_text())
+    runtime = json.loads((run / 'runtime.json').read_text(encoding='utf-8'))
     del runtime['tokens_total']
     write(run / 'runtime.json', runtime)
 
@@ -193,7 +198,7 @@ def test_a_blocked_run_says_why_and_claims_no_review(run):
     for index in (1, 2):
         (run / f'reviewer-{index}' / 'editor-package.json').unlink()
     write(run / 'progress.json', {'status': 'blocked', 'error': 'the run passed its token ceiling'})
-    runtime = json.loads((run / 'runtime.json').read_text())
+    runtime = json.loads((run / 'runtime.json').read_text(encoding='utf-8'))
     runtime.update(status='blocked', blocked_reason='the run passed its token ceiling')
     write(run / 'runtime.json', runtime)
     markdown, text = reports(run)
@@ -205,7 +210,7 @@ def test_a_blocked_run_says_why_and_claims_no_review(run):
 
 
 def test_a_rate_limit_that_stopped_the_run_is_on_the_page(run):
-    runtime = json.loads((run / 'runtime.json').read_text())
+    runtime = json.loads((run / 'runtime.json').read_text(encoding='utf-8'))
     runtime['rate_limits'] = [{'reason': 'the seven_day rate-limit window is at 99.4%'}]
     write(run / 'runtime.json', runtime)
 

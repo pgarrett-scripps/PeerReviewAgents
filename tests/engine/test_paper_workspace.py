@@ -80,12 +80,12 @@ class SourceIntegrity(unittest.TestCase):
             server=Investigation({'paper':d,'output':str(root/'out'),'cache':str(root/'cache'),'tool_limit':1})
             self.assertTrue(server.call('save_note',{'text':'A hypothesis','evidence_blocks':['b1']})['saved'])
             self.assertIn('notice',server.call('search',{'query':'samples'}))
-            self.assertEqual(len((root/'out/notes.jsonl').read_text().splitlines()),1)
+            self.assertEqual(len((root/'out/notes.jsonl').read_text(encoding='utf-8').splitlines()),1)
 
     def test_imported_pilot_references_and_table_boundaries(self):
         path=Path('runs/pra-workspace-pilot-v1/paper-v2/paper.json')
         if not path.exists():self.skipTest('Pilot artifact unavailable')
-        paper=json.loads(path.read_text())
+        paper=json.loads(path.read_text(encoding='utf-8'))
         self.assertEqual(len(paper['references']),67)
         tables=[b for b in paper['blocks'] if b['document']=='S1_Table.docx' and b['kind']=='table']
         self.assertEqual(len(tables),1)
@@ -95,8 +95,8 @@ class SourceIntegrity(unittest.TestCase):
     def test_corrected_doi_import_preserves_source_blocks(self):
         new=Path('runs/pra-workspace-pilot-v1/import-qa-v3/paper.json')
         if not new.exists():self.skipTest('Corrected import unavailable')
-        original=json.loads(Path('runs/pra-workspace-pilot-v1/paper-v2/paper.json').read_text())
-        corrected=json.loads(new.read_text())
+        original=json.loads(Path('runs/pra-workspace-pilot-v1/paper-v2/paper.json').read_text(encoding='utf-8'))
+        corrected=json.loads(new.read_text(encoding='utf-8'))
         self.assertEqual(corrected['blocks'],original['blocks'])
         self.assertEqual(sum(bool(r['doi']) for r in corrected['references']),61)
 

@@ -281,7 +281,7 @@ def test_an_anchored_finding_is_stored_with_its_track_and_a_uid(tmp_path):
     assert len(stored['finding_uid']) == 16
     assert stored['basis'] == 'judgement'
     rows = [json.loads(line) for line in
-            (run.review / 'findings.jsonl').read_text().splitlines()]
+            (run.review / 'findings.jsonl').read_text(encoding='utf-8').splitlines()]
     assert [row['finding_uid'] for row in rows] == [stored['finding_uid']]
 
 
@@ -498,7 +498,7 @@ def test_agreement_between_two_reviewers_is_two_rows_the_editor_merges(tmp_path)
     assert accepted['accepted'] is True, accepted
     close(editor, model='claude-sonnet-5-5')
     assert srv.write_review(token_for('recorder'))['status'] == 'complete'
-    package = json.loads((run.review / 'editor-package.json').read_text())
+    package = json.loads((run.review / 'editor-package.json').read_text(encoding='utf-8'))
     assert [f['reviewers_raising'] for f in package['findings']] == [2]
     assert package['findings'][0]['duplicate_uids'] == [second['finding_uid']]
 
@@ -588,7 +588,7 @@ def test_write_review_refuses_while_a_stage_has_not_reported(tmp_path):
     assert 'never reported' in refusal['request_rejected']
     assert 'core-2' in refusal['request_rejected']
     assert refusal['status'] == 'blocked'
-    assert json.loads((run.review / 'progress.json').read_text())['status'] == 'blocked'
+    assert json.loads((run.review / 'progress.json').read_text(encoding='utf-8'))['status'] == 'blocked'
 
 
 def test_write_review_refuses_without_an_accepted_editor_package(tmp_path):
@@ -678,10 +678,10 @@ def test_a_finished_run_writes_the_files_a_consumer_reads(tmp_path):
     for name in ('protocol.json', 'progress.json', 'manifest.json', 'editor-package.json',
                  'REVIEW.md'):
         assert (review / name).is_file(), name
-    assert (review / 'audit_stats.md').read_text().startswith('# stats audit')
+    assert (review / 'audit_stats.md').read_text(encoding='utf-8').startswith('# stats audit')
     assert (review / 'audit_citations.md').is_file()
 
-    package = json.loads((review / 'editor-package.json').read_text())
+    package = json.loads((review / 'editor-package.json').read_text(encoding='utf-8'))
     assert len(package['findings']) == 3
     assert package['verdict']['basis'] == 'judgement'
     assert package['escalation_rulings'][0]['finding_uid'] == uids['spec-stats']
@@ -689,17 +689,17 @@ def test_a_finished_run_writes_the_files_a_consumer_reads(tmp_path):
     assert {row['slot'] for row in package['reviewer_provenance']} >= {'core-1', 'spec-stats'}
     assert all(row['model'] == 'claude-sonnet-5-5' for row in package['reviewer_provenance'])
 
-    protocol = json.loads((review / 'protocol.json').read_text())
+    protocol = json.loads((review / 'protocol.json').read_text(encoding='utf-8'))
     assert protocol['provider'] == 'claude-code'
     assert protocol['arm'] == 'full-two-track'
     assert protocol['finding_schema_version'] == srv.FINDING_SCHEMA_VERSION
 
-    manifest = json.loads((review / 'manifest.json').read_text())
+    manifest = json.loads((review / 'manifest.json').read_text(encoding='utf-8'))
     assert manifest['paper_id'] == run.paper['id']
     assert any(key.startswith('engine/') for key in manifest['code'])
     assert manifest['plan']['reviewers'] == 2
 
-    progress = json.loads((review / 'progress.json').read_text())
+    progress = json.loads((review / 'progress.json').read_text(encoding='utf-8'))
     assert progress['status'] == 'complete'
     assert progress['stages']['missing'] == []
     assert progress['review_guard_status'] == 'clean'
@@ -741,7 +741,7 @@ def test_the_guard_status_in_the_run_files_is_read_and_not_assumed(tmp_path):
                        severity='major')
     close(token, model='claude-sonnet-5-5')
     assert srv.write_review(token_for('recorder'))['status'] == 'complete'
-    progress = json.loads((run.review / 'progress.json').read_text())
+    progress = json.loads((run.review / 'progress.json').read_text(encoding='utf-8'))
     assert progress['review_guard_status'] == 'quarantined'
     assert progress['quarantined_findings_count'] == 1
 
@@ -779,7 +779,7 @@ def test_mark_blocked_is_recorded_in_the_run_files(tmp_path):
     run = srv.current()
     key = CODES['recorder_key']
     assert srv.mark_blocked(key, 'the subscription rate limit was reached')['status'] == 'blocked'
-    progress = json.loads((run.review / 'progress.json').read_text())
+    progress = json.loads((run.review / 'progress.json').read_text(encoding='utf-8'))
     assert progress['status'] == 'blocked'
     assert 'rate limit' in progress['error']
     assert (run.review / 'manifest.json').is_file()
@@ -797,7 +797,7 @@ def test_only_the_run_key_marks_a_run_blocked_and_never_a_finished_one(tmp_path)
     assert srv.write_review(token_for('recorder'))['status'] == 'complete-without-findings'
     refused = srv.mark_blocked(CODES['recorder_key'], 'too late')
     assert 'finished run is not marked blocked' in refused['request_rejected']
-    assert json.loads((run.review / 'progress.json').read_text())['status'] == (
+    assert json.loads((run.review / 'progress.json').read_text(encoding='utf-8'))['status'] == (
         'complete-without-findings')
 
 
