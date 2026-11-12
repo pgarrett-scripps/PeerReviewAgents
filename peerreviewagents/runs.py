@@ -31,6 +31,7 @@ from .names import (
     BLOCKED,
     COMPLETE,
     COMPLETE_STATUSES,
+    COMPLETE_WITHOUT_FINDINGS,
     MANUSCRIPT_DIRECTORY,
     RUN_DIRECTORY,
     RUN_STATUSES,
@@ -289,6 +290,44 @@ def run_status(progress=None, runtime=None, startup=None, problems=None):
             'note': note}
 
 
+def publishable_reasons(status, findings_source, guard_status, problems):
+    """Why this run is not publishable, in words, or an empty list when it is.
+
+    One rule, in one place, so that ``publishable`` and the reasons can never
+    disagree: ``publishable`` is this list being empty.
+
+    A quarantined finding is not one of the reasons. The review guard exists to
+    throw out a finding whose quote it could not match to the block it names,
+    and a guard that did that has done its job — what is left is a whole review
+    minus one bad quote. Stage A found the cost of the other rule: a correct
+    catch of a planted error was quarantined for a paraphrased quote, and the
+    run it came from read as not publishable with nothing at all wrong in it.
+
+    What does stop a run from being publishable is the review not being there to
+    show: a status that is not ``complete``, every finding quarantined, findings
+    that come from the ledger instead of the editor's package, no guard verdict
+    at all, or a file that could not be read in full.
+    """
+    reasons = []
+    if status == COMPLETE_WITHOUT_FINDINGS:
+        reasons.append('every finding was quarantined by the review guard, so there is '
+                       'nothing to publish')
+    elif status != COMPLETE:
+        reasons.append(f'the run is not complete: its status is {status}')
+    if findings_source == 'ledger':
+        reasons.append("the findings come from the ledger rather than from the editor's "
+                       'editor-package.json, so they are not the editor\'s own review')
+    elif findings_source == 'none' and status == COMPLETE:
+        reasons.append('the run holds no findings and no editor package')
+    if guard_status is None:
+        reasons.append('no review-guard verdict was recorded, so it is not known whether the '
+                       'guard ran over these findings')
+    if problems:
+        reasons.append(f'{len(problems)} file(s) could not be read in full, and they are named '
+                       'in `problems`')
+    return reasons
+
+
 def read_run(path):
     """Everything a caller needs about one run folder, from the run's own files.
 
@@ -306,12 +345,17 @@ def read_run(path):
         The two questions asked of a status, already answered. ``complete`` is
         true for ``complete`` and for ``complete-without-findings``, so a run
         that delivered no findings is finished rather than failed.
-    ``publishable``
+    ``publishable``, ``not_publishable_reasons``
         True only when the whole review is here to show: status ``complete``,
-        the findings from a readable ``editor-package.json``, nothing in
-        ``problems``, and a clean guard. A run with quarantined findings is
-        complete and not publishable: ``quarantined`` says what was thrown out,
-        and that is a judgement for a person, not a flag.
+        the findings from a readable ``editor-package.json``, a guard that
+        recorded a verdict, and nothing in ``problems``. When it is false,
+        ``not_publishable_reasons`` says why in words, one entry per reason, and
+        it is never false with nothing named. A quarantined finding is not a
+        reason: the guard threw out a finding it could not anchor, which is the
+        guard working, and what is left is publishable. ``quarantined`` says
+        what was thrown out, and whether that mattered is a judgement for a
+        person rather than a flag. ``complete-without-findings`` — everything
+        quarantined — leaves nothing to publish and so is not publishable.
     ``cause``, ``note``
         ``cause`` is why a run that is not complete stopped — a rate limit, a
         breached token ceiling, the wall-clock limit, a stage that never
@@ -409,13 +453,15 @@ def read_run(path):
     agents = agent_rows(review, protocol, runtime=runtime, on_problem=problems.append)
     usage = observed_usage(review, on_problem=problems.append)
 
+    reasons = publishable_reasons(status, source, guard, problems)
+
     return {
         'run': str(root),
         'review': str(review),
         'status': status,
         'complete': complete,
-        'publishable': (status == COMPLETE and source == 'editor-package' and guard == 'clean'
-                        and not problems),
+        'publishable': not reasons,
+        'not_publishable_reasons': reasons,
         'blocked': status == BLOCKED,
         'cause': state['cause'],
         'note': state['note'],
