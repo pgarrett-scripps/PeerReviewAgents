@@ -123,6 +123,15 @@ including 32 test modules, and nothing was left behind as a shim.
 
 ### Changed
 
+- Every reviewer brief now says to copy the `quote` out of the block text
+  rather than retype it, and names the two ways it goes wrong: numbers or terms
+  reordered, and a clause dropped from the middle. A quote written from memory
+  is quarantined even when the finding is right, so the finding is lost — the
+  Stage A matrix lost three correct catches of planted defects that way. On a
+  rerun of both affected papers the targeted failure stopped happening and one
+  paper's withheld correct catches went to zero, with no catch lost;
+  `docs/stage-a-results.md` has the before-and-after counts and the two
+  remaining causes, which are the reader's and the guard's, not the briefs'.
 - `peerreview review <pdf> <run folder> [--reviewers N] [--arm NAME]` is the
   review, and a bare manuscript path means the same thing. `--arm` is an
   ordinary option now, not the switch that chose between two engines.
