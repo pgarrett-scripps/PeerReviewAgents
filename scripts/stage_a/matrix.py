@@ -186,9 +186,19 @@ def line(row: dict) -> str:
     verdict = ('caught' if caught else 'missed') if row['kind'] != 'control' else \
         f'{row.get("planted_style_allegations", 0)} allegations'
     # `publishable` is printed because a row scored from a folder that could not
-    # be read in full is not the same evidence as a row scored from a whole one.
+    # be read in full is not the same evidence as a row scored from a whole one,
+    # and with the reason, because the three reasons mean different things: a
+    # guard that threw a finding out, a file that could not be read, and a run
+    # with no editor package are not the same event.
+    reasons = []
+    if (row.get('problems') or []):
+        reasons.append(f'{len(row["problems"])} problems')
+    if row.get('guard_status') and row['guard_status'] != 'clean':
+        reasons.append(f'guard {row["guard_status"]} ({row.get("quarantined") or 0})')
+    if row.get('findings_source') != 'editor-package':
+        reasons.append(f'findings from {row.get("findings_source")}')
     flag = 'publishable' if row.get('publishable') else \
-        f'NOT publishable ({len(row.get("problems") or [])} problems)'
+        'not publishable: ' + (', '.join(reasons) or 'status ' + str(row.get('status')))
     return (f'{row["id"]:70} {row.get("status") or "?":8} {verdict:14} '
             f'{row.get("findings_total", 0):3} findings  '
             f'{row.get("tokens", 0):>9,} tokens  {row.get("minutes", 0):5.1f} min  {flag}')
