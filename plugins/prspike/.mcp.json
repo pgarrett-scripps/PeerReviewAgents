@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "peerreview": {
+      "command": "${CLAUDE_PROJECT_DIR}/.venv/bin/python",
+      "args": [
+        "-m",
+        "peerreviewagents.plugin.spike_server"
+      ],
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}
