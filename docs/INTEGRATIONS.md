@@ -99,8 +99,10 @@ from peerreviewagents import (
     review, review_main, report_main,      # run a review; the two commands
     read_run, write_reports,               # read and re-render a run folder
     import_paper, verify_workspace, export_draft,
+    plugin_directory, claude_code_version,  # check an installation
+    review_parser, report_parser,           # the real parsers behind the commands
     RUN_DIRECTORY, MANUSCRIPT_DIRECTORY,   # "review" and "manuscript"
-    RUN_STATUSES, COMPLETE_STATUSES, FINDING_SCHEMA_VERSION,
+    RUN_STATUSES, COMPLETE_STATUSES, CLI_COMMANDS, FINDING_SCHEMA_VERSION,
 )
 ```
 
@@ -127,9 +129,38 @@ if command == "review":
 raise SystemExit(report_main(argv, prog="workbench report"))
 ```
 
-That is the whole reason they exist. Copying `starter.main`, or reaching for
-`starter.build_parser` and `starter.exit_code`, means your wrapper breaks when
-an option is added; these two do not.
+That is the whole reason they exist. Copying `starter.main`, or reaching into
+`plugin.starter` for the parser, means your wrapper breaks when an option is
+added; these two do not.
+
+### Checking the installation and your own commands
+
+Four names answer the questions a wrapper asks about the engine rather than
+about a run, so none of them needs a private module:
+
+```python
+from peerreviewagents import (CLI_COMMANDS, claude_code_version,
+                              plugin_directory, report_parser, review_parser)
+
+if claude_code_version() is None:          # None, not an exception
+    raise SystemExit("Claude Code is not installed on this PATH")
+plugin = plugin_directory()                # package data, not a checkout
+
+documented = {"review", "report", "doctor"}
+assert documented >= set(CLI_COMMANDS), "a peerreview command this wrapper hides"
+options = {action.dest for action in review_parser()._actions}
+```
+
+`plugin_directory()` is the `pra` plugin that ships inside the package — what
+`claude --plugin-dir` is given, and what to assert the existence of before
+offering a review. `claude_code_version()` is what `claude --version` prints,
+or `None` when Claude Code is not on this PATH: the one precondition a review
+cannot do without. `CLI_COMMANDS` is `("review", "report")` and there is no
+third; `review_parser(prog=...)` and `report_parser(prog=...)` are the real
+parsers those commands run on, so a wrapper that documents its own options can
+diff them against these instead of against a copy that silently falls behind.
+Use `review_main` and `report_main` to *run* a command; these are for checking
+one.
 
 ### Reading a run folder
 
@@ -164,9 +195,28 @@ Keys: `status`, `complete`, `publishable`, `not_publishable_reasons`, `blocked`,
 `cause`, `note`, `stage`, `findings`, `body`, `appendix`, `findings_source`,
 `counts`, `quarantined`, `guard_status`, `escalations`, `escalation_rulings`,
 `summary`, `verdict`, `limitations`, `identity`, `stages`, `runtime`, `agents`,
-`usage`, `reports`, `startup_problems`, `problems`, `files`, `run`, `review`.
-The same 31 keys come back for every folder, in every state, so a consumer
-never has to test whether a key is there.
+`usage`, `reports`, `startup`, `startup_problems`, `problems`, `files`, `run`,
+`review`. The same 32 keys come back for every folder, in every state, so a
+consumer never has to test whether a key is there.
+
+Three of them hold what an integration used to read out of the run folder
+itself:
+
+- `identity['code_hashes']` is `manifest.json`'s code map — one digest per
+  engine and plugin file that served the run, so two runs of the same arm can
+  be told apart when the plugin changed between them. `{}` for a run that
+  stopped before `ingest` wrote one, or for a map that is damaged.
+- `identity['provider']` is what ran the review — `claude-code` for every run
+  this version writes, from `protocol.json` rather than inferred. `None` when
+  the protocol does not say.
+- `startup` is `{'probe': ..., 'problems': [...]}` from `startup.json`: the
+  harness's own start-up event and what the probe refused to launch over.
+  `probe` is `None` when no probe was written or it holds the wrong shape, and
+  `problems` is the probe's own list. The long-standing `startup_problems` key
+  is the same list, kept as it was.
+
+Damage in any of the three is named in `problems` and read as absent or empty,
+like every other damaged file.
 
 Four rules it enforces so you do not have to:
 
@@ -209,9 +259,10 @@ and another way in its own report. The rule, in order:
 5. Otherwise `unknown` — and a status word this version does not know is
    `unknown` with a line in `problems`, never passed through.
 
-`complete-without-findings` means the review was written and every finding in
-it had been quarantined by the guard. The run worked; there is nothing to
-publish.
+`complete-without-findings` means the review was written with no findings in
+it, and it happens two ways: the reviewers raised nothing, or the guard
+quarantined everything they raised. `counts['quarantined']` is what tells them
+apart, and `publishable` follows it — see below.
 
 ### Gating on `publishable`
 
@@ -219,7 +270,8 @@ publish.
 whole review is here to show, which is the question a consumer actually has
 before it puts a review in front of someone. It is `True` only when:
 
-- `status` is `complete`,
+- `status` is `complete`, or `complete-without-findings` with nothing
+  quarantined,
 - `findings_source` is `editor-package` — the editor's own placement, not the
   ledger fallback,
 - `guard_status` is set, so the guard recorded a verdict over these findings,
@@ -236,8 +288,15 @@ out a finding whose quote it could not match to the block the finding names. A
 guard that did that has done its job, and what is left is a whole review minus
 one unanchored quote. `guard_status` is `clean` or `quarantined` — there is no
 error state — and `quarantined` holds the rows themselves, so an application
-that wants to weigh what was held can. `complete-without-findings` is the
-exception: every finding was quarantined, so there is nothing left to publish.
+that wants to weigh what was held can.
+
+**A review with no findings in it is still a review.**
+`complete-without-findings` with `counts['quarantined']` at zero means the
+reviewers read the manuscript and raised nothing make-or-break, and the editor
+wrote a package saying so: publishable. The same status with findings
+quarantined is not publishable, because what the reviewers raised is not in the
+review; the reason names how many were held back. The status alone does not
+tell you which case you have — the count does.
 
 ### Exit codes
 

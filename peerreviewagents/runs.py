@@ -197,9 +197,47 @@ def dedupe(findings):
     return [latest[uid] for uid in order]
 
 
-def _identity(manifest, protocol, paper, pdf_from_startup=None):
+def _code_hashes(value, problems):
+    """The manifest's code map: one digest per file of the engine and the plugin.
+
+    It is how a reading says which code served the run, so a consumer can tell
+    two runs of the same arm apart when the plugin changed between them. Absent
+    is an empty map, because a run that stopped before ``ingest`` has the
+    starter's thin manifest, which records no code at all.
+    """
+    if not value:
+        return {}
+    if not isinstance(value, dict):
+        problems.append(f"manifest.json's code holds a {type(value).__name__} where a map of "
+                        'file to digest belongs; it is read as empty')
+        return {}
+    hashes = {str(name): digest for name, digest in value.items() if isinstance(digest, str)}
+    if len(hashes) != len(value):
+        problems.append(f"{len(value) - len(hashes)} entry/entries in manifest.json's code map "
+                        'name no digest, and they are left out of `code_hashes`')
+    return hashes
+
+
+def _provider(protocol, problems):
+    """What ran the review — ``claude-code`` for every run this version writes.
+
+    It is in the protocol rather than inferred, so a folder written by another
+    provider reads as that provider instead of as this one.
+    """
+    value = protocol.get('provider')
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        problems.append(f"protocol.json's provider holds a {type(value).__name__} where a name "
+                        'belongs; it is read as absent')
+        return None
+    return value
+
+
+def _identity(manifest, protocol, paper, pdf_from_startup=None, problems=None):
     """Who the run reviewed, from the files that say so rather than from a name."""
     manifest, protocol, paper = manifest or {}, protocol or {}, paper or {}
+    problems = problems if problems is not None else []
     plan = manifest.get('plan') or protocol.get('plan') or {}
     plan = plan if isinstance(plan, dict) else {}
     return {
@@ -216,6 +254,8 @@ def _identity(manifest, protocol, paper, pdf_from_startup=None):
         'finding_schema_version': (manifest.get('finding_schema_version')
                                    or protocol.get('finding_schema_version')),
         'claude_code_version': manifest.get('claude_code_version'),
+        'provider': _provider(protocol, problems),
+        'code_hashes': _code_hashes(manifest.get('code'), problems),
     }
 
 
@@ -290,7 +330,7 @@ def run_status(progress=None, runtime=None, startup=None, problems=None):
             'note': note}
 
 
-def publishable_reasons(status, findings_source, guard_status, problems):
+def publishable_reasons(status, findings_source, guard_status, problems, quarantined=0):
     """Why this run is not publishable, in words, or an empty list when it is.
 
     One rule, in one place, so that ``publishable`` and the reasons can never
@@ -303,21 +343,33 @@ def publishable_reasons(status, findings_source, guard_status, problems):
     catch of a planted error was quarantined for a paraphrased quote, and the
     run it came from read as not publishable with nothing at all wrong in it.
 
+    **A review with no findings in it.** ``complete-without-findings`` is the
+    status for an editor package that delivered nothing, and two different runs
+    end that way. If the guard quarantined findings, the reviewers did raise
+    something and it is not in the review, so there is nothing publishable to
+    show and the reason says how many were held. If nothing was quarantined, the
+    reviewers read the manuscript and raised nothing — "we found nothing
+    make-or-break" is a review, and a run that reached it with an editor package
+    and a clean guard is publishable like any other.
+
     What does stop a run from being publishable is the review not being there to
-    show: a status that is not ``complete``, every finding quarantined, findings
-    that come from the ledger instead of the editor's package, no guard verdict
-    at all, or a file that could not be read in full.
+    show: a status that is not ``complete``, a review emptied by the guard,
+    findings that come from the ledger instead of the editor's package, no
+    editor package at all, no guard verdict, or a file that could not be read in
+    full.
     """
     reasons = []
     if status == COMPLETE_WITHOUT_FINDINGS:
-        reasons.append('every finding was quarantined by the review guard, so there is '
-                       'nothing to publish')
+        if quarantined:
+            reasons.append(f'the review was written with no findings in it, and the review guard '
+                           f'quarantined {quarantined}, so what the reviewers raised is not in '
+                           'the review and there is nothing to publish')
     elif status != COMPLETE:
         reasons.append(f'the run is not complete: its status is {status}')
     if findings_source == 'ledger':
         reasons.append("the findings come from the ledger rather than from the editor's "
                        'editor-package.json, so they are not the editor\'s own review')
-    elif findings_source == 'none' and status == COMPLETE:
+    elif findings_source == 'none' and status in COMPLETE_STATUSES:
         reasons.append('the run holds no findings and no editor package')
     if guard_status is None:
         reasons.append('no review-guard verdict was recorded, so it is not known whether the '
@@ -338,9 +390,10 @@ def read_run(path):
         One of :data:`peerreviewagents.names.RUN_STATUSES`, or ``unknown`` for
         a folder whose status file was never written or holds a word this
         version does not know. :func:`run_status` is the rule, and
-        ``complete-without-findings`` means the review was written and every
-        finding in it had been quarantined by the guard — the run worked, and
-        there is nothing to publish.
+        ``complete-without-findings`` means the review was written with no
+        findings in it: either the reviewers raised nothing, or the guard
+        quarantined everything they did raise. ``counts['quarantined']`` is
+        which of the two.
     ``complete``, ``blocked``
         The two questions asked of a status, already answered. ``complete`` is
         true for ``complete`` and for ``complete-without-findings``, so a run
@@ -354,8 +407,9 @@ def read_run(path):
         reason: the guard threw out a finding it could not anchor, which is the
         guard working, and what is left is publishable. ``quarantined`` says
         what was thrown out, and whether that mattered is a judgement for a
-        person rather than a flag. ``complete-without-findings`` — everything
-        quarantined — leaves nothing to publish and so is not publishable.
+        person rather than a flag. A review with no findings in it is
+        publishable when the reviewers raised nothing and the guard held
+        nothing, and is not when the guard emptied it.
     ``cause``, ``note``
         ``cause`` is why a run that is not complete stopped — a rate limit, a
         breached token ceiling, the wall-clock limit, a stage that never
@@ -380,7 +434,17 @@ def read_run(path):
     ``escalations``, ``escalation_rulings``
         The specialist findings that asked for a ruling, and the rulings given.
     ``identity``
-        What was reviewed: paper id, source hash, PDF path, arm, versions.
+        What was reviewed and what reviewed it: paper id, source hash, PDF
+        path, arm, versions, ``provider`` — ``claude-code`` for every run this
+        version writes — and ``code_hashes``, the manifest's digest of each
+        plugin and engine file the run was served by, empty for a run that
+        stopped before the manuscript was imported.
+    ``startup``
+        The start-up probe: ``probe`` is the harness's own init event, the
+        plugins, MCP servers, agents and commands the session reported, or
+        ``None`` when no session ever reached it, and ``problems`` is what the
+        probe refused to launch over. ``startup_problems`` is that same list at
+        the top level, kept for callers that already read it.
     ``agents``
         One row per agent slot: role, track, model, server and session tool
         calls, tokens, state. Empty for a run that never claimed a slot.
@@ -453,7 +517,13 @@ def read_run(path):
     agents = agent_rows(review, protocol, runtime=runtime, on_problem=problems.append)
     usage = observed_usage(review, on_problem=problems.append)
 
-    reasons = publishable_reasons(status, source, guard, problems)
+    reasons = publishable_reasons(status, source, guard, problems, len(quarantined))
+
+    probe = startup.get('probe')
+    if probe is not None and not isinstance(probe, dict):
+        problems.append(f"startup.json's probe holds a {type(probe).__name__} where the harness's "
+                        'own start-up event belongs; it is read as absent')
+        probe = None
 
     return {
         'run': str(root),
@@ -482,8 +552,8 @@ def read_run(path):
         'summary': package.get('summary'),
         'verdict': package.get('verdict'),
         'limitations': package.get('limitations') or [],
-        'identity': _identity(manifest, protocol, paper, (startup.get('probe') or {}).get('pdf')
-                              if isinstance(startup.get('probe'), dict) else None),
+        'identity': _identity(manifest, protocol, paper,
+                              (probe or {}).get('pdf'), problems),
         'stages': progress.get('stages') or (runtime.get('stages') if runtime else None),
         'runtime': {'wall_seconds': runtime.get('wall_seconds'),
                     'tokens_total': runtime.get('tokens_total'),
@@ -495,6 +565,7 @@ def read_run(path):
         'agents': agents,
         'usage': usage,
         'reports': reports,
+        'startup': {'probe': probe, 'problems': list(startup.get('problems') or [])},
         'startup_problems': list(startup.get('problems') or []),
         'problems': problems,
         'files': {name: str(review / name) for name in RUN_MARKERS
