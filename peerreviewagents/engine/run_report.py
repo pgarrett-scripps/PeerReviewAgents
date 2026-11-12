@@ -16,6 +16,9 @@ MANUSCRIPT = 'manuscript'
 NOTICE = ('This review was generated automatically. Exact quotations and issue accounting were validated. '
           'Scientific correctness was not.')
 AGENT_COLUMNS = ('Agent', 'Model', 'Server calls', 'Session calls', 'Tokens', 'State')
+# What makes a folder a run folder, for a run that stopped before the server
+# wrote its protocol: the starter's own files, and the server's first ones.
+RUN_FILES = ('protocol.json', 'progress.json', 'runtime.json', 'startup.json', 'findings.jsonl')
 
 
 def _optional(path):
@@ -158,20 +161,34 @@ def report_blocks(run, workspace=None):
     run = Path(run).resolve()
     protocol = _optional(run / 'protocol.json')
     if protocol is None:
-        raise ValueError('Not a review run folder: protocol.json is missing')
+        # A run that stopped before the server recorded its protocol is still a
+        # run folder, and the reason it stopped is the whole point of rendering
+        # it. Only a folder that recorded nothing at all is refused.
+        if not any((run / name).is_file() for name in RUN_FILES):
+            raise ValueError('Not a review run folder: none of ' + ', '.join(RUN_FILES)
+                             + ' is in it')
+        protocol = {}
     paper_id = (_optional(run / 'manifest.json') or {}).get('paper_id') or protocol.get('paper_id')
     workspace = Path(workspace).resolve() if workspace else find_workspace(run)
     paper = _optional(workspace / 'paper.json') if workspace else None
     if workspace and paper is None:
-        raise ValueError('The workspace has no paper.json')
+        # The workspace is where the manuscript was imported, and a run that
+        # never got that far has none. A caller naming one that does not exist
+        # yet asked for the reports of this run, not for an exception: the run
+        # folder is enough, and the paper fields are left out of the page.
+        workspace = find_workspace(run)
+        paper = _optional(workspace / 'paper.json') if workspace else None
     if paper and paper_id and paper.get('id') != paper_id:
         raise ValueError('The workspace does not match the reviewed manuscript')
     reviewers = _reviewer_packages(run)
     progress = _optional(run / 'progress.json') or {}
-    status = progress.get('status', 'unknown')
+    runtime = runtime_usage(run) or {}
+    # The server records the status it reached; the starter records the status
+    # the run ended in. A run killed before the server wrote anything has only
+    # the second, and reporting that as `unknown` hid the reason it stopped.
+    status = progress.get('status') or runtime.get('status') or 'unknown'
     if status == 'running':
         status += ' (last recorded state, the run may have stopped)'
-    runtime = runtime_usage(run) or {}
     usage = observed_usage(run)
     agents = agent_rows(run, protocol)
     models = sorted({row['model'] for row in agents if row.get('model')})

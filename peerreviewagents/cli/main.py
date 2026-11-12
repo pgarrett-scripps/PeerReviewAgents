@@ -61,23 +61,40 @@ def report_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def report(argv: list[str]) -> int:
-    """Render the reports of a run that has already finished."""
-    from peerreviewagents.engine.run_report import write_reports
-    from peerreviewagents.plugin.server import RUN_DIRECTORY
+def report_main(argv: list[str] | None = None) -> int:
+    """``peerreview report`` as a function: render a run folder's reports offline.
 
+    This is the supported entry point for an application that wraps the
+    command. It takes the arguments after ``report`` (a leading ``report`` is
+    accepted too), prints JSON on stdout and returns the exit code rather than
+    raising it.
+
+    A run that stopped is rendered like any other. The status and the cause are
+    printed with the report paths, because a folder that was killed on a token
+    ceiling or whose probe never launched a session is a result to read, not a
+    folder to be told is "not a finished run".
+    """
+    from peerreviewagents.engine.run_report import write_reports
+    from peerreviewagents.runs import NotARunFolder, read_run
+
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "report":
+        argv = argv[1:]
     args = report_parser().parse_args(argv)
-    run = Path(args.run).resolve()
-    if not (run / "protocol.json").is_file():
+    try:
         # The run folder holds `manuscript/` and `review/`; the reports belong
         # to the review folder, so naming the run folder means that one.
-        if (run / RUN_DIRECTORY / "protocol.json").is_file():
-            run = run / RUN_DIRECTORY
-        else:
-            raise SystemExit(f"No protocol.json in {run}: that is not a finished run folder.")
+        summary = read_run(args.run)
+    except NotARunFolder as exc:
+        raise SystemExit(str(exc)) from None
+    run = Path(summary["review"])
     paths = write_reports(run, args.workspace, args.output_dir)
-    print(json.dumps({key: str(value) for key, value in paths.items()}, indent=2))
+    print(json.dumps({'status': summary['status'], 'cause': summary['cause'],
+                      'findings': summary['counts']['findings'],
+                      **{key: str(value) for key, value in paths.items()}}, indent=2))
     return 0
+
+
 
 
 def first_word(argv: list[str]) -> str | None:
@@ -120,11 +137,11 @@ def run() -> None:
     argv = review_argv(sys.argv[1:])
     command = argv[0] if argv else None
     if command == "review":
-        from peerreviewagents.plugin.starter import main as review_main
+        from peerreviewagents.plugin.starter import review_main
 
         raise SystemExit(review_main(argv))
     if command == "report":
-        raise SystemExit(report(argv[1:]))
+        raise SystemExit(report_main(argv[1:]))
     build_parser().parse_args(argv)  # Prints the help, or names the bad command.
 
 

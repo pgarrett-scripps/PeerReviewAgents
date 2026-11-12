@@ -39,7 +39,8 @@ import threading
 import time
 from pathlib import Path
 
-from ..engine.storage import read, write
+from ..engine.storage import digest, read, write
+from ..names import COMPLETE_STATUSES, FINDING_SCHEMA_VERSION
 from .server import (
     ARMS,
     DEFAULT_ARM,
@@ -47,6 +48,7 @@ from .server import (
     RUN_DIRECTORY,
     SPECIALIST_TRACKS,
     TOOLS,
+    WORKFLOW_VERSION,
 )
 
 SERVER = 'peerreview'
@@ -384,6 +386,60 @@ def write_usage(review, accounting):
                                      'state': row.get('state')}) + '\n')
 
 
+def write_identity(review, source, arm, reviewers, cutoff=None, tracks=None):
+    """Say which paper and which plan this folder was, when the server never did.
+
+    The server writes ``protocol.json`` and ``manifest.json`` from the imported
+    manuscript, which is the full record and is left alone wherever it exists.
+    A run that never reached ``ingest`` — a start-up probe that refused to
+    launch, a session that died before the workflow called the first tool — has
+    neither, and a folder that cannot name its own paper or arm is not a result
+    anybody can file. These two are the thin version: the source hash, the
+    plan, the versions, and nothing the run did not actually learn.
+    """
+    source = Path(source)
+    try:
+        source_sha256 = digest(source.read_bytes()) if source.is_file() else None
+    except OSError:
+        source_sha256 = None
+    plan = ARMS.get(arm) or {}
+    wrote = []
+    if not (review / 'protocol.json').is_file():
+        write(review / 'protocol.json', {
+            'provider': 'claude-code',
+            'mode': arm,
+            'arm': arm,
+            'reviewers': reviewers,
+            'paper_id': None,
+            'literature_cutoff': cutoff,
+            'version': WORKFLOW_VERSION,
+            'finding_schema_version': FINDING_SCHEMA_VERSION,
+            'pdf': str(source),
+            'agents': {},
+            'stage': 'startup',
+            'written_by': 'starter: the run stopped before the server recorded its protocol',
+            'plan': {'arm': arm, 'reviewers': reviewers,
+                     'specialists': list(tracks or ()) if plan.get('specialists') else [],
+                     'editor': plan.get('editor'), 'revision': plan.get('revision'),
+                     'summary': plan.get('summary')},
+        })
+        wrote.append('protocol.json')
+    if not (review / 'manifest.json').is_file():
+        write(review / 'manifest.json', {
+            'paper_id': None,
+            'source_sha256': source_sha256,
+            'pdf': str(source),
+            'code': {},
+            'workflow_version': WORKFLOW_VERSION,
+            'finding_schema_version': FINDING_SCHEMA_VERSION,
+            'claude_code_version': claude_version() or os.environ.get(
+                'PEERREVIEW_CLAUDE_VERSION'),
+            'written_by': 'starter: the run stopped before the manuscript was imported',
+        })
+        wrote.append('manifest.json')
+    return wrote
+
+
 def finish(review, status, reason, accounting, wall, result):
     write(review / 'runtime.json', {
         'status': status,
@@ -405,7 +461,7 @@ def finish(review, status, reason, accounting, wall, result):
     progress = review / 'progress.json'
     if status == 'blocked' and progress.is_file():
         current = read(progress)
-        if current.get('status') not in ('complete', 'complete-without-findings'):
+        if current.get('status') not in COMPLETE_STATUSES:
             write(progress, {**current, 'status': 'blocked',
                              'error': reason or current.get('error'), 'updated': now()})
 
@@ -472,6 +528,7 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
                                         'tools_expected': list(tool_names()), 'at': now()})
     if problems:
         reason = 'the start-up probe failed: ' + '; '.join(problems)
+        write_identity(review_dir, source, arm, reviewers, literature_cutoff, tracks)
         finish(review_dir, 'blocked', reason,
                Accounting(per_agent_tokens, per_run_tokens), 0.0, None)
         return {'status': 'blocked', 'blocked_reason': reason, 'stage': 'startup',
@@ -500,7 +557,7 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     if status is None:
         recorded = read(progress) if progress.is_file() else {}
         status = str(recorded.get('status') or '') or None
-        if status not in ('complete', 'complete-without-findings'):
+        if status not in COMPLETE_STATUSES:
             # A workflow that ends without write_review or mark_blocked leaves
             # the server's own status at `running`, which would read as a review
             # still in flight long after the session is gone.
@@ -509,6 +566,9 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
                 f' the server last recorded {status}' if status
                 else 'the server wrote no progress file')
             status = 'blocked'
+    # A session that ended before the workflow called `ingest` left no protocol
+    # and no manifest, so the folder would not name its own paper or arm.
+    write_identity(review_dir, source, arm, reviewers, literature_cutoff, tracks)
     finish(review_dir, status, blocked, accounting, wall, result)
     report = rerender(review_dir, root / MANUSCRIPT_DIRECTORY)
     summary = {
@@ -543,14 +603,14 @@ def exit_code(summary):
     A start-up probe that refuses to launch is worth its own code, because no
     subscription usage was spent and the fix is on this machine.
     """
-    if summary.get('status') in ('complete', 'complete-without-findings'):
+    if summary.get('status') in COMPLETE_STATUSES:
         return 0
     return 2 if summary.get('stage') == 'startup' else 1
 
 
-def build_parser():
+def build_parser(prog='peerreview review'):
     parser = argparse.ArgumentParser(
-        prog='peerreview review',
+        prog=prog,
         description='Review one manuscript with the pra plugin in a headless Claude Code session.')
     parser.add_argument('workspace', help='the manuscript PDF')
     parser.add_argument('output', help='the run folder to write')
@@ -570,11 +630,23 @@ def build_parser():
     return parser
 
 
-def main(argv=None):
+def review_main(argv=None, prog='peerreview review'):
+    """``peerreview review`` as a function: parse, run, print the summary, return a code.
+
+    This is the supported entry point for an application that wraps the
+    command. It takes the argument list the user typed — with or without a
+    leading ``review`` — prints the run summary as JSON on stdout and returns
+    the process exit code rather than raising it, so a caller decides what to
+    do with a blocked run. ``prog`` is the program name its ``--help`` and its
+    errors use, so a wrapper named something else says its own name.
+
+    Nothing else here needs to be reached for: the summary dict comes from
+    :func:`review` and the code from :func:`exit_code`.
+    """
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == 'review':
         argv = argv[1:]
-    args = build_parser().parse_args(argv)
+    args = build_parser(prog=prog).parse_args(argv)
     summary = review(args.workspace, args.output, reviewers=args.reviewers, arm=args.arm,
                      literature_cutoff=args.literature_cutoff, tracks=args.track,
                      per_agent_tokens=args.per_agent_tokens, per_run_tokens=args.per_run_tokens,
@@ -583,5 +655,10 @@ def main(argv=None):
     return exit_code(summary)
 
 
+def main(argv=None):
+    """The console script's entry point. :func:`review_main` is the public name."""
+    return review_main(argv)
+
+
 if __name__ == '__main__':
-    raise SystemExit(main())
+    raise SystemExit(review_main())

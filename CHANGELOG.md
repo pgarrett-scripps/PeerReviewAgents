@@ -44,6 +44,29 @@ including 32 test modules, and nothing was left behind as a shim.
 - `review-finding-v3`: a `finding_uid` stable across re-reviews of the same
   paper, a `track`, a specialist `escalate` flag, and a `basis` the server
   assigns rather than the agent asserting it.
+- `peerreviewagents.read_run(path)`, which reads any run folder: the status,
+  the cause and the stage of a run that stopped, the findings de-duplicated to
+  the latest row per `finding_uid` (from `editor-package.json` when the editor
+  got that far, from the `findings.jsonl` ledger when it did not), body against
+  appendix, the escalations and the editor's rulings, the manifest identity and
+  source hash, the report paths and the runtime of each agent. Complete,
+  complete without findings, blocked, killed by the starter on a ceiling, a
+  timeout, a rate limit or a session error, and start-up blocked with only
+  `startup.json` and `runtime.json` are all folders it reads. It refuses a run
+  file that is a symlink, by name, and raises `runs.NotARunFolder` for a folder
+  that is not a run. The first application to show PRA runs had to reach into
+  private names and parse these files by hand.
+- `review_main(argv, prog=...)` and `report_main(argv)`: the two commands as
+  functions — argument list in, the command's JSON on stdout, the exit code
+  returned rather than raised — so a wrapper does not copy `starter.main` or
+  import `starter.build_parser`, `starter.exit_code` or `cli.main.report`, and
+  names itself in its own `--help`.
+- `peerreviewagents.names`, a module that imports nothing, holding the names an
+  integration needs as constants: `RUN_DIRECTORY`, `MANUSCRIPT_DIRECTORY`,
+  `RUN_STATUSES`, `COMPLETE_STATUSES` and `FINDING_SCHEMA_VERSION`. They were
+  literals inside `plugin.server`, which an app had to import a launcher and an
+  MCP SDK to read. The server now imports them from there, so there is one
+  definition and nothing to drift.
 
 ### Changed
 
@@ -80,6 +103,17 @@ including 32 test modules, and nothing was left behind as a shim.
   check its work — which is one of the things the arms compare.
 - The tool allowance belongs to the slot: a retry continues the first
   attempt's count instead of buying 30 more calls.
+- The supported library surface is `review`, `review_main`, `report_main`,
+  `read_run`, `write_reports`, `import_paper`, `verify_workspace`,
+  `export_draft` and the five constants, all importable from
+  `peerreviewagents` and documented in `README.md` and
+  `docs/INTEGRATIONS.md`. The callables still resolve lazily, so reading a run
+  imports neither the launcher nor the MCP SDK.
+- `write_reports(run)` takes a run folder on its own: the workspace argument is
+  needed only when the manuscript lives outside the run.
+- `export_draft` no longer emits `component_decisions` or `epistemic_audit`.
+  They were the debate's keys, and 0.9 has no debate, so every export carried
+  two empty fields a consumer had to interpret.
 
 ### Fixed
 
@@ -96,6 +130,16 @@ including 32 test modules, and nothing was left behind as a shim.
 - A workflow that ends without writing the review or marking the run blocked
   leaves the run `blocked` with a reason, not `running`. A missing `claude`
   binary says so rather than blaming the plugin.
+- `protocol.json` and `manifest.json` are written at ingest, before any agent
+  reports, instead of only by `write_review` and `mark_blocked`. A run killed
+  on a token ceiling used to leave a folder that could not say which paper it
+  held; and when the probe never launched a session, the starter writes a thin
+  pair itself — the arm, the PDF and its hash — without ever overwriting the
+  server's own.
+- `peerreview report` renders a blocked, killed or start-up-blocked run and
+  prints its cause. It refused anything without a `protocol.json` with "not a
+  review run folder", which is the message for exactly the runs whose cause one
+  wants to read.
 - The starter drains the session's stderr on its own thread, so a chatty
   session cannot deadlock the run, and it drops `ANTHROPIC_AUTH_TOKEN` as well
   as `ANTHROPIC_API_KEY` from the child environment. The rate-limit ceiling
