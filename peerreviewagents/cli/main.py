@@ -48,9 +48,9 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def report_parser() -> argparse.ArgumentParser:
+def report_parser(prog: str = "peerreview report") -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="peerreview report",
+        prog=prog,
         description="Re-render REVIEW.md and REVIEW.txt from a finished run folder. "
                     "No model call is made and nothing but the reports is written.")
     parser.add_argument("run", help="the run folder, or the review folder inside it")
@@ -61,13 +61,15 @@ def report_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def report_main(argv: list[str] | None = None) -> int:
+def report_main(argv: list[str] | None = None, prog: str = "peerreview report") -> int:
     """``peerreview report`` as a function: render a run folder's reports offline.
 
     This is the supported entry point for an application that wraps the
     command. It takes the arguments after ``report`` (a leading ``report`` is
     accepted too), prints JSON on stdout and returns the exit code rather than
-    raising it.
+    raising it. ``prog`` is the program name its ``--help`` and its errors use,
+    so a wrapper named something else says its own name, exactly as
+    :func:`peerreviewagents.review_main` does.
 
     A run that stopped is rendered like any other. The status and the cause are
     printed with the report paths, because a folder that was killed on a token
@@ -84,7 +86,7 @@ def report_main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "report":
         argv = argv[1:]
-    args = report_parser().parse_args(argv)
+    args = report_parser(prog=prog).parse_args(argv)
     try:
         # The run folder holds `manuscript/` and `review/`; the reports belong
         # to the review folder, so naming the run folder means that one.
@@ -97,6 +99,7 @@ def report_main(argv: list[str] | None = None) -> int:
     print(json.dumps({'status': summary['status'], 'cause': summary['cause'],
                       'findings': summary['counts']['findings'],
                       'publishable': summary['publishable'],
+                      'not_publishable_reasons': summary['not_publishable_reasons'],
                       'problems': summary['problems'],
                       **{key: str(value) for key, value in paths.items()}}, indent=2))
     return 0

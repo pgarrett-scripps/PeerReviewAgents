@@ -292,7 +292,7 @@ them:
 | `run`, `review` | the run folder and the `review/` folder inside it, as strings |
 | `status` | one of `RUN_STATUSES`, or `unknown` for a status file that was never written or holds a word this version does not know |
 | `complete`, `blocked` | the two questions asked of a status, already answered |
-| `publishable` | whether the whole review is here to show (see below) |
+| `publishable`, `not_publishable_reasons` | whether the whole review is here to show, and why not when it is not (see below) |
 | `cause`, `note` | why a run that is not complete stopped, and a limit that fired after the review was written |
 | `stage` | `startup` when no session ever ran and no subscription usage was spent, `session` once one did |
 | `findings`, `body`, `appendix` | the findings, de-duplicated per `finding_uid`, split the way the editor placed them |
@@ -331,9 +331,16 @@ worked and there is nothing to publish.
 
 **`publishable`** is the one flag to gate publishing on. It is true only when
 the status is `complete`, the findings came from a readable
-`editor-package.json`, the guard is `clean`, and `problems` is empty. A run with
-quarantined findings is complete and *not* publishable — `quarantined` says what
-was thrown out, and that is a judgement for a person.
+`editor-package.json`, the guard recorded a verdict, and `problems` is empty.
+When it is false, `not_publishable_reasons` names every reason in words, so the
+flag is never false with nothing said.
+
+A quarantined finding is not one of those reasons. The guard exists to throw out
+a finding whose quote it could not match to the block it names; a guard that did
+that has done its job, and the review that is left is publishable. `quarantined`
+says what was thrown out, and whether that mattered is a judgement for a person.
+`complete-without-findings` — everything quarantined — leaves nothing to publish
+and so is not publishable.
 
 **Damaged folders are read, not raised on.** A truncated `runtime.json`, a
 half-written last line in a usage receipt, a ledger with bytes that are not

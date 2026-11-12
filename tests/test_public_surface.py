@@ -342,6 +342,17 @@ def test_review_main_names_the_wrapper_in_its_own_help():
     assert 'workbench review' in out.getvalue()
 
 
+def test_report_main_names_the_wrapper_in_its_own_help():
+    """Both entry points take ``prog``, so a wrapping app's help says one name."""
+    with pytest.raises(SystemExit):
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            report_main(['--help'], prog='workbench report')
+
+    printed = out.getvalue()
+    assert 'workbench report' in printed
+    assert 'peerreview report' not in printed
+
+
 def test_report_main_renders_a_blocked_run_and_prints_the_cause(tmp_path):
     review = blocked_run(tmp_path)
 
@@ -538,6 +549,7 @@ def test_an_unknown_status_is_unknown_and_publishable_says_what_is_showable(tmp_
     assert (none['status'], none['complete'], none['publishable']) == (
         'complete-without-findings', True, False)
     assert none['counts']['findings'] == 0, 'the guard threw out every finding there was'
+    assert any('nothing to publish' in reason for reason in none['not_publishable_reasons'])
 
     guarded = complete_run(tmp_path / 'guarded')
     package = json.loads((guarded / 'editor-package.json').read_text(encoding='utf-8'))
@@ -546,8 +558,12 @@ def test_an_unknown_status_is_unknown_and_publishable_says_what_is_showable(tmp_
 
     held = read_run(guarded)
 
+    # The guard threw out a finding it could not anchor, which is the guard
+    # working. What is left is a whole review, so it is publishable and the
+    # quarantined row is there for a person to weigh.
     assert (held['status'], held['guard_status'], held['publishable']) == (
-        'complete', 'quarantined', False)
+        'complete', 'quarantined', True)
+    assert held['not_publishable_reasons'] == []
     assert held['counts']['quarantined'] == 1
 
     odd = complete_run(tmp_path / 'odd')
@@ -560,6 +576,46 @@ def test_an_unknown_status_is_unknown_and_publishable_says_what_is_showable(tmp_
     assert (strange['status'], strange['complete'], strange['publishable']) == (
         'unknown', False, False)
     assert any('finished' in problem for problem in strange['problems'])
+    assert any('not complete' in reason for reason in strange['not_publishable_reasons'])
+
+
+def _without_guard(path: Path) -> dict:
+    """The JSON at *path* with its guard verdict taken out, as an older run has."""
+    held = json.loads(Path(path).read_text(encoding='utf-8'))
+    return {key: value for key, value in held.items() if key != 'review_guard_status'}
+
+
+def test_publishable_is_never_false_without_saying_why(tmp_path):
+    """A flag that holds a review back has to name the reason that held it.
+
+    An application cannot act on ``False`` alone: a guard that threw out one
+    unanchored quote, a truncated editor package and a killed run are three
+    different events, and one of them is not a reason to hold the review at all.
+    """
+    whole = read_run(complete_run(tmp_path / 'whole'))
+    assert (whole['publishable'], whole['not_publishable_reasons']) == (True, [])
+
+    for name, prepare, expected in (
+        ('ledger', lambda review: (review / 'editor-package.json').write_text(
+            '{"summary": "truncated', encoding='utf-8'), 'ledger'),
+        ('killed', lambda review: _write(review / 'runtime.json', {
+            'status': 'blocked', 'blocked_reason': 'per-run token ceiling', 'agents': []}), None),
+        ('no-guard', lambda review: [_write(review / name, _without_guard(review / name))
+                                     for name in ('editor-package.json', 'progress.json')],
+         'guard'),
+    ):
+        review = complete_run(tmp_path / name)
+        if name == 'killed':
+            _write(review / 'progress.json', {'status': 'running'})
+        prepare(review)
+
+        run = read_run(review)
+
+        assert run['publishable'] is False, name
+        assert run['not_publishable_reasons'], f'{name} is held back with nothing named'
+        if expected:
+            assert any(expected in reason for reason in run['not_publishable_reasons']), \
+                run['not_publishable_reasons']
 
 
 def test_read_run_refuses_every_kind_of_symlink_by_name(tmp_path):
