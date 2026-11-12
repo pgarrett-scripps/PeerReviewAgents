@@ -98,9 +98,12 @@ this list and say so, because those modules change without notice.
 from peerreviewagents import (
     review, review_main, report_main,      # run a review; the two commands
     read_run, write_reports,               # read and re-render a run folder
+    locate_run, NotARunFolder,             # resolve a run folder, and the error
     import_paper, verify_workspace, export_draft,
+    plugin_directory, claude_code_version,  # check an installation
+    review_parser, report_parser,           # the real parsers behind the commands
     RUN_DIRECTORY, MANUSCRIPT_DIRECTORY,   # "review" and "manuscript"
-    RUN_STATUSES, COMPLETE_STATUSES, FINDING_SCHEMA_VERSION,
+    RUN_STATUSES, COMPLETE_STATUSES, CLI_COMMANDS, FINDING_SCHEMA_VERSION,
 )
 ```
 
@@ -127,9 +130,38 @@ if command == "review":
 raise SystemExit(report_main(argv, prog="workbench report"))
 ```
 
-That is the whole reason they exist. Copying `starter.main`, or reaching for
-`starter.build_parser` and `starter.exit_code`, means your wrapper breaks when
-an option is added; these two do not.
+That is the whole reason they exist. Copying `starter.main`, or reaching into
+`plugin.starter` for the parser, means your wrapper breaks when an option is
+added; these two do not.
+
+### Checking the installation and your own commands
+
+Four names answer the questions a wrapper asks about the engine rather than
+about a run, so none of them needs a private module:
+
+```python
+from peerreviewagents import (CLI_COMMANDS, claude_code_version,
+                              plugin_directory, report_parser, review_parser)
+
+if claude_code_version() is None:          # None, not an exception
+    raise SystemExit("Claude Code is not installed on this PATH")
+plugin = plugin_directory()                # package data, not a checkout
+
+documented = {"review", "report", "doctor"}
+assert documented >= set(CLI_COMMANDS), "a peerreview command this wrapper hides"
+options = {action.dest for action in review_parser()._actions}
+```
+
+`plugin_directory()` is the `pra` plugin that ships inside the package — what
+`claude --plugin-dir` is given, and what to assert the existence of before
+offering a review. `claude_code_version()` is what `claude --version` prints,
+or `None` when Claude Code is not on this PATH: the one precondition a review
+cannot do without. `CLI_COMMANDS` is `("review", "report")` and there is no
+third; `review_parser(prog=...)` and `report_parser(prog=...)` are the real
+parsers those commands run on, so a wrapper that documents its own options can
+diff them against these instead of against a copy that silently falls behind.
+Use `review_main` and `report_main` to *run* a command; these are for checking
+one.
 
 ### Reading a run folder
 
@@ -149,6 +181,12 @@ print(run["runtime"]["tokens_total"], "tokens",
       [(a["slot"], a["tokens"]) for a in run["agents"]])
 ```
 
+`locate_run(path)` is the step `read_run` does first, on its own: it returns
+`(run folder, review folder)` for either spelling, raises `NotARunFolder` for a
+folder that is neither and refuses a symlinked `review/` by name. An app that
+lists a directory of runs before reading any of them wants that, not a reading
+of each.
+
 It works on every kind of folder a review can leave behind, which is the point:
 
 | Folder | What `read_run` gives you |
@@ -164,9 +202,28 @@ Keys: `status`, `complete`, `publishable`, `not_publishable_reasons`, `blocked`,
 `cause`, `note`, `stage`, `findings`, `body`, `appendix`, `findings_source`,
 `counts`, `quarantined`, `guard_status`, `escalations`, `escalation_rulings`,
 `summary`, `verdict`, `limitations`, `identity`, `stages`, `runtime`, `agents`,
-`usage`, `reports`, `startup_problems`, `problems`, `files`, `run`, `review`.
-The same 31 keys come back for every folder, in every state, so a consumer
-never has to test whether a key is there.
+`usage`, `reports`, `startup`, `startup_problems`, `problems`, `files`, `run`,
+`review`. The same 32 keys come back for every folder, in every state, so a
+consumer never has to test whether a key is there.
+
+Three of them hold what an integration used to read out of the run folder
+itself:
+
+- `identity['code_hashes']` is `manifest.json`'s code map — one digest per
+  engine and plugin file that served the run, so two runs of the same arm can
+  be told apart when the plugin changed between them. `{}` for a run that
+  stopped before `ingest` wrote one, or for a map that is damaged.
+- `identity['provider']` is what ran the review — `claude-code` for every run
+  this version writes, from `protocol.json` rather than inferred. `None` when
+  the protocol does not say.
+- `startup` is `{'probe': ..., 'problems': [...]}` from `startup.json`: the
+  harness's own start-up event and what the probe refused to launch over.
+  `probe` is `None` when no probe was written or it holds the wrong shape, and
+  `problems` is the probe's own list. The long-standing `startup_problems` key
+  is the same list, kept as it was.
+
+Damage in any of the three is named in `problems` and read as absent or empty,
+like every other damaged file.
 
 Four rules it enforces so you do not have to:
 
@@ -177,7 +234,8 @@ Four rules it enforces so you do not have to:
   `findings_source` says which. A uid the editor placed in both its lists is in
   `body` only, so it is one finding and one escalation, not two.
 - **A folder that is not a run is an error, not an empty answer.** It raises
-  `peerreviewagents.runs.NotARunFolder` (a `ValueError`) naming the files it
+  `peerreviewagents.NotARunFolder` (a `ValueError`, also reachable as
+  `peerreviewagents.runs.NotARunFolder`) naming the files it
   looked for.
 - **A damaged file inside a real run is named, not raised.** A truncated
   `runtime.json`, a half-written last line in a usage receipt, a status file
@@ -209,9 +267,10 @@ and another way in its own report. The rule, in order:
 5. Otherwise `unknown` — and a status word this version does not know is
    `unknown` with a line in `problems`, never passed through.
 
-`complete-without-findings` means the review was written and every finding in
-it had been quarantined by the guard. The run worked; there is nothing to
-publish.
+`complete-without-findings` means the review was written with no findings in
+it, and it happens two ways: the reviewers raised nothing, or the guard
+quarantined everything they raised. `counts['quarantined']` is what tells them
+apart, and `publishable` follows it — see below.
 
 ### Gating on `publishable`
 
@@ -219,7 +278,8 @@ publish.
 whole review is here to show, which is the question a consumer actually has
 before it puts a review in front of someone. It is `True` only when:
 
-- `status` is `complete`,
+- `status` is `complete`, or `complete-without-findings` with nothing
+  quarantined,
 - `findings_source` is `editor-package` — the editor's own placement, not the
   ledger fallback,
 - `guard_status` is set, so the guard recorded a verdict over these findings,
@@ -236,8 +296,15 @@ out a finding whose quote it could not match to the block the finding names. A
 guard that did that has done its job, and what is left is a whole review minus
 one unanchored quote. `guard_status` is `clean` or `quarantined` — there is no
 error state — and `quarantined` holds the rows themselves, so an application
-that wants to weigh what was held can. `complete-without-findings` is the
-exception: every finding was quarantined, so there is nothing left to publish.
+that wants to weigh what was held can.
+
+**A review with no findings in it is still a review.**
+`complete-without-findings` with `counts['quarantined']` at zero means the
+reviewers read the manuscript and raised nothing make-or-break, and the editor
+wrote a package saying so: publishable. The same status with findings
+quarantined is not publishable, because what the reviewers raised is not in the
+review; the reason names how many were held back. The status alone does not
+tell you which case you have — the count does.
 
 ### Exit codes
 
@@ -258,6 +325,39 @@ A blocked run is the code `1` and a full run folder to read, not an exception.
 `write_reports(run)` re-renders `REVIEW.md` and `REVIEW.txt` from a run folder
 with no model call. The workspace path is optional: a run folder holds its own
 manuscript, so pass one only when the manuscript lives somewhere else.
+
+### Writing files the engine reads: `peerreviewagents.workspace`
+
+An app that keeps its own files beside a manuscript workspace — a revision, a
+saved review, a scaffold import, an export — writes files the engine reads back
+and verifies against a manifest. So it cannot carry its own digest, its own
+JSON writer or its own review normalisation: a second implementation of any of
+them is a file the engine refuses, or worse, one it accepts as something it is
+not. The seven tools are in one public module rather than seven more top-level
+names, and each is the same object the engine itself uses — the import is an
+alias, not a copy:
+
+```python
+from peerreviewagents.workspace import (digest, read_json, write_json,
+                                        normalize_review, save_review,
+                                        words, text_of)
+```
+
+| Name | What it is |
+| --- | --- |
+| `digest(value)` | the SHA-256 every manifest entry in a workspace is checked against; takes `bytes` or `str` |
+| `read_json(path)` | the one reader of a JSON file in a run or a workspace, UTF-8 |
+| `write_json(path, value)` | the one writer: parents created, written to a temp file in the same directory and `os.replace`d, UTF-8 and `indent=2`, so a half-written file is impossible rather than unlikely |
+| `normalize_review(paper, response, review_id)` | the anchoring step: ids, quote positions, `placement`, withheld edits, and the counts — for an app that wants the normalised findings without writing them |
+| `save_review(root, response, review_id)` | that, verified against the workspace and stored at `reviews/<review_id>.json`; the same review twice is the same file, a different body under the same id is a `ValueError`, and a review of another manuscript version is refused |
+| `words(text)` | the word split the import counts by |
+| `text_of(element)` | an XML element's text as the import reads it, whitespace collapsed; `''` for `None` |
+
+The whole-workspace operations stay on the top level: `import_paper`,
+`verify_workspace` and `export_draft`. Use `write_json` for every file you add
+to a workspace and `digest` for every manifest entry, and
+`verify_workspace(root)` will accept what you wrote; writing JSON yourself is
+the one way to produce a workspace the engine rejects.
 
 ### Run statuses
 

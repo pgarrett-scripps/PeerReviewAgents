@@ -160,6 +160,56 @@ def runtime_usage(run, on_problem=None):
     return value if isinstance(value, dict) else None
 
 
+#: The fields a stream row carries when it says anything at all about an agent.
+#: A row with a label and none of these is the placeholder the harness emits for
+#: an agent it has announced and not yet run.
+SPENT_FIELDS = ('tokens', 'toolCalls', 'state', 'model', 'agentType', 'durationMs')
+
+
+def _said_something(row):
+    return any(row.get(field) is not None for field in SPENT_FIELDS)
+
+
+def _role_of(row):
+    """The agent file a stream row names, without its plugin prefix.
+
+    The harness labels a task by what the task is — ``ingest``, ``write
+    review`` — while the protocol records the slot that did it, ``recorder``.
+    The ``agentType`` is the one field that holds the same word as the slot.
+    """
+    kind = row.get('agentType')
+    return str(kind).split(':')[-1].strip() if kind else None
+
+
+def _total(rows, field):
+    """The sum over the rows that report ``field``, or ``None`` if none does."""
+    values = [row[field] for row in rows if isinstance(row.get(field), (int, float))
+              and not isinstance(row.get(field), bool)]
+    return sum(values) if values else None
+
+
+def _merge(rows):
+    """Several stream rows for one slot, as one row's worth of accounting.
+
+    A slot can appear in the stream more than once because one agent ran more
+    than one task: the recorder ingests the manuscript and later writes the
+    review. Both are that slot's spend, so they are added rather than listed as
+    two agents, and ``labels`` keeps the task names the stream used.
+    """
+    state = [row.get('state') for row in rows if row.get('state')]
+    return {
+        'model': next((row['model'] for row in rows if row.get('model')), None),
+        'attempt': max((int(row.get('attempt') or 1) for row in rows), default=1),
+        'session_calls': _total(rows, 'toolCalls'),
+        'tokens': _total(rows, 'tokens'),
+        # Every task done is the slot done; anything else is the state that is
+        # not, because that is the one worth seeing.
+        'state': next((value for value in state if value != 'done'),
+                      state[0] if state else None),
+        'labels': [str(row.get('label')) for row in rows if row.get('label')],
+    }
+
+
 def agent_rows(run, protocol=None, runtime=None, on_problem=None):
     """One row per agent slot: role, track, model, tool calls and tokens.
 
@@ -171,31 +221,50 @@ def agent_rows(run, protocol=None, runtime=None, on_problem=None):
     server itself served that slot, which is the number the ledger bounds;
     ``session_calls`` is every tool call the session saw the agent make, which
     is larger and is Claude Code's count rather than the server's.
+
+    **One agent is one row.** The stream names a task and the protocol names a
+    slot, and for the recorder those are different words: ``ingest`` and ``write
+    review`` in ``runtime.json``, ``recorder`` in ``protocol.json``. A stream
+    row whose ``agentType`` is the slot's own agent is that slot's, so its
+    tokens and calls are added to it and ``labels`` says which tasks they were,
+    rather than the same agent appearing three times with the spend under the
+    two names the protocol does not use. A stream row that carries nothing but a
+    label is the harness's placeholder for an agent it has not run, and it is
+    left out: it is not a slot, and listing it puts an agent that spent nothing
+    and did nothing in the run's own record.
     """
     if runtime is None:
         runtime = runtime_usage(run, on_problem) or {}
     spent = {}
     rows_recorded = runtime.get('agents')
     for row in rows_recorded if isinstance(rows_recorded, list) else []:
-        if isinstance(row, dict) and row.get('label'):
+        if isinstance(row, dict) and row.get('label') and _said_something(row):
             spent[str(row['label']).split('#')[0]] = row
     rows = []
     planned = (protocol or {}).get('agents')
     for slot, record in sorted((planned if isinstance(planned, dict) else {}).items()):
         record = record if isinstance(record, dict) else {}
-        observed = spent.pop(slot, {})
+        if slot in spent:
+            observed = _merge([spent.pop(slot)])
+        else:
+            # No row under the slot's own name: the tasks this slot's agent ran.
+            theirs = [label for label, row in spent.items() if _role_of(row) == slot]
+            observed = _merge([spent.pop(label) for label in theirs]) if theirs else {}
         rows.append({'slot': slot, 'role': record.get('role'), 'track': record.get('track'),
                      'model': observed.get('model') or record.get('model'),
                      'attempt': observed.get('attempt') or record.get('attempt') or 1,
                      'tool_calls': record.get('tool_calls'),
-                     'session_calls': observed.get('toolCalls'),
+                     'session_calls': observed.get('session_calls'),
                      'tokens': observed.get('tokens'),
-                     'state': observed.get('state')})
+                     'state': observed.get('state'),
+                     'labels': observed.get('labels') or []})
     # An agent the stream reported but the protocol never recorded is a real
     # discrepancy, so it is shown rather than dropped to make the table tidy.
     for slot, observed in sorted(spent.items()):
-        rows.append({'slot': slot, 'role': None, 'track': None, 'model': observed.get('model'),
-                     'attempt': observed.get('attempt') or 1, 'tool_calls': None,
-                     'session_calls': observed.get('toolCalls'),
-                     'tokens': observed.get('tokens'), 'state': observed.get('state')})
+        merged = _merge([observed])
+        rows.append({'slot': slot, 'role': None, 'track': None, 'model': merged.get('model'),
+                     'attempt': merged.get('attempt') or 1, 'tool_calls': None,
+                     'session_calls': merged.get('session_calls'),
+                     'tokens': merged.get('tokens'), 'state': merged.get('state'),
+                     'labels': merged.get('labels') or []})
     return rows

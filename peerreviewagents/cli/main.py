@@ -24,7 +24,12 @@ import json
 import sys
 from pathlib import Path
 
-COMMANDS = ("review", "report")
+from ..names import CLI_COMMANDS
+
+# The two commands, kept in :mod:`peerreviewagents.names` so that a consumer
+#: can read them without importing this module, and spelled here under the name
+#: this module has always used them by.
+COMMANDS = CLI_COMMANDS
 
 DESCRIPTION = (
     "Review a manuscript PDF end to end with the pra plugin, with every finding "

@@ -23,19 +23,44 @@ Reading a run
     the escalations and their rulings, the manifest identity, the report paths
     and the runtime of each agent. :func:`write_reports` re-renders
     ``REVIEW.md`` and ``REVIEW.txt`` from a run folder, with no model call and
-    no workspace path needed.
+    no workspace path needed. :func:`locate_run` is the resolution those two
+    do first — ``(run folder, review folder)`` from either spelling — for an
+    app that lists folders before reading them, and
+    :class:`NotARunFolder` is what both raise for a folder that is not a run.
+
+Checking an installation
+    :func:`plugin_directory` is the ``pra`` plugin that ships inside this
+    package — package data, not a checkout — which is what a wrapper passes to
+    ``claude --plugin-dir`` or asserts the existence of before offering a
+    review. :func:`claude_code_version` is what ``claude --version`` prints,
+    or ``None`` when Claude Code is not installed on this PATH, which is the
+    one precondition a review cannot do without.
+
+Checking a wrapper's own commands
+    :data:`CLI_COMMANDS` is every command ``peerreview`` has, and
+    :func:`review_parser` and :func:`report_parser` are the real parsers behind
+    the two of them. A wrapper that documents its own options can compare them
+    against these instead of against a copy, so an option added here shows up
+    as a difference rather than as a wrapper that silently drops it. Use
+    :func:`review_main` and :func:`report_main` to *run* a command; these three
+    are for checking one.
 
 Manuscripts and workspaces
     :func:`import_paper` imports a PDF into a manuscript workspace without any
     model call. :func:`verify_workspace` re-checks an imported workspace
     against its own manifest and returns the paper. :func:`export_draft`
     applies the accepted anchored edits of a review to a copy of the blocks.
+    :mod:`peerreviewagents.workspace` holds the smaller tools those are built
+    from, for an app that writes files the engine reads back: the manifest
+    digest, the atomic JSON read and write, the review normalisation and save,
+    and the two text helpers the import uses.
 
 Names
     :data:`RUN_DIRECTORY` and :data:`MANUSCRIPT_DIRECTORY` are the two folders
     inside a run, :data:`RUN_STATUSES` and :data:`COMPLETE_STATUSES` are the
-    statuses a run folder can record, and :data:`FINDING_SCHEMA_VERSION` is the
-    schema every stored finding is stamped with.
+    statuses a run folder can record, :data:`CLI_COMMANDS` is the two commands,
+    and :data:`FINDING_SCHEMA_VERSION` is the schema every stored finding is
+    stamped with.
 
 The callables resolve lazily (PEP 562) so that ``import peerreviewagents``
 stays as cheap as it is on its own, and so a caller that only wants to read a
@@ -48,6 +73,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from .names import (
+    CLI_COMMANDS,
     COMPLETE_STATUSES,
     FINDING_SCHEMA_VERSION,
     MANUSCRIPT_DIRECTORY,
@@ -56,25 +82,37 @@ from .names import (
 )
 
 if TYPE_CHECKING:  # Static tooling sees the real objects, not the fallback.
+    from .cli.main import report_parser
     from .engine.annotations import export_draft, verify_workspace
     from .engine.ingest import import_paper
     from .engine.run_report import write_reports
+    from .plugin.starter import build_parser as review_parser
+    from .plugin.starter import claude_version as claude_code_version
+    from .plugin.starter import plugin_dir as plugin_directory
     from .plugin.starter import review, review_main
-    from .runs import read_run
+    from .runs import NotARunFolder, read_run
+    from .runs import locate as locate_run
 
 __all__ = [
     "review",
     "review_main",
     "report_main",
     "read_run",
+    "locate_run",
+    "NotARunFolder",
     "import_paper",
     "write_reports",
     "verify_workspace",
     "export_draft",
+    "plugin_directory",
+    "claude_code_version",
+    "review_parser",
+    "report_parser",
     "RUN_DIRECTORY",
     "MANUSCRIPT_DIRECTORY",
     "RUN_STATUSES",
     "COMPLETE_STATUSES",
+    "CLI_COMMANDS",
     "FINDING_SCHEMA_VERSION",
 ]
 
@@ -83,6 +121,17 @@ _LAZY = {
     "review_main": (".plugin.starter", "review_main"),
     "report_main": (".cli.main", "report_main"),
     "read_run": (".runs", "read_run"),
+    # The run-folder resolution and the error both of those raise, so an app
+    # that lists folders never imports `runs` for them.
+    "locate_run": (".runs", "locate"),
+    "NotARunFolder": (".runs", "NotARunFolder"),
+    # The installation checks and the two parsers. Each is the object the
+    # command itself uses, under the name this surface calls it by, so a
+    # consumer never needs `plugin.starter` or `cli.main`.
+    "plugin_directory": (".plugin.starter", "plugin_dir"),
+    "claude_code_version": (".plugin.starter", "claude_version"),
+    "review_parser": (".plugin.starter", "build_parser"),
+    "report_parser": (".cli.main", "report_parser"),
     "import_paper": (".engine.ingest", "import_paper"),
     "write_reports": (".engine.run_report", "write_reports"),
     "verify_workspace": (".engine.annotations", "verify_workspace"),

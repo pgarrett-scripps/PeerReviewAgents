@@ -253,12 +253,18 @@ launcher.
 | `review_main(argv, prog=...)` | that command as a function: JSON on stdout, exit code returned |
 | `report_main(argv)` | `peerreview report` as a function, same contract |
 | `read_run(path)` | read any run folder: status, cause, findings, costs |
+| `locate_run(path)`, `NotARunFolder` | `(run folder, review folder)` from either spelling, and the error both it and `read_run` raise for a folder that is not a run |
 | `write_reports(run, workspace=None, output_dir=None)` | re-render `REVIEW.md` and `REVIEW.txt`, offline |
 | `import_paper(pdf, workspace)` | import a PDF into a manuscript workspace, no model call |
 | `verify_workspace(workspace)` | re-check an import against its own manifest, returns the paper |
 | `export_draft(paper, review, decisions)` | apply the accepted anchored edits to a copy of the blocks |
+| `peerreviewagents.workspace` | the workspace tools an app needs to write files the engine reads back: `digest`, `read_json`, `write_json`, `normalize_review`, `save_review`, `words`, `text_of` |
+| `plugin_directory()` | the `pra` plugin that ships inside this package, for `claude --plugin-dir` |
+| `claude_code_version()` | what `claude --version` prints, or `None` when Claude Code is not on this PATH |
+| `review_parser(prog=...)`, `report_parser(prog=...)` | the real parsers behind the two commands, for checking a wrapper's own options against them |
 | `RUN_DIRECTORY`, `MANUSCRIPT_DIRECTORY` | `"review"` and `"manuscript"`, the two folders in a run |
 | `RUN_STATUSES`, `COMPLETE_STATUSES` | the statuses a run can record, and the two that mean it finished |
+| `CLI_COMMANDS` | `("review", "report")`, every command `peerreview` has |
 | `FINDING_SCHEMA_VERSION` | the schema every stored finding is stamped with |
 
 `review` returns the run's summary and prints nothing: `status`,
@@ -272,6 +278,14 @@ no plugin — raises `ValueError` before anything is written, and nothing else i
 raised. `peerreviewagents.plugin.starter.exit_code(summary)` is what
 the command turns it into — `0` reviewed, `2` never started, `1` otherwise, and
 `review_main` returns it for you.
+
+`plugin_directory()` and `claude_code_version()` are the two preconditions a
+wrapper checks before offering a review: the plugin that ships in this package,
+and the Claude Code the review runs on (`None` when it is not installed, not an
+exception). `CLI_COMMANDS`, `review_parser` and `report_parser` are for checking
+a wrapper against the commands rather than running one: compare your own
+documented options against the real parsers, and an option added here shows up
+as a difference instead of as an option your wrapper silently drops.
 
 ### Reading a run folder
 
@@ -301,12 +315,13 @@ them:
 | `quarantined`, `guard_status` | what the guard threw out, and `clean` or `quarantined` |
 | `escalations`, `escalation_rulings` | the specialist findings that asked for a ruling, and the rulings given |
 | `summary`, `verdict`, `limitations` | the editor's own three, or `None`/`[]` |
-| `identity` | paper id, source hash, PDF path, arm, reviewers, specialist tracks, versions |
+| `identity` | paper id, source hash, PDF path, arm, reviewers, specialist tracks, versions, `provider`, and `code_hashes` — the manifest's digest of each engine and plugin file that served the run |
 | `stages` | the stages the run recorded, or `None` |
 | `runtime` | wall time, total tokens, rate limits, both token ceilings, the Claude Code version |
 | `agents` | one row per agent slot: role, track, model, tool calls, tokens, state |
 | `usage` | observed subscription tokens from the usage receipts, with `unknown` set if any receipt was unreadable |
 | `reports` | absolute paths to what exists — `REVIEW.md`, `REVIEW.txt`, `editor-package.json`, and `audits` keyed by track |
+| `startup` | the harness's own start-up event as `probe` (`None` when no probe was written or it holds the wrong shape) and the probe's own `problems` |
 | `startup_problems` | what the start-up probe refused to launch over |
 | `problems` | every file that could not be read in full, named |
 | `files` | the run files that exist, by name |
@@ -326,21 +341,27 @@ the starter records a rate limit or a token ceiling that fired *after*
 becomes `note` rather than `cause`. Otherwise `runtime.json` decides, then
 `progress.json`, then a run with a cause but no status is `blocked`, and
 anything else is `unknown`. `complete-without-findings` means the review was
-written and every finding in it had been quarantined by the guard: the run
-worked and there is nothing to publish.
+written with no findings in it, which happens two ways: the reviewers raised
+nothing, or the guard quarantined everything they raised. `counts['quarantined']`
+is what tells them apart.
 
-**`publishable`** is the one flag to gate publishing on. It is true only when
-the status is `complete`, the findings came from a readable
-`editor-package.json`, the guard recorded a verdict, and `problems` is empty.
-When it is false, `not_publishable_reasons` names every reason in words, so the
-flag is never false with nothing said.
+**`publishable`** is the one flag to gate publishing on. It is true when the
+status is `complete` or `complete-without-findings`, the findings came from a
+readable `editor-package.json`, the guard recorded a verdict, and `problems` is
+empty. When it is false, `not_publishable_reasons` names every reason in words,
+so the flag is never false with nothing said.
 
 A quarantined finding is not one of those reasons. The guard exists to throw out
 a finding whose quote it could not match to the block it names; a guard that did
 that has done its job, and the review that is left is publishable. `quarantined`
 says what was thrown out, and whether that mattered is a judgement for a person.
-`complete-without-findings` — everything quarantined — leaves nothing to publish
-and so is not publishable.
+
+**A review with no findings in it.** `complete-without-findings` with nothing
+quarantined is publishable: the reviewers read the manuscript, raised nothing
+make-or-break, and the editor wrote a package saying so, which is a review. The
+same status with findings quarantined is not: what the reviewers raised is not
+in the review, so there is nothing to publish, and the reason says how many were
+held back.
 
 **Damaged folders are read, not raised on.** A truncated `runtime.json`, a
 half-written last line in a usage receipt, a ledger with bytes that are not
