@@ -187,21 +187,22 @@ def line(row: dict) -> str:
         f'{row.get("planted_style_allegations", 0)} allegations'
     # `publishable` is printed because a row scored from a folder that could not
     # be read in full is not the same evidence as a row scored from a whole one,
-    # and with the reason, because the three reasons mean different things: a
-    # guard that threw a finding out, a file that could not be read, and a run
-    # with no editor package are not the same event.
-    reasons = []
-    if (row.get('problems') or []):
-        reasons.append(f'{len(row["problems"])} problems')
-    if row.get('guard_status') and row['guard_status'] != 'clean':
-        reasons.append(f'guard {row["guard_status"]} ({row.get("quarantined") or 0})')
-    if row.get('findings_source') != 'editor-package':
-        reasons.append(f'findings from {row.get("findings_source")}')
+    # and the reason comes from the engine's own `not_publishable_reasons` so
+    # that the line never says False while naming nothing.
+    reasons = row.get('not_publishable_reasons') or []
     flag = 'publishable' if row.get('publishable') else \
-        'not publishable: ' + (', '.join(reasons) or 'status ' + str(row.get('status')))
+        'not publishable: ' + ('; '.join(reasons) or 'status ' + str(row.get('status')))
+    # The guard is printed whether or not it bears on publishability, because a
+    # quarantined catch is the arm's result being withheld by the brief.
+    guard = ''
+    if row.get('guard_status') and row['guard_status'] != 'clean':
+        held = row.get('quarantined_catches') or 0
+        guard = (f'  guard {row["guard_status"]} ({row.get("quarantined") or 0}'
+                 + (f', {held} of them catches' if held else '') + ')')
     return (f'{row["id"]:70} {row.get("status") or "?":8} {verdict:14} '
             f'{row.get("findings_total", 0):3} findings  '
-            f'{row.get("tokens", 0):>9,} tokens  {row.get("minutes", 0):5.1f} min  {flag}')
+            f'{row.get("tokens", 0):>9,} tokens  {row.get("minutes", 0):5.1f} min  '
+            f'{flag}{guard}')
 
 
 def drive(root: Path, stages=STAGES, control_slugs=(), peerreview='peerreview',

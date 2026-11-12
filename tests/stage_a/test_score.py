@@ -27,12 +27,15 @@ KEY = {
 }
 
 
-def write_run(folder, findings, runtime=None, progress=None):
+def write_run(folder, findings, runtime=None, progress=None, quarantined=()):
     """A run folder of the shape the plugin writes."""
     review = folder / 'review'
     review.mkdir(parents=True, exist_ok=True)
     review.joinpath('findings.jsonl').write_text(
         ''.join(json.dumps(row) + '\n' for row in findings), encoding='utf-8')
+    if quarantined:
+        review.joinpath('quarantined.jsonl').write_text(
+            ''.join(json.dumps(row) + '\n' for row in quarantined), encoding='utf-8')
     review.joinpath('runtime.json').write_text(json.dumps(runtime or {
         'status': 'complete', 'wall_seconds': 247.0, 'tokens_total': 636299,
         'agents': [{'label': 'stats', 'tokens': 90000, 'toolCalls': 9, 'model': 'opus'}],
@@ -61,6 +64,36 @@ def test_naming_both_numbers_in_the_right_block_is_a_catch(tmp_path):
     assert result['first_catch']['slot'] == 'specialist-stats'
     assert result['tokens'] == 636299 and result['minutes'] == 4.1
     assert result['findings_by_track'] == {'stats': 1}
+
+
+def test_a_catch_the_guard_quarantined_is_counted_apart_from_the_delivered_ones(tmp_path):
+    """A withheld catch is the brief's fault, so it is counted and not scored as a catch.
+
+    The guard quarantines a finding whose quote it cannot place, and it keeps
+    the block id, so the place rule still reaches the row. The run delivered
+    nothing about the planted error, so ``caught`` is false; what the arm found
+    and the brief threw away is ``quarantined_catches``.
+    """
+    run = write_run(tmp_path / 'run', [finding(
+        block_id='b0003', title='The discussion overstates the effect')],
+        quarantined=[finding(
+            block_id='b0010',
+            title='Randomised total disagrees with the flow diagram',
+            comment='The text says 548 randomised while the diagram says 530.',
+            quote='a total of roughly 548 patients')])
+    result = score.score(run, KEY)
+    assert result['caught'] is False
+    assert result['quarantined'] == 1
+    assert result['quarantined_catches'] == 1
+    assert result['quarantined_caught_by'][0]['block_id'] == 'b0010'
+
+
+def test_a_quarantined_finding_about_something_else_is_not_a_withheld_catch(tmp_path):
+    run = write_run(tmp_path / 'run', [], quarantined=[finding(
+        block_id='b0010', title='The randomisation method is not described',
+        comment='No allocation sequence is given.')])
+    result = score.score(run, KEY)
+    assert result['quarantined'] == 1 and result['quarantined_catches'] == 0
 
 
 def test_quoting_the_sentence_without_the_claim_is_only_a_near_miss(tmp_path):

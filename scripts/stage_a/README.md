@@ -77,3 +77,12 @@ printed DOI returns 404, the preprint's DOI is this one, the last digits differ
 Quoting the altered sentence while saying something else about it is a near miss,
 not a catch. Near misses are recorded too, because they are what tell an agent
 brief that it looked in the right place and did not run the check.
+
+A catch the review guard quarantined is counted apart, as
+`quarantined_catches`, and is not a catch: the run did not deliver it. It is
+also not a failure of the arm — the arm found the error and the brief threw the
+finding away, nearly always because the reviewer paraphrased the quote instead
+of copying it. The two numbers have to stay separate, because one says the
+reviewers need a better check and the other says the brief needs a clearer
+instruction. A quarantined row keeps its block id, so the place rule still
+reaches it even when its quote is the reason it was held.

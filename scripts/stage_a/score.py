@@ -169,6 +169,7 @@ def reading_of(run: Path) -> dict:
         return {'status': 'unknown', 'publishable': False, 'findings': [], 'body': [],
                 'appendix': [], 'findings_source': 'none', 'counts': {}, 'quarantined': [],
                 'guard_status': None, 'cause': str(refusal), 'note': None,
+                'not_publishable_reasons': [str(refusal)],
                 'runtime': {}, 'usage': {}, 'agents': [], 'problems': [str(refusal)]}
 
 
@@ -190,6 +191,10 @@ def cost_of(reading: dict) -> dict:
     return {
         'status': reading.get('status'),
         'publishable': reading.get('publishable'),
+        # The engine says why a run is not publishable; the matrix prints those
+        # words rather than guessing at them from the parts, so one rule is
+        # described in one place.
+        'not_publishable_reasons': reading.get('not_publishable_reasons') or [],
         'problems': reading.get('problems') or [],
         'blocked_reason': reading.get('cause'),
         'note': reading.get('note'),
@@ -229,6 +234,13 @@ def score(run: Path, key: dict, reading: dict | None = None) -> dict:
     for finding in findings:
         tracks[str(finding.get('track') or 'unknown')] = \
             tracks.get(str(finding.get('track') or 'unknown'), 0) + 1
+    # A catch the review guard threw out is a catch the arm made and the run did
+    # not deliver, which is a different number from a miss and has to be counted
+    # separately: it says the brief needs fixing, not that the reviewers failed.
+    # The place rule reaches a quarantined row through its block id, which the
+    # guard leaves in place even when it rejects the quote.
+    held = [brief(finding) for finding in (reading.get('quarantined') or [])
+            if in_place(finding, key) and about_it(finding, key)]
     return {
         'run': str(run),
         'paper': key['paper'],
@@ -247,6 +259,8 @@ def score(run: Path, key: dict, reading: dict | None = None) -> dict:
         'findings_by_severity': counts(findings, 'severity'),
         'escalated': sum(1 for finding in findings if finding.get('escalate')),
         'quarantined': len(reading.get('quarantined') or []),
+        'quarantined_catches': len(held),
+        'quarantined_caught_by': held,
         **cost_of(reading),
     }
 
