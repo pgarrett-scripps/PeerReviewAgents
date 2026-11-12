@@ -9,6 +9,8 @@ the failure is a message about a file to fix rather than a wasted run.
 
 from __future__ import annotations
 
+import json
+
 import matrix
 
 HTML = (b'<html>\n  <head>\n    <title>Preparing to download...</title>\n'
@@ -87,6 +89,76 @@ def test_drive_runs_a_queue_whose_inputs_are_all_pdfs(tmp_path, monkeypatch):
     state = matrix.drive(tmp_path, peerreview='/bin/false')
     assert seen == ['paper0--statistic--full-two-track--r3']
     assert state['ran'] == 1 and state['stopped_because'] == ''
+
+
+def planted_root(tmp_path, *slugs):
+    """A Stage A data root holding a key and an altered PDF per slug."""
+    (tmp_path / 'keys').mkdir(exist_ok=True)
+    (tmp_path / 'altered').mkdir(exist_ok=True)
+    for slug in slugs:
+        pdf = write(tmp_path / 'altered', f'{slug}.pdf', b'%PDF-1.4\n')
+        (tmp_path / 'keys' / f'{slug}.json').write_text(
+            json.dumps({'paper': slug, 'kind': 'statistic', 'altered_pdf': str(pdf)}),
+            encoding='utf-8')
+    return tmp_path
+
+
+def test_a_rerun_goes_to_a_folder_of_its_own(tmp_path):
+    """The run being compared against must still be there afterwards."""
+    root = planted_root(tmp_path, 'trial-pmc8938265', 'psychology-pmc7609822')
+    specs = matrix.reruns(root, ('trial-pmc8938265',), 'briefs-fixed')
+    assert [spec['id'] for spec in specs] == [
+        'trial-pmc8938265--statistic--full-two-track--r3--briefs-fixed']
+    assert specs[0]['stage'] == 'rerun' and specs[0]['arm'] == 'full-two-track'
+    assert specs[0]['reviewers'] == 3 and specs[0]['tag'] == 'briefs-fixed'
+    first = str(root / 'runs' / 'trial-pmc8938265--statistic--full-two-track--r3')
+    assert specs[0]['run'] != first and specs[0]['run'].startswith(first)
+
+
+def test_a_rerun_of_a_paper_that_is_not_planted_is_refused(tmp_path):
+    root = planted_root(tmp_path, 'trial-pmc8938265')
+    try:
+        matrix.reruns(root, ('trial-pmc8938265', 'not-a-paper'), 'briefs-fixed')
+    except SystemExit as stop:
+        assert 'not-a-paper' in str(stop)
+    else:
+        raise AssertionError('a slug that names no planted paper should stop the run')
+
+
+def test_reruns_are_not_in_the_default_stages(tmp_path):
+    """A plain matrix run must never start a rerun of anything."""
+    root = planted_root(tmp_path, 'trial-pmc8938265')
+    assert matrix.jobs(root, matrix.STAGES, (), (), 'rerun')
+    default = matrix.build_parser().parse_args([])
+    assert default.stage is None and default.rerun_paper == []
+    assert 'rerun' in matrix.STAGES
+
+
+def test_a_rescore_keeps_a_row_for_a_stage_it_was_not_asked_about(tmp_path, monkeypatch):
+    """Rescoring rewrites the results file, so it must rebuild every row.
+
+    A rescore of the matrix must not delete the rerun rows, and a rescore of
+    the reruns must not delete the matrix.
+    """
+    root = planted_root(tmp_path, 'trial-pmc8938265')
+    (root / 'runs').mkdir(exist_ok=True)
+    kept = {'id': 'trial-pmc8938265--statistic--full-two-track--r3--briefs-fixed',
+            'stage': 'rerun', 'paper': 'trial-pmc8938265', 'kind': 'statistic',
+            'arm': 'full-two-track', 'reviewers': 3, 'tokens': 11,
+            'run': str(root / 'runs' / 'kept-run')}
+    (root / 'runs' / 'results.jsonl').write_text(json.dumps(kept) + '\n', encoding='utf-8')
+    monkeypatch.setattr(matrix, 'already_done', lambda run: True)
+    monkeypatch.setattr(matrix, 'result',
+                        lambda spec, exit_code: {'id': spec['id'], 'kind': spec['kind'],
+                                                 'stage': spec['stage'], 'status': 'complete',
+                                                 'tokens': 11, 'findings_total': 0,
+                                                 'minutes': 0.1, 'caught': False,
+                                                 'guard_status': 'clean'})
+    matrix.drive(root, stages=('main',), rescore_only=True)
+    written = [json.loads(text) for text
+               in (root / 'runs' / 'results.jsonl').read_text(encoding='utf-8').splitlines()
+               if text.strip()]
+    assert kept['id'] in [row['id'] for row in written]
 
 
 def test_a_dry_run_flags_the_bad_input_instead_of_refusing(tmp_path, monkeypatch, capsys):

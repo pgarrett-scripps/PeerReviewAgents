@@ -11,6 +11,9 @@ what a single reviewer finds on its own.
     reviewers1   reviewers-only with one reviewer, on three of the papers,
                  against the three-reviewer reviewers-only run of the same
                  paper that `main` or `pilot` already did
+    rerun        named papers again at full-two-track, into run folders of
+                 their own, for comparing one engine or one brief against
+                 another on the same paper
 
 Rules this driver keeps to, because they are the ones that stop a long night of
 real runs from going wrong:
@@ -49,7 +52,7 @@ CEILING = 20_000_000
 EXPECTED = 12_000_000
 PILOT = 2
 REVIEWERS1 = 3
-STAGES = ('pilot', 'main', 'control', 'reviewers1')
+STAGES = ('pilot', 'main', 'control', 'reviewers1', 'rerun')
 
 
 def planted(root: Path) -> list:
@@ -104,7 +107,33 @@ def job(paper: dict, arm: str, reviewers: int, root: Path, stage: str) -> dict:
     }
 
 
-def jobs(root: Path, stages=STAGES, control_slugs=()) -> list:
+def reruns(root: Path, slugs: tuple, tag: str) -> list:
+    """Named planted papers again at full-two-track, each in a folder of its own.
+
+    The id carries `tag`, so a rerun never lands in the folder of the run it is
+    being compared against: the first run stays exactly as it was recorded, and
+    the two rows sit side by side in `results.jsonl`.
+    """
+    out = []
+    wanted = tuple(slugs)
+    for paper in planted(root):
+        if paper['paper'] not in wanted:
+            continue
+        spec = job(paper, 'full-two-track', 3, root, 'rerun')
+        spec['id'] = f'{spec["id"]}--{tag}'
+        spec['tag'] = tag
+        spec['run'] = str(Path(root) / 'runs' / spec['id'])
+        spec['log'] = str(Path(root) / 'logs' / f'{spec["id"]}.log')
+        out.append(spec)
+    missing = [slug for slug in wanted
+               if slug not in {spec['paper'] for spec in out}]
+    if missing:
+        raise SystemExit('no planted paper named: ' + ', '.join(missing))
+    return out
+
+
+def jobs(root: Path, stages=STAGES, control_slugs=(), rerun_slugs=(),
+         tag='rerun') -> list:
     """The whole matrix in the order it should run."""
     papers = planted(root)
     out = []
@@ -120,6 +149,8 @@ def jobs(root: Path, stages=STAGES, control_slugs=()) -> list:
     if 'reviewers1' in stages:
         for paper in papers[:REVIEWERS1]:
             out.append(job(paper, 'reviewers-only', 1, root, 'reviewers1'))
+    if 'rerun' in stages:
+        out.extend(reruns(root, rerun_slugs, tag))
     return out
 
 
@@ -177,6 +208,37 @@ def record(root: Path, row: dict) -> None:
         handle.write(json.dumps(row) + '\n')
 
 
+def recorded_specs(root: Path, known: list) -> list:
+    """Specs for rows already in `results.jsonl` that `known` does not cover.
+
+    A rescore rewrites the results file, so it has to be able to rebuild every
+    row it is about to replace — including a row for a stage this invocation
+    was not asked about, such as a rerun. The row itself says which folder it
+    came from and how it was run, and the key is found again from the paper.
+    """
+    path = Path(root) / 'runs' / 'results.jsonl'
+    if not path.is_file():
+        return []
+    seen = {spec['id'] for spec in known}
+    keys = {paper['paper']: paper['key'] for paper in planted(root)}
+    out, added = [], set()
+    for text in path.read_text(encoding='utf-8').splitlines():
+        if not text.strip():
+            continue
+        row = json.loads(text)
+        name = row.get('id') or ''
+        if name in seen or name in added or not row.get('run'):
+            continue
+        added.add(name)
+        out.append({'id': name, 'stage': row.get('stage') or 'unknown',
+                    'paper': row.get('paper') or '', 'kind': row.get('kind') or '',
+                    'arm': row.get('arm') or '', 'reviewers': row.get('reviewers') or 3,
+                    'pdf': '', 'key': keys.get(row.get('paper'), ''),
+                    'run': row['run'],
+                    'log': str(Path(root) / 'logs' / f'{name}.log')})
+    return out
+
+
 def rescore(root: Path, specs: list) -> dict:
     """Score every run that is already on disk again, and rewrite the results.
 
@@ -184,7 +246,11 @@ def rescore(root: Path, specs: list) -> dict:
     run showed that a short planted value matched as a run of digits — and a
     corrected rule has to be applied to every run, not only the ones that run
     after it. No review is run here and no run folder is touched.
+
+    Rows already recorded for runs outside `specs` are rescored too, so that
+    rewriting the results file never drops a run that happened.
     """
+    specs = list(specs) + recorded_specs(root, specs)
     state = {'root': str(root), 'planned': len(specs), 'ran': 0, 'skipped': 0,
              'tokens': 0, 'stopped_because': '', 'rows': []}
     lines = []
@@ -231,9 +297,9 @@ def line(row: dict) -> str:
 
 def drive(root: Path, stages=STAGES, control_slugs=(), peerreview='peerreview',
           ceiling=CEILING, timeout=7200, dry_run=False, only='', limit=0,
-          rescore_only=False) -> dict:
+          rescore_only=False, rerun_slugs=(), tag='rerun') -> dict:
     """Run the matrix in order and stop on the first rule that says to stop."""
-    queue = [spec for spec in jobs(root, stages, control_slugs)
+    queue = [spec for spec in jobs(root, stages, control_slugs, rerun_slugs, tag)
              if not only or only in spec['id']]
     if limit:
         queue = queue[:limit]
@@ -298,6 +364,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help='repeatable; the default is every stage in order')
     parser.add_argument('--control', action='append', default=[],
                         help='an unaltered paper slug, repeatable')
+    parser.add_argument('--rerun-paper', action='append', default=[],
+                        help='a planted paper slug to run again at full-two-track, '
+                             'repeatable; needs --stage rerun')
+    parser.add_argument('--tag', default='rerun',
+                        help='the suffix a rerun folder and row carry, so the earlier '
+                             'run of the same paper is left untouched')
     parser.add_argument('--peerreview', default='peerreview', help='the CLI to call')
     parser.add_argument('--ceiling', type=int, default=CEILING,
                         help='stop once the runs have cost this many tokens')
@@ -312,9 +384,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
-    state = drive(Path(args.root), tuple(args.stage or STAGES), tuple(args.control),
+    stages = tuple(args.stage or [stage for stage in STAGES if stage != 'rerun'])
+    state = drive(Path(args.root), stages, tuple(args.control),
                   args.peerreview, args.ceiling, args.timeout, args.dry_run,
-                  args.only, args.limit, args.rescore)
+                  args.only, args.limit, args.rescore,
+                  tuple(args.rerun_paper), args.tag)
     return 1 if state['stopped_because'] else 0
 
 
