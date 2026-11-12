@@ -374,6 +374,12 @@ def read_run(path):
         problems.append('editor-package.json is present but could not be read, so the findings '
                         'below come from the ledger and are not the editor\'s own review')
     if package.get('findings') is not None or package.get('appendix') is not None:
+        for key in ('findings', 'appendix'):
+            # A string or a number here is a package this version cannot read,
+            # and dropping that list in silence understates the review.
+            if package.get(key) is not None and not isinstance(package.get(key), list):
+                problems.append(f"editor-package.json's {key} is not a list, so the findings in "
+                                'it could not be read')
         body = dedupe([f for f in package.get('findings') or [] if isinstance(f, dict)])
         appendix = dedupe([f for f in package.get('appendix') or [] if isinstance(f, dict)])
         source = 'editor-package'

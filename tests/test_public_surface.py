@@ -617,6 +617,17 @@ def test_a_damaged_editor_package_on_a_complete_run_is_not_a_whole_review(tmp_pa
     assert run['publishable'] is False
     assert any('editor-package.json' in problem for problem in run['problems'])
 
+    # Readable JSON holding the wrong shape is the same thing: a package this
+    # version cannot read, not a review with nothing in its body.
+    other = complete_run(tmp_path / 'wrong-shape')
+    package = json.loads((other / 'editor-package.json').read_text(encoding='utf-8'))
+    _write(other / 'editor-package.json', {**package, 'findings': 'see the appendix'})
+
+    shaped = read_run(other)
+
+    assert shaped['body'] == [] and shaped['publishable'] is False
+    assert any("findings is not a list" in problem for problem in shaped['problems'])
+
 
 def test_a_startup_blocked_run_records_the_tracks_the_arm_would_have_run(tmp_path):
     """``specialists: []`` for a full two-track run said the plan was something it was not."""
