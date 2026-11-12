@@ -111,17 +111,20 @@ nothing at all.
 
 ### Wrapping the two commands
 
-`review_main(argv, prog=...)` and `report_main(argv)` are `peerreview review`
-and `peerreview report` as functions: they take the argument list, print the
-JSON the command prints, and **return** the exit code instead of raising it.
-`prog` is the name in the wrapper's own `--help`, so your command can call
-itself what it is:
+`review_main(argv, prog=...)` and `report_main(argv, prog=...)` are
+`peerreview review` and `peerreview report` as functions: they take the argument
+list, print the JSON the command prints, and **return** the exit code instead of
+raising it. `prog` is the name in the wrapper's own `--help` and in its argument
+errors, so each of your commands can call itself what it is:
 
 ```python
 import sys
-from peerreviewagents import review_main
+from peerreviewagents import report_main, review_main
 
-raise SystemExit(review_main(sys.argv[2:], prog="workbench review"))
+command, argv = sys.argv[1], sys.argv[2:]
+if command == "review":
+    raise SystemExit(review_main(argv, prog="workbench review"))
+raise SystemExit(report_main(argv, prog="workbench report"))
 ```
 
 That is the whole reason they exist. Copying `starter.main`, or reaching for
@@ -157,13 +160,13 @@ It works on every kind of folder a review can leave behind, which is the point:
 | start-up blocked | `stage` `startup`, `startup_problems`, and the identity the starter wrote |
 | killed mid-write | everything that could be read, and each file that could not in `problems` |
 
-Keys: `status`, `complete`, `publishable`, `blocked`, `cause`, `note`, `stage`,
-`findings`, `body`, `appendix`, `findings_source`, `counts`, `quarantined`,
-`guard_status`, `escalations`, `escalation_rulings`, `summary`, `verdict`,
-`limitations`, `identity`, `stages`, `runtime`, `agents`, `usage`, `reports`,
-`startup_problems`, `problems`, `files`, `run`, `review`. The same 30 keys come
-back for every folder, in every state, so a consumer never has to test whether
-a key is there.
+Keys: `status`, `complete`, `publishable`, `not_publishable_reasons`, `blocked`,
+`cause`, `note`, `stage`, `findings`, `body`, `appendix`, `findings_source`,
+`counts`, `quarantined`, `guard_status`, `escalations`, `escalation_rulings`,
+`summary`, `verdict`, `limitations`, `identity`, `stages`, `runtime`, `agents`,
+`usage`, `reports`, `startup_problems`, `problems`, `files`, `run`, `review`.
+The same 31 keys come back for every folder, in every state, so a consumer
+never has to test whether a key is there.
 
 Four rules it enforces so you do not have to:
 
@@ -219,14 +222,22 @@ before it puts a review in front of someone. It is `True` only when:
 - `status` is `complete`,
 - `findings_source` is `editor-package` — the editor's own placement, not the
   ledger fallback,
-- `guard_status` is `clean`, and
+- `guard_status` is set, so the guard recorded a verdict over these findings,
+  and
 - `problems` is empty.
 
-So a run whose findings were quarantined is complete and not publishable, and
-so is a complete run whose `editor-package.json` was truncated: the ledger
-findings are real, but they are not the editor's review. `quarantined`,
-`guard_status` and `problems` are all exposed, so an application that wants to
-show a held review anyway can decide that for itself — with the reason in hand.
+When it is `False`, `not_publishable_reasons` holds one sentence per reason and
+is never empty, so the flag is never `False` with nothing named. A complete run
+whose `editor-package.json` was truncated is the usual case: the ledger findings
+are real, but they are not the editor's review, and the reason says so.
+
+**A quarantined finding does not make a run unpublishable.** The guard throws
+out a finding whose quote it could not match to the block the finding names. A
+guard that did that has done its job, and what is left is a whole review minus
+one unanchored quote. `guard_status` is `clean` or `quarantined` — there is no
+error state — and `quarantined` holds the rows themselves, so an application
+that wants to weigh what was held can. `complete-without-findings` is the
+exception: every finding was quarantined, so there is nothing left to publish.
 
 ### Exit codes
 

@@ -55,17 +55,20 @@ including 32 test modules, and nothing was left behind as a shim.
   `startup.json` and `runtime.json` are all folders it reads. It refuses a run
   file that is a symlink, by name, and raises `runs.NotARunFolder` for a folder
   that is not a run. The first application to show PRA runs had to reach into
-  private names and parse these files by hand. It returns the same 30 keys for
+  private names and parse these files by hand. It returns the same 31 keys for
   every folder, among them `publishable` — status `complete`, the findings from
-  a readable editor package, a clean guard and nothing in `problems` — which is
-  the flag to gate publishing on, and `problems`, which names every file or
-  line that could not be read.
+  a readable editor package, a guard verdict on the record and nothing in
+  `problems` — which is the flag to gate publishing on, with
+  `not_publishable_reasons` naming every reason when it is false, and
+  `problems`, which names every file or line that could not be read. A finding
+  the guard quarantined does not hold a review back: the guard threw out a
+  quote it could not anchor, and the rest of the review is whole.
 - `peerreviewagents.runs.run_status`, the one rule that decides a run's status,
   used by `read_run` and by the report writer, so a folder cannot read one way
   through the library and another way in its own `REVIEW.md`. A limit that
   fired after the review was written is a `note`, not a `cause`, and the run is
   complete.
-- `review_main(argv, prog=...)` and `report_main(argv)`: the two commands as
+- `review_main(argv, prog=...)` and `report_main(argv, prog=...)`: the two commands as
   functions — argument list in, the command's JSON on stdout, the exit code
   returned rather than raised — so a wrapper does not copy `starter.main` or
   import `starter.build_parser`, `starter.exit_code` or `cli.main.report`, and
