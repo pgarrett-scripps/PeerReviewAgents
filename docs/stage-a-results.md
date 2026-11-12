@@ -9,7 +9,9 @@ on a paper with no planted error — except the control arm, which is the only
 place a false allegation can be counted.
 
 The numbers in this document come from `runs/results.jsonl` in the Stage A data
-directory, written by `scripts/stage_a/matrix.py` and scored by
+directory — a directory outside this repository, named by `--root` or
+`PRA_STAGE_A_ROOT`, holding the papers, the altered copies, the answer keys and
+the run folders — written by `scripts/stage_a/matrix.py` and scored by
 `scripts/stage_a/score.py`. Every row is one run folder, and the folder is the
 evidence: `review/protocol.json` records what each run was allowed to do.
 
@@ -18,8 +20,9 @@ evidence: `review/protocol.json` records what each run was allowed to do.
 1. **The matrix ran on the pre-fix reviewer briefs.** The pilot showed the
    guard quarantining a *correct* catch because the reviewer had retyped the
    quote instead of copying it (see "Correct catches the guard withheld"). The
-   fix — one sentence in each of the six specialist briefs telling the agent to
-   copy the quote from the block text — is on this branch but was **not** in
+   fix — one sentence in each of the six specialist briefs and in
+   `core-reviewer.md`, seven briefs in all, telling the agent to copy the quote
+   from the block text — is on this branch but was **not** in
    effect for any run in the tables below, deliberately: changing a brief
    mid-matrix would mean the arms were not run against the same instructions.
    The rerun of the affected papers is reported separately at the end.
@@ -43,7 +46,7 @@ evidence: `review/protocol.json` records what each run was allowed to do.
 | Venv | Engine | What it ran |
 | --- | --- | --- |
 | built 02:22 | `f8d8d3b` | every matrix run: pilot, main, control, reviewers1 |
-| built for the rerun | `brief-exact-quotes` (45d6834 + the brief fix) | the four brief-fix reruns, and the final `--rescore` of every row |
+| built for the rerun | `efea099` (`brief-exact-quotes`: 45d6834 plus the brief fix) | the two brief-fix reruns, the follow-up run, and the final `--rescore` of every row |
 
 Both are plain (non-editable) installs, so each run is pinned to the code that
 was installed when its venv was built, whatever the working tree says.
@@ -364,7 +367,15 @@ average (354,454 against 813,184 in total, so one reviewer runs at 44% of the
 three-reviewer cost) and produced about three times the findings — 5.3 against
 18.3 per paper. More findings, the same answer on the thing being measured.
 
-Two caveats before this is read as "one reviewer is enough". It is three
+This was measured in `reviewers-only` on three papers and nowhere else, so it
+says nothing yet about the default review: `full-two-track` with one reviewer
+was never run, and in that arm the core reviewers sit alongside six specialists
+whose findings they do not see, which is exactly the setting where a second and
+third core reviewer might or might not be redundant. Stage B carries that as
+its own arm (see "Sizing, from the measured means"); the default stays at three
+reviewers until it is measured there.
+
+Two further caveats before this is read as "one reviewer is enough". It is three
 papers, and the one-reviewer runs reuse the three-reviewer papers rather than
 being drawn fresh, so the comparison is paired but tiny. And the extra findings
 are not nothing: nobody has checked whether the extra thirteen findings per
@@ -579,9 +590,14 @@ and 4.4 min (the two completed controls).
 | 40 planted papers, `full-two-track` | 40 | 26.0 M | 3.3 h |
 | 20 unaltered controls, `full-two-track` | 20 | 10.1 M | 1.5 h |
 | 10 papers repeated 3× in `full-two-track` | 30 | 19.5 M | 2.5 h |
-| **Total** | **130** | **59.3 M** | **8.7 h** |
+| 10 papers, `full-two-track` with 1 reviewer | 10 | 3.4 M | 0.8 h |
+| **Total** | **140** | **62.7 M** | **9.5 h** |
 
-Without the repeat block it is 100 runs, 39.8 M tokens and 6.2 h. The repeat
+The one-reviewer `full` arm is costed by subtracting Stage A's measured price of
+two extra core reviewers (152,910 tokens each) from the `full` mean: 648,972 −
+305,820 = 343,152 a paper. Its minutes are the `full` mean unreduced, as an
+upper bound. Without the repeat block it is 110 runs, 43.2 M tokens and 7.0 h;
+without the repeat block and that arm, 100 runs, 39.8 M tokens and 6.2 h. The repeat
 block is what turns "this arm caught two more papers" into a statement with a
 run-to-run variance attached to it, and Stage A's neuroscience-pmc8596853 flip
 is the reason to pay for it.
@@ -590,9 +606,9 @@ Three design decisions that follow from the numbers:
 
 1. **Drop `reviewers-only`.** It spent 2.5 M tokens in Stage A to score below
    one reviewer. Spending those tokens on more papers in the two arms that
-   differ structurally is strictly better. The one-versus-three question, if it
-   is still wanted, is a cheap side experiment: 10 papers at 143 k and 335 k is
-   4.8 M.
+   differ structurally is strictly better. Dropping the arm does not drop the
+   one-versus-three question — item 4 moves it into the arm where the answer
+   would actually change the default.
 2. **Forty planted papers, ten of each defect kind.** Forty paired papers gives
    roughly eight to ten discordant pairs at the 20% discordance Stage A saw. If
    they fall nine to one toward `full`, that is an answer; if they fall six to
@@ -603,6 +619,13 @@ Three design decisions that follow from the numbers:
    and it is worth nothing unless each planted-style allegation can be judged.
    That needs brief item 3 above — an arithmetic claim stating its arithmetic —
    shipped before Stage B starts, not after.
+4. **Run `full-two-track` with one reviewer against `full-two-track` with
+   three, as an arm.** Ten of the forty planted papers, paired, same specialists
+   either way. Stage A's one-versus-three result was measured in
+   `reviewers-only` only, where there are no specialists for the core reviewers
+   to be redundant against, so it cannot be read across to the default. This arm
+   is the cheapest thing in Stage B that could change a default: 3.4 M tokens to
+   find out whether two of the three core reviewers are paying for themselves.
 
 **The gate is the corpus, not the tokens.** Stage B needs 60 usable PDFs.
 Stage A started from 61 candidates and lost 20 to the saved-HTML fetch bug, so
