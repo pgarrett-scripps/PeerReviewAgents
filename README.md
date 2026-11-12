@@ -63,6 +63,14 @@ The SDK is a dependency rather than an extra in 0.9: the plugin's server *is*
 the review, so a review cannot start without it. No OCR, no provider SDK, and
 no paid service beyond the subscription you already have.
 
+PDF text extraction is Poppler's `pdftotext`, which is not a Python package:
+
+```bash
+sudo apt install poppler-utils     # Debian, Ubuntu
+brew install poppler               # macOS
+choco install poppler              # Windows
+```
+
 Then install and sign in to the standalone Claude Code CLI, because that is
 what a run launches. Claude Desktop alone does not install it; get it from
 [the Claude Code quickstart](https://code.claude.com/docs/en/quickstart) and

@@ -57,6 +57,11 @@ jobs:
             echo "publish=${{ inputs.dry_run == false }}" >> "$GITHUB_OUTPUT"
           fi
 
+      # The suite ingests a PDF fixture, and PDF text extraction is Poppler's
+      # `pdftotext` — a runtime requirement of the tool itself.
+      - name: Install Poppler
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq poppler-utils
+
       - name: Install
         run: pip install --quiet -e '.[dev]'
 

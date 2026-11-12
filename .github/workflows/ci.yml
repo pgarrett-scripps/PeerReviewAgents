@@ -30,6 +30,12 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
+      # The server ingests a PDF fixture, and PDF text extraction is Poppler's
+      # `pdftotext`. It is a runtime requirement of the tool, not of the tests,
+      # so CI installs it rather than skipping what needs it.
+      - name: Install Poppler
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq poppler-utils
+
       - name: Install
         run: pip install --quiet -e '.[dev]'
 
@@ -73,6 +79,15 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+
+      # Same Poppler requirement as the Linux job, through each platform's own
+      # package manager. This is also the check that the install line the
+      # importer prints when `pdftotext` is missing is the right one.
+      - if: runner.os == 'macOS'
+        run: brew install poppler
+      - if: runner.os == 'Windows'
+        run: choco install -y --no-progress poppler
+
       - run: pip install --quiet -e '.[dev]'
       # The starter builds a `claude` command line and the server writes the
       # run folder, so path handling is what differs off Linux. The whole

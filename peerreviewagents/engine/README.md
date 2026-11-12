@@ -29,7 +29,8 @@ that preceded it is at `legacy-langgraph-v0.6.1`. There is no shim.
 | `run_report.py` | renders `REVIEW.md` and `REVIEW.txt` from a finished or blocked run |
 
 No module here starts a model, reads a key, or launches a session. Importing
-the package imports no transport.
+the package imports no transport. PDF import needs `rustypaper`, Pillow and
+Poppler's `pdftotext` on `PATH`; everything else is pure Python.
 
 ## Import and report, without a model
 

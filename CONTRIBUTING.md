@@ -12,7 +12,12 @@ uv venv && uv pip install -e '.[dev]'
 ```
 
 That is what CI installs, and `just install-dev` is the same thing. The `dev`
-extra (pytest, ruff, pyyaml) runs the whole suite on its own.
+extra (pytest, ruff, pyyaml) covers everything `tests/` imports.
+
+The suite ingests a PDF fixture, so it also needs Poppler's `pdftotext` —
+`sudo apt install poppler-utils`, `brew install poppler`, or `choco install
+poppler`. That is a runtime requirement of the importer, not of the tests, so
+CI installs it rather than skipping what needs it.
 
 Keep the virtual environment at `.venv` in the checkout. The plugin launches
 its MCP server as `${CLAUDE_PROJECT_DIR}/.venv/bin/python`, so a venv anywhere

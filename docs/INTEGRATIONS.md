@@ -24,6 +24,9 @@ budgets and the files.
   plugin's `.mcp.json` launches `${CLAUDE_PROJECT_DIR}/.venv/bin/python -m
   peerreviewagents.plugin.server`, and `${CLAUDE_PROJECT_DIR}` is the package
   root the run starts from, so the venv has to be in that one place.
+- Poppler's `pdftotext` on `PATH`, which does the PDF text extraction:
+  `sudo apt install poppler-utils`, `brew install poppler`, or `choco install
+  poppler`.
 - No API key. A run strips `ANTHROPIC_API_KEY` from the session's environment
   and never passes `--bare`, so it cannot silently fall back to one.
 
