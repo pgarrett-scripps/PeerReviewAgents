@@ -77,7 +77,7 @@ author pass as a failure.
 Nothing in this repository changes for the adapter. It uses:
 
 * `peerreview review ... --arm draft-check --track ...` — the specialist-only
-  arm, no core reviewer and no editor, which is what the `check-draft` skill
+  arm, no core reviewer and no editor, which is what the `draft-check` skill
   runs inside a session.
 * `peerreview report <run>` — the offline reader. It prints `status`, `cause`,
   `findings`, `publishable`, `not_publishable_reasons`, `problems` and the
@@ -87,7 +87,18 @@ Nothing in this repository changes for the adapter. It uses:
   `review/quarantined.jsonl` and `review/runtime.json` — the findings, each
   track's own write-up, what the guard rejected and the run's cost.
 
+That list is the whole interface, and all of it is public: the patch imports no
+Python module from this package at all. The two commands it runs are the two in
+`peerreviewagents.CLI_COMMANDS`, and the four files it reads are the run-folder
+files [`INTEGRATIONS.md`](INTEGRATIONS.md) documents. An adapter that reached
+into `peerreviewagents.engine.*` would be a second copy of engine behaviour
+living in a repository that cannot see when the engine changes it.
+
 A wrapping application that wants the same thing in Python rather than in a
-skill should read [`INTEGRATIONS.md`](INTEGRATIONS.md) instead: `review_main`,
-`report_main` and `read_run` are the supported surface, and both `_main`
-functions take a `prog` so the wrapper's own name appears in its help.
+skill should read [`INTEGRATIONS.md`](INTEGRATIONS.md) instead, and it has the
+same constraint: `review_main`, `report_main`, `read_run` and `locate_run` are
+the supported surface, both `_main` functions take a `prog` so the wrapper's own
+name appears in its help, and an application that writes files the engine reads
+back — a revision, a saved review, a scaffold import — takes the digest, the
+JSON reader and writer and the review normalisation from
+`peerreviewagents.workspace` rather than implementing its own.
