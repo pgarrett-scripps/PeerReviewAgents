@@ -41,6 +41,7 @@ from pathlib import Path
 
 from ..engine.storage import digest, read, write
 from ..names import COMPLETE_STATUSES, FINDING_SCHEMA_VERSION
+from . import models as model_plan
 from .server import (
     ARMS,
     DEFAULT_ARM,
@@ -49,6 +50,7 @@ from .server import (
     SPECIALIST_TRACKS,
     TOOLS,
     WORKFLOW_VERSION,
+    plan_slots,
 )
 
 SERVER = 'peerreview'
@@ -113,13 +115,21 @@ def claude_version(binary=None):
     return VERSIONS[binary]
 
 
-def child_environment(binary):
-    """The environment a session runs in: subscription login, own interpreter."""
+def child_environment(binary, chosen=None):
+    """The environment a session runs in: subscription login, own interpreter.
+
+    ``chosen`` carries the models this run asked for into the session, because
+    the session reaches the server through its own workflow and never sees this
+    process's arguments. The server reads them at ingest, so a session that
+    passes no model arguments of its own still runs the models the user chose.
+    """
     environment = {**os.environ, 'PEERREVIEW_PLUGIN_RUN': '1',
                    # The plugin's `.mcp.json` launches its MCP server through
                    # this, so the run is served by the very interpreter that
                    # started it even when that virtualenv is not on PATH.
                    'PEERREVIEW_MCP_COMMAND': sys.executable}
+    for key, value in (chosen or {}).items():
+        environment[key] = value
     for key in ('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'):
         environment.pop(key, None)  # subscription login only, never a key
     version = claude_version(binary)
@@ -159,7 +169,7 @@ def drain(stream, into):
         pass
 
 
-def launch(prompt, directory, timeout_at, on_event, cwd):
+def launch(prompt, directory, timeout_at, on_event, cwd, chosen=None):
     """Run one headless session, handing every stream event to ``on_event``.
 
     ``on_event`` returns a reason to stop, or ``None`` to carry on; a reason
@@ -184,7 +194,7 @@ def launch(prompt, directory, timeout_at, on_event, cwd):
     try:
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    text=True, bufsize=1, cwd=str(cwd),
-                                   env=child_environment(binary),
+                                   env=child_environment(binary, chosen),
                                    encoding='utf-8', errors='replace')
     except (OSError, ValueError) as exc:
         # A claude that will not start is a blocked run, not a traceback.
@@ -390,7 +400,8 @@ def write_usage(review, accounting):
                                      'state': row.get('state')}) + '\n')
 
 
-def write_identity(review, source, arm, reviewers, cutoff=None, tracks=None):
+def write_identity(review, source, arm, reviewers, cutoff=None, tracks=None, models=None,
+                   reviewer_models=None):
     """Say which paper and which plan this folder was, when the server never did.
 
     The server writes ``protocol.json`` and ``manifest.json`` from the imported
@@ -400,6 +411,11 @@ def write_identity(review, source, arm, reviewers, cutoff=None, tracks=None):
     neither, and a folder that cannot name its own paper or arm is not a result
     anybody can file. These two are the thin version: the source hash, the
     plan, the versions, and nothing the run did not actually learn.
+
+    ``models`` is the per-slot assignment and ``reviewer_models`` the ordered
+    list the core reviewers were to be drawn from. Both are written, because
+    the list is what a later comparison has to be pinned to and a folder
+    holding only the per-slot mapping cannot say what order it came from.
     """
     source = Path(source)
     try:
@@ -420,6 +436,12 @@ def write_identity(review, source, arm, reviewers, cutoff=None, tracks=None):
             'arm': arm,
             'reviewers': reviewers,
             'paper_id': None,
+            # The models this run was going to use. A run that never reached
+            # ingest still says which model each slot was asked for, so a
+            # folder that holds no review is still an arm of the experiment.
+            'model': model_plan.describe(models or {}),
+            'models': dict(models or {}),
+            'reviewer_models': list(reviewer_models or ()),
             'literature_cutoff': cutoff,
             'version': WORKFLOW_VERSION,
             'finding_schema_version': FINDING_SCHEMA_VERSION,
@@ -430,7 +452,9 @@ def write_identity(review, source, arm, reviewers, cutoff=None, tracks=None):
             'plan': {'arm': arm, 'reviewers': reviewers,
                      'specialists': specialists if plan.get('specialists') else [],
                      'editor': plan.get('editor'), 'revision': plan.get('revision'),
-                     'summary': plan.get('summary')},
+                     'summary': plan.get('summary'),
+                     'models': dict(models or {}),
+                     'reviewer_models': list(reviewer_models or ())},
         })
         wrote.append('protocol.json')
     if not (review / 'manifest.json').is_file():
@@ -528,7 +552,7 @@ def rerender(review, workspace=None):
         return {'error': str(exc)}
 
 
-def prompt_for(pdf, out, reviewers, arm, cutoff, tracks):
+def prompt_for(pdf, out, reviewers, arm, cutoff, tracks, models=None):
     text = (f'Use the peer-review-manuscript skill from the {PLUGIN} plugin. Review the '
             f'manuscript at {pdf} and write the run folder to {out}. Use {reviewers} core '
             f'reviewer(s) and the {arm} arm.')
@@ -538,26 +562,48 @@ def prompt_for(pdf, out, reviewers, arm, cutoff, tracks):
                 f'write the run folder to {out}, and run these tracks: {chosen}.')
     if cutoff:
         text += f' The literature cutoff is {cutoff}.'
+    if models:
+        # The models are already in the session's environment, where the server
+        # reads them. Saying so stops the session from passing model arguments
+        # of its own, which would be a second answer to a settled question.
+        text += (' The models for this run are already set in this session, one per slot: '
+                 + ', '.join(f'{slot} {model}' for slot, model in models.items())
+                 + '. Pass no model arguments to the workflow.')
     return text + ' Report exactly what the workflow returns.'
 
 
 def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, tracks=None,
            per_agent_tokens=PER_AGENT_TOKENS, per_run_tokens=PER_RUN_TOKENS,
-           wall_timeout=WALL_TIMEOUT, directory=None, cwd=None):
+           wall_timeout=WALL_TIMEOUT, directory=None, cwd=None,
+           reviewer_models=None, specialist_model=None, editor_model=None,
+           recorder_model=None):
     """Run one review and return its summary.
 
     The summary is a dict, not an exit code: ``status``, ``blocked_reason``,
     the run and review folders, the arm, the wall time, the tokens in total and
-    per agent, the models each slot ran on, and the counts the server recorded.
-    ``stage`` says how far the run got — ``startup`` means the probe refused to
-    launch a session and no usage was spent. :func:`exit_code` turns it into a
-    process status, and nothing here prints: the command prints, a library
-    caller reads the dict and the run folder.
+    per agent, the models each slot was asked to run (``models_requested``) and
+    the models the session reported running (``models``), and the counts the
+    server recorded. ``stage`` says how far the run got — ``startup`` means the
+    probe refused to launch a session and no usage was spent. :func:`exit_code`
+    turns it into a process status, and nothing here prints: the command
+    prints, a library caller reads the dict and the run folder.
 
-    An unknown arm, a manuscript that is not there and a missing plugin raise
-    ``ValueError`` before anything is written or any usage is spent — a caller
-    gave an argument no run can be made from, which is not a run that stopped.
-    :func:`review_main` turns that into a message and the exit code 2.
+    ``reviewer_models`` is the ordered list the core reviewers are drawn from,
+    reviewer *i* running ``list[(i - 1) % len(list)]``; the default makes three
+    reviewers three different models. ``specialist_model``, ``editor_model``
+    and ``recorder_model`` are one model each. Anything not given here falls
+    back to the ``PEERREVIEW_*_MODEL(S)`` variables in this process's
+    environment, and only then to the defaults — one merge, in
+    :func:`peerreviewagents.plugin.models.settle`, because the session this
+    starter launches reads those same variables and the two must not reach
+    different answers about what the run asked for.
+
+    An unknown arm, a manuscript that is not there, a missing plugin, a model
+    this login cannot run and a ``CLAUDE_CODE_SUBAGENT_MODEL`` that would
+    outrank the plan all raise ``ValueError`` before anything is written or any
+    usage is spent — a caller gave an argument no run can be made from, which
+    is not a run that stopped. :func:`review_main` turns that into a message
+    and the exit code 2.
     """
     if arm not in ARMS:
         raise ValueError(f'Unknown arm {arm}. Arms: ' + ', '.join(sorted(ARMS)))
@@ -570,6 +616,28 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     cwd = Path(cwd) if cwd else Path(__file__).resolve().parent.parent.parent
     if not (directory / '.claude-plugin' / 'plugin.json').is_file():
         raise ValueError(f'No plugin at {directory}')
+    # Which model each slot will run, settled and checked here: a model this
+    # login cannot run is refused before the probe spends anything, because
+    # Claude Code's own answer to one is to quietly run a different model.
+    #
+    # `settle` merges this call's arguments over the environment once, and the
+    # same merged answer is both planned from and passed on. Planning from the
+    # arguments alone while passing the environment through was a disagreement
+    # with the server inside the session: with PEERREVIEW_REVIEWER_MODELS set
+    # and no argument given, this folder was written with the defaults and the
+    # server then refused it for already holding a run under other models.
+    settled = model_plan.settle(reviewer_models, specialist_model, editor_model, recorder_model)
+    reviewer_list = list(model_plan.parse_list(settled.get('reviewers'))
+                         or model_plan.DEFAULT_REVIEWER_MODELS)
+    wanted = model_plan.assign((*plan_slots(arm, reviewers, tracks), 'recorder'), **settled)
+    model_plan.refuse(wanted)
+    # A variable that outranks the per-spawn override makes every slot one
+    # model while the run records the plan. Refused, never unset: the variable
+    # is the user's.
+    outranked = model_plan.subagent_override(claude_version())
+    if outranked:
+        raise ValueError(outranked)
+    chosen = model_plan.to_environment(**settled)
     review_dir.mkdir(parents=True, exist_ok=True)
     supersede(review_dir)
 
@@ -578,18 +646,19 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
                                         'tools_expected': list(tool_names()), 'at': now()})
     if problems:
         reason = 'the start-up probe failed: ' + '; '.join(problems)
-        write_identity(review_dir, source, arm, reviewers, literature_cutoff, tracks)
+        write_identity(review_dir, source, arm, reviewers, literature_cutoff, tracks, wanted,
+                       reviewer_list)
         finish(review_dir, 'blocked', reason,
                Accounting(per_agent_tokens, per_run_tokens), 0.0, None)
         return {'status': 'blocked', 'blocked_reason': reason, 'stage': 'startup',
                 'probe_problems': problems, 'run': str(root), 'review': str(review_dir),
-                'arm': arm, 'reviewers': reviewers}
+                'arm': arm, 'reviewers': reviewers, 'models_requested': dict(wanted)}
 
     accounting = Accounting(per_agent_tokens, per_run_tokens)
     started = time.monotonic()
-    prompt = prompt_for(source, root, reviewers, arm, literature_cutoff, tracks)
+    prompt = prompt_for(source, root, reviewers, arm, literature_cutoff, tracks, wanted)
     seen, stop, code = launch(prompt, directory, started + wall_timeout,
-                              accounting.on_event, cwd)
+                              accounting.on_event, cwd, chosen)
     wall = time.monotonic() - started
     result = accounting.last_result()
     blocked = None
@@ -618,7 +687,8 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
             status = 'blocked'
     # A session that ended before the workflow called `ingest` left no protocol
     # and no manifest, so the folder would not name its own paper or arm.
-    write_identity(review_dir, source, arm, reviewers, literature_cutoff, tracks)
+    write_identity(review_dir, source, arm, reviewers, literature_cutoff, tracks, wanted,
+                   reviewer_list)
     finish(review_dir, status, blocked, accounting, wall, result)
     report = rerender(review_dir, root / MANUSCRIPT_DIRECTORY)
     summary = {
@@ -634,6 +704,9 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
         'tokens_total': accounting.total_tokens(),
         'tokens_by_agent': {row['label']: row.get('tokens') for row in
                             sorted(accounting.agents.values(), key=lambda r: r['label'])},
+        # Two different facts: what was asked for, per slot, and what the
+        # session reported running. They disagree when a model was substituted.
+        'models_requested': dict(wanted),
         'models': sorted({str(row.get('model')) for row in accounting.agents.values()
                           if row.get('model')}),
         'stream_events': seen,
@@ -672,6 +745,19 @@ def build_parser(prog='peerreview review'):
                         help='for the draft-check arm: a specialist track, repeatable')
     parser.add_argument('--literature-cutoff', default=None,
                         help='no literature after this date counts against the paper')
+    parser.add_argument('--reviewer-models', default=None, metavar='A,B,C',
+                        help='the models the core reviewers are drawn from, in order; '
+                             'reviewer i runs the i-th, wrapping round (default: '
+                             + ', '.join(model_plan.DEFAULT_REVIEWER_MODELS) + ')')
+    parser.add_argument('--specialist-model', default=None, metavar='MODEL',
+                        help='the model every specialist runs (default: '
+                             + model_plan.DEFAULT_SPECIALIST_MODEL + ')')
+    parser.add_argument('--editor-model', default=None, metavar='MODEL',
+                        help='the model the editor runs (default: '
+                             + model_plan.DEFAULT_EDITOR_MODEL + ')')
+    parser.add_argument('--recorder-model', default=None, metavar='MODEL',
+                        help='the model the recorder runs: ingest, the ledger and the '
+                             'write-up (default: ' + model_plan.DEFAULT_RECORDER_MODEL + ')')
     parser.add_argument('--per-agent-tokens', type=int, default=PER_AGENT_TOKENS)
     parser.add_argument('--per-run-tokens', type=int, default=PER_RUN_TOKENS)
     parser.add_argument('--timeout', type=int, default=WALL_TIMEOUT,
@@ -691,10 +777,10 @@ def review_main(argv=None, prog='peerreview review'):
     errors use, so a wrapper named something else says its own name.
 
     An argument no run can be made from — a manuscript that is not there, an
-    arm that does not exist, a plugin folder that holds no plugin — is a
-    message on stderr and the code 2, the same code as a run that never
-    started, because nothing was written and no usage was spent. Nothing is
-    raised for it.
+    arm that does not exist, a plugin folder that holds no plugin, a model this
+    login cannot run — is a message on stderr and the code 2, the same code as
+    a run that never started, because nothing was written and no usage was
+    spent. Nothing is raised for it.
 
     Nothing else here needs to be reached for: the summary dict comes from
     :func:`review` and the code from :func:`exit_code`.
@@ -708,7 +794,11 @@ def review_main(argv=None, prog='peerreview review'):
                          literature_cutoff=args.literature_cutoff, tracks=args.track,
                          per_agent_tokens=args.per_agent_tokens,
                          per_run_tokens=args.per_run_tokens,
-                         wall_timeout=args.timeout, directory=args.plugin_dir)
+                         wall_timeout=args.timeout, directory=args.plugin_dir,
+                         reviewer_models=args.reviewer_models,
+                         specialist_model=args.specialist_model,
+                         editor_model=args.editor_model,
+                         recorder_model=args.recorder_model)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2

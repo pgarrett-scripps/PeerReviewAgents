@@ -10,9 +10,14 @@ difference between them, finding by finding.
 
 1. **Re-review the revision.** Start the workflow exactly as
    `peer-review-manuscript` does, with the same arm and the same reviewer count
-   as the earlier run — read them from `<old run>/review/protocol.json`
-   (`arm`, `reviewers`) so the comparison is between versions, not between
-   designs. Write the new run to its own folder; never into the old one.
+   as the earlier run, and on the same models — read them from
+   `<old run>/review/protocol.json` (`arm`, `reviewers`, `reviewer_models` and
+   `models`) so the comparison is between versions, not between designs. Pass
+   the old `reviewer_models` as `reviewer_models`, and the old `models.editor`
+   and a specialist's `models` entry as `editor_model` and `specialist_model`.
+   A run from before 0.9.0 recorded no models, so leave all three out and say
+   in the write-up that the two runs may not have read on the same models.
+   Write the new run to its own folder; never into the old one.
 2. **Wait for it.** If the new run is `blocked`, stop and report that. There is
    nothing to compare.
 3. **Match the findings on what they rest on, and never on `finding_uid`.**

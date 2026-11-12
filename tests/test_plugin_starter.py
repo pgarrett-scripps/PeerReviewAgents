@@ -428,6 +428,134 @@ def test_an_ordinary_event_is_not_a_rate_limit():
     assert accounting.on_event(progress([{'label': 'core-1', 'tokens': 10}])) is None
 
 
+# -- the models -------------------------------------------------------------
+
+
+@pytest.fixture
+def no_allowlist(monkeypatch):
+    """No ``availableModels`` anywhere, which is the ordinary login."""
+    monkeypatch.setattr(starter.model_plan, 'allowlist', lambda **kwargs: None)
+
+
+def test_the_flags_the_user_typed_reach_the_run(monkeypatch):
+    seen = {}
+
+    def fake_review(pdf, out, **options):
+        seen.update(options)
+        return {'status': 'complete', 'stage': 'session'}
+
+    monkeypatch.setattr(starter, 'review', fake_review)
+    assert starter.review_main(['paper.pdf', 'out', '--reviewer-models', 'opus,haiku',
+                                '--specialist-model', 'haiku',
+                                '--editor-model', 'fable',
+                                '--recorder-model', 'sonnet']) == 0
+    assert seen['reviewer_models'] == 'opus,haiku'
+    assert seen['specialist_model'] == 'haiku'
+    assert seen['editor_model'] == 'fable'
+    assert seen['recorder_model'] == 'sonnet', 'the recorder is a slot like any other'
+
+    assert starter.review_main(['paper.pdf', 'out']) == 0
+    assert seen['reviewer_models'] is None, 'unset is the default, not an empty list'
+
+
+def test_the_models_are_carried_into_the_session_that_runs_the_workflow(tmp_path, monkeypatch,
+                                                                       no_allowlist):
+    """The workflow passes no model arguments, so the environment has to say."""
+    seen = {}
+
+    def fake_popen(command, **kwargs):
+        seen['env'] = kwargs['env']
+        raise FileNotFoundError('stopping here')
+
+    monkeypatch.setattr(starter, 'claude_binary', lambda: '/opt/claude/bin/claude')
+    monkeypatch.setattr(starter, 'claude_version', lambda binary=None: '2.1.400')
+    monkeypatch.setattr(starter, 'probe', lambda directory, cwd: ([], {'raw': None}))
+    monkeypatch.setattr(starter.subprocess, 'Popen', fake_popen)
+    starter.review(str(FIXTURE), str(tmp_path / 'run'), arm='single',
+                   reviewer_models='haiku', editor_model='opus')
+    assert seen['env']['PEERREVIEW_REVIEWER_MODELS'] == 'claude-haiku-5-5'
+    assert seen['env']['PEERREVIEW_EDITOR_MODEL'] == 'claude-opus-5-5'
+    assert 'PEERREVIEW_SPECIALIST_MODEL' not in seen['env'], \
+        'nothing is passed on for a slot nobody chose'
+
+
+def test_a_model_this_login_cannot_run_stops_the_run_before_it_costs_anything(tmp_path,
+                                                                              no_allowlist):
+    with pytest.raises(ValueError) as refused:
+        starter.review(str(FIXTURE), str(tmp_path / 'run'), arm='single',
+                       reviewer_models='claude-nonesuch-9')
+    assert 'claude-nonesuch-9' in str(refused.value)
+    assert '--reviewer-models' in str(refused.value)
+    assert not (tmp_path / 'run').exists(), 'no probe, no folder, no usage'
+
+
+def test_the_models_asked_for_are_recorded_even_when_no_session_started(tmp_path, monkeypatch,
+                                                                        no_allowlist):
+    monkeypatch.setenv('PATH', str(tmp_path / 'empty'))
+    out = tmp_path / 'run'
+    summary = starter.review(str(FIXTURE), str(out), reviewers=2)
+    assert summary['models_requested']['core-2'] == 'claude-opus-5-5'
+    protocol = json.loads((out / 'review' / 'protocol.json').read_text(encoding='utf-8'))
+    assert protocol['models']['core-2'] == 'claude-opus-5-5'
+    assert protocol['models']['editor'] == 'claude-fable-5-2'
+    assert 'claude-opus-5-5' in protocol['model']
+    assert protocol['reviewer_models'] == list(starter.model_plan.DEFAULT_REVIEWER_MODELS), \
+        'the ordered list, not only the per-slot mapping it was drawn from'
+
+
+def test_a_subagent_variable_that_outranks_the_plan_stops_the_run(tmp_path, monkeypatch,
+                                                                  no_allowlist):
+    """Below 2.1.251 the variable beats the per-spawn override, silently.
+
+    Every slot would then run whatever it names while the run records the plan,
+    which is the one disagreement no later reading can repair. The variable is
+    the user's, so it is refused rather than unset, and a Claude Code that
+    ranks it correctly is left alone.
+    """
+    monkeypatch.setenv('CLAUDE_CODE_SUBAGENT_MODEL', 'haiku')
+    monkeypatch.setattr(starter, 'claude_version', lambda binary=None: '2.1.250')
+    with pytest.raises(ValueError) as refused:
+        starter.review(str(FIXTURE), str(tmp_path / 'run'), arm='single')
+    assert 'CLAUDE_CODE_SUBAGENT_MODEL' in str(refused.value)
+    assert os.environ['CLAUDE_CODE_SUBAGENT_MODEL'] == 'haiku', 'refused, never unset'
+    assert not (tmp_path / 'run').exists(), 'nothing written, nothing spent'
+
+    monkeypatch.setattr(starter, 'claude_version', lambda binary=None: None)
+    with pytest.raises(ValueError) as unreadable:
+        starter.review(str(FIXTURE), str(tmp_path / 'run'), arm='single')
+    assert 'could not be read' in str(unreadable.value), \
+        'a version nobody could read cannot say the plan will hold'
+
+    monkeypatch.setattr(starter, 'claude_version', lambda binary=None: '2.1.251')
+    monkeypatch.setattr(starter, 'claude_binary', lambda: None)
+    summary = starter.review(str(FIXTURE), str(tmp_path / 'run'), arm='single')
+    assert summary['status'] == 'blocked' and summary['stage'] == 'startup', \
+        'a fixed Claude Code gets as far as the probe'
+
+
+def test_the_stub_run_records_what_was_asked_for_beside_what_ran(tmp_path, monkeypatch,
+                                                                 no_allowlist):
+    install_stub(tmp_path, monkeypatch, progress={
+        'status': 'complete', 'findings_delivered': 1, 'stages': {'missing': []}})
+    out = tmp_path / 'run'
+    summary = starter.review(str(FIXTURE), str(out), reviewers=3, arm='reviewers-only')
+    assert summary['models_requested'] == {
+        'core-1': 'claude-sonnet-5-5', 'core-2': 'claude-opus-5-5',
+        'core-3': 'claude-haiku-5-5', 'editor': 'claude-fable-5-2',
+        'recorder': 'claude-haiku-5-5'}
+    assert summary['models'] == ['claude-haiku-5-5', 'claude-sonnet-5-5'], \
+        'what the stub session reported, which is not what was asked for'
+
+
+def test_the_prompt_tells_the_session_the_models_are_already_set():
+    models = {'core-1': 'claude-sonnet-5-5', 'core-2': 'claude-opus-5-5'}
+    text = starter.prompt_for('/p.pdf', '/out', 2, 'reviewers-only', None, None, models)
+    assert 'claude-opus-5-5' in text and 'core-2' in text
+    assert 'no model arguments' in text
+    assert 'claude-opus' not in starter.prompt_for('/p.pdf', '/out', 2, 'reviewers-only',
+                                                   None, None)
+
+
 def test_the_prompt_names_the_skill_the_arm_belongs_to():
     full = starter.prompt_for('/p.pdf', '/out', 3, 'full-two-track', None, None)
     assert 'peer-review-manuscript' in full and '3 core reviewer' in full

@@ -2,10 +2,11 @@
 
 An arm is a **workflow** now: which agents run, in what order, and what they
 can see. It is not a policy, a preset, a mode or a model — 0.9 deleted all four.
-Effort, turn limits and the model each slot runs on are pinned in the plugin's
-own agent files (`peerreviewagents/plugin/pra/agents/*.md`), identically for
-every arm, so what
-an arm changes is the shape of the review and nothing else.
+Effort and turn limits are pinned in the plugin's own agent files
+(`peerreviewagents/plugin/pra/agents/*.md`), identically for every arm, so what
+an arm changes is the shape of the review and nothing else. The model each slot
+runs on is a flag, and the same for every arm only if you keep it so — see
+[Models](#models) below.
 
 `peerreview review` has one default, and that default is what a person should
 run: `full-two-track`. Everything else is an **ablation**, measured against it
@@ -29,6 +30,34 @@ published work:
 ```bash
 CUTOFF=2026-11-10
 ```
+
+## Models
+
+The core reviewers run on different models by default — reviewer *i* takes the
+*i*-th of `sonnet,opus,haiku`, wrapping round — so **changing the reviewer
+count changes which models read the paper.** `single` is one Sonnet reviewer
+and the reference arm is Sonnet, Opus and Haiku, which is two differences, not
+one. An arm comparison therefore says which of the two questions it is asking,
+and pins the models accordingly:
+
+```bash
+# What the shape of the review is worth, models held still.
+peerreview review manuscript.pdf arms/single --arm single --reviewer-models sonnet
+peerreview review manuscript.pdf arms/reference --reviewers 3 --reviewer-models sonnet
+
+# What three readers are worth when they are three different models.
+peerreview review manuscript.pdf arms/mixed --reviewers 3
+```
+
+`--reviewer-models`, `--specialist-model`, `--editor-model` and
+`--recorder-model` take one of the four models this version knows —
+`claude-sonnet-5-5`, `claude-opus-5-5`, `claude-haiku-5-5`,
+`claude-fable-5-2` — by alias or by id, each run records what it was given in
+`protocol.json`
+(`models`, `reviewer_models`, and `assigned_model` per slot), and a folder that
+already holds a run under other models is refused rather than reused. Every
+Stage A result recorded before 0.9.0 ran one model for every reviewer, so a run
+being compared against one pins `--reviewer-models` to that model.
 
 ## The reference arm: the review a person should run
 

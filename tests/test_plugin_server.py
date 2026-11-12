@@ -15,6 +15,7 @@ import pytest
 
 from peerreviewagents import names
 from peerreviewagents.plugin import server as srv
+from peerreviewagents.runs import read_run
 
 FIXTURE = Path(__file__).parent / 'fixtures' / 'single-column.pdf'
 # The claim codes ingest hands back, kept the way the workflow script keeps
@@ -569,9 +570,14 @@ def test_a_finding_cites_the_blocks_it_rests_on_and_not_every_block(tmp_path):
 # -- the ledger and the files ----------------------------------------------
 
 
-def two_track_run(tmp_path, reviewers=2):
-    """A whole run short of the editor: every stage reported, findings stored."""
-    open_run(tmp_path, reviewers=reviewers)
+def two_track_run(tmp_path, reviewers=2, model='claude-sonnet-5-5', **opened):
+    """A whole run short of the editor: every stage reported, findings stored.
+
+    ``model`` is what every stage *reports* running, and anything in ``opened``
+    goes to ``ingest`` — which is how a test asks for a run whose plan and
+    whose reports disagree.
+    """
+    open_run(tmp_path, reviewers=reviewers, **opened)
     run = srv.current()
     uids = {}
     for index in range(1, reviewers + 1):
@@ -580,7 +586,7 @@ def two_track_run(tmp_path, reviewers=2):
         stored = srv.submit_finding(token, title=f'Reviewer {index} finding', block_id=block,
                                     quote=quote, comment='...', severity='major')
         uids[f'core-{index}'] = stored['finding_uid']
-        close(token, model='claude-sonnet-5-5')
+        close(token, model=model)
     for position, track in enumerate(srv.SPECIALIST_TRACKS):
         token = claim(f'spec-{track}')['agent_token']
         if track == 'stats':
@@ -589,9 +595,9 @@ def two_track_run(tmp_path, reviewers=2):
                                         quote=quote, comment='...', severity='moderate',
                                         escalate=True)
             uids['spec-stats'] = stored['finding_uid']
-            close(token, model='claude-sonnet-5-5', report_markdown='# what I checked')
+            close(token, model=model, report_markdown='# what I checked')
         else:
-            close(token, none_found=True, model='claude-sonnet-5-5')
+            close(token, none_found=True, model=model)
     return run, uids
 
 
@@ -738,6 +744,93 @@ def test_a_finished_run_writes_the_files_a_consumer_reads(tmp_path):
     assert progress['stages']['missing'] == []
     assert progress['review_guard_status'] == 'clean'
     assert (review / 'reviewer-1' / 'editor-package.json').is_file()
+
+
+def test_a_published_review_can_say_which_model_wrote_which_report(tmp_path):
+    """Two facts per slot: the model it was asked to run, and the one it says it ran.
+
+    A review is published with the reviewer reports beside it, so the arm has to
+    be legible from the folder — and a model the harness substituted has to be
+    visible as a disagreement rather than written over the plan.
+    """
+    run, uids = two_track_run(tmp_path)  # every agent self-reports Sonnet
+    editor, accepted = accept_editor(run, uids)
+    assert accepted['accepted'] is True, accepted
+    close(editor, model='claude-fable-5-2')
+    srv.write_review(claim('recorder')['agent_token'])
+
+    package = json.loads((run.review / 'editor-package.json').read_text(encoding='utf-8'))
+    rows = {row['slot']: row for row in package['reviewer_provenance']}
+    assert rows['core-1']['assigned_model'] == 'claude-sonnet-5-5'
+    assert rows['core-2']['assigned_model'] == 'claude-opus-5-5', 'two reviewers, two models'
+    assert rows['core-2']['model'] == 'claude-sonnet-5-5', 'what it reported, kept as it is'
+    assert rows['spec-stats']['assigned_model'] == 'claude-sonnet-5-5'
+
+    protocol = json.loads((run.review / 'protocol.json').read_text(encoding='utf-8'))
+    assert protocol['agents']['core-2']['assigned_model'] == 'claude-opus-5-5'
+    assert protocol['agents']['editor']['model'] == 'claude-fable-5-2'
+    assert protocol['models']['editor'] == 'claude-fable-5-2'
+
+    # core-2 was assigned Opus and reported Sonnet, so this run is not the run
+    # it records: a different family in a slot is a problem and a reason not to
+    # publish, named slot by slot. The folder is whole, so nothing else is.
+    reading = read_run(run.review)
+    assert reading['status'] == 'complete' and reading['publishable'] is False
+    reasons = reading['not_publishable_reasons']
+    assert len(reasons) == 1 and reasons == reading['problems']
+    assert 'core-2' in reasons[0] and 'claude-opus-5-5' in reasons[0]
+    assert 'claude-sonnet-5-5' in reasons[0] and 'different model family' in reasons[0]
+
+
+def test_a_slot_that_ran_another_version_of_its_own_family_is_not_a_problem(tmp_path):
+    """The family is the plan; the version is what the family resolved to.
+
+    A per-spawn override takes the family alias, so the version that answers it
+    is Claude Code's to choose and a newer one is not a substitution. Only a
+    different family means the run did not happen as it is recorded.
+    """
+    run, uids = two_track_run(tmp_path, model='claude-sonnet-5-6',
+                              reviewer_models='sonnet')
+    editor, accepted = accept_editor(run, uids)
+    assert accepted['accepted'] is True, accepted
+    close(editor, model='claude-fable-5-2')
+    srv.write_review(claim('recorder')['agent_token'])
+
+    reading = read_run(run.review)
+    assert reading['problems'] == []
+    assert reading['publishable'] is True, reading['not_publishable_reasons']
+
+
+def test_a_slot_that_reported_no_model_is_unverified_and_still_publishable(tmp_path):
+    """Nothing was seen to disagree with the plan, so the review stands.
+
+    What cannot be said is that the slot ran what it was asked to run: the
+    session reported no model and the agent never said. `models_unverified`
+    names those slots so an application can show the plan as a plan, and it is
+    deliberately not a problem and not a reason to withhold the review.
+    """
+    open_run(tmp_path, arm='single')
+    close(claim('core-1')['agent_token'], none_found=True)
+    srv.write_review(claim('recorder')['agent_token'])
+
+    reading = read_run(srv.current().review)
+    assert 'core-1' in reading['identity']['models_unverified']
+    assert reading['identity']['models']['core-1'] == 'claude-sonnet-5-5', 'the plan is recorded'
+    assert [row['model'] for row in reading['agents'] if row['slot'] == 'core-1'] == [None], \
+        'never the assignment repeated back'
+    assert reading['problems'] == []
+    assert reading['publishable'] is True, reading['not_publishable_reasons']
+
+
+def test_a_slot_that_reported_its_model_is_not_unverified(tmp_path):
+    run, uids = two_track_run(tmp_path)
+    editor, accepted = accept_editor(run, uids)
+    assert accepted['accepted'] is True, accepted
+    close(editor, model='claude-fable-5-2')
+    srv.write_review(claim('recorder')['agent_token'])
+    reading = read_run(run.review)
+    assert 'core-1' not in reading['identity']['models_unverified']
+    assert 'editor' not in reading['identity']['models_unverified']
 
 
 def test_a_run_where_nobody_found_anything_is_complete_without_findings(tmp_path):

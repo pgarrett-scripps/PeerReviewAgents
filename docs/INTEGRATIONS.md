@@ -45,6 +45,47 @@ allowed to call present. What it saw is written to
 `run-output/review/startup.json` either way, and a failed probe is a `blocked`
 run with its reasons, not a traceback.
 
+### Models
+
+The core reviewers run on different models by default, because Stage A ran
+three of them on one model and they caught no more than one did. Reviewer *i*
+takes the *i*-th model of an ordered list, wrapping round, so one reviewer is
+Sonnet, two are Sonnet and Opus, and three are Sonnet, Opus and Haiku:
+
+```bash
+peerreview review manuscript.pdf run-output --reviewers 3 \
+    --reviewer-models sonnet,opus,haiku \
+    --specialist-model sonnet --editor-model fable
+```
+
+Those three are the defaults — `--reviewer-models sonnet,opus,haiku`,
+`--specialist-model claude-sonnet-5-5`, `--editor-model claude-fable-5-2`, with
+the recorder on `claude-haiku-5-5`. Each takes one of the four models this
+version knows — `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-haiku-5-5` and
+`claude-fable-5-2` — by alias or by id, and anything else is refused by name as
+a model this version does not know rather than as one your login may not run.
+`revision-1` always runs on `core-1`'s model because it is `core-1` revising
+its own findings. Pinning every reviewer to one model is
+`--reviewer-models sonnet`, which is what a run being compared against a
+recorded Stage A result wants. **None of this is gated on billing or usage:**
+which models your login may run is yours to decide.
+
+A model this login cannot run is refused at start-up, before the probe spends
+anything, with one line naming the slot, the model and the flag that changes
+it — Claude Code answers a model it may not run by quietly running another, so
+a run that asked for Opus could otherwise be recorded as an arm it was not.
+Availability is the `availableModels` allowlist in the settings files Claude
+Code reads, managed settings first.
+
+A session that drives the workflow itself passes `reviewer_models`,
+`specialist_model` and `editor_model` to the `ingest` tool instead; its answer
+gains `models`, one `{slot, model, spawn}` row per agent, where `spawn` is the
+family alias the workflow hands Claude Code and `model` is the version the run
+records. `PEERREVIEW_REVIEWER_MODELS`, `PEERREVIEW_SPECIALIST_MODEL`,
+`PEERREVIEW_EDITOR_MODEL` and `PEERREVIEW_RECORDER_MODEL` do the same for a
+session the starter launched, and an explicit `ingest` argument wins over the
+environment.
+
 ## Inside a Claude Code session
 
 From a checkout:
@@ -224,6 +265,48 @@ itself:
 
 Damage in any of the three is named in `problems` and read as absent or empty,
 like every other damaged file.
+
+Three more say which model wrote which report, so a published review can name
+them. `identity['models']` maps each slot to the model the run was started
+with and `identity['reviewer_models']` is the ordered list the core reviewers
+were drawn from; each row of `agents` carries `assigned_model`, the plan, beside
+the `model` the agent reported running as. The two are never merged and neither
+stands in for the other: `model` is `None` when nothing observed that slot —
+no model in the session stream and no self-report — and it never falls back to
+`assigned_model`. `identity['models']` and `identity['reviewer_models']` are
+empty for a run written before 0.9.0, which recorded no models at all — empty
+means *not recorded*, never *the default*.
+
+`identity['models_unverified']` is the third: the slots that were assigned a
+model and never reported running one. Those runs are still publishable —
+nothing was seen to disagree with the plan — but for those slots the plan is
+all there is, and `REVIEW.md` and `REVIEW.txt` carry the same sentence under
+**Models unverified**. Show it beside `identity['models']` rather than showing
+the assignment alone.
+
+A slot that ran a *different model family* from the one it was assigned is a
+different matter. That run did not run the models it is filed under, and no
+later reading of the folder repairs it: `read_run` names the slot, the assigned
+model and the observed one in `problems` and again in
+`not_publishable_reasons`, so `publishable` is `False`. A different *version* of
+the same family is not a mismatch — which version a family alias resolves to is
+the login's business and the observed id is simply what gets reported — so it
+is neither a problem nor a reason. Compare families, not ids, if you do this
+yourself: `peerreviewagents.plugin.models.substituted(assigned, observed)` is
+the rule both the reader and the report use.
+
+One start-up refusal is worth knowing about if you launch runs yourself.
+Before Claude Code 2.1.251, `CLAUDE_CODE_SUBAGENT_MODEL` outranked both the
+per-spawn model override the plugin sends and the agent files, so with it set
+every agent in the run would be the one model it names while `protocol.json`
+recorded the per-slot plan. `peerreview review` refuses to start in that
+situation — one `ValueError` before the probe, naming the variable, the version
+and what to do — and refuses the same way when `claude --version` cannot be
+read at all, because "new enough" is not something an unreadable version says.
+The variable is never unset: it is the user's, and a process that quietly
+removed it would be overriding a deliberate choice. Unset it in the environment
+you launch from, or launch from Claude Code 2.1.251 or newer, where it ranks
+below both and the plan holds.
 
 Four rules it enforces so you do not have to:
 

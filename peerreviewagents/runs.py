@@ -37,6 +37,10 @@ from .names import (
     RUN_STATUSES,
 )
 
+# The one module that decides which model a slot runs also decides what counts
+# as a different model, which is what this reader has to compare.
+from .plugin import models as model_plan
+
 #: The files that make a folder a review folder. A run that was killed before
 #: the server wrote anything still has ``startup.json`` from the probe.
 RUN_MARKERS = ('protocol.json', 'progress.json', 'runtime.json', 'startup.json',
@@ -234,7 +238,31 @@ def _provider(protocol, problems):
     return value
 
 
-def _identity(manifest, protocol, paper, pdf_from_startup=None, problems=None):
+def _models(*candidates):
+    """The per-slot models, ``{}`` for a run that recorded none.
+
+    A run written before 0.9.0 pinned every slot's model in the plugin agent
+    files and wrote no mapping, so an absent one is the ordinary old case and
+    not a damaged file. Anything that is not a mapping of strings is dropped
+    rather than reported: the self-reported model in ``agents`` still says what
+    ran, and this is the plan, not the measurement.
+    """
+    for value in candidates:
+        if isinstance(value, dict) and value:
+            return {str(slot): str(model) for slot, model in value.items()
+                    if isinstance(model, str) and model}
+    return {}
+
+
+def _reviewer_models(*candidates):
+    """The ordered list the core reviewers were drawn from, or ``[]``."""
+    for value in candidates:
+        if isinstance(value, list) and value:
+            return [str(model) for model in value if isinstance(model, str) and model]
+    return []
+
+
+def _identity(manifest, protocol, paper, pdf_from_startup=None, problems=None, agents=None):
     """Who the run reviewed, from the files that say so rather than from a name."""
     manifest, protocol, paper = manifest or {}, protocol or {}, paper or {}
     problems = problems if problems is not None else []
@@ -249,6 +277,19 @@ def _identity(manifest, protocol, paper, pdf_from_startup=None, problems=None):
         'reviewers': protocol.get('reviewers') if protocol.get('reviewers') is not None
         else plan.get('reviewers'),
         'specialists': plan.get('specialists'),
+        # Which model ran in which slot, and the ordered list the core
+        # reviewers were drawn from. Both are empty for a run written before
+        # 0.9.0, when every slot's model was pinned in the agent files.
+        'models': _models(protocol.get('models'), plan.get('models')),
+        'reviewer_models': _reviewer_models(protocol.get('reviewer_models'),
+                                            plan.get('reviewer_models')),
+        # The slots that were assigned a model and never reported running one.
+        # Not a problem and not a reason the review cannot be published — a
+        # slot nothing observed is not a slot that ran something else — but the
+        # plan for those slots is a plan nobody checked, and an application
+        # showing `models` has to be able to say so. The report writer draws
+        # its own line from the same rule, `models.unverified`.
+        'models_unverified': model_plan.unverified(agents),
         'literature_cutoff': protocol.get('literature_cutoff'),
         'workflow_version': manifest.get('workflow_version') or protocol.get('version'),
         'finding_schema_version': (manifest.get('finding_schema_version')
@@ -330,7 +371,8 @@ def run_status(progress=None, runtime=None, startup=None, problems=None):
             'note': note}
 
 
-def publishable_reasons(status, findings_source, guard_status, problems, quarantined=0):
+def publishable_reasons(status, findings_source, guard_status, problems, quarantined=0,
+                        substitutions=()):
     """Why this run is not publishable, in words, or an empty list when it is.
 
     One rule, in one place, so that ``publishable`` and the reasons can never
@@ -357,6 +399,17 @@ def publishable_reasons(status, findings_source, guard_status, problems, quarant
     findings that come from the ledger instead of the editor's package, no
     editor package at all, no guard verdict, or a file that could not be read in
     full.
+
+    **A slot that ran a different model family than it was assigned** stops it
+    too, and each one is its own reason. Claude Code substitutes a model it may
+    not run rather than refusing, and a substitution inside the session happens
+    after every check this package can make up front: the run then reads as an
+    arm nobody ran, and publishing it would attribute a report to a model that
+    never wrote it. ``substitutions`` holds those lines — see
+    :func:`peerreviewagents.plugin.models.substitutions`, which also decides
+    what is not one: the same family at another version is the version that
+    family resolved to on this login, and the observed id is what gets
+    reported.
     """
     reasons = []
     if status == COMPLETE_WITHOUT_FINDINGS:
@@ -377,6 +430,7 @@ def publishable_reasons(status, findings_source, guard_status, problems, quarant
     if problems:
         reasons.append(f'{len(problems)} file(s) could not be read in full, and they are named '
                        'in `problems`')
+    reasons += list(substitutions)
     return reasons
 
 
@@ -409,7 +463,12 @@ def read_run(path):
         what was thrown out, and whether that mattered is a judgement for a
         person rather than a flag. A review with no findings in it is
         publishable when the reviewers raised nothing and the guard held
-        nothing, and is not when the guard emptied it.
+        nothing, and is not when the guard emptied it. A slot that reported
+        running a different model family than the run assigned it is a reason
+        of its own, naming the slot, the model assigned and the model that ran:
+        the review would otherwise be attributed to a model that never wrote
+        it. Another version of the same family is not a reason — that is the
+        version the family resolved to, and ``agents[].model`` reports it.
     ``cause``, ``note``
         ``cause`` is why a run that is not complete stopped — a rate limit, a
         breached token ceiling, the wall-clock limit, a stage that never
@@ -417,10 +476,11 @@ def read_run(path):
         limit that fired *after* the review was written, which ends the session
         without unwriting the review.
     ``problems``
-        Every file that could not be read in full, named. Empty for a whole
-        folder. A reading with problems is still a reading — that is the point
-        — but a consumer should not publish it or quote a number from it
-        without saying so.
+        Every file that could not be read in full, named, and every slot whose
+        observed model is a different family from the one it was assigned.
+        Empty for a whole folder. A reading with problems is still a reading —
+        that is the point — but a consumer should not publish it or quote a
+        number from it without saying so.
     ``stage``
         ``startup`` when no session ever ran and no subscription usage was
         spent, ``session`` once one did.
@@ -438,7 +498,16 @@ def read_run(path):
         path, arm, versions, ``provider`` — ``claude-code`` for every run this
         version writes — and ``code_hashes``, the manifest's digest of each
         plugin and engine file the run was served by, empty for a run that
-        stopped before the manuscript was imported.
+        stopped before the manuscript was imported. ``models`` is which model
+        each slot was asked to run and ``reviewer_models`` the ordered list the
+        core reviewers were drawn from — both empty for a run written before
+        0.9.0, which pinned one model per slot in the plugin agent files.
+        ``models_unverified`` names the slots that were assigned a model and
+        never reported running one: the review is still publishable, because
+        nothing was seen to disagree with the plan, but for those slots the
+        plan is all there is. A slot that ran a *different* model family is a
+        different matter and is in ``problems`` and
+        ``not_publishable_reasons``.
     ``startup``
         The start-up probe: ``probe`` is the harness's own init event, the
         plugins, MCP servers, agents and commands the session reported, or
@@ -446,8 +515,11 @@ def read_run(path):
         probe refused to launch over. ``startup_problems`` is that same list at
         the top level, kept for callers that already read it.
     ``agents``
-        One row per agent slot: role, track, model, server and session tool
-        calls, tokens, state. Empty for a run that never claimed a slot.
+        One row per agent slot: role, track, ``model`` — what the agent was
+        observed running as, and ``None`` when nothing observed it, which means
+        *not recorded* and never *what it was asked to run* — ``assigned_model``,
+        what the run asked that slot to run, server and session tool calls,
+        tokens, state. Empty for a run that never claimed a slot.
     ``reports``
         Absolute paths to what exists on disk — ``REVIEW.md``, ``REVIEW.txt``,
         each ``audit_<track>.md``, ``editor-package.json`` — and nothing else.
@@ -517,7 +589,13 @@ def read_run(path):
     agents = agent_rows(review, protocol, runtime=runtime, on_problem=problems.append)
     usage = observed_usage(review, on_problem=problems.append)
 
-    reasons = publishable_reasons(status, source, guard, problems, len(quarantined))
+    # What each slot was assigned against what it reported running. It is
+    # computed before the reasons so that the "N file(s) could not be read in
+    # full" count is the files, and appended to `problems` after, because a
+    # substituted model is a problem with this run's record of itself.
+    swapped = model_plan.substitutions(agents)
+    reasons = publishable_reasons(status, source, guard, problems, len(quarantined), swapped)
+    problems += swapped
 
     probe = startup.get('probe')
     if probe is not None and not isinstance(probe, dict):
@@ -553,7 +631,7 @@ def read_run(path):
         'verdict': package.get('verdict'),
         'limitations': package.get('limitations') or [],
         'identity': _identity(manifest, protocol, paper,
-                              (probe or {}).get('pdf'), problems),
+                              (probe or {}).get('pdf'), problems, agents),
         'stages': progress.get('stages') or (runtime.get('stages') if runtime else None),
         'runtime': {'wall_seconds': runtime.get('wall_seconds'),
                     'tokens_total': runtime.get('tokens_total'),

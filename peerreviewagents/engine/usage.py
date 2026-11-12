@@ -217,6 +217,16 @@ def agent_rows(run, protocol=None, runtime=None, on_problem=None):
     do; ``runtime.json`` says what each really spent. A slot that never reported
     is still listed, because a missing agent is the thing worth seeing.
 
+    ``model`` and ``assigned_model`` are two different facts since 0.9.0, when
+    the slots stopped all running one model, and neither is ever shown as the
+    other. ``assigned_model`` is the model the run asked that slot to run, from
+    the protocol: the plan. ``model`` is what was observed to run — the
+    stream's word for it, then the agent's own report of it — and nothing else.
+    A slot that reported no model has ``model`` of ``None``, which means *not
+    recorded*, never *the model it was assigned*: filling the gap from the plan
+    would make a substituted model impossible to see, which is the one thing
+    these two fields exist to show.
+
     Two call counts are kept apart on purpose. ``tool_calls`` is what the
     server itself served that slot, which is the number the ledger bounds;
     ``session_calls`` is every tool call the session saw the agent make, which
@@ -252,6 +262,7 @@ def agent_rows(run, protocol=None, runtime=None, on_problem=None):
             observed = _merge([spent.pop(label) for label in theirs]) if theirs else {}
         rows.append({'slot': slot, 'role': record.get('role'), 'track': record.get('track'),
                      'model': observed.get('model') or record.get('model'),
+                     'assigned_model': record.get('assigned_model'),
                      'attempt': observed.get('attempt') or record.get('attempt') or 1,
                      'tool_calls': record.get('tool_calls'),
                      'session_calls': observed.get('session_calls'),
@@ -263,6 +274,7 @@ def agent_rows(run, protocol=None, runtime=None, on_problem=None):
     for slot, observed in sorted(spent.items()):
         merged = _merge([observed])
         rows.append({'slot': slot, 'role': None, 'track': None, 'model': merged.get('model'),
+                     'assigned_model': None,
                      'attempt': merged.get('attempt') or 1, 'tool_calls': None,
                      'session_calls': merged.get('session_calls'),
                      'tokens': merged.get('tokens'), 'state': merged.get('state'),

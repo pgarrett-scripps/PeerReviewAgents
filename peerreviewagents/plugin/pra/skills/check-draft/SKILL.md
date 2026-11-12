@@ -21,6 +21,11 @@ your own does not need one — it needs the list.
     "tracks": ["stats", "consistency", "methods-reporting"]}
    ```
 
+   Add `"specialist_model": "<a model>"` only when the request names one; left
+   out, every specialist runs on Sonnet. If the workflow refuses to start
+   because a model is not available on this login, report that line as it came
+   and do not retry with another model.
+
 3. Wait for it, then report what it returns, and point at the per-track audits
    the run wrote: `<run folder>/review/audit_<track>.md`, one per track.
 

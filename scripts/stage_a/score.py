@@ -207,6 +207,11 @@ def cost_of(reading: dict) -> dict:
         'agents': len(agents),
         'tool_calls': sum((row.get('toolCalls') or 0) for row in agents),
         'models': sorted({str(row.get('model')) for row in agents if row.get('model')}),
+        # What the run asked its core reviewers to be, which is the arm as
+        # designed; `models` above is what they reported being. A row from
+        # before 0.9.0 has an empty list here, because every slot's model was
+        # pinned in the plugin agent files and the run recorded no list.
+        'reviewer_models': (reading.get('identity') or {}).get('reviewer_models') or [],
     }
 
 

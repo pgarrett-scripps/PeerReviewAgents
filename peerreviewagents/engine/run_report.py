@@ -8,6 +8,7 @@ wrote about itself: ``protocol.json`` for the arm and the agent slots,
 import textwrap
 from pathlib import Path
 
+from ..plugin import models as model_plan
 from .storage import read
 from .usage import agent_rows, observed_usage, runtime_usage
 
@@ -15,7 +16,8 @@ WIDTH = 88
 MANUSCRIPT = 'manuscript'
 NOTICE = ('This review was generated automatically. Exact quotations and issue accounting were validated. '
           'Scientific correctness was not.')
-AGENT_COLUMNS = ('Agent', 'Model', 'Server calls', 'Session calls', 'Tokens', 'State')
+AGENT_COLUMNS = ('Agent', 'Model asked', 'Model ran', 'Server calls', 'Session calls',
+                 'Tokens', 'State')
 # What makes a folder a run folder, for a run that stopped before the server
 # wrote its protocol: the starter's own files, and the server's first ones.
 RUN_FILES = ('protocol.json', 'progress.json', 'runtime.json', 'startup.json', 'findings.jsonl')
@@ -108,13 +110,22 @@ def _agent_label(row):
 
 
 def _agent_table(agents):
-    """One row per agent slot, so the model each one ran as is on the page.
+    """One row per agent slot, with the model it was asked to run and the one that ran.
 
-    The models are pinned per agent in the plugin's own agent files, so there is
-    no single model for a run and the table is the only honest answer. The slot
-    name carries the role and the track already (``core-2``, ``spec-stats``,
-    ``editor``), so neither gets a column of its own: the table has to stay
-    inside the plain-text report's width.
+    The slots do not all run one model, so there is no single model for a run
+    and the table is the only honest answer. The two model columns are two
+    different facts and are never merged: ``Model asked`` is the run's plan
+    from ``protocol.json`` and ``Model ran`` is what that agent reported, so a
+    slot that was given Opus and ran Sonnet shows it here rather than reading
+    as a run of the arm it is filed under. A slot that reported nothing says
+    ``not recorded``, which is not the same as having run what it was asked.
+
+    The slot name carries the role and the track already (``core-2``,
+    ``spec-stats``, ``editor``), so neither gets a column of its own. Two model
+    ids and both call counts put this table past the prose width of the
+    plain-text report, which is the one place that is worth it: the table is
+    read as a table, and dropping either model column would hide the thing it
+    is here to show.
 
     ``Server calls`` is what the server served that agent, which is the count
     the ledger bounds. ``Session calls`` is every tool call Claude Code saw it
@@ -123,6 +134,7 @@ def _agent_table(agents):
     if not agents:
         return []
     body = [[_agent_label(row),
+             row.get('assigned_model') or 'not recorded',
              row.get('model') or 'not recorded',
              row.get('tool_calls') if row.get('tool_calls') is not None else '—',
              row.get('session_calls') if row.get('session_calls') is not None else '—',
@@ -206,6 +218,9 @@ def report_blocks(run, workspace=None):
         status += ' (last recorded state, the run may have stopped)'
     usage = observed_usage(run, on_problem=lambda message: None)
     agents = agent_rows(run, protocol, runtime=runtime)
+    # The plan and the observation, side by side and never merged: a page that
+    # printed one list would be saying the run ran what it asked for.
+    asked = sorted({row['assigned_model'] for row in agents if row.get('assigned_model')})
     models = sorted({row['model'] for row in agents if row.get('model')})
     if state['cause']:
         status = f"{status}: {state['cause']}"
@@ -214,7 +229,8 @@ def report_blocks(run, workspace=None):
     fields = [('Paper', (paper or {}).get('title')), ('Paper ID', paper_id),
               ('Source', (paper or {}).get('source_url')),
               ('Workflow', _workflow(protocol)),
-              ('Models', ', '.join(models) or None),
+              ('Models asked for', ', '.join(asked) or None),
+              ('Models that ran', ', '.join(models) or None),
               ('Literature cutoff', protocol.get('literature_cutoff')),
               ('Run status', status),
               ('Agents', len(agents) or None),
@@ -231,6 +247,13 @@ def report_blocks(run, workspace=None):
     for limit in runtime.get('rate_limits') or []:
         blocks.append(('labeled', 'Rate limit', str(limit.get('reason'))))
     blocks += _agent_table(agents)
+    # A slot nothing observed does not hold a review back, but a page showing
+    # `Model asked` for it and nothing beside it would read as agreement. The
+    # line says plainly that those slots are unverified. See `models.unverified`.
+    missing = model_plan.unverified(agents)
+    if missing:
+        blocks.append(('labeled', 'Models unverified',
+                       model_plan.unverified_line(missing).capitalize() + '.'))
     final = _final_review(run)
     if final or reviewers:
         blocks.append(('paragraph', NOTICE))

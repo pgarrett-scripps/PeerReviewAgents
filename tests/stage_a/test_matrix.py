@@ -91,6 +91,46 @@ def test_drive_runs_a_queue_whose_inputs_are_all_pdfs(tmp_path, monkeypatch):
     assert state['ran'] == 1 and state['stopped_because'] == ''
 
 
+def test_the_reviewers_can_be_pinned_to_one_model_so_the_arms_compare(tmp_path, monkeypatch):
+    """Stage A's earlier results ran every reviewer on one model, and a rerun has to.
+
+    The default is now one model per reviewer, so an arm that is being compared
+    against a recorded result pins them, and the row says which models the run
+    asked for rather than leaving the two arms to be pooled.
+    """
+    queue = specs(write(tmp_path, 'good.pdf', b'%PDF-1.4\n'))
+    commands = []
+    monkeypatch.setattr(matrix, 'jobs', lambda *args, **kwargs: queue)
+    monkeypatch.setattr(matrix.subprocess, 'run',
+                        lambda command, **kwargs: commands.append(command) or Finished(0))
+    monkeypatch.setattr(matrix, 'result',
+                        lambda spec, exit_code: {'id': spec['id'], 'kind': spec['kind'],
+                                                 'status': 'complete', 'tokens': 7,
+                                                 'findings_total': 0, 'minutes': 0.1,
+                                                 'caught': False, 'guard_status': 'clean'})
+    monkeypatch.setattr(matrix, 'record', lambda root, row: None)
+    state = matrix.drive(tmp_path, peerreview='/bin/false', reviewer_models='sonnet')
+    assert state['reviewer_models'] == 'sonnet'
+    assert commands[0][commands[0].index('--reviewer-models') + 1] == 'sonnet'
+
+    commands.clear()
+    matrix.drive(tmp_path, peerreview='/bin/false')
+    assert '--reviewer-models' not in commands[0], 'unset leaves the review its own default'
+
+
+class Finished:
+    """What ``subprocess.run`` returns, as far as ``execute`` reads it."""
+
+    def __init__(self, returncode):
+        self.returncode = returncode
+
+
+def test_the_pin_is_off_by_default_on_the_command_line():
+    assert matrix.build_parser().parse_args([]).reviewer_models == ''
+    pinned = matrix.build_parser().parse_args(['--reviewer-models', 'sonnet,opus'])
+    assert pinned.reviewer_models == 'sonnet,opus'
+
+
 def planted_root(tmp_path, *slugs):
     """A Stage A data root holding a key and an altered PDF per slug."""
     (tmp_path / 'keys').mkdir(exist_ok=True)
@@ -123,6 +163,40 @@ def test_a_rerun_of_a_paper_that_is_not_planted_is_refused(tmp_path):
         assert 'not-a-paper' in str(stop)
     else:
         raise AssertionError('a slug that names no planted paper should stop the run')
+
+
+def test_a_pinned_model_names_itself_in_every_job_id(tmp_path):
+    """Two arms under different models must never share a run folder.
+
+    `already_done` skips a finished folder, so a `main` run under pinned models
+    landing in the recorded run's folder would be read as already done and the
+    pinned arm would never run at all. The suffix is what keeps them apart, and
+    with nothing pinned the ids are byte-identical to the recorded ones.
+    """
+    root = planted_root(tmp_path, 'trial-pmc8938265')
+    plain = matrix.jobs(root, ('pilot', 'reviewers1'), (), ())
+    pinned = matrix.jobs(root, ('pilot', 'reviewers1'), (), (),
+                         reviewer_models='claude-sonnet-5-5,opus')
+    tail = '--sonnet-opus'
+    assert all(spec['id'].endswith(tail) for spec in pinned)
+    assert all(spec['tag'] == 'sonnet-opus' for spec in pinned)
+    assert [spec['id'] for spec in plain] == [spec['id'][:-len(tail)] for spec in pinned]
+    assert all('tag' not in spec for spec in plain), 'an unpinned run is the plain matrix'
+    assert [spec['run'] for spec in plain] != [spec['run'] for spec in pinned]
+
+    tagged = matrix.jobs(root, ('pilot',), (), (), tag='briefs-fixed',
+                         reviewer_models='sonnet')
+    assert all(spec['id'].endswith('--briefs-fixed') for spec in tagged), '--tag wins'
+
+
+def test_the_rerun_ids_already_on_disk_do_not_move(tmp_path):
+    """`rerun` is the one stage that had a suffix before the models did."""
+    assert matrix.id_suffix('rerun') == 'rerun'
+    assert matrix.id_suffix('rerun', reviewer_models='haiku') == 'haiku'
+    assert matrix.id_suffix('rerun', 'briefs-fixed', 'haiku') == 'briefs-fixed'
+    assert matrix.id_suffix('main') == ''
+    assert matrix.id_suffix('main', reviewer_models='claude-haiku-5-5') == 'haiku'
+    assert matrix.models_slug('') == '' and matrix.models_slug('  ,  ') == ''
 
 
 def test_reruns_are_not_in_the_default_stages(tmp_path):

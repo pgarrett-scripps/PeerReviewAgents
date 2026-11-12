@@ -98,6 +98,9 @@ peerreview manuscript.pdf run-output
 # Five core reviewers instead of three.
 peerreview review manuscript.pdf run-output --reviewers 5
 
+# One model per reviewer is the default; pin them all to one to compare arms.
+peerreview review manuscript.pdf run-output --reviewer-models sonnet
+
 # Bound what published work is eligible (defaults to today).
 peerreview review manuscript.pdf run-output --literature-cutoff 2026-01-05
 
@@ -112,6 +115,10 @@ the review's options:
 | Flag | Default | What it changes |
 | --- | --- | --- |
 | `--reviewers` | `3` | Core reviewers, 1 to 8. They never see each other's findings |
+| `--reviewer-models` | `sonnet,opus,haiku` | Ordered; reviewer *i* takes the *i*-th, wrapping round |
+| `--specialist-model` | `claude-sonnet-5-5` | Every specialist |
+| `--editor-model` | `claude-fable-5-2` | The editor in chief |
+| `--recorder-model` | `claude-haiku-5-5` | The recorder, which writes the run files |
 | `--arm` | `full-two-track` | Which workflow runs; see [`docs/study-arms.md`](docs/study-arms.md) |
 | `--track` | all six | Repeatable; limits the specialist tracks (used by `draft-check`) |
 | `--literature-cutoff` | today | Latest eligible publication date |
@@ -120,8 +127,20 @@ the review's options:
 | `--timeout` | `5400` | Wall-clock limit in seconds |
 | `--plugin-dir` | the checkout's | Override the folder the plugin is loaded from |
 
+The core reviewers are deliberately different models: Stage A ran three of them
+on one model and they caught no more than one did, which is three readings by
+the same reader. So one reviewer is Sonnet, two are Sonnet and Opus, three are
+Sonnet, Opus and Haiku, and a fourth starts the list again; `revision-1` runs
+on `core-1`'s model because it is `core-1` revising its own findings. A model
+your login cannot run is refused at start-up, naming the slot, the model and
+the flag — never quietly swapped for another. Nothing about models is gated on
+billing or usage.
+
 Set `PEERREVIEW_CLAUDE_VERSION` to have the run record which Claude Code
-version produced it; nothing else in the run depends on it.
+version produced it; `PEERREVIEW_REVIEWER_MODELS`,
+`PEERREVIEW_SPECIALIST_MODEL`, `PEERREVIEW_EDITOR_MODEL` and
+`PEERREVIEW_RECORDER_MODEL` are the three flags above and the recorder's model
+for a session the starter launched. Nothing else in the run depends on them.
 
 ### What a run writes
 
@@ -269,8 +288,9 @@ launcher.
 
 `review` returns the run's summary and prints nothing: `status`,
 `blocked_reason`, `stage`, the run and review folders, the report paths, the
-arm, the wall time, the total and per-agent tokens, the models each slot ran
-on, and the finding counts the server recorded. A `blocked` run returns the
+arm, the wall time, the total and per-agent tokens, the models each slot was
+asked for in `models_requested` beside the models that were observed running,
+and the finding counts the server recorded. A `blocked` run returns the
 same shape with the reason filled in: there is no exception for a review that
 did not work and no stdout to parse. An argument that cannot be used at all —
 an unknown arm, a manuscript that is not there, a plugin directory that holds
@@ -315,10 +335,10 @@ them:
 | `quarantined`, `guard_status` | what the guard threw out, and `clean` or `quarantined` |
 | `escalations`, `escalation_rulings` | the specialist findings that asked for a ruling, and the rulings given |
 | `summary`, `verdict`, `limitations` | the editor's own three, or `None`/`[]` |
-| `identity` | paper id, source hash, PDF path, arm, reviewers, specialist tracks, versions, `provider`, and `code_hashes` — the manifest's digest of each engine and plugin file that served the run |
+| `identity` | paper id, source hash, PDF path, arm, reviewers, specialist tracks, versions, `provider`, `code_hashes` — the manifest's digest of each engine and plugin file that served the run — and `models`/`reviewer_models`, the model each slot was started with (both empty for a run from before 0.9.0), with `models_unverified` naming the slots that never reported running one |
 | `stages` | the stages the run recorded, or `None` |
 | `runtime` | wall time, total tokens, rate limits, both token ceilings, the Claude Code version |
-| `agents` | one row per agent slot: role, track, model, tool calls, tokens, state |
+| `agents` | one row per agent slot: role, track, `assigned_model` and the `model` it reported running as, tool calls, tokens, state |
 | `usage` | observed subscription tokens from the usage receipts, with `unknown` set if any receipt was unreadable |
 | `reports` | absolute paths to what exists — `REVIEW.md`, `REVIEW.txt`, `editor-package.json`, and `audits` keyed by track |
 | `startup` | the harness's own start-up event as `probe` (`None` when no probe was written or it holds the wrong shape) and the probe's own `problems` |
