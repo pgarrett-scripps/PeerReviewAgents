@@ -72,6 +72,12 @@ dependencies = [
 # a review and nothing short of the artifact itself proves the package data.
 # 70 is where the wheel is built without a separate `wheel` package.
 dev = ["pytest>=8", "ruff>=0.6", "pyyaml>=6", "setuptools>=70"]
+# `stage-a` is the planted-error experiment in scripts/stage_a/, not part of
+# the reviewer: the planter rewrites a published PDF's own content streams so
+# an altered copy still goes through the ordinary `peerreview review` path.
+# Nothing the package imports needs pikepdf, and the offline tests of the
+# planner skip the PDF layer, so it is an extra rather than a dependency.
+stage-a = ["pikepdf>=9"]
 
 [project.urls]
 Homepage = "https://github.com/pgarrett-scripps/PeerReviewAgents"

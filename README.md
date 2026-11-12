@@ -408,6 +408,9 @@ command for each workflow arm, including the manuscript-only baseline.
 was removed in 0.8.0 with the panel itself.
 [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md) covers loading the plugin in a
 Claude Code session, what 0.9 removed, data handling and troubleshooting.
+[`docs/paper-scaffold.md`](docs/paper-scaffold.md) is the adapter that runs the
+engine over a paper-scaffold manuscript's built PDF as one more member of its
+`review-all`, with the patch beside it.
 
 ## License
 

@@ -38,8 +38,10 @@ the whole paper: "approved by", "randomly assigned", "available at",
 ## Submitting
 
 `submit_finding` needs an exact `quote` appearing once in the block you name.
-Where the problem is an absence, quote the sentence that should have carried the
-parameter and say in the comment what is missing — do not quote text that is
+Copy it out of the block text rather than retyping it: a quote reassembled from
+memory — a parameter reordered, a clause dropped — is quarantined even when the
+finding is right. Where the problem is an absence, quote the sentence that
+should have carried the parameter and say in the comment what is missing — do not quote text that is
 not there, because that finding will be quarantined and lost.
 
 Set `escalate: true` only when the gap means the central result cannot be

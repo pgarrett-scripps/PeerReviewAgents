@@ -1,0 +1,260 @@
+diff --git a/plugins/paper/skills/draft-check/SKILL.md b/plugins/paper/skills/draft-check/SKILL.md
+new file mode 100644
+index 0000000..a4c6a47
+--- /dev/null
++++ b/plugins/paper/skills/draft-check/SKILL.md
+@@ -0,0 +1,163 @@
++---
++name: draft-check
++description: Run the PeerReviewAgents review engine over the built paper.pdf - specialist tracks only, no reviewer personas and no editor - and write its findings under reviews/ as an actions table. Use to have the review engine audit the built paper, or when asked for an engine, agent or plugin review of the PDF. Needs the peerreview command and a Claude subscription. Read-only.
++context: fork
++agent: general-purpose
++model: sonnet
++---
++
++# Check the built paper with the review engine
++
++Work from the manuscript root and follow AGENTS.md/CLAUDE.md. This skill is
++read-only for the manuscript: it builds nothing but the PDF the engine needs,
++writes one findings file, and never edits prose, `stats.json` or the analysis.
++
++It differs from `/paper:peer-review` in what it is. `peer-review` is this
++session acting as a panel of reviewer personas over the reviewers' copy.
++`draft-check` hands the built PDF to a separate program — the
++PeerReviewAgents engine — which runs its own specialist agents in their own
++sessions, anchors every finding to a quotation in the PDF, and keeps its own
++ledger. The findings come back as somebody else's work, and the value of them
++is exactly that: they were not written by the session that wrote the paper.
++
++## What it needs
++
++1. `peerreview --help` answers. If the command is not on PATH, stop and say
++   so: this skill cannot run without the engine, and nothing else in the
++   scaffold depends on it. Do not pip-install anything.
++2. A Claude Code subscription login on this machine. The engine runs headless
++   sessions of its own; it takes no API key and there is no service to call.
++3. `paper.pdf`, current. Run `just check-build`; if it reports the PDF stale
++   or missing, run `just paper` once and say so in the report. The PDF is an
++   untracked build artifact, so building it is not an edit to the manuscript.
++
++## Read the action ledger first
++
++`reviews/ACTIONS.md` records every finding earlier reviews raised and whether
++it was fixed; its header states the rules. Read it before writing anything.
++If it is missing, create it with `just check-actions --init`. A problem that
++matches an `open`, `done` or `wontfix` row is not a new finding: cite the
++existing id in the findings file instead of raising it again.
++
++If you were launched by `/paper:review-all`, read the ledger to skip what it
++already holds but do not write it — `review-all` merges.
++
++## Run the engine
++
++One command, in the foreground, and only one at a time:
++
++```
++peerreview review paper.pdf reviews/engine/<YYYY-MM-DD> \
++  --arm draft-check --track stats --track consistency --track methods-reporting
++```
++
++* `--arm draft-check` runs the specialist tracks with no core reviewer and no
++  editor. That is the arm an author wants: nothing pools the findings into an
++  accept-or-reject verdict, and every finding stands on its own.
++* The six tracks are `stats`, `figures-tables`, `methods-reporting`,
++  `citations`, `consistency`, `field`. The three above are the default. Add
++  `--track citations` when the request asks about the references; it reaches
++  the network and takes longer. Pass the tracks the user named, and no others.
++* It takes roughly two to six minutes and a few hundred thousand tokens, more
++  with more tracks. Do not run it twice to compare, and do not retry a run
++  that stopped: read what it wrote.
++
++Then read the run, with the engine's own reader rather than by opening files:
++
++```
++peerreview report reviews/engine/<YYYY-MM-DD>
++```
++
++It prints JSON — `status`, `cause`, `findings`, `publishable`,
++`not_publishable_reasons`, `problems` and the report paths — and makes no
++model call.
++
++* `status` `complete` is the result to read. `blocked` means the run stopped
++  (a rate limit, a timeout, a session that never launched); report the
++  `cause`, keep the partial findings out of the ledger, and stop.
++* `problems` naming files means the run folder could not be read in full.
++  Say which, and treat the findings as incomplete evidence.
++* `publishable` will be `false`, and this is correct, not a fault:
++  `not_publishable_reasons` says the findings come from the ledger rather than
++  from an editor's package, and the `draft-check` arm has no editor by design.
++  Do not report it as a failure, and do not gate on it. The gate here is
++  `status` and `problems`.
++
++The findings themselves are `reviews/engine/<YYYY-MM-DD>/review/findings.jsonl`
++(one JSON object per line) with the per-track audits beside them as
++`review/audit_<track>.md`. Read the JSONL for the table and the audits for
++what a track concluded overall.
++
++A finding in `review/quarantined.jsonl` was rejected by the engine's own
++guard, nearly always because its quote does not occur in the block it cites.
++Those are not findings: leave them out of the table and the ledger, and say
++how many there were.
++
++## Translate the findings
++
++Each engine finding carries `title`, `comment`, `quote`, `block_id`,
++`severity` (`major`, `moderate`, `minor`), `kind` (`question`, `edit`,
++`literature`), `track`, `escalate` and a `finding_uid`. Three columns need a
++decision:
++
++**Location.** The engine's `block_id` is a position in the PDF, not a place in
++the Typst sources, and it does not survive a rebuild. Give the location as the
++section heading plus the finding's `quote`, which is the sentence as the PDF
++prints it, and leave the block id to the `source` column. Whoever fixes it
++searches the sources for the quoted words.
++
++**Severity.** The engine's severities are a reviewer's, not the ledger's, and
++it has no `blocker`. Map them so the adapter never invents one:
++
++| engine | ledger |
++|---|---|
++| `major` with `escalate` true | blocker |
++| `major` | major |
++| `moderate` | minor |
++| `minor` | minor |
++
++Say in the verdict paragraph that the mapping is deliberately conservative: a
++`moderate` the author reads as decisive can be promoted by hand, and a reader
++of the ledger can see which rows came through it.
++
++**Fix.** Route by what the finding asks for, to an owner the scaffold already
++has: wording to `/paper:copy-edit`; a number in the text that disagrees with
++another number, or with none declared, to `/paper:declare-number`; a figure or
++table that disagrees with its caption or the text to `/paper:new-figure`; a
++failing gate to `/paper:fix-verify`; a computation the engine says is wrong to
++"analysis change"; a `question` about what was done, and anything on the
++`field` track, to "author decision" with the question stated. A `literature`
++kind is an "author decision" unless it names a citation to add, which is
++`/paper:copy-edit`.
++
++Do not re-judge a finding on its merits and do not add findings of your own.
++If the engine is wrong about something, the ledger row says so in the `fix`
++column as "author decision" with the reason; a disagreement is for the author
++to close, not for this pass to drop silently.
++
++## Report
++
++Write `reviews/<YYYY-MM-DD>-draft-check.md`:
++
++1. A one-paragraph verdict: the arm and tracks, the run folder, how many
++   findings in each mapped severity, how many the guard quarantined, the
++   engine's own token and wall-clock numbers from `review/runtime.json`, and
++   the two or three findings that matter most.
++2. The findings as a table: severity, location (section and quote), the
++   finding, what the engine checked (its track and `kind`), the routed fix,
++   and the `finding_uid` with the run folder as the `source`. The uid names
++   the finding inside that run, and the run folder is what makes it
++   traceable — a later run of a rebuilt PDF gives the same finding a different
++   uid, so a row cites both or neither.
++3. Anything the run could not do: a `blocked` status with its cause, named
++   `problems`, a track that returned nothing.
++
++Then, unless `/paper:review-all` launched you, merge into `reviews/ACTIONS.md`
++exactly as the other review skills do: dedupe against the open and `wontfix`
++rows, reopen a `done` row whose problem is back, append the rest blockers
++first with `status` `open`, an empty `closed`, and `source` citing this
++findings file; then run `just check-actions` and repair any format error in
++the rows you wrote.
++
++Finish by printing the verdict paragraph and the file path. Nothing in the
++manuscript was edited, so do not run `just verify` or `just paper` again.
+diff --git a/plugins/paper/skills/review-all/SKILL.md b/plugins/paper/skills/review-all/SKILL.md
+index a95c565..66e58b5 100644
+--- a/plugins/paper/skills/review-all/SKILL.md
++++ b/plugins/paper/skills/review-all/SKILL.md
+@@ -23,6 +23,12 @@ at the top of the report.
+ - **which**: default all five. The user may drop one ("skip figures") or
+   name a subset. `/paper:literature-check` is off by default because it needs
+   the network and is slow; "with literature" adds it as a sixth agent.
++  `/paper:draft-check` is off by default too: it hands the built PDF to the
++  PeerReviewAgents engine, which runs its own sessions and spends its own
++  tokens, and it needs the `peerreview` command on PATH. "with the engine"
++  adds it. It is the one member that works from `paper.pdf` rather than from
++  `paper.review.txt`, because the engine anchors every finding to a quotation
++  in the PDF it was given.
+ - **model**: passed as the Agent tool's `model` parameter on every launch.
+   Default is split by the kind of work: `claim-audit`, `methods-vs-code`,
+   `figure-review` and `prose-review` are checklists against a fixed standard
+@@ -71,8 +77,11 @@ You were launched by /paper:review-all: read reviews/ACTIONS.md to skip
+ findings it already holds, but do not write it; review-all merges."
+ That last clause applies to `claim-audit` and `methods-vs-code`, whose
+ findings are about source and code; `peer-review`, `prose-review` and the
+-caption half of `figure-review` work from the copy alone. The agents share
+-nothing with each other beyond that file. Do not start any of them sequentially and do not run one
++caption half of `figure-review` work from the copy alone. `draft-check`, if
++it was selected, is told instead that `paper.pdf` is the input, that it may
++run `just paper` once if `just check-build` reports the PDF stale, and that
++one engine run is all it gets. The agents share nothing with each other
++beyond that file. Do not start any of them sequentially and do not run one
+ inline to save time. Wait for every agent to finish before writing the
+ merged report; if one fails, say so in the report and do not invent its
+ findings.
+@@ -86,7 +95,10 @@ list of work, and it outlives this run.
+ 1. Deduplicate across the reviews: the same sentence flagged by two reviews
+    is one action whose `source` cites both files. A `prose-review` wording
+    finding on a sentence `claim-audit` calls overstated is one action owned
+-   by `claim-audit`.
++   by `claim-audit`. A `draft-check` row that matches a scaffold review's
++   finding is the same action, owned by the scaffold review — which knows the
++   sources and the code — with the engine's file and `finding_uid` added to
++   `source`, because an outside program agreeing is worth being able to see.
+ 2. Deduplicate against the ledger: a finding that matches an `open` or
+    `wontfix` row adds nothing. One that matches a `done` row whose problem is
+    back reopens that row in place: `status` to `open`, `closed` to
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 23b4fc3..75a67b8 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -154,9 +154,10 @@ Prefer a skill over improvising its steps.
+ - Review, read-only, findings under `reviews/`: `/paper:claim-audit`,
+   `/paper:methods-vs-code`, `/paper:figure-review`, `/paper:prose-review`,
+   `/paper:literature-check` (network), `/paper:story-review`,
+-  `/paper:peer-review`. `/paper:review-all` runs them and merges the findings
+-  (literature check only on request, story review never). A review skill
+-  never edits the manuscript.
++  `/paper:peer-review`, `/paper:draft-check` (the PeerReviewAgents engine over
++  the built PDF; needs the `peerreview` command). `/paper:review-all` runs them
++  and merges the findings (literature check and engine check only on request,
++  story review never). A review skill never edits the manuscript.
+ - `reviews/ACTIONS.md` is the action ledger: reviews read it first and append
+   new findings, editing skills close the rows they fix with the commit hash;
+   `just check-actions --open` lists what is open.
+diff --git a/docs/working-with-ai.md b/docs/working-with-ai.md
+index ac6eee8..15d308f 100644
+--- a/docs/working-with-ai.md
++++ b/docs/working-with-ai.md
+@@ -49,13 +49,19 @@ and specific rendering defects. Copy-editing records its initial metrics with
+ `just verify`. The writing review also checks defined terminology and concrete,
+ supported claims using [STYLE.md](../STYLE.md#scientific-terms-and-concrete-claims).
+
+-Twelve workflows ship as skills: four that edit (`copy-edit`, `fix-verify`,
+-`declare-number`, `new-figure`) and seven read-only reviews (`claim-audit`,
++Thirteen workflows ship as skills: four that edit (`copy-edit`, `fix-verify`,
++`declare-number`, `new-figure`) and eight read-only reviews (`claim-audit`,
+ `methods-vs-code`, `figure-review`, `prose-review`, `literature-check`,
+-`story-review`, `peer-review`) that write findings under `reviews/`, plus
+-`review-all`, which runs the fix-list reviews in parallel (the network-bound
+-literature check only on request; the story review is a plan to discuss and
+-stays out) and merges them. Their maintained files live in `plugins/paper/skills/`
++`story-review`, `peer-review`, `draft-check`) that write findings under
++`reviews/`, plus `review-all`, which runs the fix-list reviews in parallel
++(the network-bound literature check and the engine-backed `draft-check` only
++on request; the story review is a plan to discuss and stays out) and merges
++them. `draft-check` is the one review that is not this session's own reading:
++it hands the built PDF to the PeerReviewAgents engine, which reviews it in
++sessions of its own and anchors each finding to a quotation, and it is skipped
++when the `peerreview` command is not installed.
++
++Their maintained files live in `plugins/paper/skills/`
+ in the scaffold and reach every paper as the `paper` Claude Code plugin
+ (`.claude/settings.json` enables it; the `paper-scaffold` marketplace serves it).
+ `.agents/skills` is a symlink into the scaffold checkout so Codex discovers the

@@ -40,8 +40,10 @@ inconsistency is yours, not the paper's.
 ## Submitting
 
 `submit_finding` needs an exact `quote` from the `block_id` you name, once,
-character for character. A quarantined finding is not stored: the server tells
-you why, and you fix the quote and resubmit.
+character for character. Copy it out of the block text rather than retyping it:
+a quote reassembled from memory — numbers reordered, a clause dropped — is
+quarantined even when the finding is right. A quarantined finding is not
+stored: the server tells you why, and you fix the quote and resubmit.
 
 Set `escalate: true` only when the finding would change what the paper claims —
 if this is right, a headline result does not stand. An escalated finding is

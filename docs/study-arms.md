@@ -56,7 +56,7 @@ arm below takes the same two positional arguments and the same cutoff.
 | `single` | 1 | none | no | `reviewers-only` | the reviewer count and the editor: one reviewer's own findings are the review |
 | `single-revision` | 1, then revising itself | none | no | `single` | one revision pass over its own findings |
 | `manuscript-only` | 1, text tools only | none | no | `single` | the evidence: no page images, no supplements, no literature or identifier lookups |
-| `draft-check` | none | chosen | no | — | not a study arm: what `check-draft` runs on a draft of your own |
+| `draft-check` | none | chosen | no | — | not a study arm: what `draft-check` runs on a draft of your own |
 
 `single` differs from `reviewers-only` in two things by construction — a
 one-reviewer run has no second reviewer to pool and nothing for an editor to

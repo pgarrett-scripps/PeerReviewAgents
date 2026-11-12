@@ -474,6 +474,39 @@ def test_a_retitled_finding_is_the_same_finding_and_both_rows_are_kept(tmp_path)
         'Underpowered: the sample size is never stated']
 
 
+def test_a_revision_shares_no_finding_uid_with_the_run_it_revises(tmp_path):
+    """A new PDF renames every finding, because the paper's own id is in the uid.
+
+    This is the test the follow-up skill needed. The skill said to compare an
+    old run against the re-review of a revision by ``finding_uid``, and a
+    paper's id is a digest of the PDF it came from, so two runs over two files
+    never share one — the comparison would have called every finding resolved
+    and every finding new, on a revision that changed nothing at all. The same
+    reviewer, the same block and the same quote are used here, so the only
+    difference is the file.
+    """
+    revision = tmp_path / 'revision.pdf'
+    revision.write_bytes(FIXTURE.read_bytes() + b'\n% a revised manuscript\n')
+    open_run(tmp_path / 'first', arm='single')
+    block, quote = quote_from(srv.current())
+    before = srv.submit_finding(token_for('core-1'), title='The sample size is unclear',
+                                block_id=block, quote=quote, comment='...', severity='major')
+
+    # The re-review is its own server process, as the skill requires: one
+    # process serves one run, and it refuses a second.
+    assert 'request_rejected' in srv.ingest(str(revision), str(tmp_path / 'second' / 'run'))
+    srv.STATE['run'] = None
+    CODES.clear()
+    opened = srv.ingest(str(revision), str(tmp_path / 'second' / 'run'), arm='single')
+    assert 'request_rejected' not in opened, opened
+    CODES.update({row['slot']: row['claim_code'] for row in opened.get('claim_codes', [])})
+    again = srv.current()
+    assert quote_from(again) == (block, quote), 'the revision was meant to read the same'
+    after = srv.submit_finding(token_for('core-1'), title='The sample size is unclear',
+                               block_id=block, quote=quote, comment='...', severity='major')
+    assert after['finding_uid'] != before['finding_uid']
+
+
 def test_agreement_between_two_reviewers_is_two_rows_the_editor_merges(tmp_path):
     open_run(tmp_path, reviewers=2, arm='reviewers-only')
     run = srv.current()

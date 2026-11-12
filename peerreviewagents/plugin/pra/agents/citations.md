@@ -41,8 +41,10 @@ cannot get one, say in the finding that the reference is unverified.
 ## Submitting
 
 `submit_finding` needs an exact `quote` appearing once in the block you name —
-usually the sentence carrying the citation. Pass the lookup you relied on in
-`source_urls`.
+usually the sentence carrying the citation. Copy it out of the block text rather
+than retyping it: a quote reassembled from memory — an author name reordered, a
+clause dropped — is quarantined even when the finding is right. Pass the lookup
+you relied on in `source_urls`.
 
 Set `escalate: true` only when the paper's central claim rests on a citation
 that does not support it. Finish with `submit_report`, passing
