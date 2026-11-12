@@ -252,7 +252,10 @@ def test_read_run_refuses_a_symlinked_run_file(tmp_path):
     elsewhere = _write(tmp_path / 'elsewhere' / 'editor-package.json',
                        {'summary': 'not this run', 'findings': []})
     (review / 'editor-package.json').unlink()
-    (review / 'editor-package.json').symlink_to(elsewhere)
+    try:
+        (review / 'editor-package.json').symlink_to(elsewhere)
+    except OSError as exc:  # Windows without the privilege. The guard is still there.
+        pytest.skip(f'this machine cannot create a symlink to test against: {exc}')
 
     with pytest.raises(ValueError, match='editor-package.json'):
         read_run(review)
