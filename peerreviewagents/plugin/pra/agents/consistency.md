@@ -42,8 +42,11 @@ conflict. The argument that they conflict has to be in your comment.
 ## Submitting
 
 `submit_finding` needs an exact `quote` appearing once in the block you name.
-Pass the second passage as `corroborating_block_id` and `corroborating_quote`;
-it must anchor exactly too, or nothing is stored.
+Copy both quotes out of the block text rather than retyping them: a quote
+reassembled from memory — numbers reordered, a clause dropped — is quarantined
+even when the finding is right, which is the way a true contradiction is most
+often lost. Pass the second passage as `corroborating_block_id` and
+`corroborating_quote`; it must anchor exactly too, or nothing is stored.
 
 Set `escalate: true` only when the contradiction touches the central claim.
 Finish with `submit_report`, passing `report_markdown` for

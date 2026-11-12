@@ -37,9 +37,11 @@ methods imply instead — do not invent a field.
 ## Submitting
 
 `submit_finding` needs an exact `quote` appearing once in the block you name.
-Where the finding is a convention of the field rather than something on the
-page, quote the sentence it bears on and make the convention explicit in the
-comment — a reader outside the field must be able to follow why it matters.
+Copy it out of the block text rather than retyping it: a quote reassembled from
+memory — a term reordered, a clause dropped — is quarantined even when the
+finding is right. Where the finding is a convention of the field rather than
+something on the page, quote the sentence it bears on and make the convention
+explicit in the comment — a reader outside the field must be able to follow why it matters.
 
 Set `escalate: true` only when the missing control or validation means the
 central result cannot be believed as stated. Finish with `submit_report`,

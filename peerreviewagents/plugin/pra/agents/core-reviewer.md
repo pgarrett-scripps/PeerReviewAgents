@@ -63,7 +63,11 @@ authors, and a severity of `major`, `moderate` or `minor`. Pass
 
 The quote must appear in that block exactly once, character for character. If
 it does not, the server quarantines the finding, tells you why, and stores
-nothing: fix the quote and submit again. Do not paraphrase inside a quote.
+nothing: fix the quote and submit again. Copy the quote out of the block text
+rather than retyping it. Do not paraphrase inside a quote, do not reorder what
+the block puts in one order, and do not drop a clause from the middle: a quote
+reassembled from memory is quarantined even when the finding is right, and the
+finding is lost with it.
 
 Reporting nothing is a real answer. If the paper is sound, say so and submit no
 findings rather than padding the list with something you do not believe. Three

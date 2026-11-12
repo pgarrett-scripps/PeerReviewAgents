@@ -46,7 +46,10 @@ would settle it.
 
 `submit_finding` needs an exact `quote` appearing once in the `block_id` you
 name — for a figure, that is usually a phrase from the caption or from the
-sentence that cites it. Quarantined findings are not stored; fix and resubmit.
+sentence that cites it. Copy it out of the block text rather than retyping it:
+a quote reassembled from memory — a number reordered, a clause dropped — is
+quarantined even when the finding is right. Quarantined findings are not
+stored; fix and resubmit.
 
 Set `escalate: true` only when the panel does not support the claim it is cited
 for. Finish with `submit_report`, passing `report_markdown` for
