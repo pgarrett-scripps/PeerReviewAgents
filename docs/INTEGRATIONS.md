@@ -98,6 +98,7 @@ this list and say so, because those modules change without notice.
 from peerreviewagents import (
     review, review_main, report_main,      # run a review; the two commands
     read_run, write_reports,               # read and re-render a run folder
+    locate_run, NotARunFolder,             # resolve a run folder, and the error
     import_paper, verify_workspace, export_draft,
     plugin_directory, claude_code_version,  # check an installation
     review_parser, report_parser,           # the real parsers behind the commands
@@ -180,6 +181,12 @@ print(run["runtime"]["tokens_total"], "tokens",
       [(a["slot"], a["tokens"]) for a in run["agents"]])
 ```
 
+`locate_run(path)` is the step `read_run` does first, on its own: it returns
+`(run folder, review folder)` for either spelling, raises `NotARunFolder` for a
+folder that is neither and refuses a symlinked `review/` by name. An app that
+lists a directory of runs before reading any of them wants that, not a reading
+of each.
+
 It works on every kind of folder a review can leave behind, which is the point:
 
 | Folder | What `read_run` gives you |
@@ -227,7 +234,8 @@ Four rules it enforces so you do not have to:
   `findings_source` says which. A uid the editor placed in both its lists is in
   `body` only, so it is one finding and one escalation, not two.
 - **A folder that is not a run is an error, not an empty answer.** It raises
-  `peerreviewagents.runs.NotARunFolder` (a `ValueError`) naming the files it
+  `peerreviewagents.NotARunFolder` (a `ValueError`, also reachable as
+  `peerreviewagents.runs.NotARunFolder`) naming the files it
   looked for.
 - **A damaged file inside a real run is named, not raised.** A truncated
   `runtime.json`, a half-written last line in a usage receipt, a status file
@@ -317,6 +325,39 @@ A blocked run is the code `1` and a full run folder to read, not an exception.
 `write_reports(run)` re-renders `REVIEW.md` and `REVIEW.txt` from a run folder
 with no model call. The workspace path is optional: a run folder holds its own
 manuscript, so pass one only when the manuscript lives somewhere else.
+
+### Writing files the engine reads: `peerreviewagents.workspace`
+
+An app that keeps its own files beside a manuscript workspace — a revision, a
+saved review, a scaffold import, an export — writes files the engine reads back
+and verifies against a manifest. So it cannot carry its own digest, its own
+JSON writer or its own review normalisation: a second implementation of any of
+them is a file the engine refuses, or worse, one it accepts as something it is
+not. The seven tools are in one public module rather than seven more top-level
+names, and each is the same object the engine itself uses — the import is an
+alias, not a copy:
+
+```python
+from peerreviewagents.workspace import (digest, read_json, write_json,
+                                        normalize_review, save_review,
+                                        words, text_of)
+```
+
+| Name | What it is |
+| --- | --- |
+| `digest(value)` | the SHA-256 every manifest entry in a workspace is checked against; takes `bytes` or `str` |
+| `read_json(path)` | the one reader of a JSON file in a run or a workspace, UTF-8 |
+| `write_json(path, value)` | the one writer: parents created, written to a temp file in the same directory and `os.replace`d, UTF-8 and `indent=2`, so a half-written file is impossible rather than unlikely |
+| `normalize_review(paper, response, review_id)` | the anchoring step: ids, quote positions, `placement`, withheld edits, and the counts — for an app that wants the normalised findings without writing them |
+| `save_review(root, response, review_id)` | that, verified against the workspace and stored at `reviews/<review_id>.json`; the same review twice is the same file, a different body under the same id is a `ValueError`, and a review of another manuscript version is refused |
+| `words(text)` | the word split the import counts by |
+| `text_of(element)` | an XML element's text as the import reads it, whitespace collapsed; `''` for `None` |
+
+The whole-workspace operations stay on the top level: `import_paper`,
+`verify_workspace` and `export_draft`. Use `write_json` for every file you add
+to a workspace and `digest` for every manifest entry, and
+`verify_workspace(root)` will accept what you wrote; writing JSON yourself is
+the one way to produce a workspace the engine rejects.
 
 ### Run statuses
 

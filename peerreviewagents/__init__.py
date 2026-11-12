@@ -23,7 +23,10 @@ Reading a run
     the escalations and their rulings, the manifest identity, the report paths
     and the runtime of each agent. :func:`write_reports` re-renders
     ``REVIEW.md`` and ``REVIEW.txt`` from a run folder, with no model call and
-    no workspace path needed.
+    no workspace path needed. :func:`locate_run` is the resolution those two
+    do first — ``(run folder, review folder)`` from either spelling — for an
+    app that lists folders before reading them, and
+    :class:`NotARunFolder` is what both raise for a folder that is not a run.
 
 Checking an installation
     :func:`plugin_directory` is the ``pra`` plugin that ships inside this
@@ -47,6 +50,10 @@ Manuscripts and workspaces
     model call. :func:`verify_workspace` re-checks an imported workspace
     against its own manifest and returns the paper. :func:`export_draft`
     applies the accepted anchored edits of a review to a copy of the blocks.
+    :mod:`peerreviewagents.workspace` holds the smaller tools those are built
+    from, for an app that writes files the engine reads back: the manifest
+    digest, the atomic JSON read and write, the review normalisation and save,
+    and the two text helpers the import uses.
 
 Names
     :data:`RUN_DIRECTORY` and :data:`MANUSCRIPT_DIRECTORY` are the two folders
@@ -83,13 +90,16 @@ if TYPE_CHECKING:  # Static tooling sees the real objects, not the fallback.
     from .plugin.starter import claude_version as claude_code_version
     from .plugin.starter import plugin_dir as plugin_directory
     from .plugin.starter import review, review_main
-    from .runs import read_run
+    from .runs import NotARunFolder, read_run
+    from .runs import locate as locate_run
 
 __all__ = [
     "review",
     "review_main",
     "report_main",
     "read_run",
+    "locate_run",
+    "NotARunFolder",
     "import_paper",
     "write_reports",
     "verify_workspace",
@@ -111,6 +121,10 @@ _LAZY = {
     "review_main": (".plugin.starter", "review_main"),
     "report_main": (".cli.main", "report_main"),
     "read_run": (".runs", "read_run"),
+    # The run-folder resolution and the error both of those raise, so an app
+    # that lists folders never imports `runs` for them.
+    "locate_run": (".runs", "locate"),
+    "NotARunFolder": (".runs", "NotARunFolder"),
     # The installation checks and the two parsers. Each is the object the
     # command itself uses, under the name this surface calls it by, so a
     # consumer never needs `plugin.starter` or `cli.main`.
