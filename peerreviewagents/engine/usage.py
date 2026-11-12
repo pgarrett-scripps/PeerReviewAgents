@@ -16,12 +16,42 @@ from pathlib import Path
 from .storage import read
 
 
-def jsonl(path):
-    """Every JSON object in a line-delimited file, or nothing if it is absent."""
+def jsonl(path, on_problem=None):
+    """Every JSON object in a line-delimited file, or nothing if it is absent.
+
+    Strict by default: the server's own budget reads these receipts, and a
+    receipt it cannot parse must stop a call rather than be counted as zero.
+    Pass ``on_problem`` — a callable taking one sentence — to read as far as the
+    file can be read instead, which is what a reader of a killed run wants: the
+    bad line is skipped, the undecodable bytes are replaced, and each is
+    reported.
+    """
     path = Path(path)
     if not path.exists(): return []
-    return [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()
-            if line.strip()]
+    raw = path.read_bytes()
+    try:
+        text = raw.decode('utf-8')
+    except UnicodeDecodeError:
+        if on_problem is None: raise
+        text = raw.decode('utf-8', errors='replace')
+        on_problem(f'{path.name} is not valid UTF-8; the bytes that are not were replaced')
+    rows, skipped = [], 0
+    for line in text.splitlines():
+        if not line.strip(): continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            if on_problem is None: raise
+            skipped += 1
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+        else:
+            skipped += 1
+    if skipped and on_problem is not None:
+        on_problem(f'{skipped} unreadable line(s) in {path.name} were skipped, so the usage '
+                   'counted here is a lower bound')
+    return rows
 
 
 def attempt_key(record):
@@ -61,7 +91,7 @@ def unaccounted_attempts(rows):
             and (row.get('usage_unknown') or row.get('observed_tokens') is None)]
 
 
-def observed_usage(out):
+def observed_usage(out, on_problem=None):
     """Account for every attempt, but judge resolution on the surviving ones.
 
     A retried call leaves a failed receipt behind on purpose. Its tokens still
@@ -73,7 +103,14 @@ def observed_usage(out):
     ``unknown_attempts`` and described in ``usage_limitation`` rather than
     silently treated as zero. The count is what the budget bounds.
     """
-    rows = [r for p in sorted(Path(out).rglob('usage.jsonl')) for r in jsonl(p)]
+    unread = []
+
+    def note(message):
+        unread.append(message)
+        on_problem(message)
+
+    reader = note if on_problem is not None else None
+    rows = [r for p in sorted(Path(out).rglob('usage.jsonl')) for r in jsonl(p, reader)]
     attempts = list(Path(out).rglob('*.started.json'))
     effective = effective_rows(rows)
     unaccounted = unaccounted_attempts(rows)
@@ -89,10 +126,18 @@ def observed_usage(out):
         value['unaccounted_attempts'] = [{'label': r.get('label'), 'request_sha256': r.get('request_sha256'),
                                           'attempt': r.get('attempt') or 1, 'error': r.get('error'),
                                           'elapsed_seconds': r.get('elapsed_seconds')} for r in unaccounted]
+    if unread:
+        # A receipt that could not be read is spend nobody counted, so the
+        # whole reading is unresolved rather than a tidy total.
+        value['unknown'] = True
+        value['usage_limitation'] = ' '.join(filter(None, [
+            value.get('usage_limitation'),
+            f'{len(unread)} usage receipt(s) could not be read in full, so observed_tokens is '
+            'a lower bound for this run.']))
     return value
 
 
-def runtime_usage(run):
+def runtime_usage(run, on_problem=None):
     """The starter's own accounting of a run, or ``None`` before it was written.
 
     ``runtime.json`` is written once the headless session has ended, so it is
@@ -103,11 +148,19 @@ def runtime_usage(run):
     path = Path(run) / 'runtime.json'
     if not path.is_file():
         return None
-    value = read(path)
+    try:
+        value = read(path)
+    except (ValueError, UnicodeDecodeError) as exc:
+        # The starter writes this file last, so a run killed while writing it
+        # leaves exactly this, and it is the file naming the reason it stopped.
+        if on_problem is None: raise
+        on_problem(f'runtime.json could not be read ({exc.__class__.__name__}); it is read as '
+                   'absent, so the tokens and the wall time of this run are lost')
+        return None
     return value if isinstance(value, dict) else None
 
 
-def agent_rows(run, protocol=None):
+def agent_rows(run, protocol=None, runtime=None, on_problem=None):
     """One row per agent slot: role, track, model, tool calls and tokens.
 
     The protocol says which slots the arm asked for and what each was allowed to
@@ -119,13 +172,16 @@ def agent_rows(run, protocol=None):
     ``session_calls`` is every tool call the session saw the agent make, which
     is larger and is Claude Code's count rather than the server's.
     """
-    runtime = runtime_usage(run) or {}
+    if runtime is None:
+        runtime = runtime_usage(run, on_problem) or {}
     spent = {}
-    for row in runtime.get('agents') or []:
+    rows_recorded = runtime.get('agents')
+    for row in rows_recorded if isinstance(rows_recorded, list) else []:
         if isinstance(row, dict) and row.get('label'):
             spent[str(row['label']).split('#')[0]] = row
     rows = []
-    for slot, record in sorted(((protocol or {}).get('agents') or {}).items()):
+    planned = (protocol or {}).get('agents')
+    for slot, record in sorted((planned if isinstance(planned, dict) else {}).items()):
         record = record if isinstance(record, dict) else {}
         observed = spent.pop(slot, {})
         rows.append({'slot': slot, 'role': record.get('role'), 'track': record.get('track'),

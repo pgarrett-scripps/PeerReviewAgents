@@ -38,11 +38,18 @@ from ..engine.domain_registry import route as domain_route
 from ..engine.ingest import import_paper
 from ..engine.investigation import Investigation
 from ..engine.storage import digest, read, write
+from ..names import (
+    COMPLETE_STATUSES,
+    FINDING_SCHEMA_VERSION,
+    MANUSCRIPT_DIRECTORY,
+    RUN_DIRECTORY,
+)
 
-FINDING_SCHEMA_VERSION = 'review-finding-v3'
+# The folder names, the statuses and the finding schema version are imported
+# from `peerreviewagents.names` because this module writes them; that module is
+# where they are defined and where an integration reads them from. Importing
+# them from here instead is not supported and nothing in the repository does.
 WORKFLOW_VERSION = 'plugin-two-track-v1'
-MANUSCRIPT_DIRECTORY = 'manuscript'
-RUN_DIRECTORY = 'review'
 SPECIALIST_TRACKS = ('stats', 'figures-tables', 'methods-reporting', 'citations',
                      'consistency', 'field')
 MAX_REVIEWERS = 8
@@ -212,6 +219,14 @@ class Run:
         self.claim_codes = {slot: secrets.token_hex(8)
                             for slot in (*self.required, 'recorder')}
         self.write_progress()
+        # Identity at ingest, not only at the end. A run that is killed — a
+        # token ceiling, the wall clock, a rate limit, a session error — used to
+        # leave a folder that could not say which paper it had been reading or
+        # which arm it was running, because `protocol.json` and `manifest.json`
+        # were written by `write_review` and `mark_blocked` alone. Both are
+        # rewritten at every later status change, so the end state still wins.
+        self.write_protocol()
+        self.write_manifest()
 
     def refuse_foreign_folder(self, pdf):
         """An out folder holds one paper under one plan, or the run is not this run.
@@ -1077,7 +1092,7 @@ def mark_blocked(recorder_key: str, reason: str) -> dict:
     if not secrets.compare_digest(str(recorder_key or ''), run.recorder_key):
         return rejection('The run is marked blocked by the recorder, with the run key ingest '
                          'returned.')
-    if str(run.status).startswith('complete'):
+    if run.status in COMPLETE_STATUSES:
         return rejection('This run is ' + run.status + ' and its review is written. A finished '
                          'run is not marked blocked.', status=run.status)
     run.status = 'blocked'
