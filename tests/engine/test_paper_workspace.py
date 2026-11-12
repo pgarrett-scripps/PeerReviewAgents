@@ -8,7 +8,6 @@ from peerreviewagents.engine.annotations import normalize_review,export_draft,ve
 from peerreviewagents.engine.calculator import calculate
 from peerreviewagents.engine.storage import digest,write
 from peerreviewagents.engine.investigation import Investigation
-from peerreviewagents.engine.reviewer import editor_package,inspected_images
 
 
 class SourceIntegrity(unittest.TestCase):
@@ -81,45 +80,23 @@ class SourceIntegrity(unittest.TestCase):
             server=Investigation({'paper':d,'output':str(root/'out'),'cache':str(root/'cache'),'tool_limit':1})
             self.assertTrue(server.call('save_note',{'text':'A hypothesis','evidence_blocks':['b1']})['saved'])
             self.assertIn('notice',server.call('search',{'query':'samples'}))
-            self.assertEqual(len((root/'out/notes.jsonl').read_text().splitlines()),1)
+            self.assertEqual(len((root/'out/notes.jsonl').read_text(encoding='utf-8').splitlines()),1)
 
     def test_imported_pilot_references_and_table_boundaries(self):
         path=Path('runs/pra-workspace-pilot-v1/paper-v2/paper.json')
         if not path.exists():self.skipTest('Pilot artifact unavailable')
-        paper=json.loads(path.read_text())
+        paper=json.loads(path.read_text(encoding='utf-8'))
         self.assertEqual(len(paper['references']),67)
         tables=[b for b in paper['blocks'] if b['document']=='S1_Table.docx' and b['kind']=='table']
         self.assertEqual(len(tables),1)
         self.assertTrue(any(len(row)>1 for row in tables[0]['table']))
         self.assertTrue(all(b['page_mapping']=='unavailable' for b in paper['blocks'] if b['page'] is None))
 
-    def test_editor_keeps_omitted_findings_unendorsed(self):
-        earlier={'findings':[self.finding]}
-        final={'summary':'Final review','findings':[]}
-        result=editor_package(final,[earlier])
-        self.assertEqual(result['verification_queue_count'],1)
-        self.assertEqual(result['findings'][0]['disposition'],'needs_verification')
-        self.assertEqual(result['findings'][0]['kind'],'question')
-        self.assertEqual(len(result['source_findings']),1)
-        self.assertEqual(final['findings'],[])
-        review=normalize_review(self.paper,result,'review')
-        exported=export_draft(self.paper,review,{'paper_id':'paper','review_id':'review','items':{}})
-        self.assertEqual(len(exported['source_findings']),1)
-
-    def test_visual_evidence_handoff(self):
-        root=Path('runs/pra-workspace-pilot-v1/paper-v2')
-        investigation=Path('runs/pra-workspace-pilot-v1-r2/investigations/workspace')
-        if not investigation.exists():self.skipTest('Pilot investigation unavailable')
-        images=inspected_images(json.loads((root/'paper.json').read_text()),root,investigation)
-        self.assertEqual(len(images),2)
-        self.assertTrue(any(path.name=='S5_Fig.png' for path,label in images))
-        self.assertTrue(any(path.name=='page_008.png' for path,label in images))
-
     def test_corrected_doi_import_preserves_source_blocks(self):
         new=Path('runs/pra-workspace-pilot-v1/import-qa-v3/paper.json')
         if not new.exists():self.skipTest('Corrected import unavailable')
-        original=json.loads(Path('runs/pra-workspace-pilot-v1/paper-v2/paper.json').read_text())
-        corrected=json.loads(new.read_text())
+        original=json.loads(Path('runs/pra-workspace-pilot-v1/paper-v2/paper.json').read_text(encoding='utf-8'))
+        corrected=json.loads(new.read_text(encoding='utf-8'))
         self.assertEqual(corrected['blocks'],original['blocks'])
         self.assertEqual(sum(bool(r['doi']) for r in corrected['references']),61)
 

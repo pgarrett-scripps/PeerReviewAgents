@@ -10,7 +10,7 @@ def digest(value):
 
 
 def read(path):
-    return json.loads(Path(path).read_text())
+    return json.loads(Path(path).read_text(encoding='utf-8'))
 
 
 def write(path, value):
@@ -18,7 +18,9 @@ def write(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp = tempfile.mkstemp(dir=path.parent, prefix='.' + path.name)
     try:
-        with os.fdopen(fd, 'w') as out:
+        # Every run file is UTF-8, explicitly: the manuscript decides what is in
+        # it, and the platform's default encoding has no say in that.
+        with os.fdopen(fd, 'w', encoding='utf-8') as out:
             json.dump(value, out, indent=2, ensure_ascii=False)
             out.write('\n')
         os.replace(temp, path)

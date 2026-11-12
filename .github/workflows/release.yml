@@ -57,6 +57,11 @@ jobs:
             echo "publish=${{ inputs.dry_run == false }}" >> "$GITHUB_OUTPUT"
           fi
 
+      # The suite ingests a PDF fixture, and PDF text extraction is Poppler's
+      # `pdftotext` — a runtime requirement of the tool itself.
+      - name: Install Poppler
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq poppler-utils
+
       - name: Install
         run: pip install --quiet -e '.[dev]'
 
@@ -94,12 +99,42 @@ jobs:
         run: |
           python -m venv /tmp/fresh
           wheel=$(find dist -name '*.whl' -print -quit)
-          /tmp/fresh/bin/pip install --quiet "${wheel}[mcp]"
+          /tmp/fresh/bin/pip install --quiet "${wheel}"
           /tmp/fresh/bin/python -c "
-          import peerreviewagents, peerreviewagents.cli.main, peerreviewagents.mcp.server
+          import peerreviewagents, peerreviewagents.cli.main
+          import peerreviewagents.plugin.server, peerreviewagents.plugin.starter
           print('import ok:', peerreviewagents.__name__)
           "
           /tmp/fresh/bin/peerreview --help >/dev/null
+
+      # The plugin *is* the review in 0.9, so a wheel that imports but ships no
+      # `pra` folder installs a package that cannot start one. `--help` never
+      # touches the plugin and passed on exactly that wheel, so this asks the
+      # starter where the plugin is and then looks.
+      - name: Prove the installed wheel can find its plugin
+        run: |
+          /tmp/fresh/bin/python -c "
+          import json
+          from peerreviewagents.plugin import starter
+          plugin = starter.plugin_dir()
+          assert plugin.is_dir(), f'the installed wheel ships no plugin at {plugin}'
+          missing = [name for name in (
+              '.claude-plugin/plugin.json', '.mcp.json', 'README.md',
+              'workflows/review.js', 'skills/peer-review-manuscript/SKILL.md',
+          ) if not (plugin / name).is_file()]
+          assert not missing, f'the installed plugin is incomplete: {missing}'
+          agents = sorted(path.name for path in (plugin / 'agents').glob('*.md'))
+          assert len(agents) == 9, agents
+          config = json.loads((plugin / '.mcp.json').read_text(encoding='utf-8'))
+          command = config['mcpServers']['peerreview']['command']
+          assert 'CLAUDE_PROJECT_DIR' not in command, command
+          assert '.venv' not in command, command
+          print('plugin ok:', plugin, len(agents), 'agents')
+          "
+          # The default launcher for a session nobody set PEERREVIEW_MCP_COMMAND
+          # for: without this console script an interactive plugin loads with
+          # its tools absent.
+          test -x /tmp/fresh/bin/peerreview-plugin-server
 
       - uses: actions/upload-artifact@v4
         with:

@@ -1,103 +1,91 @@
-"""The ``peerreview`` command: one evidence-linked review of a manuscript PDF.
+"""The ``peerreview`` command: one plugin review of a manuscript PDF.
 
-``peerreview manuscript.pdf`` is the whole review. The PDF is imported into
-``manuscript-review/manuscript``, two reviewers investigate it independently,
-an audited debate synthesises them, and ``REVIEW.md`` is written into
-``manuscript-review`` with every finding anchored to an exact quotation. The
-same review named in full is ``peerreview review manuscript.pdf <folder>``.
+``peerreview review manuscript.pdf <run folder>`` is the whole review. The PDF
+is imported into ``<run folder>/manuscript``, a headless Claude Code session
+runs the ``pra`` plugin over it — N core reviewers and six specialist tracks in
+parallel, then an editor — and ``<run folder>/review/REVIEW.md`` is written with
+every finding anchored to an exact quotation. ``peerreview manuscript.pdf
+<run folder>`` means the same thing.
 
-Every engine command (``import``, ``verify``, ``review``, ``investigate``,
-``report``, ``checks``, ``add-review``, ``result-map``) is here, plus ``serve``
-for the browser UI over the same reviews. The review runs on a coding-agent
-subscription installed on this machine — Claude Code by default, Codex with
-``--provider codex`` — so there is no API key and no PeerReviewAgents service.
+There are two commands and no third. ``review`` runs the review and is the only
+way to run one. ``report`` re-renders the reports of a run that already
+finished, which makes no model call at all. Everything the review itself owns —
+the manuscript, the agent identities, the ledger and the budgets — belongs to
+the plugin's MCP server, not to this command.
+
+The review runs on a Claude Code subscription login installed on this machine,
+so there is no API key and no PeerReviewAgents service.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from pathlib import Path
 
-from peerreviewagents.engine.__main__ import COMMANDS, add_subcommands
-from peerreviewagents.engine.__main__ import dispatch as engine_dispatch
+COMMANDS = ("review", "report")
 
 DESCRIPTION = (
-    "Review a manuscript PDF end to end, with every finding anchored to a "
-    "quotation in it. `peerreview manuscript.pdf` is the whole review."
+    "Review a manuscript PDF end to end with the pra plugin, with every finding "
+    "anchored to a quotation in it. `peerreview review paper.pdf run/` is the whole review."
 )
 
 
-def add_serve_arguments(sub: argparse._SubParsersAction) -> None:
-    """Attach the ``serve`` command: the same reviews, started from a browser."""
-    p = sub.add_parser(
-        "serve",
-        help="Serve the web UI: upload a manuscript PDF, read its REVIEW.md",
-    )
-    p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=8765)
-    p.add_argument("--output-dir", dest="output_dir", default=None,
-                   help="Where reviews are written (default: ./reviews)")
-    p.add_argument("--upload-dir", dest="upload_dir", default=None,
-                   help="Where uploaded manuscripts are stored "
-                        "(default: ./.peerreview-uploads)")
-    p.add_argument("--mode", dest="mode", default=None,
-                   choices=("ensemble", "independent", "panel"),
-                   help="Default review mode for the form (default: ensemble)")
-    p.add_argument("--reviewers", dest="reviewers", type=int, default=None,
-                   help="Default reviewer count for ensemble mode (default: 2)")
-    p.add_argument("--provider", dest="provider", choices=("claude-code", "codex"),
-                   default=None, help="Default transport (default: claude-code)")
-    p.add_argument("--model", dest="model", default=None,
-                   help="Default model for the chosen transport")
-    p.add_argument("--policy", dest="policy", default=None,
-                   help="Default review policy, such as standard-v1")
-    p.add_argument("--literature-cutoff", dest="literature_cutoff", default=None,
-                   metavar="YYYY-MM-DD",
-                   help="Default literature cutoff date for the form")
-
-
 def build_parser() -> argparse.ArgumentParser:
-    """The engine's own commands, plus ``serve``, under the ``peerreview`` name."""
+    """The two commands, for ``peerreview --help`` and for an unusable invocation.
+
+    Each command parses its own arguments, so the subparsers here carry no
+    options: ``peerreview review -h`` and ``peerreview report -h`` are answered
+    by the command itself.
+    """
     parser = argparse.ArgumentParser(prog="peerreview", description=DESCRIPTION)
-    sub = parser.add_subparsers(dest="command", required=True)
-    add_subcommands(sub)
-    add_serve_arguments(sub)
+    sub = parser.add_subparsers(dest="command", required=True, metavar="{review,report}")
+    sub.add_parser("review", add_help=False,
+                   help="review one manuscript PDF (peerreview review -h for its options)")
+    sub.add_parser("report", add_help=False,
+                   help="re-render the reports of a finished run, offline")
     return parser
 
 
-def run_server(args) -> None:
-    """Launch the FastAPI web UI over the review engine."""
-    try:
-        import uvicorn
+def report_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="peerreview report",
+        description="Re-render REVIEW.md and REVIEW.txt from a finished run folder. "
+                    "No model call is made and nothing but the reports is written.")
+    parser.add_argument("run", help="the run folder, or the review folder inside it")
+    parser.add_argument("--workspace", default=None,
+                        help="the manuscript workspace, if it is not beside the run")
+    parser.add_argument("--output-dir", dest="output_dir", default=None,
+                        help="where to write the reports (default: the run folder itself)")
+    return parser
 
-        from peerreviewagents.web import create_app
-    except ImportError as exc:
-        print(f"Web dependencies missing: {exc}", file=sys.stderr)
-        print("Run: uv pip install -e . to pick them up.", file=sys.stderr)
-        raise SystemExit(1) from exc
 
-    defaults = {
-        key: getattr(args, key)
-        for key in ("mode", "reviewers", "provider", "model", "policy", "literature_cutoff")
-        if getattr(args, key, None) is not None
-    }
-    app = create_app(
-        output_dir=args.output_dir,
-        upload_dir=args.upload_dir,
-        host=args.host,
-        defaults=defaults,
-    )
-    print(f"PeerReviewAgents web UI on http://{args.host}:{args.port}")
-    print(f"Reviews are written to {app.state.output_root}")
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+def report(argv: list[str]) -> int:
+    """Render the reports of a run that has already finished."""
+    from peerreviewagents.engine.run_report import write_reports
+    from peerreviewagents.plugin.server import RUN_DIRECTORY
+
+    args = report_parser().parse_args(argv)
+    run = Path(args.run).resolve()
+    if not (run / "protocol.json").is_file():
+        # The run folder holds `manuscript/` and `review/`; the reports belong
+        # to the review folder, so naming the run folder means that one.
+        if (run / RUN_DIRECTORY / "protocol.json").is_file():
+            run = run / RUN_DIRECTORY
+        else:
+            raise SystemExit(f"No protocol.json in {run}: that is not a finished run folder.")
+    paths = write_reports(run, args.workspace, args.output_dir)
+    print(json.dumps({key: str(value) for key, value in paths.items()}, indent=2))
+    return 0
 
 
 def first_word(argv: list[str]) -> str | None:
     """The first argument that is a command name's place, or ``None``.
 
     An option and the value that follows it are skipped, so the command is
-    looked for where a command can be: ``--mode panel paper.pdf`` names no
-    command, and ``panel`` is the value of ``--mode`` rather than a bad one.
+    looked for where a command can be: ``--reviewers 3 paper.pdf`` names no
+    command, and ``3`` is the value of ``--reviewers`` rather than a bad one.
     A ``--flag=value`` carries its own value, so the token after it is not
     skipped.
     """
@@ -116,25 +104,28 @@ def first_word(argv: list[str]) -> str | None:
 def review_argv(argv: list[str]) -> list[str]:
     """Read a bare manuscript path as the ``review`` command it stands for.
 
-    ``peerreview manuscript.pdf`` is the one-command review, so an invocation
+    ``peerreview paper.pdf run/`` is the one-command review, so an invocation
     that names no command is a review of the manuscript it names, whether the
     review's own options come before the path or after it. ``--help`` is the
     top-level parser's, so it is never rewritten into a review.
     """
     if not argv or any(flag in ("-h", "--help") for flag in argv):
         return argv
-    if first_word(argv) in (*COMMANDS, "serve"):
+    if first_word(argv) in COMMANDS:
         return argv
     return ["review", *argv]
 
 
 def run() -> None:
-    parser = build_parser()
-    args = parser.parse_args(review_argv(sys.argv[1:]))
-    if args.command == "serve":
-        run_server(args)
-        return
-    engine_dispatch(parser, args)
+    argv = review_argv(sys.argv[1:])
+    command = argv[0] if argv else None
+    if command == "review":
+        from peerreviewagents.plugin.starter import main as review_main
+
+        raise SystemExit(review_main(argv))
+    if command == "report":
+        raise SystemExit(report(argv[1:]))
+    build_parser().parse_args(argv)  # Prints the help, or names the bad command.
 
 
 if __name__ == "__main__":

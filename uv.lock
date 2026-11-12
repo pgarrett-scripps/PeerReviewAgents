@@ -8,15 +8,6 @@ resolution-markers = [
 ]
 
 [[package]]
-name = "annotated-doc"
-version = "0.0.5"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/5a/8e/38aa427ed5402449e226975b649c5dc73ccadfefeb95e6aecb8f8ea4b6b6/annotated_doc-0.0.5.tar.gz", hash = "sha256:c7e58ce09192557605d8bbd92836d7e1d520ac9580096042c0bfd197efacf1bb", size = 10758, upload-time = "2026-07-28T13:50:58.129Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/3e/30/e900b21425a860e195f32e37657aa1f7c7f2b1bfb26f03ca209b90933c06/annotated_doc-0.0.5-py3-none-any.whl", hash = "sha256:117bac03a25ede5df5440e855b32d556049ca169ead221505badf432fed4b101", size = 5302, upload-time = "2026-07-28T13:50:57.239Z" },
-]
-
-[[package]]
 name = "annotated-types"
 version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -197,22 +188,6 @@ wheels = [
 ]
 
 [[package]]
-name = "fastapi"
-version = "0.141.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "annotated-doc" },
-    { name = "pydantic" },
-    { name = "starlette" },
-    { name = "typing-extensions" },
-    { name = "typing-inspection" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/8a/02/91e3416a8fdd715abb903a952a6bec7cdd8d14eed55d415fc8595524c319/fastapi-0.141.1.tar.gz", hash = "sha256:e8822fc40db1e1858054d7a949a888695bc9bdce70139178e33bd2871a453ca1", size = 425799, upload-time = "2026-07-29T17:18:05.568Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/cb/03/10388a42375ee7e4ac9b94eb2c5c569c8b5795e377e701c9ac3ad63de890/fastapi-0.141.1-py3-none-any.whl", hash = "sha256:bfb91aa2d334c61cb35ba9a116fc123b3d3df31640b801cf57a7a78ec3f603b3", size = 131954, upload-time = "2026-07-29T17:18:04.364Z" },
-]
-
-[[package]]
 name = "h11"
 version = "0.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -340,45 +315,35 @@ wheels = [
 
 [[package]]
 name = "peerreviewagents"
-version = "0.8.0"
+version = "0.9.0"
 source = { editable = "." }
 dependencies = [
-    { name = "fastapi" },
+    { name = "mcp" },
     { name = "pillow" },
-    { name = "python-multipart" },
     { name = "rustypaper" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
-    { name = "uvicorn" },
 ]
 
 [package.optional-dependencies]
 dev = [
-    { name = "httpx" },
-    { name = "mcp" },
     { name = "pytest" },
     { name = "pyyaml" },
     { name = "ruff" },
-]
-mcp = [
-    { name = "mcp" },
+    { name = "setuptools" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "fastapi", specifier = ">=0.110" },
-    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
-    { name = "mcp", marker = "extra == 'dev'", specifier = ">=1.13,<2" },
-    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.13,<2" },
+    { name = "mcp", specifier = ">=1.13,<2" },
     { name = "pillow", specifier = ">=10" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
-    { name = "python-multipart", specifier = ">=0.0.9" },
     { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
     { name = "rustypaper", specifier = "==0.2.2" },
+    { name = "setuptools", marker = "extra == 'dev'", specifier = ">=70" },
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2" },
-    { name = "uvicorn", specifier = ">=0.27" },
 ]
-provides-extras = ["mcp", "dev"]
+provides-extras = ["dev"]
 
 [[package]]
 name = "pillow"
@@ -908,6 +873,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/b0/36/86e4e7d111440abc0c7570b19d426d6d7b3a9fce8af286851b19cf449b33/rustypaper-0.2.2-cp39-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:287dcf0c8aa008438610ca0b3b58678297c09e1d9d94ded0cbb48563dc02c79a", size = 1455283, upload-time = "2026-10-11T20:45:50.872Z" },
     { url = "https://files.pythonhosted.org/packages/0f/24/2a310b48b431c86e0d86f75e0257d1e40de82ecec57e95b358063146dbf3/rustypaper-0.2.2-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:36ebd16808c77fa325db80660ad92b28de61bd3c4f3f67593e32ac57c94979b9", size = 1525755, upload-time = "2026-10-11T20:45:52.334Z" },
     { url = "https://files.pythonhosted.org/packages/66/c9/2f4a36c7d1c6999cf8444a1f6068a52e74c84ab1ecbc260f4697cab28545/rustypaper-0.2.2-cp39-abi3-win_amd64.whl", hash = "sha256:b4f0763113af74cbf50e09bc52d91817b465248c2f4e945830c72811d437d16d", size = 1370041, upload-time = "2026-10-11T20:45:53.786Z" },
+]
+
+[[package]]
+name = "setuptools"
+version = "84.2.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/70/b3/c19426f783614d625699a4b247faf628ea9ab1db228674491767b417f9e1/setuptools-84.2.1.tar.gz", hash = "sha256:3ff8b3b5492a0aa66960f4419365a86b84e013070d4313e4d4a6894f5d64d6bc", size = 1230289, upload-time = "2026-10-20T19:01:37.742Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ef/55/6dc6d6bb953bdfc52519a0059592c52b6e3b8ad51cf8256dffceb55b0610/setuptools-84.2.1-py3-none-any.whl", hash = "sha256:ca140b45d5325a9478f880e351484f62fef15f336462e449ca0c03c873d589c2", size = 876263, upload-time = "2026-10-20T19:01:35.678Z" },
 ]
 
 [[package]]

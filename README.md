@@ -3,133 +3,168 @@
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21781895.svg)](https://doi.org/10.5281/zenodo.21781895)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Evidence-linked peer review of a manuscript PDF, on a coding-agent
-subscription. One command imports the PDF into immutable source blocks, runs
-independent reviewers against bounded manuscript and literature tools,
-synthesizes their findings through an audited debate, and validates every quote
-and location before a finding reaches the report. There is no API key: the
-models run on your signed-in Claude Code or Codex subscription.
+Evidence-linked peer review of a manuscript PDF, on a Claude Code
+subscription. One command imports the PDF into immutable source blocks and runs
+the `pra` plugin over them: several core reviewers and six specialist tracks
+work the paper in parallel and in isolation, then an editor pools what they
+found into one package with a decision and a reason for every finding. There is
+no API key — the models run on your signed-in Claude Code login.
 
 Every finding carries the block it is anchored to and the exact quotation it
 rests on. A finding whose quote does not match the manuscript does not ship.
 
 ```bash
-peerreview manuscript.pdf
+peerreview review manuscript.pdf manuscript-review
 ```
 
-That writes `manuscript-review/` beside the PDF, holding the imported
-manuscript, the run, and `REVIEW.md` and `REVIEW.txt`.
+That writes `manuscript-review/`, holding the imported manuscript, the run, and
+`REVIEW.md` and `REVIEW.txt`.
 
-## 0.8.0: the engine is the whole program
+## 0.9.0: the plugin is the only way to run a review
 
-0.8.0 removed the LangGraph panel that shipped through 0.7.x — the five
-specialist reviewers, the advocate/skeptic rounds, the journal profiles, the
-strictness levels, the desk screen, the revision loop, the Textual TUI and the
-API-key providers. The engine, `peerreviewagents.engine`, is now the only
-review path, and every surface runs it: the command line, the web UI, the MCP
-server, the Claude Code and Codex plugins, and the Pi package.
+0.9.0 deleted the Python orchestration. Through 0.8.x a review was a Python
+program that called a model CLI per reviewer: `ensemble`, `reviewer`,
+`model_runtime`, the audited debate, six modes, three policies, `ReviewRequest`
+and `run_review`. All of it is gone, along with the Codex provider, the web UI
+and the standalone MCP server.
 
-The panel is not deprecated in place, it is gone. If you need it, it is frozen
-at the tag `legacy-langgraph-v0.6.1` (and in the `v0.7.0` release), where it
-still works unchanged. Nothing on `main` imports `langgraph` or `langchain`.
+What runs a review now is a Claude Code plugin — `peerreviewagents/plugin/pra`,
+shipped inside the package, so an installed wheel carries it — whose workflow
+fans out the agents and whose MCP server owns the manuscript, the agent
+identities, the tool allowances, the budgets, the stage ledger and the run
+files. No agent's account of its own work is taken on trust: it can only ask
+the server for text and hand it findings, and the server decides what a finding
+rests on.
+
+This is a break, not a deprecation. There is no shim and no legacy path. If you
+need the 0.8 engine it is frozen at the `v0.8.0` release, where it still works
+unchanged; the LangGraph panel that preceded it is frozen at
+`legacy-langgraph-v0.6.1`.
 
 ## Install
 
-You need a virtual environment. Current Linux distributions and Homebrew Python
-refuse a bare `pip install` into the system interpreter (PEP 668), so the first
-line is not optional.
+Install it anywhere a Python environment runs. `peerreview review` starts the
+plugin's MCP server with the very interpreter running the command — it passes
+it in `PEERREVIEW_MCP_COMMAND` — so neither the venv's name nor its place
+matters, and a plain `pip install peerreviewagents` can run a review with no
+checkout at all.
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e .
-
-# MCP server and Claude Code or Codex plugin support
-pip install -e '.[mcp]'
 ```
 
 Or with [uv](https://docs.astral.sh/uv/), which is what CI uses:
 
 ```bash
 uv venv && source .venv/bin/activate
-uv pip install -e '.[mcp]'
+uv pip install -e .
 ```
 
-Dependencies are `rustypaper` (PDF → source blocks), Pillow, and FastAPI and
-Uvicorn for the web UI. No OCR, no paid service beyond the subscription you
-already have, and no provider SDK.
+Dependencies are `rustypaper` (PDF → source blocks), Pillow, and the MCP SDK.
+The SDK is a dependency rather than an extra in 0.9: the plugin's server *is*
+the review, so a review cannot start without it. No OCR, no provider SDK, and
+no paid service beyond the subscription you already have.
 
-Then sign in to the transport you want to run on. Claude Code is the default,
-so the standalone `claude` CLI signed in to your Claude account is all a review
-needs. Claude Desktop alone does not install that command; install it from
-[the Claude Code quickstart](https://code.claude.com/docs/en/quickstart), or
-set `PEERREVIEW_CLAUDE_PATH` to its absolute path if it lives somewhere
-unusual. For Codex, sign in to the `codex` CLI with ChatGPT and pass
-`--provider codex` (or set `PEERREVIEW_CODEX_PATH`). Nothing selects Codex
-implicitly.
+PDF text extraction is Poppler's `pdftotext`, which is not a Python package:
+
+```bash
+sudo apt install poppler-utils     # Debian, Ubuntu
+brew install poppler               # macOS
+choco install poppler              # Windows
+```
+
+Then install and sign in to the standalone Claude Code CLI, because that is
+what a run launches. Claude Desktop alone does not install it; get it from
+[the Claude Code quickstart](https://code.claude.com/docs/en/quickstart) and
+make sure `claude` is on your `PATH`. A run never passes `--bare`, so it
+cannot fall back to an API key: `ANTHROPIC_API_KEY` is removed from the
+session's environment.
 
 How much subscription usage a run may spend is your own account setting. The
-engine records every call in `usage.jsonl` and does not gate on it.
+run records every token the session reports in `runtime.json` and stops itself
+at its own ceilings (500,000 tokens per agent, 6,000,000 per run, 90 minutes
+wall clock, all overridable).
 
 ## One review
 
 ```bash
 # The whole thing: import, review, report.
-peerreview manuscript.pdf
-
-# Name the run folder instead of taking the default beside the PDF.
 peerreview review manuscript.pdf run-output
+
+# A bare path means the same review.
+peerreview manuscript.pdf run-output
+
+# Five core reviewers instead of three.
+peerreview review manuscript.pdf run-output --reviewers 5
 
 # Bound what published work is eligible (defaults to today).
 peerreview review manuscript.pdf run-output --literature-cutoff 2026-01-05
+
+# Re-render the reports of a finished run. No model call.
+peerreview report run-output
 ```
 
-The three steps are still separate commands when you want them to be:
-
-```bash
-peerreview import manuscript.pdf workspace --xml manuscript.xml --supplements supplement-dir
-peerreview verify workspace
-peerreview review workspace run-output
-peerreview report run-output        # rewrites the reports from saved JSON, no model calls
-```
-
-`peerreview --help` lists every command: `import`, `verify`, `add-review`,
-`result-map`, `review`, `investigate`, `report`, `checks` and `serve`.
-
-### What a run writes
-
-A one-command run folder (`manuscript-review/` by default) holds:
-
-- `manuscript/` — the immutable import: `original.pdf`, `paper.json` source
-  blocks, page images, and the manifest `verify` checks against.
-- `review/` — the run itself: saved finding JSON, the validated coverage
-  record, tool logs, `progress.json` and `usage.jsonl`.
-- `REVIEW.md` and `REVIEW.txt` — the run details, the final review, and each
-  independent reviewer for an ensemble run.
-
-`peerreview report` works on a blocked or stopped run too, and reports what was
-saved rather than failing.
-
-### Modes, policies and models
-
-The default review is the agentic ensemble: two independent reviewers at high
-effort with a thirty call tool allowance and no finding cap, then an audited
-debate synthesis.
+There are two commands and no third. `review` is the only way to run a review;
+`report` only re-reads what a run already wrote. `peerreview review -h` lists
+the review's options:
 
 | Flag | Default | What it changes |
 | --- | --- | --- |
-| `--mode` | `ensemble` | `independent` is one reviewer; `panel` is one reviewer plus a debate pass |
-| `--reviewers` | `2` | Independent discovery reviewers for ensemble mode, 1 to 16 |
-| `--policy` | `agentic-v1` | `standard-v1` is the bounded study budget: at most five findings in about 900 words at medium effort. `workspace-agentic-v1` is one long agentic session, so it needs `--mode independent` |
-| `--provider` | `claude-code` | `codex` runs on a ChatGPT login |
-| `--model` | `claude-sonnet-5-5` | Or `gpt-5.6-terra` with `--provider codex`; `--help` lists the accepted IDs |
-| `--preset` | — | Pins mode, reviewers, token budget and policy together, so pass it alone |
-| `--token-budget` | per policy | Observed-token launch ceiling for the run, not a hard cap on a running call |
+| `--reviewers` | `3` | Core reviewers, 1 to 8. They never see each other's findings |
+| `--arm` | `full-two-track` | Which workflow runs; see [`docs/study-arms.md`](docs/study-arms.md) |
+| `--track` | all six | Repeatable; limits the specialist tracks (used by `draft-check`) |
 | `--literature-cutoff` | today | Latest eligible publication date |
+| `--per-agent-tokens` | `500000` | Per-agent token ceiling, enforced from the session stream |
+| `--per-run-tokens` | `6000000` | Per-run token ceiling |
+| `--timeout` | `5400` | Wall-clock limit in seconds |
+| `--plugin-dir` | the checkout's | Override the folder the plugin is loaded from |
 
-Three further modes — `plain`, `workspace` and `self-revision` — are study
-instruments and are deliberately absent from `--help`.
-[`docs/study-arms.md`](docs/study-arms.md) gives the exact command for every
-ablation arm, including the manuscript-only baseline.
+Set `PEERREVIEW_CLAUDE_VERSION` to have the run record which Claude Code
+version produced it; nothing else in the run depends on it.
+
+### What a run writes
+
+```
+<run>/manuscript/             the immutable import: original.pdf, paper.json
+                              source blocks, page images, the manifest
+<run>/review/REVIEW.md        the review, and REVIEW.txt beside it
+<run>/review/editor-package.json   the editor's decisions, one per finding
+<run>/review/findings.jsonl   every stored finding, with its basis
+<run>/review/reviewer-<n>/    each core reviewer's own package view
+<run>/review/audit_<track>.md the specialist audits
+<run>/review/protocol.json    arm, slots, models, versions, provenance hashes
+<run>/review/progress.json    stages and status
+<run>/review/runtime.json     tokens and models per agent, wall time, limits
+<run>/review/usage/<slot>/    the session stream's own usage records
+```
+
+`peerreview report` works on a blocked or stopped run too, and reports what was
+saved rather than failing. A rate limit, a breached budget or a missing stage
+leaves the run `blocked`: that is an outcome recorded in `runtime.json` and
+`progress.json`, not an error to paper over.
+
+### What the review guarantees
+
+- **Anchored or quarantined.** A finding's quotation must match a source block
+  exactly. One that does not is quarantined by the server, not reported.
+- **A basis the agent cannot assert.** The server labels each finding
+  `computed` when a `calculate` receipt covers the numbers the cited blocks
+  print, `two-quotes` when a second anchored quotation corroborates it, and
+  `judgement` otherwise.
+- **Isolation.** Core reviewers never see each other's findings and are not
+  told the specialists exist. The editor sees the pool in an order seeded by
+  the run salt, so slot order carries no weight.
+- **Tools per track.** Every slot has an allow list. A citations specialist
+  asking for figure pages is refused.
+- **One decision per finding.** The editor rules on each, merges duplicates by
+  `finding_uid`, puts at most eight in the body, and must rule by name on every
+  specialist escalation. Leaving a `computed` finding out of the body needs an
+  anchored rebuttal quotation.
+
+[`peerreviewagents/plugin/pra/README.md`](peerreviewagents/plugin/pra/README.md)
+documents the plugin itself: the agents, the workflow, the 23 server tools and
+the arms.
 
 ## Manuscript ingest
 
@@ -152,99 +187,70 @@ block and page counts, and the manifest hash the review is anchored to. Publish
 it. A reader checking a quoted sentence against the PDF needs to know which
 conversion was reviewed.
 
-Publisher JATS XML is preferred when it exists (`--xml`): it gives real text
-and parsed references, where PDF-only references stay provisional.
-`--supplements` preserves supplementary table cells. Source page images are
-attached so a reviewer can inspect a figure, and `--source-image` attaches up to
-ten specific pages.
+Publisher JATS XML is preferred when it exists: it gives real text and parsed
+references, where PDF-only references stay provisional. Source page images are
+attached so a reviewer can inspect a figure.
 
-**Convert here, not before.** Handing the engine a Markdown file you converted
+**Convert here, not before.** Handing the review a Markdown file you converted
 yourself looks equivalent and is not: the run records which converter read the
 manuscript, and a conversion done elsewhere would be recorded as though this
 one did it. Give it the PDF.
 
 [rustypaper]: https://github.com/pgarrett-scripps/rustypaper
 
-## Web UI
+## Inside Claude Code
+
+The same plugin is what you load interactively. From a checkout:
 
 ```bash
-peerreview serve                 # http://127.0.0.1:8765
-just serve
+claude --plugin-dir /absolute/path/to/PeerReviewAgents/peerreviewagents/plugin/pra
 ```
 
-Upload a manuscript PDF, pick the mode, reviewers, provider and literature
-cutoff, and watch the run. Reviews run as background jobs on the same engine the
-command line uses, so the page polls status and reads `REVIEW.md` and the saved
-artifacts when they land; closing the browser does not stop a run.
-`--output-dir` and `--upload-dir` bound what the server may read and write: an
-upload is the only way in, so no path on this machine is reviewable from the
-browser. It answers only to its own host and refuses a cross-origin post, and it
-has no authentication: do not expose it to a network you do not control.
-
-## Local coding agent plugins
-
-This repository packages local integrations for Claude Code, Codex, Factory
-Droid and Pi, and all of them run the same one-command engine review as a
-background job, so a client can check status and read artifacts without holding
-one tool call open for the full run.
-
-For Claude Code or Claude Desktop's Code tab, install and sign in to the
-standalone Claude Code CLI, then run the same installer on macOS, Linux, or
-Windows with Git Bash:
+Or add the repository as a marketplace and install it by name:
 
 ```bash
-bash scripts/install-claude.sh
+claude plugin marketplace add /absolute/path/to/PeerReviewAgents
+claude plugin install pra@peer-review-agents-local
 ```
 
-The installer detects your platform, downloads Python automatically, and
-configures the plugin with absolute executable paths. No preinstalled Python or
-uv is required. VS Code is not required. Restart Claude Desktop after
-installation and select a Local Code session. See
-[Claude setup](docs/INTEGRATIONS.md#claude-code-and-claude-desktop) for
-installation without a checkout, Windows without Bash, and upgrades.
+Loaded by hand like this, nothing sets `PEERREVIEW_MCP_COMMAND`, so the server
+starts through the `peerreview-plugin-server` console script instead: install
+this package in the environment that shell uses, or the plugin loads with its
+tools absent. `peerreview review` needs nothing of the sort.
 
-For other clients, install the MCP extra so `peerreview-mcp` is available.
-During local development, load the repository directly in Claude Code:
-
-```bash
-claude --plugin-dir /absolute/path/to/PeerReviewAgents
-```
-
-Add the repository marketplace and install the Codex plugin:
-
-```bash
-codex plugin marketplace add /absolute/path/to/PeerReviewAgents
-codex plugin add peer-review-agents@peer-review-agents-local
-```
-
-Both clients use the same `skills/peer-review-manuscript/SKILL.md` workflow and
-`.mcp.json` server. See [Local agent integrations](docs/INTEGRATIONS.md) for
-clean installation, upgrade, uninstall, Factory Droid, Pi, generic MCP,
-security, and the tested compatibility matrix.
+It carries three skills: `peer-review-manuscript` for a full review,
+`check-draft` for a draft of your own, and `follow-up` for what changed since
+the last run. Each one runs the same server and the same guarantees as
+`peerreview review`.
 
 ## As a library
 
 ```python
-from peerreviewagents import plan_review, review_options, run_review_options
+from peerreviewagents import review, import_paper, write_reports
 
-paths = plan_review("manuscript.pdf")   # imports the PDF, resolves the layout
-options = review_options(reviewers=2, literature_cutoff="2026-01-05")
-result = run_review_options(paths, options)
-
-print(result["progress"]["status"], result["reports"]["markdown"])
+run = review("manuscript.pdf", "run-output", reviewers=3)
+print(run["status"], run["tokens_total"], run["report"]["markdown"])
 ```
 
-`review_options` validates a request and refuses a bad one in the same words
-every surface uses; `run_review_options` runs it, writes the reports and returns
-their paths alongside the run's progress record and `failure`.
+Three functions, resolved lazily so `import peerreviewagents` stays cheap:
+`review` is the whole review and is exactly what `peerreview review` runs,
+`import_paper` imports a PDF into a manuscript workspace with no model call,
+and `write_reports` renders `REVIEW.md` and `REVIEW.txt` from a run folder,
+also with no model call.
 
-Those are the same three functions every surface calls, so a library run and a
-`peerreview` run are the same review. `peerreviewagents.capabilities()` reports
-what this install can run without starting anything.
-`peerreviewagents.engine.api` is the versioned engine boundary;
+`review` returns the run's summary and prints nothing: `status`,
+`blocked_reason`, `stage`, the run and review folders, the report paths, the
+arm, the wall time, the total and per-agent tokens, the models each slot ran
+on, and the finding counts the server recorded. A `blocked` run returns the
+same shape with the reason filled in, so there is nothing to catch and no
+stdout to parse. `peerreviewagents.plugin.starter.exit_code(summary)` is what
+the command turns it into — `0` reviewed, `2` never started, `1` otherwise.
+
+That is the whole importable surface. `peerreviewagents.engine` is no longer an
+integration boundary: it holds the manuscript workspace, the investigation
+tools and the report writer the plugin server calls, and
 [`peerreviewagents/engine/README.md`](peerreviewagents/engine/README.md)
-documents the engine in full, including the investigation tools, the debate
-accounting, the Paper Scaffold adapter and the stated boundaries.
+documents them.
 
 ## Tests
 
@@ -254,14 +260,14 @@ uv run --extra dev pytest -q # the dev extra alone runs the whole suite
 pytest tests/ -q             # no subscription, no API key, no network
 ```
 
-The suite makes no model calls and no network calls. It covers Unicode anchors,
-ambiguous quotes, source tampering, overlap rejection, numerical guards, table
-extraction, tool limits, restricted arithmetic, malformed debate dispositions,
-source-image provenance, cache identity, interrupted-call recovery and usage
-accounting, plus the surfaces over the engine: the bare command, the MCP
-server, the web UI end to end, the Claude installer on macOS and Windows, and
-an import-isolation check that fails if a server dependency or a LangGraph
-import ever creeps back into the engine.
+The suite makes no model calls and no network calls, and runs with `claude` off
+the `PATH`. It covers Unicode anchors, ambiguous quotes, source tampering,
+overlap rejection, numerical guards, table extraction, per-track tool limits,
+restricted arithmetic, identity and token forgery, editor rules, basis
+assignment, stream token accounting, blocked-run reporting, source-image
+provenance and the two-command CLI, plus an import-isolation check that fails if
+a server dependency, a LangGraph import, or any of the deleted orchestration
+modules ever creeps back.
 
 ## Paper
 
@@ -269,11 +275,13 @@ A manuscript describing the system is in preparation, in a private companion
 repository alongside the evaluation analysis. It will be linked here on
 submission.
 
-[`docs/study-arms.md`](docs/study-arms.md) is the engine's study design: the
-exact command for each arm, including the manuscript-only baseline.
+[`docs/study-arms.md`](docs/study-arms.md) is the study design: the exact
+command for each workflow arm, including the manuscript-only baseline.
 [`docs/EVALUATION.md`](docs/EVALUATION.md) is the frozen audit record of the
 0.4.0 OpenReview comparison, which measured the LangGraph panel; its harness
 was removed in 0.8.0 with the panel itself.
+[`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md) covers loading the plugin in a
+Claude Code session, what 0.9 removed, data handling and troubleshooting.
 
 ## License
 

@@ -1,0 +1,13 @@
+{
+  "name": "pra",
+  "version": "0.9.0",
+  "description": "PeerReviewAgents 0.9: a two-track peer review run as a Claude Code workflow. N core reviewers and six specialists work through the peerreview MCP server, which owns identity, the finding guard, the stage ledger and the run files.",
+  "author": {
+    "name": "PeerReviewAgents"
+  },
+  "keywords": [
+    "peer-review",
+    "manuscript",
+    "review"
+  ]
+}

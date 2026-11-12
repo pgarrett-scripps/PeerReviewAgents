@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "peerreview": {
+      "command": "${PEERREVIEW_MCP_COMMAND:-peerreview-plugin-server}",
+      "args": [
+        "-m",
+        "peerreviewagents.plugin.server",
+        "--plugin-root",
+        "${CLAUDE_PLUGIN_ROOT}"
+      ],
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}

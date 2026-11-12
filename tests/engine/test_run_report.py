@@ -1,127 +1,275 @@
-"""Offline checks for the Markdown and plain-text run reports."""
-import json
-import sys
-import tempfile
-import unittest
-from pathlib import Path
-from unittest.mock import patch
+"""Offline checks for the Markdown and plain-text reports of a plugin run.
 
-from peerreviewagents.engine.run_report import NOTICE, WIDTH, write_reports
+The header is the part of the report a reader trusts without reading further,
+so these tests pin what it may say. A run whose session has ended knows what it
+spent — the stream's own token total, the wall time, the model each agent ran
+as, the server tool calls the ledger counted — and the header has to state those
+instead of the zeroes a report rendered mid-session would see, and instead of
+the protocol's ``model`` field, which for a plugin run is the sentence "per-agent,
+pinned in the plugin agent files" rather than a model name.
+
+Nothing here makes a model call: every number comes from JSON the run wrote.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+
+import pytest
+
+from peerreviewagents.engine.run_report import NOTICE, WIDTH, report_blocks, write_reports
 from peerreviewagents.engine.storage import write
 
-EDIT = {'title': 'Soften the prerequisite claim', 'severity': 'major', 'kind': 'edit', 'block_id': 'b1',
-        'placement': 'anchored', 'quote': 'These results confirm the model.',
+EDIT = {'title': 'Soften the prerequisite claim', 'severity': 'major', 'kind': 'edit',
+        'block_id': 'b1', 'placement': 'anchored', 'quote': 'These results confirm the model.',
         'comment': 'The curves are consistent with the model but do not confirm it. ' * 3,
-        'replacement': 'These results are consistent with the model.', 'counterevidence': 'The mutant stays inactive.'}
-QUESTION = {'title': 'Report biological replicates', 'severity': 'moderate', 'kind': 'question', 'block_id': 'b2',
-            'placement': 'anchored', 'quote': 'n = 3', 'comment': 'How many biological replicates were used?',
-            'replacement': ''}
+        'replacement': 'These results are consistent with the model.',
+        'counterevidence': 'The mutant stays inactive.'}
+QUESTION = {'title': 'Report biological replicates', 'severity': 'moderate', 'kind': 'question',
+            'block_id': 'b2', 'placement': 'anchored', 'quote': 'n = 3', 'replacement': '',
+            'comment': 'How many biological replicates were used?'}
+
+# The slots and the per-slot models of a real two-track run, which is where the
+# header's "Models" row and the agent table have to come from.
+AGENTS = {
+    'core-1': {'role': 'core', 'track': 'core', 'attempt': 1, 'tool_calls': 8,
+               'model': 'claude-sonnet-5-5'},
+    'core-2': {'role': 'core', 'track': 'core', 'attempt': 1, 'tool_calls': 9,
+               'model': 'claude-sonnet-5-5'},
+    'spec-stats': {'role': 'specialist', 'track': 'stats', 'attempt': 1, 'tool_calls': 12,
+                   'model': 'claude-sonnet-5-5'},
+    'editor': {'role': 'editor', 'track': 'editor', 'attempt': 1, 'tool_calls': 3,
+               'model': 'claude-opus-5-5'},
+    'recorder': {'role': 'recorder', 'track': 'recorder', 'attempt': 1, 'tool_calls': 2,
+                 'model': 'claude-haiku-5-5'},
+}
+
+STREAM = [
+    {'label': 'core-1', 'state': 'done', 'attempt': 1, 'agentType': 'pra:core-reviewer',
+     'model': 'claude-sonnet-5-5', 'tokens': 61794, 'toolCalls': 17, 'durationMs': 95647},
+    {'label': 'core-2', 'state': 'done', 'attempt': 1, 'model': 'claude-sonnet-5-5',
+     'tokens': 58206, 'toolCalls': 19},
+    {'label': 'spec-stats', 'state': 'done', 'attempt': 1, 'model': 'claude-sonnet-5-5',
+     'tokens': 40000, 'toolCalls': 21},
+    {'label': 'editor', 'state': 'done', 'attempt': 1, 'model': 'claude-opus-5-5',
+     'tokens': 20000, 'toolCalls': 7},
+    {'label': 'recorder', 'state': 'done', 'attempt': 1, 'model': 'claude-haiku-5-5',
+     'tokens': 4000, 'toolCalls': 2},
+]
 
 
-class RunReportTests(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
-        self.workspace = self.root / 'workspace'
-        write(self.workspace / 'paper.json', {'id': 'paper-1', 'title': 'Dimerization regulates enzyme activity',
-                                              'source_url': 'https://example.org/preprint'})
-        self.run = self.root / 'run'
-
-    def call(self, folder):
-        write(folder / 'execution' / 'calls' / f'{len(list(self.run.rglob("*.started.json")))}.started.json', {})
-        with (folder / 'execution' / 'usage.jsonl').open('a') as stream:
-            stream.write(json.dumps({'observed_tokens': 100, 'usage_unknown': False}) + '\n')
-
-    def ensemble(self, final=True):
-        write(self.run / 'protocol.json', {'provider': 'claude-code', 'model': 'claude-sonnet-5-5', 'effort': 'medium',
-                                           'mode': 'ensemble', 'reviewers': 2})
-        write(self.run / 'manifest.json', {'paper_id': 'paper-1'})
-        write(self.run / 'progress.json', {'status': 'complete'})
-        for index in (1, 2):
-            reviewer = self.run / f'reviewer-{index}'
-            write(reviewer / 'protocol.json', {'literature_cutoff': '2024-04-07'})
-            write(reviewer / 'execution' / 'workspace' / 'tool-config.json', {'paper': str(self.workspace)})
-            write(reviewer / 'editor-package.json', {'summary': f'Reviewer {index} summary.', 'findings': [QUESTION],
-                                                     'investigation_summary': 'Opened one figure page.',
-                                                     'limitations': ['No raw data.']})
-            self.call(reviewer)
-        write(self.run / 'debate' / 'synthesis-validation.json',
-              {'valid': True, 'component_ledger': {'accounted_components': 4, 'expected_components': 4}})
-        self.call(self.run / 'debate')
-        if final:
-            write(self.run / 'editor-package.json', {'summary': 'Two findings remain.', 'findings': [EDIT, QUESTION],
-                                                     'limitations': ['Supplementary data were unavailable.'],
-                                                     'decisions': [{'issue_id': 'r1-issue-1', 'decision_reason': 'kept'}]})
-
-    def reports(self, **options):
-        paths = write_reports(self.run, **options)
-        return paths['markdown'].read_text(), paths['text'].read_text()
-
-    def test_ensemble_report_has_the_final_review_then_each_reviewer_in_both_formats(self):
-        self.ensemble()
-        markdown, text = self.reports()
-        for expected in ('# Review: Dimerization regulates enzyme activity', '## Final review (synthesis)',
-                         '> These results confirm the model.', '> These results are consistent with the model.',
-                         '**Strongest counterpoint:** The mutant stays inactive.', '| Literature cutoff | 2024-04-07 |',
-                         '| Model | claude-sonnet-5-5 (claude-code, medium effort) |', '| Observed tokens | 300 |',
-                         '| Component ledger | 4 of 4 components accounted, synthesis valid |',
-                         '**Investigation:** Opened one figure page.', NOTICE):
-            self.assertIn(expected, markdown)
-        positions = [markdown.index(f'## {name}') for name in
-                     ('Final review (synthesis)', 'Reviewer 1 (independent)', 'Reviewer 2 (independent)')]
-        self.assertEqual(positions, sorted(positions))
-        self.assertNotIn('How the synthesis', markdown)
-        self.assertNotIn('r1-issue-1', markdown + text)
-        for expected in ('Final review (synthesis)', 'Reviewer 2 (independent)', '    These results are consistent',
-                         'Severity: major | Type: edit | Location: block b1', 'Literature cutoff: 2024-04-07'):
-            self.assertIn(expected, text)
-        for line in text.splitlines():
-            self.assertFalse(line.startswith(('#', '>', '| ')) or '**' in line, line)
-            if str(self.run) not in line:
-                self.assertLessEqual(len(line), WIDTH, line)
-
-    def test_single_review_modes_use_their_saved_result(self):
-        write(self.run / 'protocol.json', {'provider': 'codex', 'model': 'gpt-5.6-terra', 'effort': 'medium',
-                                           'mode': 'plain', 'paper_id': 'paper-1', 'literature_cutoff': '2024-01-01'})
-        write(self.run / 'progress.json', {'status': 'complete'})
-        write(self.run / 'responses' / 'plain-guarded.json', {'summary': 'One finding.', 'findings': [EDIT]})
-        markdown, _ = self.reports(workspace=self.workspace)
-        self.assertIn('## Review\n', markdown)
-        self.assertIn('Soften the prerequisite claim', markdown)
-        self.assertIn('| Workflow | plain review |', markdown)
-        self.assertNotIn('Reviewer 1', markdown)
-
-    def test_failed_run_reports_its_error_without_claiming_validation(self):
-        self.ensemble(final=False)
-        for index in (1, 2):
-            (self.run / f'reviewer-{index}' / 'editor-package.json').unlink()
-        write(self.run / 'progress.json', {'status': 'blocked', 'error': 'Claude Code failed. No automatic retry.'})
-        markdown, text = self.reports()
-        self.assertIn('## Final review (synthesis)\n\nNo final review was produced.', markdown)
-        self.assertIn('Run error: Claude Code failed. No automatic retry.', text)
-        self.assertNotIn(NOTICE, markdown)
-
-    def test_mismatched_workspace_or_missing_protocol_fails_before_writing(self):
-        self.ensemble()
-        other = self.root / 'other'
-        write(other / 'paper.json', {'id': 'paper-2', 'title': 'Another paper'})
-        with self.assertRaisesRegex(ValueError, 'does not match'):
-            write_reports(self.run, workspace=other)
-        with self.assertRaisesRegex(ValueError, 'protocol.json'):
-            write_reports(self.root / 'workspace')
-        self.assertFalse((self.run / 'REVIEW.md').exists())
-
-    def test_command_writes_both_reports_to_the_chosen_folder(self):
-        from peerreviewagents.engine.__main__ import main
-        self.ensemble()
-        target = self.root / 'reports'
-        with patch.object(sys, 'argv', ['paper-workbench', 'report', str(self.run), '--output-dir', str(target)]), \
-                patch('builtins.print'):
-            main()
-        self.assertTrue((target / 'REVIEW.md').is_file() and (target / 'REVIEW.txt').is_file())
-        self.assertFalse((self.run / 'REVIEW.md').exists())
+@pytest.fixture
+def run(tmp_path):
+    """A finished two-track run: a manuscript folder, a review folder, both reports' input."""
+    write(tmp_path / 'manuscript' / 'paper.json',
+          {'id': 'paper-1', 'title': 'Dimerization regulates enzyme activity',
+           'source_url': 'https://example.org/preprint'})
+    review = tmp_path / 'review'
+    write(review / 'protocol.json', {
+        'provider': 'claude-code', 'model': 'per-agent, pinned in the plugin agent files',
+        'effort': 'per-agent, pinned in the plugin agent files', 'arm': 'full-two-track',
+        'reviewers': 2, 'paper_id': 'paper-1', 'literature_cutoff': '2024-04-07',
+        'agents': AGENTS,
+        'plan': {'arm': 'full-two-track', 'reviewers': 2, 'specialists': ['stats'] * 6,
+                 'editor': True, 'revision': False},
+    })
+    write(review / 'manifest.json', {'paper_id': 'paper-1'})
+    write(review / 'progress.json', {'status': 'complete'})
+    write(review / 'runtime.json', {
+        'status': 'complete', 'blocked_reason': None, 'wall_seconds': 247.0,
+        'tokens_total': 184000, 'claude_code_version': '2.1.322', 'agents': STREAM,
+        'rate_limits': [], 'result': {'num_turns': 41, 'session_id': 'abc'},
+    })
+    write(review / 'editor-package.json', {
+        'summary': 'Two findings remain.', 'findings': [EDIT, QUESTION],
+        'limitations': ['Supplementary data were unavailable.']})
+    for index in (1, 2):
+        write(review / f'reviewer-{index}' / 'editor-package.json',
+              {'summary': f'Reviewer {index} summary.', 'findings': [QUESTION],
+               'limitations': ['No raw data.']})
+    usage = review / 'usage' / 'core-1'
+    write(usage / 'core-1-1.started.json', {'label': 'core-1'})
+    (usage / 'usage.jsonl').write_text(
+        json.dumps({'label': 'core-1', 'request_sha256': 'r1', 'attempt': 1,
+                    'observed_tokens': 61794, 'usage_unknown': False}) + '\n',
+        encoding='utf-8')
+    return review
 
 
-if __name__ == '__main__':
-    unittest.main()
+def reports(run, **options):
+    paths = write_reports(run, **options)
+    # The report is written as UTF-8 and the header uses an em dash for a value
+    # the run never recorded; read in the platform encoding it comes back
+    # mangled, which is how this read failed on Windows and nowhere else.
+    return (paths['markdown'].read_text(encoding='utf-8'),
+            paths['text'].read_text(encoding='utf-8'))
+
+
+def rows(markdown):
+    """The header table as a dict, so a test can name a row without its spacing."""
+    found = {}
+    for line in markdown.splitlines():
+        match = re.fullmatch(r'\| ([^|]+?) \| (.*?) \|', line)
+        if match and match.group(1) not in ('Detail', '---'):
+            found.setdefault(match.group(1), match.group(2))
+    return found
+
+
+# -- the header -------------------------------------------------------------
+
+
+def test_the_header_states_what_the_run_really_spent(run):
+    """The 0.9 header read 0 calls and 0 tokens because it rendered mid-session."""
+    markdown, _ = reports(run)
+    header = rows(markdown)
+
+    assert markdown.startswith('# Review: Dimerization regulates enzyme activity')
+    assert header['Tokens'] == '184,000 (session stream)'
+    assert header['Wall time'] == '4 min 7 s'
+    assert header['Claude Code'] == '2.1.322'
+    assert header['Agents'] == '5'
+    assert header['Server tool calls'] == '34'      # the ledger's own count: 8+9+12+3+2
+    assert header['Session tool calls'] == '66'     # what the stream saw: 17+19+21+7+2
+    assert header['Workflow'] == ('full-two-track: 2 core reviewer(s), 6 specialist track(s), '
+                                  'an editor')
+    assert header['Models'] == 'claude-haiku-5-5, claude-opus-5-5, claude-sonnet-5-5'
+    assert header['Literature cutoff'] == '2024-04-07'
+    assert header['Paper ID'] == 'paper-1'
+
+
+def test_the_header_never_prints_the_protocols_model_sentence(run):
+    """``protocol.model`` is a sentence about where models are pinned, not a model."""
+    markdown, text = reports(run)
+
+    assert 'pinned in the plugin agent files' not in markdown + text
+    assert 'Model' not in rows(markdown)      # the header row is `Models`, from the agents
+    assert 'Model calls' not in markdown + text
+    assert 'Observed tokens' not in markdown + text
+    for line in markdown.splitlines():
+        assert not re.fullmatch(r'\| (Tokens|Server tool calls|Agents) \| 0 \|', line), line
+
+
+def test_the_agent_table_names_the_model_each_agent_ran_as(run):
+    markdown, text = reports(run)
+
+    assert '## Agents' in markdown
+    assert '| Agent | Model | Server calls | Session calls | Tokens | State |' in markdown
+    assert '| core-1 | claude-sonnet-5-5 | 8 | 17 | 61,794 | done |' in markdown
+    assert '| editor | claude-opus-5-5 | 3 | 7 | 20,000 | done |' in markdown
+    assert 'claude-haiku-5-5' in text
+
+
+def test_a_retry_is_labelled_as_one_and_an_unplanned_agent_is_still_shown(run):
+    """A slot the protocol never recorded is a discrepancy worth seeing, not a tidy-up."""
+    runtime = json.loads((run / 'runtime.json').read_text(encoding='utf-8'))
+    runtime['agents'] = [{'label': 'core-1#2', 'attempt': 2, 'tokens': 1000, 'toolCalls': 3,
+                          'model': 'claude-sonnet-5-5', 'state': 'done'},
+                         {'label': 'ghost-1', 'tokens': 500, 'toolCalls': 1, 'state': 'failed'}]
+    write(run / 'runtime.json', runtime)
+    markdown, _ = reports(run)
+
+    assert '| core-1#2 | claude-sonnet-5-5 | 8 | 3 | 1,000 | done |' in markdown
+    assert '| ghost-1 | not recorded | — | 1 | 500 | failed |' in markdown
+    assert rows(markdown)['Agents'] == '6'
+
+
+def test_tokens_fall_back_to_the_usage_receipts_when_the_stream_wrote_none(run):
+    """A session killed before the starter wrote its totals still has the receipts."""
+    runtime = json.loads((run / 'runtime.json').read_text(encoding='utf-8'))
+    del runtime['tokens_total']
+    write(run / 'runtime.json', runtime)
+
+    assert rows(reports(run)[0])['Tokens'] == '61,794 (usage receipts)'
+
+
+def test_usage_the_run_cannot_account_for_is_said_so_in_the_header(run):
+    """A started attempt with no receipt makes the token total a lower bound."""
+    write(run / 'usage' / 'core-2' / 'core-2-1.started.json', {'label': 'core-2'})
+    runtime = json.loads((run / 'runtime.json').read_text(encoding='utf-8'))
+    del runtime['tokens_total']
+    write(run / 'runtime.json', runtime)
+
+    assert rows(reports(run)[0])['Tokens'].endswith('; some usage is unknown')
+
+
+def test_a_blocked_run_says_why_and_claims_no_review(run):
+    (run / 'editor-package.json').unlink()
+    for index in (1, 2):
+        (run / f'reviewer-{index}' / 'editor-package.json').unlink()
+    write(run / 'progress.json', {'status': 'blocked', 'error': 'the run passed its token ceiling'})
+    runtime = json.loads((run / 'runtime.json').read_text(encoding='utf-8'))
+    runtime.update(status='blocked', blocked_reason='the run passed its token ceiling')
+    write(run / 'runtime.json', runtime)
+    markdown, text = reports(run)
+
+    assert rows(markdown)['Run status'] == 'blocked: the run passed its token ceiling'
+    assert '## Review\n\nNo final review was produced.' in markdown
+    assert 'Run error: the run passed its token ceiling' in text
+    assert NOTICE not in markdown
+
+
+def test_a_rate_limit_that_stopped_the_run_is_on_the_page(run):
+    runtime = json.loads((run / 'runtime.json').read_text(encoding='utf-8'))
+    runtime['rate_limits'] = [{'reason': 'the seven_day rate-limit window is at 99.4%'}]
+    write(run / 'runtime.json', runtime)
+
+    assert '**Rate limit:** the seven_day rate-limit window is at 99.4%' in reports(run)[0]
+
+
+# -- the review -------------------------------------------------------------
+
+
+def test_the_final_review_comes_before_each_independent_reviewer(run):
+    markdown, text = reports(run)
+
+    positions = [markdown.index(f'## {name}') for name in
+                 ('Final review (editor)', 'Reviewer 1 (independent)', 'Reviewer 2 (independent)')]
+    assert positions == sorted(positions)
+    for expected in ('> These results confirm the model.',
+                     '> These results are consistent with the model.',
+                     '**Strongest counterpoint:** The mutant stays inactive.',
+                     '- Supplementary data were unavailable.', NOTICE):
+        assert expected in markdown
+    assert 'Severity: major | Type: edit | Location: block b1' in text
+
+
+def test_the_text_report_is_plain_text_within_the_width(run):
+    _, text = reports(run)
+
+    for line in text.splitlines():
+        assert not (line.startswith(('#', '>', '| ')) or '**' in line), line
+        if str(run) not in line:
+            assert len(line) <= WIDTH, line
+
+
+# -- the inputs -------------------------------------------------------------
+
+
+def test_the_manuscript_folder_is_found_beside_the_review_folder(run):
+    """``peerreview report <run>/review`` is given no workspace and must find one."""
+    blocks = report_blocks(run)
+    fields = dict(next(content for kind, *content in blocks if kind == 'fields')[0])
+
+    assert fields['Paper'] == 'Dimerization regulates enzyme activity'
+    assert fields['Source'] == 'https://example.org/preprint'
+
+
+def test_a_mismatched_workspace_or_a_missing_protocol_fails_before_writing(run, tmp_path):
+    other = tmp_path / 'other'
+    write(other / 'paper.json', {'id': 'paper-2', 'title': 'Another paper'})
+
+    with pytest.raises(ValueError, match='does not match'):
+        write_reports(run, workspace=other)
+    with pytest.raises(ValueError, match='protocol.json'):
+        write_reports(tmp_path / 'manuscript')
+    assert not (run / 'REVIEW.md').exists()
+
+
+def test_the_reports_can_be_written_somewhere_else_without_touching_the_run(run, tmp_path):
+    target = tmp_path / 'reports'
+    paths = write_reports(run, output_dir=target)
+
+    assert paths['markdown'] == target / 'REVIEW.md'
+    assert (target / 'REVIEW.md').is_file() and (target / 'REVIEW.txt').is_file()
+    assert not (run / 'REVIEW.md').exists()

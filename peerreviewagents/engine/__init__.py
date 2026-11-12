@@ -1,27 +1,16 @@
-"""Evidence-linked review engine: manuscript workspaces, reviewers and synthesis.
+"""Manuscript workspaces, the investigation tools and the run reports.
 
-This subpackage is the headless engine. Its public, versioned API is the same
-surface that used to be ``paper_workbench_core``, so a downstream shim can
-re-export it unchanged:
-
-    from peerreviewagents.engine import api
+What is left here after 0.9 is the part of the engine the plugin uses: a PDF
+becomes a workspace of addressable source blocks (:mod:`ingest`,
+:mod:`annotations`), an agent investigates that workspace through bounded tools
+(:mod:`investigation`), and a finished run is rendered as a report
+(:mod:`run_report`, :mod:`usage`). There is no orchestration here any more. The
+review itself — reviewers, specialists, the editor, the ledger and the budgets
+— belongs to the ``pra`` plugin and :mod:`peerreviewagents.plugin.server`.
 
 Importing this package starts no model provider and reads no manuscript.
 """
-from .api import (
-    API_VERSION, ReviewRequest, capabilities, load_manuscript, evidence_registry,
-    validate_review, run_review, review_request_from_preset,
-    SavedDraftSynthesisRequest, run_saved_draft_synthesis,
-)
-from .config import CONFIG_VERSION, review_presets, resolved_review_config
-from .review_policy import (DEFAULT_POLICY_NAME, POLICY_VERSION, STUDY_POLICY_NAME,
-                            ReviewPolicy, get_review_policy, review_policies)
 
 # Tracks the distribution version in pyproject.toml.
-__version__ = '0.8.0'
-__all__ = ['API_VERSION', 'ReviewRequest', 'capabilities', 'load_manuscript',
-           'evidence_registry', 'validate_review', 'run_review', 'CONFIG_VERSION',
-           'review_presets', 'resolved_review_config', 'review_request_from_preset']
-__all__ += ['SavedDraftSynthesisRequest', 'run_saved_draft_synthesis']
-__all__ += ['ReviewPolicy', 'review_policies', 'get_review_policy', 'POLICY_VERSION',
-            'DEFAULT_POLICY_NAME', 'STUDY_POLICY_NAME']
+__version__ = '0.9.0'
+__all__ = ['__version__']

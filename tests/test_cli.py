@@ -1,11 +1,12 @@
-"""``peerreview manuscript.pdf`` is the whole review.
+"""``peerreview`` has two commands after 0.9, and one of them runs the plugin.
 
-The command used to take a bare manuscript path into the LangGraph panel, with
-a Textual office, a target journal, an article type, a strictness level, a desk
-screen and about twenty-five other flags. The engine has none of those, so the
-bare form is now the one-command engine review and nothing else: these tests
-pin where it writes, that the review flags still reach it, and that the panel's
-flags are refused rather than quietly ignored.
+Every other command the engine used to offer — ``import``, ``verify``,
+``investigate``, ``checks``, ``add-review``, ``result-map`` and the ``serve``
+web UI — is gone with the orchestration it drove, and so is the ``--arm``
+discriminator that told the plugin route apart from the engine's own ``review``
+while both existed. These tests pin the surface that is left: a review goes to
+the plugin and nowhere else, a run already on disk can be re-rendered offline,
+and a command that no longer exists fails instead of being quietly ignored.
 """
 
 from __future__ import annotations
@@ -13,224 +14,197 @@ from __future__ import annotations
 import contextlib
 import io
 import json
-import shutil
 from pathlib import Path
 
 import pytest
 
 from peerreviewagents.cli import main as cli
-from peerreviewagents.engine import __main__ as engine_cli
-from peerreviewagents.engine.bundle import default_output
+from peerreviewagents.plugin import starter
+from peerreviewagents.plugin.server import DEFAULT_ARM
 
 PDF = b"%PDF-1.7\nnot a real manuscript\n"
 
 
 @pytest.fixture
-def reviewed(monkeypatch, tmp_path):
-    """Run the command for real up to the model call, and capture that call."""
+def started(monkeypatch):
+    """Capture the call the CLI makes into the plugin starter, without a session."""
     seen: dict = {}
 
-    def fake_import(source, workspace):
-        Path(workspace).mkdir(parents=True, exist_ok=True)
-        (Path(workspace) / "paper.json").write_text("{}", encoding="utf-8")
-        return {"title": "A manuscript", "statistics": {"blocks": 1}}
+    def fake_review(pdf, out, **options):
+        seen['pdf'], seen['out'], seen['options'] = pdf, out, options
+        return {'status': 'complete', 'stage': 'session'}
 
-    def fake_run(paths, literature_cutoff, mode="ensemble", **options):
-        seen["paths"], seen["mode"], seen["cutoff"] = paths, mode, literature_cutoff
-        seen["options"] = options
-        return {"progress": {"status": "complete"}, "reports": {}, "failure": None,
-                **paths.record()}
-
-    monkeypatch.setattr("peerreviewagents.engine.ingest.import_paper", fake_import)
-    monkeypatch.setattr(engine_cli, "run_bundle_review", fake_run)
+    monkeypatch.setattr(starter, 'review', fake_review)
     return seen
 
 
-def _pdf(tmp_path, name="paper.pdf") -> Path:
+def _pdf(tmp_path, name='paper.pdf') -> Path:
     path = tmp_path / name
     path.write_bytes(PDF)
     return path
 
 
-def _run(argv: list[str], monkeypatch) -> None:
-    monkeypatch.setattr("sys.argv", ["peerreview", *argv])
+def _run(argv: list[str], monkeypatch) -> int | str | None:
+    monkeypatch.setattr('sys.argv', ['peerreview', *argv])
     with contextlib.redirect_stdout(io.StringIO()):
-        cli.run()
+        with pytest.raises(SystemExit) as exit_info:
+            cli.run()
+    return exit_info.value.code
 
 
-def test_a_bare_pdf_is_the_one_command_review_beside_the_manuscript(
-    tmp_path, monkeypatch, reviewed
-):
+def _fails(argv: list[str], monkeypatch) -> str:
+    monkeypatch.setattr('sys.argv', ['peerreview', *argv])
+    with pytest.raises(SystemExit) as exit_info:
+        with contextlib.redirect_stdout(io.StringIO()):
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                cli.run()
+    assert exit_info.value.code not in (0, None), argv
+    return err.getvalue() + str(exit_info.value.code)
+
+
+# -- the review -------------------------------------------------------------
+
+
+def test_a_review_goes_to_the_plugin_with_the_full_two_track_arm(tmp_path, monkeypatch, started):
     manuscript = _pdf(tmp_path)
 
-    _run([str(manuscript)], monkeypatch)
+    assert _run(['review', str(manuscript), str(tmp_path / 'run')], monkeypatch) == 0
 
-    bundle = tmp_path / "paper-review"
-    assert default_output(manuscript) == bundle
-    assert reviewed["paths"].bundle == bundle
-    assert reviewed["paths"].run == bundle / "review"
-    assert reviewed["paths"].workspace == bundle / "manuscript"
-    assert reviewed["mode"] == "ensemble"
-    assert reviewed["options"]["reviewers"] == 2
+    assert started['pdf'] == str(manuscript)
+    assert started['out'] == str(tmp_path / 'run')
+    assert started['options']['arm'] == DEFAULT_ARM == 'full-two-track'
+    assert started['options']['reviewers'] == 3
 
 
-FIXTURE = Path(__file__).parent / "fixtures" / "single-column.pdf"
-
-
-@pytest.mark.skipif(not FIXTURE.is_file(), reason="shared ingestion fixture missing")
-@pytest.mark.skipif(shutil.which("pdftotext") is None, reason="Poppler (pdftotext) not installed")
-def test_a_real_pdf_is_imported_into_the_default_folder(tmp_path, monkeypatch):
-    """Everything up to the first model call is real, on a real PDF.
-
-    The import is the one thing the bare command does before it starts
-    spending a subscription, and it is the step a person sees fail. So this
-    reads the shared ingestion fixture with the installed converter and stubs
-    only the review itself.
-
-    It needs the converter it exercises, the same way it needs the fixture:
-    this module also runs on the macOS and Windows installation jobs, which
-    have no Poppler, and there the import cannot be the thing under test. What
-    a person without Poppler is told is pinned in tests/engine/test_cli_review.
-    """
-    manuscript = tmp_path / "single-column.pdf"
-    manuscript.write_bytes(FIXTURE.read_bytes())
-    seen = {}
-
-    def capture(paths, literature_cutoff, mode="ensemble", **options):
-        seen["paths"] = paths
-        return {"progress": {"status": "complete"}, "reports": {}, "failure": None,
-                **paths.record()}
-
-    monkeypatch.setattr(engine_cli, "run_bundle_review", capture)
-
-    _run([str(manuscript)], monkeypatch)
-
-    bundle = tmp_path / "single-column-review"
-    assert seen["paths"].bundle == bundle
-    paper = json.loads((bundle / "manuscript" / "paper.json").read_text(encoding="utf-8"))
-    assert paper["blocks"]
-    assert (bundle / "manuscript" / "original.pdf").read_bytes() == FIXTURE.read_bytes()
-
-
-def test_the_review_flags_reach_the_bare_form_too(tmp_path, monkeypatch, reviewed):
+def test_a_bare_manuscript_path_is_the_same_review(tmp_path, monkeypatch, started):
+    """``peerreview paper.pdf run/`` means ``peerreview review paper.pdf run/``."""
     manuscript = _pdf(tmp_path)
 
-    _run([str(manuscript), "--mode", "independent", "--policy", "standard-v1",
-          "--provider", "codex", "--literature-cutoff", "2025-01-31"], monkeypatch)
+    assert _run([str(manuscript), str(tmp_path / 'run')], monkeypatch) == 0
 
-    assert reviewed["mode"] == "independent"
-    assert reviewed["options"]["policy"] == "standard-v1"
-    assert reviewed["options"]["model"] == "gpt-5.6-terra"
-    assert reviewed["cutoff"] == "2025-01-31"
+    assert started['pdf'] == str(manuscript)
+    assert started['options']['arm'] == DEFAULT_ARM
 
 
-def test_options_before_the_manuscript_path_are_still_a_review(
-    tmp_path, monkeypatch, reviewed
-):
-    """``peerreview --mode panel paper.pdf`` failed with "invalid choice:
-    'panel'": the bare form only looked at the first argument, so a flag's
-    value was read as the command name. A flag may come first."""
+def test_options_before_the_manuscript_path_are_still_a_review(tmp_path, monkeypatch, started):
+    """A flag's value must not be read as the command name."""
     manuscript = _pdf(tmp_path)
 
-    _run(["--mode", "panel", str(manuscript)], monkeypatch)
-    assert reviewed["mode"] == "panel"
-
-    _run(["--provider", "codex", "--reviewers", "3", str(manuscript)], monkeypatch)
-    assert reviewed["options"]["model"] == "gpt-5.6-terra"
-    assert reviewed["options"]["reviewers"] == 3
+    _run(['--arm', 'single', '--reviewers', '1', str(manuscript), str(tmp_path / 'run')],
+         monkeypatch)
+    assert started['options']['arm'] == 'single'
+    assert started['options']['reviewers'] == 1
 
     # `--flag=value` carries its value, so the next argument is the manuscript.
-    _run(["--mode=independent", str(manuscript)], monkeypatch)
-    assert reviewed["mode"] == "independent"
+    _run(['--arm=reviewers-only', str(manuscript), str(tmp_path / 'run2')], monkeypatch)
+    assert started['options']['arm'] == 'reviewers-only'
 
 
-def test_options_with_no_manuscript_ask_for_one(monkeypatch):
-    """The refusal names what is missing rather than the mode's value."""
-    monkeypatch.setattr("sys.argv", ["peerreview", "--mode", "panel"])
-    with pytest.raises(SystemExit) as exit_info:
-        with contextlib.redirect_stderr(io.StringIO()) as err:
-            cli.run()
-    assert exit_info.value.code == 2
-    assert "paper" in err.getvalue()
-    assert "invalid choice" not in err.getvalue()
-
-
-def test_a_refusal_a_person_can_fix_comes_before_the_import(tmp_path, monkeypatch):
-    """An unknown model used to be reported after the manuscript was imported,
-    so a typo cost the whole import and left a half-made run folder."""
+def test_the_arm_is_an_option_and_no_longer_a_discriminator(tmp_path, monkeypatch, started):
+    """0.9 had to see ``--arm`` to choose the plugin. There is nothing else to choose."""
     manuscript = _pdf(tmp_path)
-    imported = []
-    monkeypatch.setattr(
-        "peerreviewagents.engine.ingest.import_paper",
-        lambda source, workspace: imported.append(workspace),
-    )
-    monkeypatch.setattr("sys.argv", ["peerreview", str(manuscript), "--model", "gpt-4o-mini"])
-    with pytest.raises(SystemExit) as exit_info:
-        with contextlib.redirect_stderr(io.StringIO()) as err:
-            cli.run()
-    assert exit_info.value.code == 2
-    assert "gpt-4o-mini" in err.getvalue()
-    assert imported == []
-    assert not (tmp_path / "paper-review").exists()
+    assert not hasattr(cli, 'plugin_route')
+    assert not hasattr(starter, 'handles')
+
+    _run(['review', str(manuscript), str(tmp_path / 'run')], monkeypatch)
+    assert started['options']['arm'] == DEFAULT_ARM
 
 
-def test_naming_the_run_folder_still_works(tmp_path, monkeypatch, reviewed):
+def test_an_unknown_arm_is_refused_before_anything_is_written(tmp_path, monkeypatch):
     manuscript = _pdf(tmp_path)
+    text = _fails(['review', str(manuscript), str(tmp_path / 'run'), '--arm', 'debate'],
+                  monkeypatch)
+    assert 'debate' in text
+    assert not (tmp_path / 'run').exists()
 
-    _run(["review", str(manuscript), str(tmp_path / "named")], monkeypatch)
 
-    assert reviewed["paths"].bundle == tmp_path / "named"
-
-
-def test_a_path_that_is_not_a_manuscript_is_refused_by_name(tmp_path, monkeypatch):
-    monkeypatch.setattr("sys.argv", ["peerreview", str(tmp_path / "missing.pdf")])
-    with pytest.raises(SystemExit) as exit_info:
-        with contextlib.redirect_stderr(io.StringIO()) as err:
+def test_review_help_names_the_arms(monkeypatch):
+    monkeypatch.setattr('sys.argv', ['peerreview', 'review', '--help'])
+    with pytest.raises(SystemExit):
+        with contextlib.redirect_stdout(io.StringIO()) as out:
             cli.run()
-    assert exit_info.value.code == 2
-    assert "does not exist" in err.getvalue()
+    text = out.getvalue()
+    for named in ('full-two-track', 'reviewers-only', 'single', '--reviewers'):
+        assert named in text
 
 
-def test_the_panel_flags_and_subcommand_are_gone_rather_than_ignored(tmp_path, monkeypatch):
-    """A flag that no longer changes anything must fail, not be accepted: a
-    review run with --strictness 5 silently at the default would be a lie."""
-    manuscript = str(_pdf(tmp_path))
-    for gone in (["--journal", "nature"], ["--article-type", "research"],
-                 ["--strictness", "5"], ["--desk-screen"], ["--no-tui"],
-                 ["--debate-rounds", "2"], ["--list-journals"], ["--show-panel"],
-                 ["--research"]):
-        monkeypatch.setattr("sys.argv", ["peerreview", manuscript, *gone])
-        with pytest.raises(SystemExit) as exit_info:
-            with contextlib.redirect_stderr(io.StringIO()):
-                cli.run()
-        assert exit_info.value.code == 2, gone
-    monkeypatch.setattr("sys.argv", ["peerreview", "legacy-panel", manuscript])
-    with pytest.raises(SystemExit) as exit_info:
-        with contextlib.redirect_stderr(io.StringIO()):
-            cli.run()
-    assert exit_info.value.code == 2
+# -- the report -------------------------------------------------------------
 
 
-def test_the_command_names_every_engine_command_and_the_web_ui(monkeypatch):
+def _run_folder(tmp_path) -> Path:
+    review = tmp_path / 'run' / 'review'
+    review.mkdir(parents=True)
+    (review / 'protocol.json').write_text(json.dumps({
+        'arm': 'full-two-track', 'reviewers': 1, 'paper_id': 'abc',
+        'plan': {'arm': 'full-two-track', 'reviewers': 1, 'specialists': [], 'editor': True},
+        'agents': {'core-1': {'role': 'core', 'track': 'core', 'model': 'claude-sonnet-5-5',
+                              'tool_calls': 4}},
+    }), encoding='utf-8')
+    (review / 'progress.json').write_text(json.dumps({'status': 'complete'}), encoding='utf-8')
+    (review / 'runtime.json').write_text(json.dumps({
+        'status': 'complete', 'wall_seconds': 61.4, 'tokens_total': 1234,
+        'claude_code_version': '2.1.322',
+        'agents': [{'label': 'core-1', 'tokens': 1234, 'toolCalls': 9, 'state': 'done',
+                    'model': 'claude-sonnet-5-5'}],
+    }), encoding='utf-8')
+    (review / 'editor-package.json').write_text(json.dumps({
+        'summary': 'One finding.', 'findings': [], 'limitations': [],
+    }), encoding='utf-8')
+    return review
+
+
+def test_report_rerenders_a_finished_run_offline(tmp_path, monkeypatch):
+    review = _run_folder(tmp_path)
+
+    assert _run(['report', str(review)], monkeypatch) == 0
+
+    text = (review / 'REVIEW.md').read_text(encoding='utf-8')
+    assert '| Tokens | 1,234 (session stream) |' in text
+    assert '| Wall time | 1 min 1 s |' in text
+    assert 'claude-sonnet-5-5' in text
+    assert (review / 'REVIEW.txt').is_file()
+
+
+def test_report_takes_the_run_folder_as_well_as_the_review_folder(tmp_path, monkeypatch):
+    review = _run_folder(tmp_path)
+
+    assert _run(['report', str(review.parent)], monkeypatch) == 0
+
+    assert (review / 'REVIEW.md').is_file()
+
+
+def test_report_refuses_a_folder_that_is_not_a_run(tmp_path, monkeypatch):
+    assert 'protocol.json' in _fails(['report', str(tmp_path)], monkeypatch)
+
+
+# -- what is gone -----------------------------------------------------------
+
+
+@pytest.mark.parametrize('gone', ['import', 'verify', 'investigate', 'checks', 'add-review',
+                                  'result-map', 'serve'])
+def test_a_command_that_no_longer_exists_fails(gone, tmp_path, monkeypatch):
+    """A command that silently became a review would review the wrong thing."""
+    _fails([gone, str(_pdf(tmp_path))], monkeypatch)
+
+
+def test_no_arguments_asks_for_a_command_instead_of_running_anything(monkeypatch):
+    assert _fails([], monkeypatch)
+
+
+def test_the_help_names_the_two_commands_and_nothing_else(monkeypatch):
     parser = cli.build_parser()
     with pytest.raises(SystemExit):
         with contextlib.redirect_stdout(io.StringIO()) as out:
-            parser.parse_args(["--help"])
+            parser.parse_args(['--help'])
     text = out.getvalue()
-    for named in ("import", "verify", "review", "investigate", "report", "checks", "serve"):
-        assert named in text
-    for gone in ("legacy-panel", "journal", "strictness", "desk"):
+    assert 'review' in text and 'report' in text
+    for gone in ('import', 'verify', 'investigate', 'checks', 'serve', 'result-map'):
         assert gone not in text
 
 
-def test_no_arguments_asks_for_a_manuscript_instead_of_running_anything(monkeypatch):
-    monkeypatch.setattr("sys.argv", ["peerreview"])
-    with pytest.raises(SystemExit) as exit_info:
-        with contextlib.redirect_stderr(io.StringIO()):
-            cli.run()
-    assert exit_info.value.code == 2
-
-
-def test_the_textual_panel_runner_is_gone():
+@pytest.mark.parametrize('module', ['peerreviewagents.engine.__main__',
+                                    'peerreviewagents.cli.tui'])
+def test_the_commands_the_cli_dropped_have_no_module_left(module):
+    """``python -m peerreviewagents.engine`` was the other way in. It is gone too."""
     with pytest.raises(ImportError):
-        __import__("peerreviewagents.cli.tui")
+        __import__(module)

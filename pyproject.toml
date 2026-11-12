@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "peerreviewagents"
-version = "0.8.0"
+version = "0.9.0"
 description = "Evidence-linked peer review of a manuscript PDF, on a coding-agent subscription"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
@@ -40,13 +40,12 @@ classifiers = [
 ]
 dependencies = [
     "tomli>=2; python_version < '3.11'",
-    # The local web UI: `peerreview serve` is the browser form of the same
-    # review the command line runs. It polls a job for its stage, so there is
-    # no WebSocket and uvicorn needs none of the `standard` extras, and
-    # python-multipart is what receives the uploaded PDF.
-    "fastapi>=0.110",
-    "uvicorn>=0.27",
-    "python-multipart>=0.0.9",
+    # The plugin's own MCP server, which owns identity, the ledger and the run
+    # files, is `python -m peerreviewagents.plugin.server` and Claude Code
+    # launches it from this environment. A review cannot start without the SDK,
+    # so it is a dependency and not an extra: 0.8 kept it optional because the
+    # review itself ran in Python and the MCP transport was one surface over it.
+    "mcp>=1.13,<2",
     # Reads PDFs into source blocks. Required, not optional: PDF ingest has no
     # fallback, because the one it used to have fused words across column
     # boundaries and flattened every heading — see the README's ingest section.
@@ -65,14 +64,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-mcp = ["mcp>=1.13,<2"]
-# `dev` runs the whole suite on its own. tests/test_web.py needs httpx for
-# FastAPI's TestClient and tests/test_mcp_server.py needs the MCP SDK; both
-# used to arrive transitively through dependencies this release deleted, so
-# they are named here rather than left to a second extra nobody passes.
-# pyyaml is also transitive today, but tests/test_metadata.py parses
-# CITATION.cff directly — declare it so CI can't lose it to a dep change.
-dev = ["pytest>=8", "ruff>=0.6", "pyyaml>=6", "httpx>=0.27", "mcp>=1.13,<2"]
+# `dev` runs the whole suite on its own. pyyaml is transitive today, but
+# tests/test_metadata.py parses CITATION.cff directly — declare it so CI
+# cannot lose it to a dependency change.
+# setuptools is here as a test dependency, not only a build one: tests build the
+# real wheel and look inside it, because a wheel that ships no plugin cannot run
+# a review and nothing short of the artifact itself proves the package data.
+# 70 is where the wheel is built without a separate `wheel` package.
+dev = ["pytest>=8", "ruff>=0.6", "pyyaml>=6", "setuptools>=70"]
 
 [project.urls]
 Homepage = "https://github.com/pgarrett-scripps/PeerReviewAgents"
@@ -83,7 +82,12 @@ Issues = "https://github.com/pgarrett-scripps/PeerReviewAgents/issues"
 
 [project.scripts]
 peerreview = "peerreviewagents.cli.main:run"
-peerreview-mcp = "peerreviewagents.mcp:run"
+# The plugin's `.mcp.json` launches its MCP server through this name by
+# default, so an installed wheel can start a review without a checkout and
+# without guessing an interpreter. `peerreview review` overrides it with
+# PEERREVIEW_MCP_COMMAND set to the very interpreter running the starter, so a
+# venv that is not on PATH still serves its own run.
+peerreview-plugin-server = "peerreviewagents.plugin.server:main"
 
 [tool.ruff]
 # Pinned explicitly: ruff's default rule selection widens between releases, so
@@ -108,7 +112,6 @@ select = ["E4", "E7", "E9", "F", "I"]
 include = ["peerreviewagents*"]
 
 [tool.setuptools.package-data]
-"peerreviewagents.web" = ["static/*", "static/vendor/*"]
 # The engine reads its domain packs from the installed package, so the
 # manifests, reviewer skills, and fixture cases have to ship in the wheel.
 "peerreviewagents.engine" = [
@@ -116,4 +119,15 @@ include = ["peerreviewagents*"]
     "domains/*/manifest.json",
     "domains/*/skills/*/SKILL.md",
     "domains/*/fixtures/cases.json",
+]
+# The plugin *is* the review in 0.9, so the wheel has to carry it: the starter
+# loads `pra` from the installed package, not from a checkout. The two dotted
+# paths are named in full because a `*` glob does not match a leading dot.
+"peerreviewagents.plugin" = [
+    "pra/.claude-plugin/plugin.json",
+    "pra/.mcp.json",
+    "pra/README.md",
+    "pra/agents/*.md",
+    "pra/skills/*/SKILL.md",
+    "pra/workflows/*.js",
 ]

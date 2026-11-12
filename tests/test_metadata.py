@@ -20,11 +20,11 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def _pyproject() -> dict:
-    return tomllib.loads((ROOT / "pyproject.toml").read_text())
+    return tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
 
 def _citation() -> dict:
-    return yaml.safe_load((ROOT / "CITATION.cff").read_text())
+    return yaml.safe_load((ROOT / "CITATION.cff").read_text(encoding="utf-8"))
 
 
 def test_version_matches_between_pyproject_and_citation():
@@ -32,7 +32,7 @@ def test_version_matches_between_pyproject_and_citation():
 
 
 def test_zenodo_inherits_the_github_release_version():
-    metadata = json.loads((ROOT / ".zenodo.json").read_text())
+    metadata = json.loads((ROOT / ".zenodo.json").read_text(encoding="utf-8"))
     assert "version" not in metadata, (
         "Remove version from .zenodo.json so Zenodo uses the GitHub release tag. "
         "A static override can archive a release under an outdated version."
