@@ -129,6 +129,15 @@ including 32 test modules, and nothing was left behind as a shim.
 
 ### Fixed
 
+- The `follow-up` skill compared two runs by `finding_uid`, which can never
+  match across them: a paper's id is a digest of its PDF and is part of the
+  uid, so a revised file renames every finding, and the interchangeable core
+  slots are in it too. The skill would have reported the whole first review
+  resolved and the whole second one new for a revision that changed nothing.
+  It now matches a finding on the passage it rests on and the claim it makes,
+  uses the uid only to name findings and to follow `duplicate_uids` within one
+  run, and records the quote each pairing was made on so a reader can check
+  it. `tests/test_plugin_server.py` pins the uid's behaviour across two files.
 - `read_run` returns a reading for a damaged folder instead of raising, which
   is the state a killed run is normally in: a truncated `runtime.json`, a
   half-written last line in a usage receipt, a status file holding a list, a
