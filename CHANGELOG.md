@@ -15,9 +15,51 @@ including 32 test modules, and nothing was left behind as a shim.
 
 ### Added
 
+- A different model per core reviewer. Stage A ran three core reviewers on one
+  model and they caught no more than one of them did — three readings of the
+  same manuscript by the same reader — so the reviewers are now drawn in order
+  from a list, reviewer *i* running `list[(i - 1) % len(list)]`. The default
+  list is `claude-sonnet-5-5, claude-opus-5-5, claude-haiku-5-5`: one reviewer
+  is Sonnet, two are Sonnet and Opus, three are all three, and a fourth starts
+  the list again. `revision-1` is `core-1` revising its own findings, so it
+  takes `core-1`'s model. The specialists stay on `claude-sonnet-5-5`, the
+  editor is `claude-fable-5-2` and the recorder `claude-haiku-5-5`. Every one
+  of them is configurable — `--reviewer-models A,B,C`, `--specialist-model`,
+  `--editor-model` on `peerreview review`, the same three as arguments to
+  `ingest` for a session that drives the workflow itself, and
+  `PEERREVIEW_REVIEWER_MODELS`, `PEERREVIEW_SPECIALIST_MODEL`,
+  `PEERREVIEW_EDITOR_MODEL`, `PEERREVIEW_RECORDER_MODEL` in a session the
+  starter launched. There is no billing or usage gate anywhere in it: which
+  models a login may run is the user's business.
+  `peerreviewagents.plugin.models` is the only place that decides, and
+  `scripts/stage_a/matrix.py --reviewer-models sonnet` pins every reviewer to
+  one model so a rerun stays comparable with the recorded results.
+- A model this login cannot run is refused at startup, in one line naming the
+  slot, the model and the flag that changes it, in both places a run can begin:
+  `peerreview review` before the probe spends anything, and `ingest` before the
+  manuscript is imported. Claude Code's own answer to a model it may not run is
+  to substitute one — a blocked family alias runs the newest permitted version
+  of that family — so a run that asked for Opus and got Sonnet would be
+  recorded as an arm it was not. Availability is the `availableModels` allowlist
+  in the settings files Claude Code reads, managed settings first; where no
+  allowlist is set, the models the plugin knows are available and any other
+  name is refused. A folder already holding a run under different models is
+  refused too, the way a folder holding a different arm already was.
+- The model each slot was asked to run, written into the run folder, so a
+  published review can say which model wrote which report: `models` and
+  `reviewer_models` in `protocol.json` and in `plan` in both `protocol.json`
+  and `manifest.json`, `assigned_model` beside the self-reported `model` on
+  every row of `protocol.json`'s `agents` and of `editor-package.json`'s
+  `reviewer_provenance`, `identity['models']`, `identity['reviewer_models']`
+  and `agents[]['assigned_model']` from `read_run`, and `models_requested`
+  beside the observed `models` in the `review` summary. The two are different
+  facts and both are kept: what the run asked for, and what the agent reported
+  having run as. They are empty for a run written before 0.9.0, which pinned
+  one model per slot in the plugin agent files.
 - `peerreviewagents/plugin/pra`, the plugin that now runs every review: a
   workflow that fans out N core reviewers and six specialist tracks and then an
-  editor, agent files that pin a model and a turn limit per slot, and three
+  editor, agent files that pin a turn limit per slot and a fallback model the
+  workflow's per-spawn override replaces, and three
   skills (`peer-review-manuscript`, `check-draft`, `follow-up`). It ships
   inside the package, so an installed wheel carries the plugin it runs; the
   starter resolves it from the installed package rather than from a checkout,

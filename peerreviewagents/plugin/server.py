@@ -44,6 +44,7 @@ from ..names import (
     MANUSCRIPT_DIRECTORY,
     RUN_DIRECTORY,
 )
+from . import models as model_plan
 
 # The folder names, the statuses and the finding schema version are imported
 # from `peerreviewagents.names` because this module writes them; that module is
@@ -169,11 +170,34 @@ class Agent:
     editor_package: dict = None
 
 
+def plan_slots(arm, reviewers, tracks=None):
+    """The slots one arm asks for, without a run: ``core-1``, ``spec-stats``, …
+
+    :class:`Run` answers this about itself, but the launcher has to answer it
+    before a run exists — it settles which model each slot would run, and
+    refuses an unavailable one, before the manuscript is imported or a session
+    is started.
+    """
+    plan = ARMS[arm]
+    fixed = plan['reviewers']
+    count = reviewers if fixed is None else fixed
+    chosen = tuple(t for t in (tracks or SPECIALIST_TRACKS) if t in SPECIALIST_TRACKS)
+    slots = [f'core-{index}' for index in range(1, (count or 0) + 1)]
+    if plan['revision']:
+        slots.append('revision-1')
+    if plan['specialists']:
+        slots.extend(f'spec-{track}' for track in chosen)
+    if plan['editor']:
+        slots.append('editor')
+    return tuple(slots)
+
+
 class Run:
     """One review in one folder. Created by ``ingest``, finished by ``write_review``."""
 
     def __init__(self, pdf, root, reviewers, arm, literature_cutoff, plugin_root, title=None,
-                 tracks=None):
+                 tracks=None, reviewer_models=None, specialist_model=None, editor_model=None,
+                 recorder_model=None):
         if arm not in ARMS:
             raise ValueError('Unknown arm: ' + arm + '. Arms: ' + ', '.join(sorted(ARMS)))
         self.arm = arm
@@ -188,6 +212,17 @@ class Run:
         if tracks and not chosen:
             raise ValueError('tracks must name specialists: ' + ', '.join(SPECIALIST_TRACKS))
         self.tracks = chosen
+        # Which model runs in which slot, settled before anything is imported
+        # or written: a model this login cannot run is refused here, rather
+        # than quietly substituted halfway through a run and recorded as the
+        # arm it was not. The reviewers are deliberately different models —
+        # see `models.py` for the ordering and the defaults.
+        self.reviewer_models = (tuple(model_plan.parse_list(reviewer_models))
+                                or tuple(model_plan.DEFAULT_REVIEWER_MODELS))
+        self.models = model_plan.refuse(model_plan.assign(
+            (*self.required_slots(), 'recorder'),
+            reviewers=self.reviewer_models, specialist=specialist_model,
+            editor=editor_model, recorder=recorder_model))
         self.root = Path(root).resolve()
         self.workspace = self.root / MANUSCRIPT_DIRECTORY
         self.review = self.root / RUN_DIRECTORY
@@ -233,7 +268,9 @@ class Run:
 
         A folder reused for a different PDF keeps the first import — the review
         would quote a manuscript nobody passed in — and a folder reused under a
-        different arm pools two arms the study design keeps apart.
+        different arm, or under different models, pools two arms the study
+        design keeps apart. A folder written before models were recorded says
+        nothing about them, and is left alone rather than guessed at.
         """
         kept = self.workspace / 'paper.json'
         if kept.is_file():
@@ -259,18 +296,28 @@ class Run:
                     'The folder ' + str(self.root) + ' already holds a ' + str(before['arm'])
                     + ' run with ' + str(before.get('reviewers')) + ' core reviewer(s). Two arms '
                     'are never pooled in one folder: use a fresh one for ' + self.arm + '.')
+        protocol = self.review / 'protocol.json'
+        if protocol.is_file():
+            try:
+                before = read(protocol)
+            except (ValueError, OSError):
+                before = {}
+            kept_models = before.get('models')
+            if isinstance(kept_models, dict) and kept_models and kept_models != self.models:
+                differs = sorted(slot for slot in set(kept_models) | set(self.models)
+                                 if kept_models.get(slot) != self.models.get(slot))
+                raise ValueError(
+                    'The folder ' + str(self.root) + ' already holds a run under different '
+                    'models (' + ', '.join(
+                        f'{slot}: {kept_models.get(slot) or "no model"} there, '
+                        f'{self.models.get(slot) or "no model"} here' for slot in differs)
+                    + '). Two model configurations are never pooled in one folder: use a '
+                    'fresh one, or change them back with ' + model_plan.FLAG['core'] + '.')
 
     # -- plan ---------------------------------------------------------------
 
     def required_slots(self):
-        slots = [f'core-{index}' for index in range(1, self.reviewers + 1)]
-        if self.plan['revision']:
-            slots.append('revision-1')
-        if self.plan['specialists']:
-            slots.extend(f'spec-{track}' for track in self.tracks)
-        if self.plan['editor']:
-            slots.append('editor')
-        return tuple(slots)
+        return plan_slots(self.arm, self.reviewers, self.tracks)
 
     def resolve_slot(self, slot):
         """Role, track and what a slot may see. Unknown slots are refused, not invented.
@@ -588,6 +635,8 @@ class Run:
                      'specialists': list(self.tracks) if self.plan['specialists'] else [],
                      'editor': self.plan['editor'], 'revision': self.plan['revision'],
                      'summary': self.plan['summary'],
+                     'models': dict(self.models),
+                     'reviewer_models': list(self.reviewer_models),
                      'execution': 'Claude Code plugin workflow; agents in parallel, '
                                   'server-owned ledger.'},
         }
@@ -595,8 +644,13 @@ class Run:
     def write_protocol(self):
         write(self.review / 'protocol.json', {
             'provider': 'claude-code',
-            'model': 'per-agent, pinned in the plugin agent files',
+            # `model` stays a string, because that is what every consumer of
+            # this file already reads; `models` is the per-slot record a
+            # published review needs to say which model wrote which report.
+            'model': model_plan.describe(self.models),
             'effort': 'per-agent, pinned in the plugin agent files',
+            'models': dict(self.models),
+            'reviewer_models': list(self.reviewer_models),
             'mode': self.arm,
             'arm': self.arm,
             'reviewers': self.reviewers,
@@ -611,6 +665,7 @@ class Run:
             'agents': {slot: {'role': agent.role, 'track': agent.track,
                               'attempt': agent.attempt, 'tool_calls': agent.calls,
                               'model': (agent.report or {}).get('model'),
+                              'assigned_model': self.models.get(slot),
                               'allowed_tools': list(agent.allowed)}
                        for slot, agent in sorted(self.agents.items())},
             'plan': self.provenance()['plan'],
@@ -634,11 +689,21 @@ def current():
 
 
 def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
-           literature_cutoff: str = '', title: str = '', tracks: list = None) -> dict:
+           literature_cutoff: str = '', title: str = '', tracks: list = None,
+           reviewer_models: list = None, specialist_model: str = '',
+           editor_model: str = '') -> dict:
     """Open a run: import the manuscript PDF and fix the plan. Safe to call twice.
 
     ``tracks`` narrows the specialist track to the ones named; the default is
     all six. ``arm`` is the study arm, and it decides which stages must report.
+
+    ``reviewer_models`` is the ordered list the core reviewers take their model
+    from — reviewer *i* runs ``list[(i - 1) % len(list)]``, so the default
+    ``claude-sonnet-5-5, claude-opus-5-5, claude-haiku-5-5`` makes three
+    reviewers three different models. Anything omitted here falls back to what
+    the launcher asked for in the environment, then to the defaults in
+    ``models.py``. The answer's ``models`` says which model each slot is to
+    run, and ``spawn`` is the override to pass that agent.
     """
     run = STATE['run']
     if run is not None and str(Path(out).resolve()) == str(run.root):
@@ -649,13 +714,21 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
                              'the ' + str(arm) + ' arm in a fresh out folder.')
         # The claim codes are minted once and go back once. A second caller
         # attaching to a live run is not the recorder: no identities, and not
-        # the slot list either.
-        return {k: v for k, v in summary_of(run).items() if k != 'slots'} | {'attached': True}
+        # the slot list either — nor the per-slot models, which name the slots.
+        hidden = ('slots', 'models')
+        return {k: v for k, v in summary_of(run).items()
+                if k not in hidden} | {'attached': True}
     if run is not None:
         return rejection('This server process already serves the run at ' + str(run.root))
+    chosen = model_plan.from_environment()
     try:
         run = Run(pdf, out, reviewers, arm, literature_cutoff or None,
-                  STATE['plugin_root'], title or None, list(tracks) if tracks else None)
+                  STATE['plugin_root'], title or None, list(tracks) if tracks else None,
+                  reviewer_models=(list(reviewer_models) if reviewer_models
+                                   else chosen.get('reviewers')),
+                  specialist_model=specialist_model or chosen.get('specialist'),
+                  editor_model=editor_model or chosen.get('editor'),
+                  recorder_model=chosen.get('recorder'))
     except (ValueError, KeyError, TypeError, OSError) as exc:
         return rejection(str(exc))
     STATE['run'] = run
@@ -678,6 +751,12 @@ def summary_of(run):
         'status': run.status,
         'statistics': run.paper.get('statistics'),
         'slots': list(run.required) + ['recorder'],
+        # The model each slot is to run, and `spawn` — the value to pass as
+        # that agent's model override. They differ only in form: the override
+        # is the family alias, and `model` is the version written down.
+        'models': [{'slot': slot, 'model': model,
+                    'spawn': model_plan.spawn_name(model)}
+                   for slot, model in run.models.items()],
         'outline': run.outline(),
         'literature_cutoff': run.cutoff,
         'finding_schema_version': FINDING_SCHEMA_VERSION,
@@ -1225,7 +1304,11 @@ def _editor_package(run):
         'escalated_count': sum(1 for f in pooled if f['escalate']),
         'findings_by_track': counts,
         'reviewer_count': run.reviewers,
+        # `model` is what the agent reported running as; `assigned_model` is
+        # what the run asked that slot to run. A published review names the
+        # second and can show the first disagreeing with it.
         'reviewer_provenance': [{'slot': r['slot'], 'track': r['track'], 'model': r['model'],
+                                 'assigned_model': run.models.get(r['slot']),
                                  'attempt': r['attempt'], 'tool_calls': r['tool_calls'],
                                  'findings': r['findings'], 'none_found': r['none_found']}
                                 for r in reports],

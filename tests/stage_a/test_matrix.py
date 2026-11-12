@@ -91,6 +91,46 @@ def test_drive_runs_a_queue_whose_inputs_are_all_pdfs(tmp_path, monkeypatch):
     assert state['ran'] == 1 and state['stopped_because'] == ''
 
 
+def test_the_reviewers_can_be_pinned_to_one_model_so_the_arms_compare(tmp_path, monkeypatch):
+    """Stage A's earlier results ran every reviewer on one model, and a rerun has to.
+
+    The default is now one model per reviewer, so an arm that is being compared
+    against a recorded result pins them, and the row says which models the run
+    asked for rather than leaving the two arms to be pooled.
+    """
+    queue = specs(write(tmp_path, 'good.pdf', b'%PDF-1.4\n'))
+    commands = []
+    monkeypatch.setattr(matrix, 'jobs', lambda *args, **kwargs: queue)
+    monkeypatch.setattr(matrix.subprocess, 'run',
+                        lambda command, **kwargs: commands.append(command) or Finished(0))
+    monkeypatch.setattr(matrix, 'result',
+                        lambda spec, exit_code: {'id': spec['id'], 'kind': spec['kind'],
+                                                 'status': 'complete', 'tokens': 7,
+                                                 'findings_total': 0, 'minutes': 0.1,
+                                                 'caught': False, 'guard_status': 'clean'})
+    monkeypatch.setattr(matrix, 'record', lambda root, row: None)
+    state = matrix.drive(tmp_path, peerreview='/bin/false', reviewer_models='sonnet')
+    assert state['reviewer_models'] == 'sonnet'
+    assert commands[0][commands[0].index('--reviewer-models') + 1] == 'sonnet'
+
+    commands.clear()
+    matrix.drive(tmp_path, peerreview='/bin/false')
+    assert '--reviewer-models' not in commands[0], 'unset leaves the review its own default'
+
+
+class Finished:
+    """What ``subprocess.run`` returns, as far as ``execute`` reads it."""
+
+    def __init__(self, returncode):
+        self.returncode = returncode
+
+
+def test_the_pin_is_off_by_default_on_the_command_line():
+    assert matrix.build_parser().parse_args([]).reviewer_models == ''
+    pinned = matrix.build_parser().parse_args(['--reviewer-models', 'sonnet,opus'])
+    assert pinned.reviewer_models == 'sonnet,opus'
+
+
 def planted_root(tmp_path, *slugs):
     """A Stage A data root holding a key and an altered PDF per slug."""
     (tmp_path / 'keys').mkdir(exist_ok=True)

@@ -45,6 +45,44 @@ allowed to call present. What it saw is written to
 `run-output/review/startup.json` either way, and a failed probe is a `blocked`
 run with its reasons, not a traceback.
 
+### Models
+
+The core reviewers run on different models by default, because Stage A ran
+three of them on one model and they caught no more than one did. Reviewer *i*
+takes the *i*-th model of an ordered list, wrapping round, so one reviewer is
+Sonnet, two are Sonnet and Opus, and three are Sonnet, Opus and Haiku:
+
+```bash
+peerreview review manuscript.pdf run-output --reviewers 3 \
+    --reviewer-models sonnet,opus,haiku \
+    --specialist-model sonnet --editor-model fable
+```
+
+Those three are the defaults — `--reviewer-models sonnet,opus,haiku`,
+`--specialist-model claude-sonnet-5-5`, `--editor-model claude-fable-5-2`, with
+the recorder on `claude-haiku-5-5`. Each takes an alias or a full model id, and
+`revision-1` always runs on `core-1`'s model because it is `core-1` revising
+its own findings. Pinning every reviewer to one model is
+`--reviewer-models sonnet`, which is what a run being compared against a
+recorded Stage A result wants. **None of this is gated on billing or usage:**
+which models your login may run is yours to decide.
+
+A model this login cannot run is refused at start-up, before the probe spends
+anything, with one line naming the slot, the model and the flag that changes
+it — Claude Code answers a model it may not run by quietly running another, so
+a run that asked for Opus could otherwise be recorded as an arm it was not.
+Availability is the `availableModels` allowlist in the settings files Claude
+Code reads, managed settings first.
+
+A session that drives the workflow itself passes `reviewer_models`,
+`specialist_model` and `editor_model` to the `ingest` tool instead; its answer
+gains `models`, one `{slot, model, spawn}` row per agent, where `spawn` is the
+family alias the workflow hands Claude Code and `model` is the version the run
+records. `PEERREVIEW_REVIEWER_MODELS`, `PEERREVIEW_SPECIALIST_MODEL`,
+`PEERREVIEW_EDITOR_MODEL` and `PEERREVIEW_RECORDER_MODEL` do the same for a
+session the starter launched, and an explicit `ingest` argument wins over the
+environment.
+
 ## Inside a Claude Code session
 
 From a checkout:
@@ -224,6 +262,14 @@ itself:
 
 Damage in any of the three is named in `problems` and read as absent or empty,
 like every other damaged file.
+
+Two more say which model wrote which report, so a published review can name
+them. `identity['models']` maps each slot to the model the run was started
+with and `identity['reviewer_models']` is the ordered list the core reviewers
+were drawn from; each row of `agents` carries `assigned_model` beside the
+`model` the agent reported running as, and `model` falls back to the assignment
+when the agent never said. Both are empty for a run written before 0.9.0, which
+recorded no models at all — empty means *not recorded*, never *the default*.
 
 Four rules it enforces so you do not have to:
 

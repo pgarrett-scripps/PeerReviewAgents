@@ -1,7 +1,7 @@
 ---
 name: editor
 description: Pools the reviewers' and specialists' findings into one review. Merges duplicates, decides body against appendix, rules on every escalated finding and gives an advisory two-axis verdict. Reads findings through the peerreview MCP server only.
-model: claude-sonnet-5-5
+model: claude-fable-5-2
 effort: high
 maxTurns: 24
 background: false

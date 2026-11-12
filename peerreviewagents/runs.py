@@ -234,6 +234,30 @@ def _provider(protocol, problems):
     return value
 
 
+def _models(*candidates):
+    """The per-slot models, ``{}`` for a run that recorded none.
+
+    A run written before 0.9.0 pinned every slot's model in the plugin agent
+    files and wrote no mapping, so an absent one is the ordinary old case and
+    not a damaged file. Anything that is not a mapping of strings is dropped
+    rather than reported: the self-reported model in ``agents`` still says what
+    ran, and this is the plan, not the measurement.
+    """
+    for value in candidates:
+        if isinstance(value, dict) and value:
+            return {str(slot): str(model) for slot, model in value.items()
+                    if isinstance(model, str) and model}
+    return {}
+
+
+def _reviewer_models(*candidates):
+    """The ordered list the core reviewers were drawn from, or ``[]``."""
+    for value in candidates:
+        if isinstance(value, list) and value:
+            return [str(model) for model in value if isinstance(model, str) and model]
+    return []
+
+
 def _identity(manifest, protocol, paper, pdf_from_startup=None, problems=None):
     """Who the run reviewed, from the files that say so rather than from a name."""
     manifest, protocol, paper = manifest or {}, protocol or {}, paper or {}
@@ -249,6 +273,12 @@ def _identity(manifest, protocol, paper, pdf_from_startup=None, problems=None):
         'reviewers': protocol.get('reviewers') if protocol.get('reviewers') is not None
         else plan.get('reviewers'),
         'specialists': plan.get('specialists'),
+        # Which model ran in which slot, and the ordered list the core
+        # reviewers were drawn from. Both are empty for a run written before
+        # 0.9.0, when every slot's model was pinned in the agent files.
+        'models': _models(protocol.get('models'), plan.get('models')),
+        'reviewer_models': _reviewer_models(protocol.get('reviewer_models'),
+                                            plan.get('reviewer_models')),
         'literature_cutoff': protocol.get('literature_cutoff'),
         'workflow_version': manifest.get('workflow_version') or protocol.get('version'),
         'finding_schema_version': (manifest.get('finding_schema_version')
@@ -438,7 +468,10 @@ def read_run(path):
         path, arm, versions, ``provider`` — ``claude-code`` for every run this
         version writes — and ``code_hashes``, the manifest's digest of each
         plugin and engine file the run was served by, empty for a run that
-        stopped before the manuscript was imported.
+        stopped before the manuscript was imported. ``models`` is which model
+        each slot was asked to run and ``reviewer_models`` the ordered list the
+        core reviewers were drawn from — both empty for a run written before
+        0.9.0, which pinned one model per slot in the plugin agent files.
     ``startup``
         The start-up probe: ``probe`` is the harness's own init event, the
         plugins, MCP servers, agents and commands the session reported, or
@@ -446,7 +479,9 @@ def read_run(path):
         probe refused to launch over. ``startup_problems`` is that same list at
         the top level, kept for callers that already read it.
     ``agents``
-        One row per agent slot: role, track, model, server and session tool
+        One row per agent slot: role, track, ``model`` — what the agent
+        reported running as, falling back to what the slot was asked to run —
+        ``assigned_model``, what it was asked to run, server and session tool
         calls, tokens, state. Empty for a run that never claimed a slot.
     ``reports``
         Absolute paths to what exists on disk — ``REVIEW.md``, ``REVIEW.txt``,

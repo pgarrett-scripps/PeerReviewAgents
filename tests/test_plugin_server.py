@@ -740,6 +740,32 @@ def test_a_finished_run_writes_the_files_a_consumer_reads(tmp_path):
     assert (review / 'reviewer-1' / 'editor-package.json').is_file()
 
 
+def test_a_published_review_can_say_which_model_wrote_which_report(tmp_path):
+    """Two facts per slot: the model it was asked to run, and the one it says it ran.
+
+    A review is published with the reviewer reports beside it, so the arm has to
+    be legible from the folder — and a model the harness substituted has to be
+    visible as a disagreement rather than written over the plan.
+    """
+    run, uids = two_track_run(tmp_path)  # every agent self-reports Sonnet
+    editor, accepted = accept_editor(run, uids)
+    assert accepted['accepted'] is True, accepted
+    close(editor, model='claude-fable-5-2')
+    srv.write_review(claim('recorder')['agent_token'])
+
+    package = json.loads((run.review / 'editor-package.json').read_text(encoding='utf-8'))
+    rows = {row['slot']: row for row in package['reviewer_provenance']}
+    assert rows['core-1']['assigned_model'] == 'claude-sonnet-5-5'
+    assert rows['core-2']['assigned_model'] == 'claude-opus-5-5', 'two reviewers, two models'
+    assert rows['core-2']['model'] == 'claude-sonnet-5-5', 'what it reported, kept as it is'
+    assert rows['spec-stats']['assigned_model'] == 'claude-sonnet-5-5'
+
+    protocol = json.loads((run.review / 'protocol.json').read_text(encoding='utf-8'))
+    assert protocol['agents']['core-2']['assigned_model'] == 'claude-opus-5-5'
+    assert protocol['agents']['editor']['model'] == 'claude-fable-5-2'
+    assert protocol['models']['editor'] == 'claude-fable-5-2'
+
+
 def test_a_run_where_nobody_found_anything_is_complete_without_findings(tmp_path):
     open_run(tmp_path, arm='single')
     close(claim('core-1')['agent_token'], none_found=True,

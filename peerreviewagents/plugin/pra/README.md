@@ -14,7 +14,8 @@ can only ask it for text and hand it findings.
 | Part | Where | What it is |
 | --- | --- | --- |
 | `peerreview` server | `.mcp.json` → `peerreviewagents.plugin.server` | 23 tools, and every piece of state worth forging |
-| Agents | `agents/*.md` | `core-reviewer`, six specialists, `editor`, `recorder`; each pins `model:` and `maxTurns:` and may call only server tools |
+| Agents | `agents/*.md` | `core-reviewer`, six specialists, `editor`, `recorder`; each pins `maxTurns:` and a fallback `model:`, and may call only server tools |
+| Models | `peerreviewagents/plugin/models.py` | which model each slot runs, and the refusal when one is not available |
 | Workflow | `workflows/review.js` | ingest → reviewers ∥ specialists → (revision) → editor → record |
 | Skills | `skills/*/SKILL.md` | `peer-review-manuscript` (a full review), `check-draft` (your own draft), `follow-up` (what changed since the last run) |
 | Starter | `peerreviewagents/plugin/starter.py` | probes, launches the headless session, enforces token budgets, records models and wall time |
@@ -23,6 +24,7 @@ can only ask it for text and hand it findings.
 
 ```
 peerreview review <manuscript.pdf> <run folder> [--reviewers N] [--arm NAME]
+                  [--reviewer-models A,B,C] [--specialist-model M] [--editor-model M]
 ```
 
 That is the only way to run a review in 0.9: the Python orchestration the 0.8
@@ -43,6 +45,42 @@ Claude Code subscription login only.
 | `single-revision` | 1 (then revises itself) | none | no | what a second pass adds |
 | `manuscript-only` | 1, text tools only | none | no | what pages and lookups add |
 | `draft-check` | none | chosen | no | `check-draft` on a draft of your own |
+
+## Models
+
+The core reviewers are deliberately different models. Stage A ran three of them
+on one model and they caught no more than one did — three readings of the same
+manuscript by the same reader — so reviewer *i* takes the *i*-th model of an
+ordered list, wrapping round:
+
+| Slot | Default | Flag |
+| --- | --- | --- |
+| `core-1`, `core-2`, `core-3`, … | `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-haiku-5-5`, then round again | `--reviewer-models A,B,C` |
+| `revision-1` | `core-1`'s model: it is `core-1` revising its own findings | `--reviewer-models` |
+| `spec-*` | `claude-sonnet-5-5` | `--specialist-model` |
+| `editor` | `claude-fable-5-2` | `--editor-model` |
+| `recorder` | `claude-haiku-5-5` | `PEERREVIEW_RECORDER_MODEL` |
+
+So one reviewer is Sonnet, two are Sonnet and Opus, and three are all three.
+A session that drives the workflow itself passes `reviewer_models`,
+`specialist_model` and `editor_model` to `ingest`; a session the starter
+launched reads `PEERREVIEW_REVIEWER_MODELS`, `PEERREVIEW_SPECIALIST_MODEL`,
+`PEERREVIEW_EDITOR_MODEL` and `PEERREVIEW_RECORDER_MODEL` from its environment,
+and an explicit `ingest` argument wins over the environment. Nothing here is
+gated on billing or usage: which models a login may run is yours to decide.
+
+Each agent is started with its family alias as a per-spawn override, which is
+what Claude Code takes, and the pinned version is what the run records —
+`models` in `protocol.json`, `assigned_model` on each agent and each row of
+`reviewer_provenance`, beside the `model` the agent reported running as.
+
+**A model this login cannot run is a refusal, not a substitution.** Claude Code
+answers a model it may not run by quietly running another, so a run that asked
+for Opus could be recorded as an arm it was not. Both entry points check first
+— `peerreview review` before the probe spends anything, `ingest` before the
+manuscript is imported — and fail with one line naming the slot, the model and
+the flag that changes it. Availability is the `availableModels` allowlist in
+the settings files Claude Code reads, managed settings first.
 
 ## What the server owns
 

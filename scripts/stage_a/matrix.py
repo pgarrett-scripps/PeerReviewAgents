@@ -174,6 +174,8 @@ def execute(spec: dict, peerreview: str, timeout: int) -> int:
     log.parent.mkdir(parents=True, exist_ok=True)
     command = [peerreview, 'review', spec['pdf'], str(run),
                '--arm', spec['arm'], '--reviewers', str(spec['reviewers'])]
+    if spec.get('reviewer_models'):
+        command += ['--reviewer-models', spec['reviewer_models']]
     with log.open('w', encoding='utf-8') as handle:
         handle.write(' '.join(command) + '\n\n')
         handle.flush()
@@ -297,14 +299,25 @@ def line(row: dict) -> str:
 
 def drive(root: Path, stages=STAGES, control_slugs=(), peerreview='peerreview',
           ceiling=CEILING, timeout=7200, dry_run=False, only='', limit=0,
-          rescore_only=False, rerun_slugs=(), tag='rerun') -> dict:
-    """Run the matrix in order and stop on the first rule that says to stop."""
+          rescore_only=False, rerun_slugs=(), tag='rerun', reviewer_models='') -> dict:
+    """Run the matrix in order and stop on the first rule that says to stop.
+
+    ``reviewer_models`` pins every core reviewer to one model — pass one name —
+    or sets the ordered list they are drawn from. Unset, the review's own
+    default applies, which is one model per reviewer and three different ones
+    at three reviewers. Every row records what the run asked for, so a pinned
+    arm and a mixed arm are told apart in the results table rather than pooled;
+    run a pinned arm under its own ``--tag`` so it gets its own folders.
+    """
     queue = [spec for spec in jobs(root, stages, control_slugs, rerun_slugs, tag)
              if not only or only in spec['id']]
     if limit:
         queue = queue[:limit]
+    for spec in queue:
+        spec['reviewer_models'] = reviewer_models
     state = {'root': str(root), 'planned': len(queue), 'ran': 0, 'skipped': 0,
-             'tokens': 0, 'stopped_because': '', 'rows': []}
+             'tokens': 0, 'stopped_because': '', 'rows': [],
+             'reviewer_models': reviewer_models}
     if dry_run:
         for spec in queue:
             print(f'{spec["stage"]:10} {spec["id"]}'
@@ -382,6 +395,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--dry-run', action='store_true', help='print the order, run nothing')
     parser.add_argument('--rescore', action='store_true',
                         help='score the runs already on disk again and rewrite results.jsonl')
+    parser.add_argument('--reviewer-models', default='',
+                        help='pin every core reviewer to one model, or give the ordered '
+                             'list they are drawn from, as in "sonnet" or '
+                             '"sonnet,opus,haiku"; unset, the review\'s own default '
+                             'applies, which is a different model per reviewer. Pin it '
+                             'with its own --tag to keep a pinned arm in its own folders')
     return parser
 
 
@@ -396,7 +415,8 @@ def main(argv=None) -> int:
     state = drive(root, stages, tuple(args.control),
                   args.peerreview, args.ceiling, args.timeout, args.dry_run,
                   args.only, args.limit, args.rescore,
-                  tuple(args.rerun_paper), args.tag)
+                  tuple(args.rerun_paper), args.tag,
+                  reviewer_models=args.reviewer_models)
     return 1 if state['stopped_because'] else 0
 
 

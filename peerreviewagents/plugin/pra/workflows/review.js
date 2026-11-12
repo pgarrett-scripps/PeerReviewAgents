@@ -1,7 +1,7 @@
 export const meta = {
   name: 'review',
   description: 'Two-track peer review: ingest, N core reviewers and six specialists in parallel, editor, write the run',
-  whenToUse: 'Reviewing one manuscript PDF with PeerReviewAgents 0.9. Pass {pdf, out, reviewers, arm}.',
+  whenToUse: 'Reviewing one manuscript PDF with PeerReviewAgents 0.9. Pass {pdf, out, reviewers, arm}, and {reviewer_models, specialist_model, editor_model} to choose the models.',
   phases: [
     { title: 'Ingest', detail: 'import the PDF and fix the plan for this arm' },
     { title: 'Review', detail: 'core reviewers and specialists, in parallel, each isolated' },
@@ -44,6 +44,19 @@ const OPENED = {
         required: ['slot', 'claim_code'],
       },
       description: 'every {slot, claim_code} pair ingest returned, verbatim',
+    },
+    models: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          slot: { type: 'string' },
+          model: { type: 'string' },
+          spawn: { type: 'string' },
+        },
+        required: ['slot', 'spawn'],
+      },
+      description: 'every {slot, model, spawn} entry ingest returned, verbatim',
     },
   },
   required: ['paper_id', 'arm', 'slots', 'recorder_key', 'claim_codes'],
@@ -116,6 +129,19 @@ let codes = {}
 let recorderKey = ''
 const codeFor = slot => codes[slot] || ''
 
+// Which model each slot runs is the server's decision, taken at ingest from
+// the flags, the environment and its defaults, and recorded in the run folder.
+// This script only carries it: `spawn` is the override the agent is started
+// with, and a slot the server said nothing about keeps the model its own agent
+// file pins. Three core reviewers are three different models on purpose.
+let spawns = {}
+let assigned = {}
+function options(slot, rest) {
+  const spawn = spawns[slot]
+  if (!spawn) return rest
+  return Object.assign({}, rest, { model: spawn })
+}
+
 // A spent code cannot be reused, so a retry has to be issued a fresh one, and
 // only the holder of the recorder key can ask for that.
 async function reissue(slot, phaseName) {
@@ -123,7 +149,9 @@ async function reissue(slot, phaseName) {
     'A stage of this run has to be retried, so its slot needs a new claim code. Call'
     + ' reissue_claim_code with recorder_key="' + recorderKey + '" and slot="' + slot
     + '". Report the claim_code it returned, verbatim, and nothing else.',
-    { label: 'reissue ' + slot, phase: phaseName, agentType: 'pra:recorder', schema: REISSUED },
+    options('recorder', {
+      label: 'reissue ' + slot, phase: phaseName, agentType: 'pra:recorder', schema: REISSUED,
+    }),
   )
   if (fresh && fresh.claim_code) {
     codes[slot] = fresh.claim_code
@@ -142,9 +170,9 @@ async function stage(slot, agentType, phaseName, promptFor, schema) {
       log(slot + ': no claim code, so the slot cannot be claimed; the run is blocked')
       return null
     }
-    const result = await agent(promptFor(code), {
+    const result = await agent(promptFor(code), options(slot, {
       label: label(slot, attempt), phase: phaseName, agentType, schema,
-    })
+    }))
     const ok = result && (schema === EDITED ? result.accepted : result.closed)
     if (ok) return Object.assign({ slot, attempts: attempt }, result)
     const what = result ? 'returned without closing its stage' : 'returned nothing'
@@ -158,7 +186,7 @@ async function block(reason) {
     'A stage of this run failed twice. Call mark_blocked with recorder_key="' + recorderKey
     + '" and this reason, exactly as written: "' + reason + '".'
     + ' Then report the status it returned.',
-    { label: 'mark blocked', phase: 'Record', agentType: 'pra:recorder' },
+    options('recorder', { label: 'mark blocked', phase: 'Record', agentType: 'pra:recorder' }),
   )
   throw new Error('review: ' + reason)
 }
@@ -169,9 +197,13 @@ const opened = await agent(
   + '", reviewers=' + REVIEWERS + ', arm="' + ARM + '"'
   + (run.literature_cutoff ? ', literature_cutoff="' + run.literature_cutoff + '"' : '')
   + (run.tracks ? ', tracks=' + JSON.stringify(run.tracks) : '')
+  + (run.reviewer_models ? ', reviewer_models=' + JSON.stringify(run.reviewer_models) : '')
+  + (run.specialist_model ? ', specialist_model="' + run.specialist_model + '"' : '')
+  + (run.editor_model ? ', editor_model="' + run.editor_model + '"' : '')
   + '. Report the paper id, the title, the block count and the slot list it returned, and copy'
-  + ' the recorder_key and every claim_code out of the response verbatim: they are the only'
-  + ' copies, and each stage is handed its own code from here.',
+  + ' the recorder_key, every claim_code and every models entry out of the response verbatim:'
+  + ' they are the only copies, and each stage is handed its own code and its own model'
+  + ' from here.',
   { label: 'ingest', phase: 'Ingest', agentType: 'pra:recorder', schema: OPENED },
 )
 if (!opened || !opened.slots || opened.slots.length === 0) {
@@ -185,6 +217,13 @@ codes = {}
 opened.claim_codes.forEach(entry => {
   if (entry && entry.slot) codes[entry.slot] = entry.claim_code
 })
+spawns = {}
+assigned = {}
+;(opened.models || []).forEach(entry => {
+  if (!entry || !entry.slot) return
+  if (entry.spawn) spawns[entry.slot] = entry.spawn
+  if (entry.model) assigned[entry.slot] = entry.model
+})
 
 // The server's slot list is the plan. The arm decides it, so the script never
 // has to hold a second copy of which stages a given arm requires.
@@ -195,6 +234,10 @@ const hasRevision = slots.indexOf('revision-1') >= 0
 const hasEditor = slots.indexOf('editor') >= 0
 log('arm ' + opened.arm + ': ' + coreSlots.length + ' core reviewer(s), '
   + specSlots.length + ' specialist(s), editor ' + (hasEditor ? 'yes' : 'no'))
+if (coreSlots.length > 0) {
+  log('models: ' + coreSlots.concat(hasEditor ? ['editor'] : [])
+    .map(s => s + ' ' + (assigned[s] || 'as its agent file pins')).join(', '))
+}
 
 phase('Review')
 const reviewPrompt = slot => code =>
@@ -268,7 +311,9 @@ const recorded = await agent(
   + '", then write_review with that token.'
   + ' Report the status, the body and appendix counts and the escalated count. If it refuses,'
   + ' report the refusal text verbatim in the refusal field.',
-  { label: 'write review', phase: 'Record', agentType: 'pra:recorder', schema: RECORDED },
+  options('recorder', {
+    label: 'write review', phase: 'Record', agentType: 'pra:recorder', schema: RECORDED,
+  }),
 )
 if (!recorded || !recorded.status) {
   await block('The run files were never written: the recorder returned nothing')
@@ -284,8 +329,10 @@ return {
   title: opened.title,
   status: recorded.status,
   refusal: recorded.refusal || null,
+  models: assigned,
   stages: reported.map(r => ({
     slot: r.slot, attempts: r.attempts, model: r.model || null,
+    assigned_model: assigned[r.slot] || null,
     findings: r.findings_stored || 0, none_found: !!r.none_found,
   })),
   editor: edited && {

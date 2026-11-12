@@ -60,6 +60,26 @@ comes back `blocked`, and stops at a token ceiling. Every run is scored and
 appended to `runs/results.jsonl` as it finishes, so an interrupted matrix is
 still a result.
 
+## Models, and comparing against the results already recorded
+
+Every result in [`docs/stage-a-results.md`](../../docs/stage-a-results.md) ran
+every core reviewer on one model. From 0.9.0 the review gives each reviewer a
+different one — because Stage A is where three same-model reviewers were shown
+to catch no more than one did — so the two cannot be pooled. `--reviewer-models`
+pins them back:
+
+```sh
+python scripts/stage_a/matrix.py --stage main --reviewer-models sonnet
+python scripts/stage_a/matrix.py --stage main --tag mixed-models
+```
+
+One name pins every reviewer to it; a comma-separated list sets the order they
+are drawn from; unset leaves the review its own default. Run a pinned arm under
+its own `--tag` so it gets its own run folders and its own rows, and the model
+the row asked for is in `reviewer_models` on every row of `runs/results.jsonl`
+and in `runs/matrix-state.json`. A folder that already holds a run under other
+models is refused rather than reused.
+
 ## The four kinds of planted error
 
 | kind | what is altered | why it is catchable |
