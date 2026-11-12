@@ -45,10 +45,10 @@ from ..names import (
     RUN_DIRECTORY,
 )
 
-# The folder names, the statuses and the finding schema version are defined in
-# `peerreviewagents.names` and re-exported here: they were literals in this
-# module through 0.8, so a caller that imports them from the server still gets
-# them, while there is only one definition to change.
+# The folder names, the statuses and the finding schema version are imported
+# from `peerreviewagents.names` because this module writes them; that module is
+# where they are defined and where an integration reads them from. Importing
+# them from here instead is not supported and nothing in the repository does.
 WORKFLOW_VERSION = 'plugin-two-track-v1'
 SPECIALIST_TRACKS = ('stats', 'figures-tables', 'methods-reporting', 'citations',
                      'consistency', 'field')

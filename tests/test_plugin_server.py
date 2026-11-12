@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from peerreviewagents import names
 from peerreviewagents.plugin import server as srv
 
 FIXTURE = Path(__file__).parent / 'fixtures' / 'single-column.pdf'
@@ -692,7 +693,7 @@ def test_a_finished_run_writes_the_files_a_consumer_reads(tmp_path):
     protocol = json.loads((review / 'protocol.json').read_text(encoding='utf-8'))
     assert protocol['provider'] == 'claude-code'
     assert protocol['arm'] == 'full-two-track'
-    assert protocol['finding_schema_version'] == srv.FINDING_SCHEMA_VERSION
+    assert protocol['finding_schema_version'] == names.FINDING_SCHEMA_VERSION
 
     manifest = json.loads((review / 'manifest.json').read_text(encoding='utf-8'))
     assert manifest['paper_id'] == run.paper['id']

@@ -55,7 +55,16 @@ including 32 test modules, and nothing was left behind as a shim.
   `startup.json` and `runtime.json` are all folders it reads. It refuses a run
   file that is a symlink, by name, and raises `runs.NotARunFolder` for a folder
   that is not a run. The first application to show PRA runs had to reach into
-  private names and parse these files by hand.
+  private names and parse these files by hand. It returns the same 30 keys for
+  every folder, among them `publishable` — status `complete`, the findings from
+  a readable editor package, a clean guard and nothing in `problems` — which is
+  the flag to gate publishing on, and `problems`, which names every file or
+  line that could not be read.
+- `peerreviewagents.runs.run_status`, the one rule that decides a run's status,
+  used by `read_run` and by the report writer, so a folder cannot read one way
+  through the library and another way in its own `REVIEW.md`. A limit that
+  fired after the review was written is a `note`, not a `cause`, and the run is
+  complete.
 - `review_main(argv, prog=...)` and `report_main(argv)`: the two commands as
   functions — argument list in, the command's JSON on stdout, the exit code
   returned rather than raised — so a wrapper does not copy `starter.main` or
@@ -117,6 +126,40 @@ including 32 test modules, and nothing was left behind as a shim.
 
 ### Fixed
 
+- `read_run` returns a reading for a damaged folder instead of raising, which
+  is the state a killed run is normally in: a truncated `runtime.json`, a
+  half-written last line in a usage receipt, a status file holding a list, a
+  ledger with bytes that are not UTF-8. Each one is named in `problems` and
+  everything else still comes back; `usage['unknown']` marks observed tokens as
+  a lower bound when a receipt could not be read in full. `peerreview report`
+  printed a traceback for exactly the runs whose cause one wants to read.
+- `read_run` and `REVIEW.md` agreed on `running` and `blocked` but not on a run
+  whose review was written before a rate limit fired: one read `progress.json`
+  first and the other `runtime.json`. Both now call `run_status`.
+- `report_main` returns `1` with the message on stderr for a folder that is not
+  a run and for a run file that is a symlink, as documented, instead of raising
+  `SystemExit` with a string or leaking a `ValueError`. `review` raises
+  `ValueError` for an unusable argument — an unknown arm, a missing manuscript,
+  a plugin directory with no plugin — before writing anything, and
+  `review_main` turns it into the message and the code `2`.
+- A status word `read_run` does not know is `unknown` with a line in
+  `problems`, rather than passed through to a consumer as if it were a status.
+- A symlinked `review/` directory and a symlinked `usage.jsonl` were followed
+  while a symlinked `audit_*.md` was dropped in silence. Every symlink anywhere
+  under the review folder is now refused by name.
+- A `finding_uid` the editor placed in both the body and the appendix was
+  counted twice, in `findings` and again in `escalations`. It is one finding,
+  in `body`.
+- A corrupt `editor-package.json` on a complete run fell back to the ledger in
+  silence and read as a whole review. The fallback is reported in `problems`
+  and the run is not `publishable`.
+- `write_identity` recorded `specialists: []` for a start-up-blocked
+  `full-two-track` run, so the folder said the plan was something it was not.
+  It records the arm's default tracks when none were named.
+- A retry in a folder that already holds a finished or killed run read as the
+  old run's block until the new one ended. The starter supersedes the previous
+  `runtime.json` and `progress.json` at the start, keeping the old state under
+  `superseded`.
 - A finding submitted after the stage closed, after the editor ruled, or after
   the run was blocked is refused rather than stored and then dropped from the
   package.

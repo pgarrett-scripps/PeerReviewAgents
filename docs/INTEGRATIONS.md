@@ -155,27 +155,94 @@ It works on every kind of folder a review can leave behind, which is the point:
 | blocked by the server | the cause from `progress.json`, findings from the ledger |
 | killed by the starter | the cause from `runtime.json` — token ceiling, timeout, rate limit, session error — even though `progress.json` still says `running` |
 | start-up blocked | `stage` `startup`, `startup_problems`, and the identity the starter wrote |
+| killed mid-write | everything that could be read, and each file that could not in `problems` |
 
-Keys: `status`, `complete`, `blocked`, `cause`, `stage`, `findings`, `body`,
-`appendix`, `findings_source`, `counts`, `quarantined`, `escalations`,
-`escalation_rulings`, `summary`, `verdict`, `limitations`, `identity`,
-`stages`, `runtime`, `agents`, `usage`, `reports`, `startup_problems`, `files`,
-`run`, `review`.
+Keys: `status`, `complete`, `publishable`, `blocked`, `cause`, `note`, `stage`,
+`findings`, `body`, `appendix`, `findings_source`, `counts`, `quarantined`,
+`guard_status`, `escalations`, `escalation_rulings`, `summary`, `verdict`,
+`limitations`, `identity`, `stages`, `runtime`, `agents`, `usage`, `reports`,
+`startup_problems`, `problems`, `files`, `run`, `review`. The same 30 keys come
+back for every folder, in every state, so a consumer never has to test whether
+a key is there.
 
-Three rules it enforces so you do not have to:
+Four rules it enforces so you do not have to:
 
 - **One row per finding.** `findings.jsonl` is append-only, so a finding
   restated during the run is several rows. `read_run` keeps the latest row per
   `finding_uid`, in the order the findings were first seen, from the editor
   package when there is one and from the ledger when there is not —
-  `findings_source` says which.
+  `findings_source` says which. A uid the editor placed in both its lists is in
+  `body` only, so it is one finding and one escalation, not two.
 - **A folder that is not a run is an error, not an empty answer.** It raises
   `peerreviewagents.runs.NotARunFolder` (a `ValueError`) naming the files it
-  looked for. A truncated file inside a real run is not an error: a process
-  killed mid-write is exactly the case this function is for.
-- **A run file that is a symlink is refused, by name.** A symlink in
+  looked for.
+- **A damaged file inside a real run is named, not raised.** A truncated
+  `runtime.json`, a half-written last line in a usage receipt, a status file
+  holding a list, a ledger with bytes that are not UTF-8 — the normal state of
+  a run somebody killed. The unreadable file or line goes into `problems` and
+  everything else still comes back, because a run that stopped badly is exactly
+  when you need to know why. When a receipt could not be read in full,
+  `usage['unknown']` is `True` and `usage['observed_tokens']` is a lower bound.
+- **A symlink anywhere under `review/` is refused, by name.** The review
+  directory itself, a usage receipt, a specialist audit, `editor-package.json`:
+  all the same way, with a `ValueError` naming the path. A symlink in
   `editor-package.json`'s place is some other file's contents presented as this
   run's result.
+
+### The status rule
+
+`peerreviewagents.runs.run_status` decides the status, and `REVIEW.md` is
+rendered from the same answer: a folder cannot read one way through `read_run`
+and another way in its own report. The rule, in order:
+
+1. A status in `progress.json` that means finished wins, even if
+   `runtime.json` says `blocked`. The starter records a rate limit or a token
+   ceiling that fired *after* `write_review`, and a review that was written is
+   written; that late limit becomes `note`, not `cause`.
+2. Otherwise `runtime.json`'s status, which is how a killed run reports itself
+   while `progress.json` still says `running`.
+3. Otherwise `progress.json`'s status.
+4. Otherwise `blocked`, if there is a cause or the start-up probe refused.
+5. Otherwise `unknown` — and a status word this version does not know is
+   `unknown` with a line in `problems`, never passed through.
+
+`complete-without-findings` means the review was written and every finding in
+it had been quarantined by the guard. The run worked; there is nothing to
+publish.
+
+### Gating on `publishable`
+
+`complete` answers whether the run finished. `publishable` answers whether the
+whole review is here to show, which is the question a consumer actually has
+before it puts a review in front of someone. It is `True` only when:
+
+- `status` is `complete`,
+- `findings_source` is `editor-package` — the editor's own placement, not the
+  ledger fallback,
+- `guard_status` is `clean`, and
+- `problems` is empty.
+
+So a run whose findings were quarantined is complete and not publishable, and
+so is a complete run whose `editor-package.json` was truncated: the ledger
+findings are real, but they are not the editor's review. `quarantined`,
+`guard_status` and `problems` are all exposed, so an application that wants to
+show a held review anyway can decide that for itself — with the reason in hand.
+
+### Exit codes
+
+`review_main` and `report_main` return a code and never raise one. `review`
+raises `ValueError` for an argument that cannot be used at all (an unknown arm,
+a missing manuscript, a plugin directory with no plugin) before writing
+anything, and `review_main` turns that into the message on stderr and the code
+`2`.
+
+| Code | `peerreview review` | `peerreview report` |
+| --- | --- | --- |
+| `0` | the review ran to a status in `COMPLETE_STATUSES` | the reports were written |
+| `1` | the run was blocked | the path is not a run folder, or a run file is a symlink |
+| `2` | the run never started, or an argument was unusable | argparse refused the arguments |
+
+A blocked run is the code `1` and a full run folder to read, not an exception.
 
 `write_reports(run)` re-renders `REVIEW.md` and `REVIEW.txt` from a run folder
 with no model call. The workspace path is optional: a run folder holds its own

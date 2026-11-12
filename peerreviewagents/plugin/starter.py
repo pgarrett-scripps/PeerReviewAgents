@@ -62,6 +62,10 @@ PROBE_TIMEOUT = 180
 RATE_LIMIT_CEILING = 0.99
 MISSING_CLAUDE = ('claude is not installed or not on this PATH, so no session can be started: '
                   'install Claude Code and check that `claude --version` runs in this shell')
+#: What `check-draft` runs when no track is named. The three a draft of your
+#: own is usually wrong about, and the default the prompt and the recorded plan
+#: must agree on.
+DRAFT_CHECK_TRACKS = ('stats', 'consistency', 'methods-reporting')
 VERSIONS = {}
 
 
@@ -403,6 +407,11 @@ def write_identity(review, source, arm, reviewers, cutoff=None, tracks=None):
     except OSError:
         source_sha256 = None
     plan = ARMS.get(arm) or {}
+    # The session was going to run the arm's own default tracks, so a folder
+    # that records `specialists: []` for a full two-track run says the plan was
+    # something it never was. The default here is the one `prompt_for` asks for.
+    default = DRAFT_CHECK_TRACKS if arm == 'draft-check' else SPECIALIST_TRACKS
+    specialists = [track for track in (tracks or default) if track in SPECIALIST_TRACKS]
     wrote = []
     if not (review / 'protocol.json').is_file():
         write(review / 'protocol.json', {
@@ -419,7 +428,7 @@ def write_identity(review, source, arm, reviewers, cutoff=None, tracks=None):
             'stage': 'startup',
             'written_by': 'starter: the run stopped before the server recorded its protocol',
             'plan': {'arm': arm, 'reviewers': reviewers,
-                     'specialists': list(tracks or ()) if plan.get('specialists') else [],
+                     'specialists': specialists if plan.get('specialists') else [],
                      'editor': plan.get('editor'), 'revision': plan.get('revision'),
                      'summary': plan.get('summary')},
         })
@@ -466,6 +475,41 @@ def finish(review, status, reason, accounting, wall, result):
                              'error': reason or current.get('error'), 'updated': now()})
 
 
+def supersede(review):
+    """Say that the run state in this folder belongs to an attempt that is over.
+
+    A retry writes into the same folder, and until it ends, the files from the
+    attempt before it are the only ones there: ``read_run`` and ``peerreview
+    report`` would answer with the old run's status and the old run's cause
+    while the new one is underway. Both files are marked as running again, the
+    state they replace is kept whole under ``superseded`` so nothing is lost,
+    and the server's own ``ingest`` overwrites ``progress.json`` outright a
+    moment later.
+    """
+    review, marked = Path(review), {}
+    for name, reason_key in (('runtime.json', 'blocked_reason'), ('progress.json', 'error')):
+        path = review / name
+        if not path.is_file():
+            continue
+        try:
+            previous = read(path)
+        except (ValueError, UnicodeDecodeError):
+            previous = {'status': None, 'unreadable': True}
+        if not isinstance(previous, dict):
+            previous = {'status': None, 'unreadable': True}
+        if previous.get('status') == 'running':
+            continue
+        ended = previous.get('status') or 'in an unrecorded state'
+        detail = previous.get(reason_key)
+        write(path, {**{key: previous[key] for key in ('reviewers', 'arm') if key in previous},
+                     'status': 'running', reason_key: None,
+                     'note': f'a new run started in this folder; the attempt before it ended '
+                             f'{ended}' + (f': {detail}' if detail else ''),
+                     'superseded': previous, 'updated': now()})
+        marked[name] = previous.get('status')
+    return marked
+
+
 def rerender(review, workspace=None):
     """Render REVIEW.md again, now that the run's own accounting is on disk.
 
@@ -489,7 +533,7 @@ def prompt_for(pdf, out, reviewers, arm, cutoff, tracks):
             f'manuscript at {pdf} and write the run folder to {out}. Use {reviewers} core '
             f'reviewer(s) and the {arm} arm.')
     if arm == 'draft-check':
-        chosen = ', '.join(tracks or ('stats', 'consistency', 'methods-reporting'))
+        chosen = ', '.join(tracks or DRAFT_CHECK_TRACKS)
         text = (f'Use the check-draft skill from the {PLUGIN} plugin. Check the draft at {pdf}, '
                 f'write the run folder to {out}, and run these tracks: {chosen}.')
     if cutoff:
@@ -509,19 +553,25 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     launch a session and no usage was spent. :func:`exit_code` turns it into a
     process status, and nothing here prints: the command prints, a library
     caller reads the dict and the run folder.
+
+    An unknown arm, a manuscript that is not there and a missing plugin raise
+    ``ValueError`` before anything is written or any usage is spent — a caller
+    gave an argument no run can be made from, which is not a run that stopped.
+    :func:`review_main` turns that into a message and the exit code 2.
     """
     if arm not in ARMS:
-        raise SystemExit(f'Unknown arm {arm}. Arms: ' + ', '.join(sorted(ARMS)))
+        raise ValueError(f'Unknown arm {arm}. Arms: ' + ', '.join(sorted(ARMS)))
     source = Path(pdf).resolve()
     if not source.is_file():
-        raise SystemExit(f'No manuscript at {source}')
+        raise ValueError(f'No manuscript at {source}')
     root = Path(out).resolve()
     review_dir = root / RUN_DIRECTORY
-    review_dir.mkdir(parents=True, exist_ok=True)
     directory = Path(directory) if directory else plugin_dir()
     cwd = Path(cwd) if cwd else Path(__file__).resolve().parent.parent.parent
     if not (directory / '.claude-plugin' / 'plugin.json').is_file():
-        raise SystemExit(f'No plugin at {directory}')
+        raise ValueError(f'No plugin at {directory}')
+    review_dir.mkdir(parents=True, exist_ok=True)
+    supersede(review_dir)
 
     problems, found = probe(directory, cwd)
     write(review_dir / 'startup.json', {'probe': found['raw'], 'problems': problems,
@@ -640,6 +690,12 @@ def review_main(argv=None, prog='peerreview review'):
     do with a blocked run. ``prog`` is the program name its ``--help`` and its
     errors use, so a wrapper named something else says its own name.
 
+    An argument no run can be made from — a manuscript that is not there, an
+    arm that does not exist, a plugin folder that holds no plugin — is a
+    message on stderr and the code 2, the same code as a run that never
+    started, because nothing was written and no usage was spent. Nothing is
+    raised for it.
+
     Nothing else here needs to be reached for: the summary dict comes from
     :func:`review` and the code from :func:`exit_code`.
     """
@@ -647,10 +703,15 @@ def review_main(argv=None, prog='peerreview review'):
     if argv and argv[0] == 'review':
         argv = argv[1:]
     args = build_parser(prog=prog).parse_args(argv)
-    summary = review(args.workspace, args.output, reviewers=args.reviewers, arm=args.arm,
-                     literature_cutoff=args.literature_cutoff, tracks=args.track,
-                     per_agent_tokens=args.per_agent_tokens, per_run_tokens=args.per_run_tokens,
-                     wall_timeout=args.timeout, directory=args.plugin_dir)
+    try:
+        summary = review(args.workspace, args.output, reviewers=args.reviewers, arm=args.arm,
+                         literature_cutoff=args.literature_cutoff, tracks=args.track,
+                         per_agent_tokens=args.per_agent_tokens,
+                         per_run_tokens=args.per_run_tokens,
+                         wall_timeout=args.timeout, directory=args.plugin_dir)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     print(json.dumps(summary, indent=2))
     return exit_code(summary)
 

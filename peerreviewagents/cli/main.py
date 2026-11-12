@@ -73,9 +73,13 @@ def report_main(argv: list[str] | None = None) -> int:
     printed with the report paths, because a folder that was killed on a token
     ceiling or whose probe never launched a session is a result to read, not a
     folder to be told is "not a finished run".
+
+    A folder that is not a run, and a run file that is a symlink, are a message
+    on stderr and the code 1. Nothing is raised: the code is returned, which is
+    what a wrapper around this function has to be able to rely on.
     """
     from peerreviewagents.engine.run_report import write_reports
-    from peerreviewagents.runs import NotARunFolder, read_run
+    from peerreviewagents.runs import read_run
 
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "report":
@@ -84,13 +88,16 @@ def report_main(argv: list[str] | None = None) -> int:
     try:
         # The run folder holds `manuscript/` and `review/`; the reports belong
         # to the review folder, so naming the run folder means that one.
+        # NotARunFolder is a ValueError, and so is the symlink refusal.
         summary = read_run(args.run)
-    except NotARunFolder as exc:
-        raise SystemExit(str(exc)) from None
-    run = Path(summary["review"])
-    paths = write_reports(run, args.workspace, args.output_dir)
+        paths = write_reports(Path(summary["review"]), args.workspace, args.output_dir)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     print(json.dumps({'status': summary['status'], 'cause': summary['cause'],
                       'findings': summary['counts']['findings'],
+                      'publishable': summary['publishable'],
+                      'problems': summary['problems'],
                       **{key: str(value) for key, value in paths.items()}}, indent=2))
     return 0
 

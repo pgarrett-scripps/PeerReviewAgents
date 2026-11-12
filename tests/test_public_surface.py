@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 
 import peerreviewagents
-from peerreviewagents import names
+from peerreviewagents import names, runs
 from peerreviewagents.cli.main import report_main
 from peerreviewagents.plugin import server as srv
 from peerreviewagents.plugin import starter
@@ -74,6 +74,7 @@ def complete_run(tmp_path, status='complete', findings=True) -> Path:
     _write(review / 'progress.json', {'status': status, 'error': None, 'arm': 'full-two-track',
                                       'findings_delivered': 3 if findings else 0,
                                       'findings_submitted': 4 if findings else 0,
+                                      'review_guard_status': 'clean',
                                       'stages': {'required': ['core-1'], 'missing': []}})
     _write(review / 'runtime.json', {
         'status': status, 'blocked_reason': None, 'wall_seconds': 247.0,
@@ -88,6 +89,7 @@ def complete_run(tmp_path, status='complete', findings=True) -> Path:
                      track='stats', escalate=True)] if findings else []
     _write(review / 'editor-package.json', {
         'summary': 'Two issues in the reported totals.',
+        'review_guard_status': 'clean',
         'findings': body,
         'appendix': ([_finding('ccc3', 'A duplicate of the first')] if findings else []),
         'escalation_rulings': ([{'finding_uid': 'bbb2', 'ruling': 'upheld'}] if findings else []),
@@ -289,9 +291,11 @@ def test_the_top_level_exports_every_supported_name():
 
 
 def test_the_public_constants_are_what_the_server_writes():
-    assert peerreviewagents.RUN_DIRECTORY == srv.RUN_DIRECTORY == 'review'
-    assert peerreviewagents.MANUSCRIPT_DIRECTORY == srv.MANUSCRIPT_DIRECTORY == 'manuscript'
-    assert peerreviewagents.FINDING_SCHEMA_VERSION == srv.FINDING_SCHEMA_VERSION
+    # `names` is where they are defined; the server imports them from there, so
+    # the top level and the writer cannot drift apart.
+    assert peerreviewagents.RUN_DIRECTORY == names.RUN_DIRECTORY == 'review'
+    assert peerreviewagents.MANUSCRIPT_DIRECTORY == names.MANUSCRIPT_DIRECTORY == 'manuscript'
+    assert peerreviewagents.FINDING_SCHEMA_VERSION == names.FINDING_SCHEMA_VERSION
     assert peerreviewagents.RUN_STATUSES == ('running', 'blocked', 'complete',
                                              'complete-without-findings')
     assert peerreviewagents.COMPLETE_STATUSES == ('complete', 'complete-without-findings')
@@ -434,3 +438,230 @@ def test_export_draft_no_longer_emits_the_debate_keys():
     assert 'component_decisions' not in exported
     assert 'epistemic_audit' not in exported
     assert exported['proposed_blocks'] == paper['blocks']
+
+
+# -- a damaged folder is still a reading ------------------------------------
+
+
+def test_read_run_reads_a_damaged_folder_instead_of_raising(tmp_path):
+    """Every way a killed process leaves a file behind, in one folder each.
+
+    A truncated ``runtime.json``, a status file holding a list, a half-written
+    last line in a usage receipt and a ledger with bytes that are not UTF-8 are
+    the ordinary state of a run somebody stopped. Each one used to be a
+    traceback out of ``read_run`` — and so out of ``peerreview report``, which
+    is where the reason a run stopped is read.
+    """
+    review = complete_run(tmp_path / 'damaged')
+    (review / 'runtime.json').write_text('{"status": "comp', encoding='utf-8')
+    _write(review / 'progress.json', ['status', 'complete'])
+    (review / 'usage' / 'core-1').mkdir(parents=True)
+    (review / 'usage' / 'core-1' / 'usage.jsonl').write_text(
+        json.dumps({'label': 'core-1', 'request_sha256': 'a1', 'attempt': 1,
+                    'observed_tokens': 400000}) + '\n{"label": "core-1", "observed_tok',
+        encoding='utf-8')
+
+    run = read_run(review)
+
+    assert run['counts']['findings'] == 3, 'the editor package was whole and was read'
+    assert run['usage']['observed_tokens'] == 400000
+    assert run['usage']['unknown'] is True, 'a receipt nobody could read is unresolved spend'
+    named = ' | '.join(run['problems'])
+    for name in ('runtime.json', 'progress.json', 'usage.jsonl'):
+        assert name in named, named
+    assert set(run) == set(read_run(complete_run(tmp_path / 'whole'))), 'the same keys either way'
+
+    # A ledger with undecodable bytes is read as far as it goes, and says so.
+    ledger = killed_run(tmp_path / 'bytes')
+    (ledger / 'findings.jsonl').write_bytes(
+        b'{"finding_uid": "aaa1", "title": "a \xff\xfe total"}\n{"finding_uid": "bb\n')
+
+    rough = read_run(ledger)
+
+    assert [f['finding_uid'] for f in rough['findings']] == ['aaa1']
+    assert any('findings.jsonl' in problem for problem in rough['problems'])
+    assert rough['publishable'] is False
+
+
+def test_a_limit_after_the_review_was_written_is_a_note_not_a_block(tmp_path):
+    """One rule decides the status, and ``REVIEW.md`` is rendered from it.
+
+    ``starter.finish`` records a rate limit or a ceiling that fired after
+    ``write_review``, so the two files disagree: the server says complete and
+    the starter says blocked. The review was written, so the run is complete and
+    the limit is a note.
+    """
+    review = complete_run(tmp_path)
+    _write(review / 'runtime.json', {
+        'status': 'blocked', 'blocked_reason': 'the five-hour rate limit was reached',
+        'wall_seconds': 300.0, 'tokens_total': 700000, 'agents': []})
+
+    run = read_run(review)
+
+    assert (run['status'], run['complete'], run['blocked']) == ('complete', True, False)
+    assert run['cause'] is None
+    assert 'rate limit' in run['note']
+    assert runs.run_status({'status': 'complete'}, {'status': 'blocked'})['status'] == 'complete'
+
+    paths = peerreviewagents.write_reports(review)
+    line = next(text for text in Path(paths['markdown']).read_text(encoding='utf-8').splitlines()
+                if 'Run status' in text)
+    assert 'complete' in line
+    assert 'blocked' not in line.split('complete')[0], line
+
+
+def test_report_main_returns_a_code_instead_of_raising(tmp_path, capsys):
+    """The documented contract: the code comes back, the message goes to stderr."""
+    (tmp_path / 'notes.txt').write_text('nothing here', encoding='utf-8')
+
+    assert report_main([str(tmp_path)]) == 1
+    assert 'protocol.json' in capsys.readouterr().err
+
+    review = complete_run(tmp_path / 'linked')
+    elsewhere = _write(tmp_path / 'elsewhere' / 'editor-package.json', {'findings': []})
+    (review / 'editor-package.json').unlink()
+    try:
+        (review / 'editor-package.json').symlink_to(elsewhere)
+    except OSError as exc:  # Windows without the privilege. The guard is still there.
+        pytest.skip(f'this machine cannot create a symlink to test against: {exc}')
+
+    assert report_main([str(review)]) == 1
+    assert 'symlink' in capsys.readouterr().err
+
+
+def test_an_unknown_status_is_unknown_and_publishable_says_what_is_showable(tmp_path):
+    """``complete`` answers whether the run finished; ``publishable`` whether to show it."""
+    assert read_run(complete_run(tmp_path / 'clean'))['publishable'] is True
+
+    none = read_run(complete_run(tmp_path / 'none', status='complete-without-findings',
+                                 findings=False))
+    assert (none['status'], none['complete'], none['publishable']) == (
+        'complete-without-findings', True, False)
+    assert none['counts']['findings'] == 0, 'the guard threw out every finding there was'
+
+    guarded = complete_run(tmp_path / 'guarded')
+    package = json.loads((guarded / 'editor-package.json').read_text(encoding='utf-8'))
+    _write(guarded / 'editor-package.json', {**package, 'review_guard_status': 'quarantined'})
+    _rows(guarded / 'quarantined.jsonl', [{'finding_uid': 'ddd4', 'reason': 'no such block'}])
+
+    held = read_run(guarded)
+
+    assert (held['status'], held['guard_status'], held['publishable']) == (
+        'complete', 'quarantined', False)
+    assert held['counts']['quarantined'] == 1
+
+    odd = complete_run(tmp_path / 'odd')
+    progress = json.loads((odd / 'progress.json').read_text(encoding='utf-8'))
+    _write(odd / 'progress.json', {**progress, 'status': 'finished'})
+    _write(odd / 'runtime.json', {'status': 'finished', 'agents': []})
+
+    strange = read_run(odd)
+
+    assert (strange['status'], strange['complete'], strange['publishable']) == (
+        'unknown', False, False)
+    assert any('finished' in problem for problem in strange['problems'])
+
+
+def test_read_run_refuses_every_kind_of_symlink_by_name(tmp_path):
+    """A directory, a receipt and an audit are refused the same way as a report."""
+    for kind, named in (('review', 'review'), ('usage', 'usage.jsonl'),
+                        ('audit', 'audit_stats.md')):
+        review = complete_run(tmp_path / kind)
+        elsewhere = tmp_path / kind / 'elsewhere'
+        elsewhere.mkdir(parents=True, exist_ok=True)
+        try:
+            if kind == 'review':
+                moved = review.parent / 'real-review'
+                review.rename(moved)
+                review.symlink_to(moved, target_is_directory=True)
+            elif kind == 'usage':
+                target = _rows(elsewhere / 'usage.jsonl',
+                               [{'label': 'core-1', 'observed_tokens': 9}])
+                (review / 'usage' / 'core-1').mkdir(parents=True)
+                (review / 'usage' / 'core-1' / 'usage.jsonl').symlink_to(target)
+            else:
+                (elsewhere / 'audit_stats.md').write_text('# not this run\n', encoding='utf-8')
+                (review / 'audit_stats.md').unlink()
+                (review / 'audit_stats.md').symlink_to(elsewhere / 'audit_stats.md')
+        except OSError as exc:  # Windows without the privilege. The guard is still there.
+            pytest.skip(f'this machine cannot create a symlink to test against: {exc}')
+
+        with pytest.raises(ValueError, match=named):
+            read_run(review.parent if kind == 'review' else review)
+
+
+def test_a_uid_in_the_body_and_the_appendix_is_one_finding(tmp_path):
+    """The editor placing a finding twice is a placement, not two findings."""
+    review = complete_run(tmp_path)
+    package = json.loads((review / 'editor-package.json').read_text(encoding='utf-8'))
+    _write(review / 'editor-package.json', {**package, 'appendix': package['findings']})
+
+    run = read_run(review)
+
+    assert [f['finding_uid'] for f in run['body']] == ['aaa1', 'bbb2']
+    assert run['appendix'] == []
+    assert run['counts'] == {'findings': 2, 'body': 2, 'appendix': 0, 'quarantined': 0,
+                             'findings_delivered': 3, 'findings_submitted': 4}
+    assert [f['finding_uid'] for f in run['escalations']] == ['bbb2']
+
+
+def test_a_damaged_editor_package_on_a_complete_run_is_not_a_whole_review(tmp_path):
+    """The ledger fallback is real findings, and it is not the editor's review."""
+    review = complete_run(tmp_path)
+    (review / 'editor-package.json').write_text('{"summary": "Two issues', encoding='utf-8')
+
+    run = read_run(review)
+
+    assert (run['status'], run['complete']) == ('complete', True)
+    assert run['findings_source'] == 'ledger'
+    assert run['publishable'] is False
+    assert any('editor-package.json' in problem for problem in run['problems'])
+
+
+def test_a_startup_blocked_run_records_the_tracks_the_arm_would_have_run(tmp_path):
+    """``specialists: []`` for a full two-track run said the plan was something it was not."""
+    review = tmp_path / 'run' / names.RUN_DIRECTORY
+    review.mkdir(parents=True)
+
+    starter.write_identity(review, tmp_path / 'paper.pdf', 'full-two-track', 3)
+
+    assert read_run(review)['identity']['specialists'] == list(srv.SPECIALIST_TRACKS)
+
+    draft = tmp_path / 'draft' / names.RUN_DIRECTORY
+    draft.mkdir(parents=True)
+
+    starter.write_identity(draft, tmp_path / 'paper.pdf', 'draft-check', 0)
+
+    assert read_run(draft)['identity']['specialists'] == list(starter.DRAFT_CHECK_TRACKS)
+    assert read_run(draft)['identity']['arm'] == 'draft-check'
+
+
+def test_a_retry_in_the_same_folder_does_not_read_as_the_old_block(tmp_path, no_claude_cli):
+    """Until the new run ends, the folder held the old run's cause and nothing said so."""
+    review = killed_run(tmp_path)
+    assert read_run(review)['cause'].startswith('core-1 passed')
+
+    starter.supersede(review)
+
+    again = read_run(review)
+    assert (again['status'], again['cause']) == ('running', None)
+    runtime = json.loads((review / 'runtime.json').read_text(encoding='utf-8'))
+    assert 'core-1 passed' in runtime['superseded']['blocked_reason']
+
+    # The same thing through `review`: a new run in a folder that already holds
+    # a finished one reports its own reason, not the one before it.
+    finished = complete_run(tmp_path / 'again')
+    summary = starter.review(str(FIXTURE), str(finished.parent), arm='single')
+
+    assert summary['stage'] == 'startup'
+    second = read_run(finished)
+    assert second['status'] == 'blocked'
+    assert 'probe failed' in second['cause']
+
+
+def test_the_readme_names_every_key_read_run_returns(tmp_path):
+    """The documented key list is the whole key list, or an app plans around a gap."""
+    readme = (Path(__file__).resolve().parent.parent / 'README.md').read_text(encoding='utf-8')
+
+    for key in read_run(complete_run(tmp_path)):
+        assert f'`{key}`' in readme, f'README.md does not name the {key} key'

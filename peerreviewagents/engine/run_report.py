@@ -22,8 +22,20 @@ RUN_FILES = ('protocol.json', 'progress.json', 'runtime.json', 'startup.json', '
 
 
 def _optional(path):
+    """One JSON file, or ``None`` when it is absent or cannot be read.
+
+    A report of a killed run is rendered from the files that run left behind,
+    and one of them is usually half-written. A traceback from the renderer loses
+    the whole page, including the reason the run stopped, so an unreadable file
+    is read as absent and the page says what it can.
+    """
     path = Path(path)
-    return read(path) if path.is_file() else None
+    if not path.is_file():
+        return None
+    try:
+        return read(path)
+    except (ValueError, UnicodeDecodeError):
+        return None
 
 
 def find_workspace(run):
@@ -37,15 +49,15 @@ def find_workspace(run):
 
 def _reviewer_packages(run):
     folders = [path for path in run.glob('reviewer-*') if path.name.split('-', 1)[1].isdigit()]
-    return [(int(path.name.split('-', 1)[1]), read(path / 'editor-package.json'))
-            for path in sorted(folders, key=lambda path: int(path.name.split('-', 1)[1]))
-            if (path / 'editor-package.json').is_file()]
+    packages = [(int(path.name.split('-', 1)[1]), _optional(path / 'editor-package.json'))
+                for path in sorted(folders, key=lambda path: int(path.name.split('-', 1)[1]))]
+    return [(number, package) for number, package in packages if isinstance(package, dict)]
 
 
 def _final_review(run):
     """The editor's pooled package. An arm that runs without an editor writes none."""
-    path = run / 'editor-package.json'
-    return read(path) if path.is_file() else None
+    package = _optional(run / 'editor-package.json')
+    return package if isinstance(package, dict) else None
 
 
 def _workflow(protocol):
@@ -182,18 +194,23 @@ def report_blocks(run, workspace=None):
         raise ValueError('The workspace does not match the reviewed manuscript')
     reviewers = _reviewer_packages(run)
     progress = _optional(run / 'progress.json') or {}
-    runtime = runtime_usage(run) or {}
-    # The server records the status it reached; the starter records the status
-    # the run ended in. A run killed before the server wrote anything has only
-    # the second, and reporting that as `unknown` hid the reason it stopped.
-    status = progress.get('status') or runtime.get('status') or 'unknown'
+    runtime = runtime_usage(run, on_problem=lambda message: None) or {}
+    startup = _optional(run / 'startup.json') or {}
+    # One rule decides the status, and `read_run` uses the same one: a page
+    # that says blocked while REVIEW.md beside it says complete is worse than
+    # either answer. See `peerreviewagents.runs.run_status`.
+    from ..runs import run_status
+    state = run_status(progress, runtime, startup)
+    status = state['status']
     if status == 'running':
         status += ' (last recorded state, the run may have stopped)'
-    usage = observed_usage(run)
-    agents = agent_rows(run, protocol)
+    usage = observed_usage(run, on_problem=lambda message: None)
+    agents = agent_rows(run, protocol, runtime=runtime)
     models = sorted({row['model'] for row in agents if row.get('model')})
-    if runtime.get('blocked_reason'):
-        status = f"{status}: {runtime['blocked_reason']}"
+    if state['cause']:
+        status = f"{status}: {state['cause']}"
+    elif state['note']:
+        status = f"{status} ({state['note']})"
     fields = [('Paper', (paper or {}).get('title')), ('Paper ID', paper_id),
               ('Source', (paper or {}).get('source_url')),
               ('Workflow', _workflow(protocol)),
