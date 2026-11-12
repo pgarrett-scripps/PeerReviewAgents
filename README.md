@@ -118,6 +118,7 @@ the review's options:
 | `--reviewer-models` | `sonnet,opus,haiku` | Ordered; reviewer *i* takes the *i*-th, wrapping round |
 | `--specialist-model` | `claude-sonnet-5-5` | Every specialist |
 | `--editor-model` | `claude-fable-5-2` | The editor in chief |
+| `--recorder-model` | `claude-haiku-5-5` | The recorder, which writes the run files |
 | `--arm` | `full-two-track` | Which workflow runs; see [`docs/study-arms.md`](docs/study-arms.md) |
 | `--track` | all six | Repeatable; limits the specialist tracks (used by `draft-check`) |
 | `--literature-cutoff` | today | Latest eligible publication date |

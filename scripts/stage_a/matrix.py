@@ -97,14 +97,56 @@ def unusable(specs) -> list:
     return [(spec['id'], spec['pdf']) for spec in specs if not is_pdf(spec['pdf'])]
 
 
-def job(paper: dict, arm: str, reviewers: int, root: Path, stage: str) -> dict:
+def models_slug(reviewer_models: str) -> str:
+    """A short, file-safe form of a ``--reviewer-models`` value, for a job id.
+
+    ``sonnet`` stays ``sonnet``; ``claude-sonnet-5-5,claude-opus-5-5`` becomes
+    ``sonnet-opus``. The family word is enough to tell two arms apart in a
+    folder name, and the exact models the run asked for are on every row of
+    ``results.jsonl`` and in ``matrix-state.json``.
+    """
+    text = str(reviewer_models or '').replace(',', ' ')
+    words = []
+    for part in text.split():
+        name = part.strip().lower().rsplit('/', 1)[-1]
+        if name.startswith('claude-'):
+            name = name[len('claude-'):]
+        word = ''.join(char for char in name.split('-')[0] if char.isalnum())
+        if word:
+            words.append(word)
+    return '-'.join(words)
+
+
+def id_suffix(stage: str, tag: str = '', reviewer_models: str = '') -> str:
+    """What this stage's job ids carry, so two arms never share a run folder.
+
+    An explicit ``--tag`` wins; failing that, a pinned ``--reviewer-models``
+    names itself. The suffix is applied to *every* stage, because a `main` run
+    under pinned models is no more poolable with the recorded `main` run than a
+    rerun is with the run it is being compared against. With neither given the
+    suffix is empty for every stage but `rerun`, whose ids are unchanged, so the
+    ids already in `results.jsonl` and on disk stay exactly as they are.
+    """
+    chosen = str(tag or '').strip() or models_slug(reviewer_models)
+    if stage == 'rerun':
+        return chosen or 'rerun'
+    return chosen
+
+
+def job(paper: dict, arm: str, reviewers: int, root: Path, stage: str,
+        suffix: str = '') -> dict:
     name = f'{paper["paper"]}--{paper["kind"]}--{arm}--r{reviewers}'
-    return {
+    if suffix:
+        name = f'{name}--{suffix}'
+    spec = {
         'id': name, 'stage': stage, 'paper': paper['paper'], 'kind': paper['kind'],
         'arm': arm, 'reviewers': reviewers, 'pdf': paper['pdf'], 'key': paper['key'],
         'run': str(Path(root) / 'runs' / name),
         'log': str(Path(root) / 'logs' / f'{name}.log'),
     }
+    if suffix:
+        spec['tag'] = suffix
+    return spec
 
 
 def reruns(root: Path, slugs: tuple, tag: str) -> list:
@@ -119,12 +161,7 @@ def reruns(root: Path, slugs: tuple, tag: str) -> list:
     for paper in planted(root):
         if paper['paper'] not in wanted:
             continue
-        spec = job(paper, 'full-two-track', 3, root, 'rerun')
-        spec['id'] = f'{spec["id"]}--{tag}'
-        spec['tag'] = tag
-        spec['run'] = str(Path(root) / 'runs' / spec['id'])
-        spec['log'] = str(Path(root) / 'logs' / f'{spec["id"]}.log')
-        out.append(spec)
+        out.append(job(paper, 'full-two-track', 3, root, 'rerun', tag))
     missing = [slug for slug in wanted
                if slug not in {spec['paper'] for spec in out}]
     if missing:
@@ -133,24 +170,25 @@ def reruns(root: Path, slugs: tuple, tag: str) -> list:
 
 
 def jobs(root: Path, stages=STAGES, control_slugs=(), rerun_slugs=(),
-         tag='rerun') -> list:
+         tag='', reviewer_models='') -> list:
     """The whole matrix in the order it should run."""
     papers = planted(root)
+    suffix = id_suffix('main', tag, reviewer_models)
     out = []
     for index, paper in enumerate(papers):
         stage = 'pilot' if index < PILOT else 'main'
         if stage not in stages:
             continue
         for arm in ARMS:
-            out.append(job(paper, arm, 3, root, stage))
+            out.append(job(paper, arm, 3, root, stage, suffix))
     if 'control' in stages:
         for paper in controls(root, control_slugs):
-            out.append(job(paper, 'full-two-track', 3, root, 'control'))
+            out.append(job(paper, 'full-two-track', 3, root, 'control', suffix))
     if 'reviewers1' in stages:
         for paper in papers[:REVIEWERS1]:
-            out.append(job(paper, 'reviewers-only', 1, root, 'reviewers1'))
+            out.append(job(paper, 'reviewers-only', 1, root, 'reviewers1', suffix))
     if 'rerun' in stages:
-        out.extend(reruns(root, rerun_slugs, tag))
+        out.extend(reruns(root, rerun_slugs, id_suffix('rerun', tag, reviewer_models)))
     return out
 
 
@@ -299,17 +337,20 @@ def line(row: dict) -> str:
 
 def drive(root: Path, stages=STAGES, control_slugs=(), peerreview='peerreview',
           ceiling=CEILING, timeout=7200, dry_run=False, only='', limit=0,
-          rescore_only=False, rerun_slugs=(), tag='rerun', reviewer_models='') -> dict:
+          rescore_only=False, rerun_slugs=(), tag='', reviewer_models='') -> dict:
     """Run the matrix in order and stop on the first rule that says to stop.
 
     ``reviewer_models`` pins every core reviewer to one model — pass one name —
     or sets the ordered list they are drawn from. Unset, the review's own
     default applies, which is one model per reviewer and three different ones
-    at three reviewers. Every row records what the run asked for, so a pinned
-    arm and a mixed arm are told apart in the results table rather than pooled;
-    run a pinned arm under its own ``--tag`` so it gets its own folders.
+    at three reviewers. Every row records what the run asked for, and the pin
+    names itself in every job id (:func:`id_suffix`), so a pinned arm gets its
+    own run folders and its own rows instead of being pooled with, or landing
+    on top of, the mixed-model run of the same paper. ``tag`` overrides that
+    suffix when a run needs a name of its own for some other reason.
     """
-    queue = [spec for spec in jobs(root, stages, control_slugs, rerun_slugs, tag)
+    queue = [spec for spec in jobs(root, stages, control_slugs, rerun_slugs,
+                                   tag, reviewer_models)
              if not only or only in spec['id']]
     if limit:
         queue = queue[:limit]
@@ -383,9 +424,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--rerun-paper', action='append', default=[],
                         help='a planted paper slug to run again at full-two-track, '
                              'repeatable; needs --stage rerun')
-    parser.add_argument('--tag', default='rerun',
-                        help='the suffix a rerun folder and row carry, so the earlier '
-                             'run of the same paper is left untouched')
+    parser.add_argument('--tag', default='',
+                        help='the suffix every folder and row of this invocation carries, '
+                             'so the runs already recorded are left untouched; unset, a '
+                             'rerun carries "rerun" and any other stage carries the '
+                             'pinned --reviewer-models, or nothing when neither is given')
     parser.add_argument('--peerreview', default='peerreview', help='the CLI to call')
     parser.add_argument('--ceiling', type=int, default=CEILING,
                         help='stop once the runs have cost this many tokens')
@@ -399,8 +442,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help='pin every core reviewer to one model, or give the ordered '
                              'list they are drawn from, as in "sonnet" or '
                              '"sonnet,opus,haiku"; unset, the review\'s own default '
-                             'applies, which is a different model per reviewer. Pin it '
-                             'with its own --tag to keep a pinned arm in its own folders')
+                             'applies, which is a different model per reviewer. A pinned '
+                             'arm names the pin in every job id, so it gets its own run '
+                             'folders and rows without needing a --tag')
     return parser
 
 

@@ -70,15 +70,20 @@ pins them back:
 
 ```sh
 python scripts/stage_a/matrix.py --stage main --reviewer-models sonnet
-python scripts/stage_a/matrix.py --stage main --tag mixed-models
+python scripts/stage_a/matrix.py --stage main
 ```
 
 One name pins every reviewer to it; a comma-separated list sets the order they
-are drawn from; unset leaves the review its own default. Run a pinned arm under
-its own `--tag` so it gets its own run folders and its own rows, and the model
-the row asked for is in `reviewer_models` on every row of `runs/results.jsonl`
-and in `runs/matrix-state.json`. A folder that already holds a run under other
-models is refused rather than reused.
+are drawn from; unset leaves the review its own default. A pin names itself in
+every job id — the first command runs
+`paper3--statistic--full-two-track--r3--sonnet`, the second
+`paper3--statistic--full-two-track--r3` — so a pinned arm gets its own run
+folders and its own rows without being asked to, and neither lands on top of
+the other. `--tag <name>` overrides that suffix when a run needs a name of its
+own for some other reason, and applies to every stage. The models the row asked
+for are in `reviewer_models` on every row of `runs/results.jsonl` and in
+`runs/matrix-state.json`. A folder that already holds a run under other models
+is refused rather than reused.
 
 ## The four kinds of planted error
 

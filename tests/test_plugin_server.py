@@ -15,6 +15,7 @@ import pytest
 
 from peerreviewagents import names
 from peerreviewagents.plugin import server as srv
+from peerreviewagents.runs import read_run
 
 FIXTURE = Path(__file__).parent / 'fixtures' / 'single-column.pdf'
 # The claim codes ingest hands back, kept the way the workflow script keeps
@@ -569,9 +570,14 @@ def test_a_finding_cites_the_blocks_it_rests_on_and_not_every_block(tmp_path):
 # -- the ledger and the files ----------------------------------------------
 
 
-def two_track_run(tmp_path, reviewers=2):
-    """A whole run short of the editor: every stage reported, findings stored."""
-    open_run(tmp_path, reviewers=reviewers)
+def two_track_run(tmp_path, reviewers=2, model='claude-sonnet-5-5', **opened):
+    """A whole run short of the editor: every stage reported, findings stored.
+
+    ``model`` is what every stage *reports* running, and anything in ``opened``
+    goes to ``ingest`` — which is how a test asks for a run whose plan and
+    whose reports disagree.
+    """
+    open_run(tmp_path, reviewers=reviewers, **opened)
     run = srv.current()
     uids = {}
     for index in range(1, reviewers + 1):
@@ -580,7 +586,7 @@ def two_track_run(tmp_path, reviewers=2):
         stored = srv.submit_finding(token, title=f'Reviewer {index} finding', block_id=block,
                                     quote=quote, comment='...', severity='major')
         uids[f'core-{index}'] = stored['finding_uid']
-        close(token, model='claude-sonnet-5-5')
+        close(token, model=model)
     for position, track in enumerate(srv.SPECIALIST_TRACKS):
         token = claim(f'spec-{track}')['agent_token']
         if track == 'stats':
@@ -589,9 +595,9 @@ def two_track_run(tmp_path, reviewers=2):
                                         quote=quote, comment='...', severity='moderate',
                                         escalate=True)
             uids['spec-stats'] = stored['finding_uid']
-            close(token, model='claude-sonnet-5-5', report_markdown='# what I checked')
+            close(token, model=model, report_markdown='# what I checked')
         else:
-            close(token, none_found=True, model='claude-sonnet-5-5')
+            close(token, none_found=True, model=model)
     return run, uids
 
 
@@ -764,6 +770,35 @@ def test_a_published_review_can_say_which_model_wrote_which_report(tmp_path):
     assert protocol['agents']['core-2']['assigned_model'] == 'claude-opus-5-5'
     assert protocol['agents']['editor']['model'] == 'claude-fable-5-2'
     assert protocol['models']['editor'] == 'claude-fable-5-2'
+
+    # core-2 was assigned Opus and reported Sonnet, so this run is not the run
+    # it records: a different family in a slot is a problem and a reason not to
+    # publish, named slot by slot. The folder is whole, so nothing else is.
+    reading = read_run(run.review)
+    assert reading['status'] == 'complete' and reading['publishable'] is False
+    reasons = reading['not_publishable_reasons']
+    assert len(reasons) == 1 and reasons == reading['problems']
+    assert 'core-2' in reasons[0] and 'claude-opus-5-5' in reasons[0]
+    assert 'claude-sonnet-5-5' in reasons[0] and 'different model family' in reasons[0]
+
+
+def test_a_slot_that_ran_another_version_of_its_own_family_is_not_a_problem(tmp_path):
+    """The family is the plan; the version is what the family resolved to.
+
+    A per-spawn override takes the family alias, so the version that answers it
+    is Claude Code's to choose and a newer one is not a substitution. Only a
+    different family means the run did not happen as it is recorded.
+    """
+    run, uids = two_track_run(tmp_path, model='claude-sonnet-5-6',
+                              reviewer_models='sonnet')
+    editor, accepted = accept_editor(run, uids)
+    assert accepted['accepted'] is True, accepted
+    close(editor, model='claude-fable-5-2')
+    srv.write_review(claim('recorder')['agent_token'])
+
+    reading = read_run(run.review)
+    assert reading['problems'] == []
+    assert reading['publishable'] is True, reading['not_publishable_reasons']
 
 
 def test_a_run_where_nobody_found_anything_is_complete_without_findings(tmp_path):

@@ -400,7 +400,8 @@ def write_usage(review, accounting):
                                      'state': row.get('state')}) + '\n')
 
 
-def write_identity(review, source, arm, reviewers, cutoff=None, tracks=None, models=None):
+def write_identity(review, source, arm, reviewers, cutoff=None, tracks=None, models=None,
+                   reviewer_models=None):
     """Say which paper and which plan this folder was, when the server never did.
 
     The server writes ``protocol.json`` and ``manifest.json`` from the imported
@@ -410,6 +411,11 @@ def write_identity(review, source, arm, reviewers, cutoff=None, tracks=None, mod
     neither, and a folder that cannot name its own paper or arm is not a result
     anybody can file. These two are the thin version: the source hash, the
     plan, the versions, and nothing the run did not actually learn.
+
+    ``models`` is the per-slot assignment and ``reviewer_models`` the ordered
+    list the core reviewers were to be drawn from. Both are written, because
+    the list is what a later comparison has to be pinned to and a folder
+    holding only the per-slot mapping cannot say what order it came from.
     """
     source = Path(source)
     try:
@@ -435,6 +441,7 @@ def write_identity(review, source, arm, reviewers, cutoff=None, tracks=None, mod
             # folder that holds no review is still an arm of the experiment.
             'model': model_plan.describe(models or {}),
             'models': dict(models or {}),
+            'reviewer_models': list(reviewer_models or ()),
             'literature_cutoff': cutoff,
             'version': WORKFLOW_VERSION,
             'finding_schema_version': FINDING_SCHEMA_VERSION,
@@ -446,7 +453,8 @@ def write_identity(review, source, arm, reviewers, cutoff=None, tracks=None, mod
                      'specialists': specialists if plan.get('specialists') else [],
                      'editor': plan.get('editor'), 'revision': plan.get('revision'),
                      'summary': plan.get('summary'),
-                     'models': dict(models or {})},
+                     'models': dict(models or {}),
+                     'reviewer_models': list(reviewer_models or ())},
         })
         wrote.append('protocol.json')
     if not (review / 'manifest.json').is_file():
@@ -567,7 +575,8 @@ def prompt_for(pdf, out, reviewers, arm, cutoff, tracks, models=None):
 def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, tracks=None,
            per_agent_tokens=PER_AGENT_TOKENS, per_run_tokens=PER_RUN_TOKENS,
            wall_timeout=WALL_TIMEOUT, directory=None, cwd=None,
-           reviewer_models=None, specialist_model=None, editor_model=None):
+           reviewer_models=None, specialist_model=None, editor_model=None,
+           recorder_model=None):
     """Run one review and return its summary.
 
     The summary is a dict, not an exit code: ``status``, ``blocked_reason``,
@@ -581,14 +590,20 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
 
     ``reviewer_models`` is the ordered list the core reviewers are drawn from,
     reviewer *i* running ``list[(i - 1) % len(list)]``; the default makes three
-    reviewers three different models. See :mod:`peerreviewagents.plugin.models`
-    for the defaults and the ordering.
+    reviewers three different models. ``specialist_model``, ``editor_model``
+    and ``recorder_model`` are one model each. Anything not given here falls
+    back to the ``PEERREVIEW_*_MODEL(S)`` variables in this process's
+    environment, and only then to the defaults — one merge, in
+    :func:`peerreviewagents.plugin.models.settle`, because the session this
+    starter launches reads those same variables and the two must not reach
+    different answers about what the run asked for.
 
-    An unknown arm, a manuscript that is not there, a missing plugin and a
-    model this login cannot run all raise ``ValueError`` before anything is
-    written or any usage is spent — a caller gave an argument no run can be
-    made from, which is not a run that stopped. :func:`review_main` turns that
-    into a message and the exit code 2.
+    An unknown arm, a manuscript that is not there, a missing plugin, a model
+    this login cannot run and a ``CLAUDE_CODE_SUBAGENT_MODEL`` that would
+    outrank the plan all raise ``ValueError`` before anything is written or any
+    usage is spent — a caller gave an argument no run can be made from, which
+    is not a run that stopped. :func:`review_main` turns that into a message
+    and the exit code 2.
     """
     if arm not in ARMS:
         raise ValueError(f'Unknown arm {arm}. Arms: ' + ', '.join(sorted(ARMS)))
@@ -604,12 +619,25 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     # Which model each slot will run, settled and checked here: a model this
     # login cannot run is refused before the probe spends anything, because
     # Claude Code's own answer to one is to quietly run a different model.
-    wanted = model_plan.assign(
-        (*plan_slots(arm, reviewers, tracks), 'recorder'), reviewers=reviewer_models,
-        specialist=specialist_model, editor=editor_model)
+    #
+    # `settle` merges this call's arguments over the environment once, and the
+    # same merged answer is both planned from and passed on. Planning from the
+    # arguments alone while passing the environment through was a disagreement
+    # with the server inside the session: with PEERREVIEW_REVIEWER_MODELS set
+    # and no argument given, this folder was written with the defaults and the
+    # server then refused it for already holding a run under other models.
+    settled = model_plan.settle(reviewer_models, specialist_model, editor_model, recorder_model)
+    reviewer_list = list(model_plan.parse_list(settled.get('reviewers'))
+                         or model_plan.DEFAULT_REVIEWER_MODELS)
+    wanted = model_plan.assign((*plan_slots(arm, reviewers, tracks), 'recorder'), **settled)
     model_plan.refuse(wanted)
-    chosen = model_plan.to_environment(reviewers=reviewer_models, specialist=specialist_model,
-                                       editor=editor_model)
+    # A variable that outranks the per-spawn override makes every slot one
+    # model while the run records the plan. Refused, never unset: the variable
+    # is the user's.
+    outranked = model_plan.subagent_override(claude_version())
+    if outranked:
+        raise ValueError(outranked)
+    chosen = model_plan.to_environment(**settled)
     review_dir.mkdir(parents=True, exist_ok=True)
     supersede(review_dir)
 
@@ -618,7 +646,8 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
                                         'tools_expected': list(tool_names()), 'at': now()})
     if problems:
         reason = 'the start-up probe failed: ' + '; '.join(problems)
-        write_identity(review_dir, source, arm, reviewers, literature_cutoff, tracks, wanted)
+        write_identity(review_dir, source, arm, reviewers, literature_cutoff, tracks, wanted,
+                       reviewer_list)
         finish(review_dir, 'blocked', reason,
                Accounting(per_agent_tokens, per_run_tokens), 0.0, None)
         return {'status': 'blocked', 'blocked_reason': reason, 'stage': 'startup',
@@ -658,7 +687,8 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
             status = 'blocked'
     # A session that ended before the workflow called `ingest` left no protocol
     # and no manifest, so the folder would not name its own paper or arm.
-    write_identity(review_dir, source, arm, reviewers, literature_cutoff, tracks, wanted)
+    write_identity(review_dir, source, arm, reviewers, literature_cutoff, tracks, wanted,
+                   reviewer_list)
     finish(review_dir, status, blocked, accounting, wall, result)
     report = rerender(review_dir, root / MANUSCRIPT_DIRECTORY)
     summary = {
@@ -725,6 +755,9 @@ def build_parser(prog='peerreview review'):
     parser.add_argument('--editor-model', default=None, metavar='MODEL',
                         help='the model the editor runs (default: '
                              + model_plan.DEFAULT_EDITOR_MODEL + ')')
+    parser.add_argument('--recorder-model', default=None, metavar='MODEL',
+                        help='the model the recorder runs: ingest, the ledger and the '
+                             'write-up (default: ' + model_plan.DEFAULT_RECORDER_MODEL + ')')
     parser.add_argument('--per-agent-tokens', type=int, default=PER_AGENT_TOKENS)
     parser.add_argument('--per-run-tokens', type=int, default=PER_RUN_TOKENS)
     parser.add_argument('--timeout', type=int, default=WALL_TIMEOUT,
@@ -764,7 +797,8 @@ def review_main(argv=None, prog='peerreview review'):
                          wall_timeout=args.timeout, directory=args.plugin_dir,
                          reviewer_models=args.reviewer_models,
                          specialist_model=args.specialist_model,
-                         editor_model=args.editor_model)
+                         editor_model=args.editor_model,
+                         recorder_model=args.recorder_model)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2

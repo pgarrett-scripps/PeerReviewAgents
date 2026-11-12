@@ -60,7 +60,10 @@ peerreview review manuscript.pdf run-output --reviewers 3 \
 
 Those three are the defaults — `--reviewer-models sonnet,opus,haiku`,
 `--specialist-model claude-sonnet-5-5`, `--editor-model claude-fable-5-2`, with
-the recorder on `claude-haiku-5-5`. Each takes an alias or a full model id, and
+the recorder on `claude-haiku-5-5`. Each takes one of the four models this
+version knows — `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-haiku-5-5` and
+`claude-fable-5-2` — by alias or by id, and anything else is refused by name as
+a model this version does not know rather than as one your login may not run.
 `revision-1` always runs on `core-1`'s model because it is `core-1` revising
 its own findings. Pinning every reviewer to one model is
 `--reviewer-models sonnet`, which is what a run being compared against a

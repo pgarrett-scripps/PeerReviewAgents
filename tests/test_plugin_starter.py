@@ -447,10 +447,12 @@ def test_the_flags_the_user_typed_reach_the_run(monkeypatch):
     monkeypatch.setattr(starter, 'review', fake_review)
     assert starter.review_main(['paper.pdf', 'out', '--reviewer-models', 'opus,haiku',
                                 '--specialist-model', 'haiku',
-                                '--editor-model', 'fable']) == 0
+                                '--editor-model', 'fable',
+                                '--recorder-model', 'sonnet']) == 0
     assert seen['reviewer_models'] == 'opus,haiku'
     assert seen['specialist_model'] == 'haiku'
     assert seen['editor_model'] == 'fable'
+    assert seen['recorder_model'] == 'sonnet', 'the recorder is a slot like any other'
 
     assert starter.review_main(['paper.pdf', 'out']) == 0
     assert seen['reviewer_models'] is None, 'unset is the default, not an empty list'
@@ -497,6 +499,32 @@ def test_the_models_asked_for_are_recorded_even_when_no_session_started(tmp_path
     assert protocol['models']['core-2'] == 'claude-opus-5-5'
     assert protocol['models']['editor'] == 'claude-fable-5-2'
     assert 'claude-opus-5-5' in protocol['model']
+    assert protocol['reviewer_models'] == list(starter.model_plan.DEFAULT_REVIEWER_MODELS), \
+        'the ordered list, not only the per-slot mapping it was drawn from'
+
+
+def test_a_subagent_variable_that_outranks_the_plan_stops_the_run(tmp_path, monkeypatch,
+                                                                  no_allowlist):
+    """Below 2.1.251 the variable beats the per-spawn override, silently.
+
+    Every slot would then run whatever it names while the run records the plan,
+    which is the one disagreement no later reading can repair. The variable is
+    the user's, so it is refused rather than unset, and a Claude Code that
+    ranks it correctly is left alone.
+    """
+    monkeypatch.setenv('CLAUDE_CODE_SUBAGENT_MODEL', 'haiku')
+    monkeypatch.setattr(starter, 'claude_version', lambda binary=None: '2.1.250')
+    with pytest.raises(ValueError) as refused:
+        starter.review(str(FIXTURE), str(tmp_path / 'run'), arm='single')
+    assert 'CLAUDE_CODE_SUBAGENT_MODEL' in str(refused.value)
+    assert os.environ['CLAUDE_CODE_SUBAGENT_MODEL'] == 'haiku', 'refused, never unset'
+    assert not (tmp_path / 'run').exists(), 'nothing written, nothing spent'
+
+    monkeypatch.setattr(starter, 'claude_version', lambda binary=None: '2.1.251')
+    monkeypatch.setattr(starter, 'claude_binary', lambda: None)
+    summary = starter.review(str(FIXTURE), str(tmp_path / 'run'), arm='single')
+    assert summary['status'] == 'blocked' and summary['stage'] == 'startup', \
+        'a fixed Claude Code gets as far as the probe'
 
 
 def test_the_stub_run_records_what_was_asked_for_beside_what_ran(tmp_path, monkeypatch,

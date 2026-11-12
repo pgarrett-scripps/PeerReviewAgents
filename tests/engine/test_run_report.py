@@ -21,6 +21,10 @@ import pytest
 from peerreviewagents.engine.run_report import NOTICE, WIDTH, report_blocks, write_reports
 from peerreviewagents.engine.storage import write
 
+# What a table row may be as wide as, which is a terminal rather than a
+# paragraph: the agent table carries two full model ids per row.
+TABLE_WIDTH = 104
+
 EDIT = {'title': 'Soften the prerequisite claim', 'severity': 'major', 'kind': 'edit',
         'block_id': 'b1', 'placement': 'anchored', 'quote': 'These results confirm the model.',
         'comment': 'The curves are consistent with the model but do not confirm it. ' * 3,
@@ -31,18 +35,20 @@ QUESTION = {'title': 'Report biological replicates', 'severity': 'moderate', 'ki
             'comment': 'How many biological replicates were used?'}
 
 # The slots and the per-slot models of a real two-track run, which is where the
-# header's "Models" row and the agent table have to come from.
+# header's model rows and the agent table have to come from. ``assigned_model``
+# is what the run asked that slot to run and ``model`` what the slot reported
+# running: two facts, and the page shows them as two.
 AGENTS = {
     'core-1': {'role': 'core', 'track': 'core', 'attempt': 1, 'tool_calls': 8,
-               'model': 'claude-sonnet-5-5'},
+               'assigned_model': 'claude-sonnet-5-5', 'model': 'claude-sonnet-5-5'},
     'core-2': {'role': 'core', 'track': 'core', 'attempt': 1, 'tool_calls': 9,
-               'model': 'claude-sonnet-5-5'},
+               'assigned_model': 'claude-sonnet-5-5', 'model': 'claude-sonnet-5-5'},
     'spec-stats': {'role': 'specialist', 'track': 'stats', 'attempt': 1, 'tool_calls': 12,
-                   'model': 'claude-sonnet-5-5'},
+                   'assigned_model': 'claude-sonnet-5-5', 'model': 'claude-sonnet-5-5'},
     'editor': {'role': 'editor', 'track': 'editor', 'attempt': 1, 'tool_calls': 3,
-               'model': 'claude-opus-5-5'},
+               'assigned_model': 'claude-opus-5-5', 'model': 'claude-opus-5-5'},
     'recorder': {'role': 'recorder', 'track': 'recorder', 'attempt': 1, 'tool_calls': 2,
-                 'model': 'claude-haiku-5-5'},
+                 'assigned_model': 'claude-haiku-5-5', 'model': 'claude-haiku-5-5'},
 }
 
 STREAM = [
@@ -133,7 +139,8 @@ def test_the_header_states_what_the_run_really_spent(run):
     assert header['Session tool calls'] == '66'     # what the stream saw: 17+19+21+7+2
     assert header['Workflow'] == ('full-two-track: 2 core reviewer(s), 6 specialist track(s), '
                                   'an editor')
-    assert header['Models'] == 'claude-haiku-5-5, claude-opus-5-5, claude-sonnet-5-5'
+    assert header['Models asked for'] == 'claude-haiku-5-5, claude-opus-5-5, claude-sonnet-5-5'
+    assert header['Models that ran'] == 'claude-haiku-5-5, claude-opus-5-5, claude-sonnet-5-5'
     assert header['Literature cutoff'] == '2024-04-07'
     assert header['Paper ID'] == 'paper-1'
 
@@ -154,10 +161,37 @@ def test_the_agent_table_names_the_model_each_agent_ran_as(run):
     markdown, text = reports(run)
 
     assert '## Agents' in markdown
-    assert '| Agent | Model | Server calls | Session calls | Tokens | State |' in markdown
-    assert '| core-1 | claude-sonnet-5-5 | 8 | 17 | 61,794 | done |' in markdown
-    assert '| editor | claude-opus-5-5 | 3 | 7 | 20,000 | done |' in markdown
+    assert ('| Agent | Model asked | Model ran | Server calls | Session calls | Tokens | State |'
+            in markdown)
+    assert ('| core-1 | claude-sonnet-5-5 | claude-sonnet-5-5 | 8 | 17 | 61,794 | done |'
+            in markdown)
+    assert '| editor | claude-opus-5-5 | claude-opus-5-5 | 3 | 7 | 20,000 | done |' in markdown
     assert 'claude-haiku-5-5' in text
+
+
+def test_the_agent_table_shows_an_assigned_model_that_did_not_run(run):
+    """A slot that ran another family is the record disagreeing with the plan.
+
+    The page is where that is read, so the plan and the observation sit in
+    their own columns and neither is ever printed as the other. A slot whose
+    model was never reported says so rather than borrowing the plan's answer.
+    """
+    protocol = json.loads((run / 'protocol.json').read_text(encoding='utf-8'))
+    protocol['agents']['core-1'].pop('model')      # core-1 never reported a model
+    write(run / 'protocol.json', protocol)
+    runtime = json.loads((run / 'runtime.json').read_text(encoding='utf-8'))
+    runtime['agents'] = [{'label': 'editor', 'attempt': 1, 'tokens': 20000, 'toolCalls': 7,
+                          'model': 'claude-sonnet-5-5', 'state': 'done'},
+                         {'label': 'core-1', 'attempt': 1, 'tokens': 61794, 'toolCalls': 17,
+                          'state': 'done'}]
+    write(run / 'runtime.json', runtime)
+    markdown, _ = reports(run)
+
+    assert '| editor | claude-opus-5-5 | claude-sonnet-5-5 | 3 | 7 | 20,000 | done |' in markdown
+    assert '| core-1 | claude-sonnet-5-5 | not recorded | 8 | 17 | 61,794 | done |' in markdown
+    assert rows(markdown)['Models asked for'] == ('claude-haiku-5-5, claude-opus-5-5, '
+                                                  'claude-sonnet-5-5')
+    assert rows(markdown)['Models that ran'] == 'claude-haiku-5-5, claude-sonnet-5-5'
 
 
 def test_a_retry_is_labelled_as_one_and_an_unplanned_agent_is_still_shown(run):
@@ -169,8 +203,9 @@ def test_a_retry_is_labelled_as_one_and_an_unplanned_agent_is_still_shown(run):
     write(run / 'runtime.json', runtime)
     markdown, _ = reports(run)
 
-    assert '| core-1#2 | claude-sonnet-5-5 | 8 | 3 | 1,000 | done |' in markdown
-    assert '| ghost-1 | not recorded | — | 1 | 500 | failed |' in markdown
+    assert ('| core-1#2 | claude-sonnet-5-5 | claude-sonnet-5-5 | 8 | 3 | 1,000 | done |'
+            in markdown)
+    assert '| ghost-1 | not recorded | not recorded | — | 1 | 500 | failed |' in markdown
     assert rows(markdown)['Agents'] == '6'
 
 
@@ -235,12 +270,32 @@ def test_the_final_review_comes_before_each_independent_reviewer(run):
 
 
 def test_the_text_report_is_plain_text_within_the_width(run):
-    _, text = reports(run)
+    """Prose keeps to the width; a table keeps to its data.
 
-    for line in text.splitlines():
+    ``WIDTH`` is a prose measure. A row of the agent table carries two full
+    model ids — the one the slot was asked to run and the one it ran — at
+    seventeen characters each, so it is wider than a paragraph may be, and
+    shortening a model id to fit is the one thing those two columns exist to
+    prevent. A table row is therefore allowed a terminal's width instead.
+    """
+    _, text = reports(run)
+    lines = text.splitlines()
+    tabular = set()
+    for index, line in enumerate(lines):
+        # A table's column rule: dashes in groups. A heading's rule has no gap.
+        if not (line.strip() and '  ' in line and re.fullmatch(r'[- ]+', line)):
+            continue
+        start, stop = index, index + 1
+        while start > 0 and lines[start - 1].strip():
+            start -= 1
+        while stop < len(lines) and lines[stop].strip():
+            stop += 1
+        tabular.update(range(start, stop))
+
+    for index, line in enumerate(lines):
         assert not (line.startswith(('#', '>', '| ')) or '**' in line), line
         if str(run) not in line:
-            assert len(line) <= WIDTH, line
+            assert len(line) <= (TABLE_WIDTH if index in tabular else WIDTH), line
 
 
 # -- the inputs -------------------------------------------------------------

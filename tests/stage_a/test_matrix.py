@@ -165,6 +165,40 @@ def test_a_rerun_of_a_paper_that_is_not_planted_is_refused(tmp_path):
         raise AssertionError('a slug that names no planted paper should stop the run')
 
 
+def test_a_pinned_model_names_itself_in_every_job_id(tmp_path):
+    """Two arms under different models must never share a run folder.
+
+    `already_done` skips a finished folder, so a `main` run under pinned models
+    landing in the recorded run's folder would be read as already done and the
+    pinned arm would never run at all. The suffix is what keeps them apart, and
+    with nothing pinned the ids are byte-identical to the recorded ones.
+    """
+    root = planted_root(tmp_path, 'trial-pmc8938265')
+    plain = matrix.jobs(root, ('pilot', 'reviewers1'), (), ())
+    pinned = matrix.jobs(root, ('pilot', 'reviewers1'), (), (),
+                         reviewer_models='claude-sonnet-5-5,opus')
+    tail = '--sonnet-opus'
+    assert all(spec['id'].endswith(tail) for spec in pinned)
+    assert all(spec['tag'] == 'sonnet-opus' for spec in pinned)
+    assert [spec['id'] for spec in plain] == [spec['id'][:-len(tail)] for spec in pinned]
+    assert all('tag' not in spec for spec in plain), 'an unpinned run is the plain matrix'
+    assert [spec['run'] for spec in plain] != [spec['run'] for spec in pinned]
+
+    tagged = matrix.jobs(root, ('pilot',), (), (), tag='briefs-fixed',
+                         reviewer_models='sonnet')
+    assert all(spec['id'].endswith('--briefs-fixed') for spec in tagged), '--tag wins'
+
+
+def test_the_rerun_ids_already_on_disk_do_not_move(tmp_path):
+    """`rerun` is the one stage that had a suffix before the models did."""
+    assert matrix.id_suffix('rerun') == 'rerun'
+    assert matrix.id_suffix('rerun', reviewer_models='haiku') == 'haiku'
+    assert matrix.id_suffix('rerun', 'briefs-fixed', 'haiku') == 'briefs-fixed'
+    assert matrix.id_suffix('main') == ''
+    assert matrix.id_suffix('main', reviewer_models='claude-haiku-5-5') == 'haiku'
+    assert matrix.models_slug('') == '' and matrix.models_slug('  ,  ') == ''
+
+
 def test_reruns_are_not_in_the_default_stages(tmp_path):
     """A plain matrix run must never start a rerun of anything."""
     root = planted_root(tmp_path, 'trial-pmc8938265')

@@ -219,6 +219,17 @@ class Run:
         # see `models.py` for the ordering and the defaults.
         self.reviewer_models = (tuple(model_plan.parse_list(reviewer_models))
                                 or tuple(model_plan.DEFAULT_REVIEWER_MODELS))
+        # What this run chose, role by role, so a second `ingest` in the same
+        # process can be told whether it is asking for the same run or a
+        # different one. The per-slot mapping cannot answer that on its own: it
+        # does not say which role put a model where.
+        self.model_choice = {
+            'reviewers': list(self.reviewer_models),
+            'specialist': model_plan.choice(specialist_model,
+                                            model_plan.DEFAULT_SPECIALIST_MODEL),
+            'editor': model_plan.choice(editor_model, model_plan.DEFAULT_EDITOR_MODEL),
+            'recorder': model_plan.choice(recorder_model, model_plan.DEFAULT_RECORDER_MODEL),
+        }
         self.models = model_plan.refuse(model_plan.assign(
             (*self.required_slots(), 'recorder'),
             reviewers=self.reviewer_models, specialist=specialist_model,
@@ -312,7 +323,12 @@ class Run:
                         f'{slot}: {kept_models.get(slot) or "no model"} there, '
                         f'{self.models.get(slot) or "no model"} here' for slot in differs)
                     + '). Two model configurations are never pooled in one folder: use a '
-                    'fresh one, or change them back with ' + model_plan.FLAG['core'] + '.')
+                    'fresh one, or change them back with '
+                    # The flag for the slots that actually differ. Naming the
+                    # reviewer flag for an editor that changed sends a reader
+                    # to a setting that is not the one in the way.
+                    + ', '.join(sorted({model_plan.FLAG[model_plan.role_of(slot)]
+                                        for slot in differs})) + '.')
 
     # -- plan ---------------------------------------------------------------
 
@@ -688,10 +704,33 @@ def current():
 # -- tools ------------------------------------------------------------------
 
 
+def _model_disagreement(run, settled):
+    """What an attaching call asks for that the live run does not do, in words.
+
+    Only what the caller actually named is compared. A second ``ingest`` that
+    passes no models at all is attaching to the run as it stands, and reading
+    its silence as a request for the defaults would refuse the ordinary attach
+    a retry makes.
+    """
+    said = []
+    for role, wanted in (settled or {}).items():
+        if role == 'reviewers':
+            listed = tuple(model_plan.parse_list(wanted))
+            if listed and listed != tuple(run.reviewer_models):
+                said.append(', '.join(run.reviewer_models) + ' as its core reviewers, not '
+                            + ', '.join(listed) + ' (' + model_plan.FLAG['core'] + ')')
+            continue
+        mine = run.model_choice.get(role)
+        if model_plan.normalize(wanted) != mine:
+            said.append(str(mine) + ' as its ' + role + ', not ' + model_plan.normalize(wanted)
+                        + ' (' + model_plan.FLAG[role] + ')')
+    return '; '.join(said)
+
+
 def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
            literature_cutoff: str = '', title: str = '', tracks: list = None,
            reviewer_models: list = None, specialist_model: str = '',
-           editor_model: str = '') -> dict:
+           editor_model: str = '', recorder_model: str = '') -> dict:
     """Open a run: import the manuscript PDF and fix the plan. Safe to call twice.
 
     ``tracks`` narrows the specialist track to the ones named; the default is
@@ -700,11 +739,23 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
     ``reviewer_models`` is the ordered list the core reviewers take their model
     from — reviewer *i* runs ``list[(i - 1) % len(list)]``, so the default
     ``claude-sonnet-5-5, claude-opus-5-5, claude-haiku-5-5`` makes three
-    reviewers three different models. Anything omitted here falls back to what
-    the launcher asked for in the environment, then to the defaults in
-    ``models.py``. The answer's ``models`` says which model each slot is to
-    run, and ``spawn`` is the override to pass that agent.
+    reviewers three different models. ``specialist_model``, ``editor_model``
+    and ``recorder_model`` are one model each, so every slot is settable the
+    same way. Anything omitted here falls back to what the launcher asked for
+    in the environment, then to the defaults in ``models.py`` — one merge,
+    ``models.settle``, the same one the launcher plans from. The answer's
+    ``models`` says which model each slot is to run, and ``spawn`` is the
+    override to pass that agent.
     """
+    try:
+        # The arguments over the environment, once, in the module that owns the
+        # rule. The launcher plans from this same merge, so a session started
+        # with PEERREVIEW_* variables set and a workflow that passes no model
+        # arguments reach the same answer instead of two.
+        settled = model_plan.settle(reviewer_models, specialist_model, editor_model,
+                                    recorder_model)
+    except ValueError as exc:
+        return rejection(str(exc))
     run = STATE['run']
     if run is not None and str(Path(out).resolve()) == str(run.root):
         wanted = ARMS[arm]['reviewers'] if arm in ARMS else reviewers
@@ -712,6 +763,14 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
             return rejection('This run is the ' + run.arm + ' arm with ' + str(run.reviewers)
                              + ' core reviewer(s). An attach does not change the plan: review '
                              'the ' + str(arm) + ' arm in a fresh out folder.')
+        # The models are as much the plan as the arm is. A second caller asking
+        # for different ones is not attaching to this run, and answering
+        # `attached: true` would hand it a run whose reports will be recorded
+        # under models it did not ask for.
+        differs = _model_disagreement(run, settled)
+        if differs:
+            return rejection('This run already runs ' + differs + '. An attach does not change '
+                             'the models: review the models you want in a fresh out folder.')
         # The claim codes are minted once and go back once. A second caller
         # attaching to a live run is not the recorder: no identities, and not
         # the slot list either — nor the per-slot models, which name the slots.
@@ -720,15 +779,13 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
                 if k not in hidden} | {'attached': True}
     if run is not None:
         return rejection('This server process already serves the run at ' + str(run.root))
-    chosen = model_plan.from_environment()
     try:
         run = Run(pdf, out, reviewers, arm, literature_cutoff or None,
                   STATE['plugin_root'], title or None, list(tracks) if tracks else None,
-                  reviewer_models=(list(reviewer_models) if reviewer_models
-                                   else chosen.get('reviewers')),
-                  specialist_model=specialist_model or chosen.get('specialist'),
-                  editor_model=editor_model or chosen.get('editor'),
-                  recorder_model=chosen.get('recorder'))
+                  reviewer_models=settled.get('reviewers'),
+                  specialist_model=settled.get('specialist'),
+                  editor_model=settled.get('editor'),
+                  recorder_model=settled.get('recorder'))
     except (ValueError, KeyError, TypeError, OSError) as exc:
         return rejection(str(exc))
     STATE['run'] = run

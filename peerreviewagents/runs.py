@@ -37,6 +37,10 @@ from .names import (
     RUN_STATUSES,
 )
 
+# The one module that decides which model a slot runs also decides what counts
+# as a different model, which is what this reader has to compare.
+from .plugin import models as model_plan
+
 #: The files that make a folder a review folder. A run that was killed before
 #: the server wrote anything still has ``startup.json`` from the probe.
 RUN_MARKERS = ('protocol.json', 'progress.json', 'runtime.json', 'startup.json',
@@ -360,7 +364,8 @@ def run_status(progress=None, runtime=None, startup=None, problems=None):
             'note': note}
 
 
-def publishable_reasons(status, findings_source, guard_status, problems, quarantined=0):
+def publishable_reasons(status, findings_source, guard_status, problems, quarantined=0,
+                        substitutions=()):
     """Why this run is not publishable, in words, or an empty list when it is.
 
     One rule, in one place, so that ``publishable`` and the reasons can never
@@ -387,6 +392,17 @@ def publishable_reasons(status, findings_source, guard_status, problems, quarant
     findings that come from the ledger instead of the editor's package, no
     editor package at all, no guard verdict, or a file that could not be read in
     full.
+
+    **A slot that ran a different model family than it was assigned** stops it
+    too, and each one is its own reason. Claude Code substitutes a model it may
+    not run rather than refusing, and a substitution inside the session happens
+    after every check this package can make up front: the run then reads as an
+    arm nobody ran, and publishing it would attribute a report to a model that
+    never wrote it. ``substitutions`` holds those lines — see
+    :func:`peerreviewagents.plugin.models.substitutions`, which also decides
+    what is not one: the same family at another version is the version that
+    family resolved to on this login, and the observed id is what gets
+    reported.
     """
     reasons = []
     if status == COMPLETE_WITHOUT_FINDINGS:
@@ -407,6 +423,7 @@ def publishable_reasons(status, findings_source, guard_status, problems, quarant
     if problems:
         reasons.append(f'{len(problems)} file(s) could not be read in full, and they are named '
                        'in `problems`')
+    reasons += list(substitutions)
     return reasons
 
 
@@ -439,7 +456,12 @@ def read_run(path):
         what was thrown out, and whether that mattered is a judgement for a
         person rather than a flag. A review with no findings in it is
         publishable when the reviewers raised nothing and the guard held
-        nothing, and is not when the guard emptied it.
+        nothing, and is not when the guard emptied it. A slot that reported
+        running a different model family than the run assigned it is a reason
+        of its own, naming the slot, the model assigned and the model that ran:
+        the review would otherwise be attributed to a model that never wrote
+        it. Another version of the same family is not a reason — that is the
+        version the family resolved to, and ``agents[].model`` reports it.
     ``cause``, ``note``
         ``cause`` is why a run that is not complete stopped — a rate limit, a
         breached token ceiling, the wall-clock limit, a stage that never
@@ -447,10 +469,11 @@ def read_run(path):
         limit that fired *after* the review was written, which ends the session
         without unwriting the review.
     ``problems``
-        Every file that could not be read in full, named. Empty for a whole
-        folder. A reading with problems is still a reading — that is the point
-        — but a consumer should not publish it or quote a number from it
-        without saying so.
+        Every file that could not be read in full, named, and every slot whose
+        observed model is a different family from the one it was assigned.
+        Empty for a whole folder. A reading with problems is still a reading —
+        that is the point — but a consumer should not publish it or quote a
+        number from it without saying so.
     ``stage``
         ``startup`` when no session ever ran and no subscription usage was
         spent, ``session`` once one did.
@@ -479,10 +502,11 @@ def read_run(path):
         probe refused to launch over. ``startup_problems`` is that same list at
         the top level, kept for callers that already read it.
     ``agents``
-        One row per agent slot: role, track, ``model`` — what the agent
-        reported running as, falling back to what the slot was asked to run —
-        ``assigned_model``, what it was asked to run, server and session tool
-        calls, tokens, state. Empty for a run that never claimed a slot.
+        One row per agent slot: role, track, ``model`` — what the agent was
+        observed running as, and ``None`` when nothing observed it, which means
+        *not recorded* and never *what it was asked to run* — ``assigned_model``,
+        what the run asked that slot to run, server and session tool calls,
+        tokens, state. Empty for a run that never claimed a slot.
     ``reports``
         Absolute paths to what exists on disk — ``REVIEW.md``, ``REVIEW.txt``,
         each ``audit_<track>.md``, ``editor-package.json`` — and nothing else.
@@ -552,7 +576,13 @@ def read_run(path):
     agents = agent_rows(review, protocol, runtime=runtime, on_problem=problems.append)
     usage = observed_usage(review, on_problem=problems.append)
 
-    reasons = publishable_reasons(status, source, guard, problems, len(quarantined))
+    # What each slot was assigned against what it reported running. It is
+    # computed before the reasons so that the "N file(s) could not be read in
+    # full" count is the files, and appended to `problems` after, because a
+    # substituted model is a problem with this run's record of itself.
+    swapped = model_plan.substitutions(agents)
+    reasons = publishable_reasons(status, source, guard, problems, len(quarantined), swapped)
+    problems += swapped
 
     probe = startup.get('probe')
     if probe is not None and not isinstance(probe, dict):

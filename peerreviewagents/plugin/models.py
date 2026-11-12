@@ -29,16 +29,26 @@ not. :func:`refuse` fails at startup instead, in one line per slot that names
 the slot, the model and the flag that changes it.
 
 Availability is read from the ``availableModels`` allowlist in the settings
-files Claude Code reads, which is where an organisation restricts model choice.
-Where no allowlist is set, the models this plugin knows (:data:`KNOWN`) are
-available and any other name is refused: a name nobody here recognises is
-exactly the name Claude Code would quietly replace.
+files Claude Code reads, concatenated across those files the way Claude Code
+concatenates them. A name outside :data:`KNOWN` is refused too, but for the
+reason it is actually refused for: this version of the plugin does not know
+that model, not that the login may not run it.
+
+Two other things here are about the gap between the plan and what runs.
+:func:`settle` is the one merge of flags over environment, so the starter and
+the server cannot disagree about which models a run asked for. And
+:func:`substitutions` compares what each slot was assigned against what it
+reported running, because Claude Code's silent fallback is exactly what
+:func:`refuse` cannot catch when the substitution happens inside the session:
+a different family is a run that did not happen as recorded, and a different
+version of the same family is simply the version that ran.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 #: The family aliases Claude Code accepts, and the model each one means here.
@@ -78,6 +88,11 @@ MANAGED_SETTINGS = (
     '/Library/Application Support/ClaudeCode/managed-settings.json',
     'C:\\ProgramData\\ClaudeCode\\managed-settings.json',
 )
+#: The variable that sets one model for every subagent, whatever a slot asked.
+SUBAGENT_MODEL = 'CLAUDE_CODE_SUBAGENT_MODEL'
+#: The Claude Code release from which that variable ranks *below* a per-spawn
+#: override and an agent file rather than above both.
+SUBAGENT_PRECEDENCE_FIXED = (2, 1, 251)
 
 
 def normalize(name):
@@ -106,17 +121,29 @@ def spawn_name(name):
 def parse_list(text):
     """``"sonnet, opus,haiku"`` as the ordered tuple of full model ids.
 
-    Blank entries are dropped rather than becoming a slot with no model, and an
-    empty string means "unset", not "an empty list": the caller then keeps the
-    default.
+    An empty string means "unset", not "an empty list": the caller then keeps
+    the default. An *empty entry* inside a list that is otherwise a choice —
+    ``sonnet,,haiku`` — is refused rather than dropped, because dropping it
+    silently changes which reviewer runs which model: with the empty item
+    dropped, reviewer 2 runs Haiku instead of the model the typo meant to name,
+    and nothing in the run would say so.
+
+    A list may be separated by commas or, when it holds no comma at all, by
+    spaces. Whitespace around a comma is not an entry.
     """
     if text is None:
         return ()
     if isinstance(text, (list, tuple)):
-        parts = [str(part) for part in text]
+        parts = [str(part).strip() for part in text]
     else:
-        parts = str(text).replace(' ', ',').split(',')
-    return tuple(normalize(part) for part in parts if str(part).strip())
+        text = str(text).strip()
+        if not text:
+            return ()
+        parts = ([part.strip() for part in text.split(',')] if ',' in text else text.split())
+    if any(not part for part in parts):
+        raise ValueError(f'a model list has an empty entry: {text!r}; separate the models with '
+                         'single commas, as in sonnet,opus,haiku (no model was run)')
+    return tuple(normalize(part) for part in parts)
 
 
 def choice(wanted, default):
@@ -141,6 +168,31 @@ def from_environment(environ=None):
         value = str(environ.get(ENVIRONMENT[role]) or '').strip()
         if value:
             chosen[key] = normalize(value)
+    return chosen
+
+
+def settle(reviewers=None, specialist=None, editor=None, recorder=None, environ=None):
+    """What a run asked for: the arguments it was given, over the environment.
+
+    This is the only merge of the two, so the process that launches a session
+    and the server inside it cannot reach different answers. The starter used
+    to plan from its flags alone while passing the environment through to the
+    session, which meant that with ``PEERREVIEW_REVIEWER_MODELS`` set and no
+    flag given, the starter wrote the defaults into the folder and the server
+    then refused that folder for holding a run under other models.
+
+    An argument beats a variable, because a flag is this run's own choice and
+    a variable is the one the environment was left in. What nobody chose is
+    absent from the result, so :func:`assign` applies the defaults once.
+    """
+    chosen = from_environment(environ)
+    listed = parse_list(reviewers)
+    if listed:
+        chosen['reviewers'] = list(listed)
+    for value, key in ((specialist, 'specialist'), (editor, 'editor'), (recorder, 'recorder')):
+        text = str(value or '').strip()
+        if text:
+            chosen[key] = normalize(text)
     return chosen
 
 
@@ -246,17 +298,20 @@ def settings_files(environ=None, project=None):
 def allowlist(environ=None, project=None, files=None):
     """The ``availableModels`` allowlist in force, or ``None`` when there is none.
 
-    The first file that names one wins, which is Claude Code's own order:
-    managed settings cannot be loosened by a user or project file.
+    Claude Code concatenates this one across the settings files rather than
+    letting the highest-precedence file replace the others, so a project file
+    naming one model does not hide the two in the user's own settings. Reading
+    only the first file would refuse models that are in fact available, which
+    is a refusal with nothing wrong behind it.
+
+    Read-only, always: a settings file is the user's, and nothing here writes
+    one or suggests editing one.
     """
+    allowed = set()
     for path in (files if files is not None else settings_files(environ, project)):
-        names = _settings_models(path)
-        if names:
-            allowed = set()
-            for name in names:
-                allowed |= {name, normalize(name), spawn_name(name)}
-            return frozenset(allowed)
-    return None
+        for name in _settings_models(path) or ():
+            allowed |= {name, normalize(name), spawn_name(name)}
+    return frozenset(allowed) if allowed else None
 
 
 def available(model, allowed=None):
@@ -273,14 +328,29 @@ def problems(assignment, allowed=None):
     The line is the whole refusal: a reader has the slot, the model it would
     have run and the flag that changes it, and does not have to work out which
     of several settings put that model there.
+
+    There are two refusals and they are not the same thing. A name this version
+    of the plugin does not know is not a model anybody's login was asked about
+    — only the four in :data:`KNOWN` are named here, by alias or by full id —
+    and saying it was unavailable on the login would send a reader to their
+    settings over a misspelling. A known model that an ``availableModels``
+    allowlist leaves out is the login refusing it.
     """
     lines = []
     for slot, model in assignment.items():
         if available(model, allowed):
             continue
         flag = FLAG[role_of(slot)]
-        lines.append(f'{slot} would run {normalize(model)}, which is not available on this '
-                     f'Claude Code login; change it with {flag} (no model was run)')
+        full = normalize(model)
+        if full not in KNOWN:
+            lines.append(f'{slot} would run {full}, which is not a model this version knows '
+                         f'(known: {", ".join(KNOWN)}, or their aliases '
+                         f'{", ".join(sorted(ALIASES))}); change it with {flag} '
+                         '(no model was run)')
+        else:
+            lines.append(f'{slot} would run {full}, which the availableModels allowlist in this '
+                         f'login\'s settings does not include; change it with {flag} '
+                         '(no model was run)')
     return lines
 
 
@@ -297,6 +367,105 @@ def refuse(assignment, allowed=None, environ=None, project=None):
     if lines:
         raise ValueError('\n'.join(lines))
     return assignment
+
+
+def version_numbers(text):
+    """The leading ``x.y.z`` of a version string as a tuple, or ``()``.
+
+    ``claude --version`` prints ``2.1.251 (Claude Code)``, and a build may add
+    a suffix after the numbers. Only the three numbers are compared.
+    """
+    match = re.match(r'\s*v?(\d+)\.(\d+)\.(\d+)', str(text or ''))
+    return tuple(int(part) for part in match.groups()) if match else ()
+
+
+def subagent_override(version, environ=None):
+    """The refusal line when ``CLAUDE_CODE_SUBAGENT_MODEL`` would outrank this plan.
+
+    Before Claude Code 2.1.251 that variable outranked both a per-spawn model
+    override and an agent file, so with it set every agent in the run would be
+    the one model it names, whatever slot asked for what — and the run would
+    record the plan rather than that. From 2.1.251 it ranks below both and the
+    plan holds, so there is nothing to refuse.
+
+    The variable is the user's and is never unset here: a process that quietly
+    removed it would be deciding something the user set deliberately, and a
+    session started from a different environment is their call to make. An
+    unparseable version is not refused either, because "older than 2.1.251" is
+    not something it says.
+    """
+    environ = os.environ if environ is None else environ
+    value = str(environ.get(SUBAGENT_MODEL) or '').strip()
+    if not value:
+        return None
+    numbers = version_numbers(version)
+    if not numbers or numbers >= SUBAGENT_PRECEDENCE_FIXED:
+        return None
+    return (f'{SUBAGENT_MODEL} is set to {value} and this Claude Code is '
+            f'{str(version).strip()}, where that variable outranks both the per-spawn model this '
+            f'plugin sends and the agent files: every slot would run {normalize(value)} and the '
+            f'run would record the models it asked for instead. Claude Code '
+            f'{".".join(str(part) for part in SUBAGENT_PRECEDENCE_FIXED)} ranks it below both, so '
+            f'upgrade, or start this review from an environment where {SUBAGENT_MODEL} is not set '
+            '(no model was run)')
+
+
+def family_of(name):
+    """Which model family one name belongs to: ``sonnet``, ``opus``, and so on.
+
+    A full id, a family alias and a provider-prefixed id all answer the same
+    family, which is what :func:`substituted` has to compare: Bedrock and
+    Vertex spell the same model differently, and ``ANTHROPIC_DEFAULT_*_MODEL``
+    or an alias resolved elsewhere can land a different *version* of the family
+    that was asked for. A name with no family in it answers itself, so two
+    unknown ids still compare unequal.
+    """
+    full = normalize(name)
+    if full in FAMILY:
+        return FAMILY[full]
+    text = str(full).strip().casefold()
+    if text in ALIASES:
+        return text
+    for part in re.split(r'[^a-z0-9]+', text):
+        if part in ALIASES:
+            return part
+    return text
+
+
+def substituted(assigned, observed):
+    """Whether ``observed`` is a different *family* from ``assigned``.
+
+    A different family is a substitution: the slot did not run the model the
+    run is recorded under, and no amount of reading the files afterwards makes
+    it the arm it was supposed to be. A different version of the same family is
+    not — it is which version that family resolved to on this login, and the
+    observed id is simply what gets reported.
+    """
+    if not assigned or not observed:
+        return False
+    return family_of(assigned) != family_of(observed)
+
+
+def substitution_line(slot, assigned, observed):
+    """One sentence naming the slot, what it was assigned and what ran."""
+    return (f'{slot} was assigned {normalize(assigned)} but ran {observed}: a different model '
+            'family ran in that slot, so this run did not run the models it records')
+
+
+def substitutions(rows):
+    """One line per agent row whose observed model is a different family.
+
+    ``rows`` are :func:`peerreviewagents.engine.usage.agent_rows` rows, where
+    ``assigned_model`` is the plan and ``model`` is what the slot reported
+    running. A slot with no observation is not a substitution: nothing was seen
+    to disagree with.
+    """
+    lines = []
+    for row in rows or ():
+        assigned, observed = row.get('assigned_model'), row.get('model')
+        if substituted(assigned, observed):
+            lines.append(substitution_line(row.get('slot') or 'a slot', assigned, observed))
+    return lines
 
 
 def summary(assignment):

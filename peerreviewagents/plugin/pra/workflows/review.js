@@ -1,7 +1,7 @@
 export const meta = {
   name: 'review',
   description: 'Two-track peer review: ingest, N core reviewers and six specialists in parallel, editor, write the run',
-  whenToUse: 'Reviewing one manuscript PDF with PeerReviewAgents 0.9. Pass {pdf, out, reviewers, arm}, and {reviewer_models, specialist_model, editor_model} to choose the models.',
+  whenToUse: 'Reviewing one manuscript PDF with PeerReviewAgents 0.9. Pass {pdf, out, reviewers, arm}, and {reviewer_models, specialist_model, editor_model, recorder_model} to choose the models.',
   phases: [
     { title: 'Ingest', detail: 'import the PDF and fix the plan for this arm' },
     { title: 'Review', detail: 'core reviewers and specialists, in parallel, each isolated' },
@@ -56,10 +56,18 @@ const OPENED = {
         },
         required: ['slot', 'spawn'],
       },
-      description: 'every {slot, model, spawn} entry ingest returned, verbatim',
+      description: 'every {slot, model, spawn} entry ingest returned, verbatim, one per slot',
     },
   },
-  required: ['paper_id', 'arm', 'slots', 'recorder_key', 'claim_codes'],
+  // `models` is required because the plan has to arrive for the run to be the
+  // run the server recorded. This script has no tool access and no filesystem
+  // access, so the plan can only reach it as text an agent relays, and a relay
+  // that drops it would otherwise complete: every slot would fall back to the
+  // model its agent file pins while `protocol.json` recorded the plan. The
+  // relay cannot be made trustworthy from in here, so it is made loud instead
+  // — and `read_run` compares what ran against the plan afterwards, which is
+  // the backstop for a relay that swaps two models rather than losing them.
+  required: ['paper_id', 'arm', 'slots', 'recorder_key', 'claim_codes', 'models'],
 }
 
 // A retry needs a code the first attempt has not spent.
@@ -200,6 +208,7 @@ const opened = await agent(
   + (run.reviewer_models ? ', reviewer_models=' + JSON.stringify(run.reviewer_models) : '')
   + (run.specialist_model ? ', specialist_model="' + run.specialist_model + '"' : '')
   + (run.editor_model ? ', editor_model="' + run.editor_model + '"' : '')
+  + (run.recorder_model ? ', recorder_model="' + run.recorder_model + '"' : '')
   + '. Report the paper id, the title, the block count and the slot list it returned, and copy'
   + ' the recorder_key, every claim_code and every models entry out of the response verbatim:'
   + ' they are the only copies, and each stage is handed its own code and its own model'
@@ -228,6 +237,16 @@ assigned = {}
 // The server's slot list is the plan. The arm decides it, so the script never
 // has to hold a second copy of which stages a given arm requires.
 const slots = opened.slots
+// Every planned slot has to arrive with its model. A slot with no entry would
+// run whatever its agent file pins while `protocol.json` records the plan, and
+// the relay is the only way the plan reaches this script, so a relay that drops
+// one stops the run rather than producing a record that disagrees with it.
+const unplanned = slots.filter(slot => !spawns[slot])
+if (unplanned.length > 0) {
+  await block('ingest returned no model for ' + unplanned.join(', ') + ', so '
+    + (unplanned.length === 1 ? 'that slot' : 'those slots')
+    + ' would run whatever the agent file pins while the run records the plan')
+}
 const coreSlots = slots.filter(s => /^core-[0-9]+$/.test(s))
 const specSlots = slots.filter(s => s.indexOf('spec-') === 0)
 const hasRevision = slots.indexOf('revision-1') >= 0

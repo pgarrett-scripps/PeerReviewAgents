@@ -49,8 +49,11 @@ peerreview review manuscript.pdf arms/reference --reviewers 3 --reviewer-models 
 peerreview review manuscript.pdf arms/mixed --reviewers 3
 ```
 
-`--reviewer-models`, `--specialist-model` and `--editor-model` take an alias or
-a full model id, each run records what it was given in `protocol.json`
+`--reviewer-models`, `--specialist-model`, `--editor-model` and
+`--recorder-model` take one of the four models this version knows —
+`claude-sonnet-5-5`, `claude-opus-5-5`, `claude-haiku-5-5`,
+`claude-fable-5-2` — by alias or by id, each run records what it was given in
+`protocol.json`
 (`models`, `reviewer_models`, and `assigned_model` per slot), and a folder that
 already holds a run under other models is refused rather than reused. Every
 Stage A result recorded before 0.9.0 ran one model for every reviewer, so a run
