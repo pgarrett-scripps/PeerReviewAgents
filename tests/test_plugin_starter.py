@@ -16,6 +16,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 from peerreviewagents.cli.main import review_argv
 from peerreviewagents.plugin import starter
 
@@ -158,14 +160,29 @@ def test_no_claude_on_path_is_a_blocked_run_not_a_traceback(tmp_path, monkeypatc
 
 
 def test_an_unknown_arm_and_a_missing_manuscript_are_both_refused(tmp_path):
-    for call in (lambda: starter.review(str(FIXTURE), str(tmp_path / 'a'), arm='debate'),
-                 lambda: starter.review(str(tmp_path / 'nothing.pdf'), str(tmp_path / 'b'))):
-        try:
+    # A ValueError, not a SystemExit: a library caller handed an argument no
+    # run can be made from, and a library does not end the process over it.
+    for folder, call in (
+            ('a', lambda: starter.review(str(FIXTURE), str(tmp_path / 'a'), arm='debate')),
+            ('b', lambda: starter.review(str(tmp_path / 'nothing.pdf'), str(tmp_path / 'b'))),
+            ('c', lambda: starter.review(str(FIXTURE), str(tmp_path / 'c'),
+                                         directory=str(tmp_path / 'not-a-plugin')))):
+        with pytest.raises(ValueError) as refused:
             call()
-        except SystemExit as stop:
-            assert 'Unknown arm' in str(stop) or 'No manuscript' in str(stop)
-        else:
-            raise AssertionError('the run should not have started')
+        assert any(word in str(refused.value)
+                   for word in ('Unknown arm', 'No manuscript', 'No plugin'))
+        assert not (tmp_path / folder).exists(), 'nothing is written for an unusable argument'
+
+
+def test_review_main_returns_two_for_an_unusable_argument(tmp_path, capsys):
+    # The documented contract of the wrapper entry point: the code comes back,
+    # the message goes to stderr, and no traceback reaches the caller.
+    code = starter.review_main([str(tmp_path / 'nothing.pdf'), str(tmp_path / 'run')])
+    assert code == 2
+    captured = capsys.readouterr()
+    assert 'No manuscript' in captured.err
+    assert captured.out == ''
+    assert not (tmp_path / 'run').exists()
 
 
 def test_the_stub_run_is_launched_the_way_the_spec_requires(tmp_path, monkeypatch):

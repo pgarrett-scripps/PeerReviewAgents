@@ -124,9 +124,11 @@ def export_draft(paper, review, decisions):
             'source_validation':review.get('raw_response',{}).get('source_validation'),
             'investigation_context':review.get('raw_response',{}).get('investigation_context',{}),
             'source_dispositions':review.get('raw_response',{}).get('source_dispositions',[]),
-            'component_decisions':review.get('raw_response',{}).get('component_decisions',[]),
+            # `component_decisions` and `epistemic_audit` were the debate's own
+            # keys. 0.9 has no debate, so every export carried two empty fields
+            # a consumer had to decide what to do with; they are gone rather
+            # than kept as a shape nothing fills.
             'component_validation':review.get('raw_response',{}).get('component_validation'),
-            'epistemic_audit':review.get('raw_response',{}).get('epistemic_audit'),
             'workflow_version':review.get('raw_response',{}).get('workflow_version'),
             'coverage_record':review.get('raw_response',{}).get('coverage_record'),
             'experiment_map':review.get('raw_response',{}).get('experiment_map'),

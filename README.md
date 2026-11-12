@@ -134,10 +134,17 @@ version produced it; nothing else in the run depends on it.
 <run>/review/reviewer-<n>/    each core reviewer's own package view
 <run>/review/audit_<track>.md the specialist audits
 <run>/review/protocol.json    arm, slots, models, versions, provenance hashes
+<run>/review/manifest.json    the paper's identity and its source hash
 <run>/review/progress.json    stages and status
 <run>/review/runtime.json     tokens and models per agent, wall time, limits
 <run>/review/usage/<slot>/    the session stream's own usage records
 ```
+
+`protocol.json` and `manifest.json` are written when the manuscript is
+ingested, before any agent reports, so a run that stopped halfway still says
+which paper it was, which arm it ran and what the source hashed to. A run whose
+probe never launched a session gets a thin pair written by the starter instead,
+which never overwrites the server's own.
 
 `peerreview report` works on a blocked or stopped run too, and reports what was
 saved rather than failing. A rate limit, a breached budget or a missing stage
@@ -226,31 +233,122 @@ the last run. Each one runs the same server and the same guarantees as
 ## As a library
 
 ```python
-from peerreviewagents import review, import_paper, write_reports
+from peerreviewagents import review, read_run
 
 run = review("manuscript.pdf", "run-output", reviewers=3)
 print(run["status"], run["tokens_total"], run["report"]["markdown"])
+
+summary = read_run("run-output")          # any run folder, finished or not
+print(summary["status"], summary["cause"], len(summary["body"]))
 ```
 
-Three functions, resolved lazily so `import peerreviewagents` stays cheap:
-`review` is the whole review and is exactly what `peerreview review` runs,
-`import_paper` imports a PDF into a manuscript workspace with no model call,
-and `write_reports` renders `REVIEW.md` and `REVIEW.txt` from a run folder,
-also with no model call.
+Everything an application is meant to use is importable from the top level and
+nothing it needs is private. The callables resolve lazily, so
+`import peerreviewagents` stays cheap and reading a run never imports the
+launcher.
+
+| Name | What it is |
+| --- | --- |
+| `review(pdf, out, ...)` | the whole review; exactly what `peerreview review` runs |
+| `review_main(argv, prog=...)` | that command as a function: JSON on stdout, exit code returned |
+| `report_main(argv)` | `peerreview report` as a function, same contract |
+| `read_run(path)` | read any run folder: status, cause, findings, costs |
+| `write_reports(run, workspace=None, output_dir=None)` | re-render `REVIEW.md` and `REVIEW.txt`, offline |
+| `import_paper(pdf, workspace)` | import a PDF into a manuscript workspace, no model call |
+| `verify_workspace(workspace)` | re-check an import against its own manifest, returns the paper |
+| `export_draft(paper, review, decisions)` | apply the accepted anchored edits to a copy of the blocks |
+| `RUN_DIRECTORY`, `MANUSCRIPT_DIRECTORY` | `"review"` and `"manuscript"`, the two folders in a run |
+| `RUN_STATUSES`, `COMPLETE_STATUSES` | the statuses a run can record, and the two that mean it finished |
+| `FINDING_SCHEMA_VERSION` | the schema every stored finding is stamped with |
 
 `review` returns the run's summary and prints nothing: `status`,
 `blocked_reason`, `stage`, the run and review folders, the report paths, the
 arm, the wall time, the total and per-agent tokens, the models each slot ran
 on, and the finding counts the server recorded. A `blocked` run returns the
-same shape with the reason filled in, so there is nothing to catch and no
-stdout to parse. `peerreviewagents.plugin.starter.exit_code(summary)` is what
-the command turns it into — `0` reviewed, `2` never started, `1` otherwise.
+same shape with the reason filled in: there is no exception for a review that
+did not work and no stdout to parse. An argument that cannot be used at all —
+an unknown arm, a manuscript that is not there, a plugin directory that holds
+no plugin — raises `ValueError` before anything is written, and nothing else is
+raised. `peerreviewagents.plugin.starter.exit_code(summary)` is what
+the command turns it into — `0` reviewed, `2` never started, `1` otherwise, and
+`review_main` returns it for you.
 
-That is the whole importable surface. `peerreviewagents.engine` is no longer an
+### Reading a run folder
+
+`read_run` is for the other side of a review: a folder on disk that something
+else produced. It works on every kind of folder a review can leave behind —
+complete, complete without findings, blocked by the server, killed by the
+starter on a token ceiling, a wall-clock limit, a rate limit or a session
+error, and stopped by a start-up probe that never launched a session, which
+leaves only `startup.json` and `runtime.json`. It takes the run folder or the
+`review/` folder inside it, raises `peerreviewagents.runs.NotARunFolder` for a
+folder that is neither, and refuses a run file that is a symlink, by name.
+
+It returns a dict with the same keys for every folder, in every state. All of
+them:
+
+| Key | What it holds |
+| --- | --- |
+| `run`, `review` | the run folder and the `review/` folder inside it, as strings |
+| `status` | one of `RUN_STATUSES`, or `unknown` for a status file that was never written or holds a word this version does not know |
+| `complete`, `blocked` | the two questions asked of a status, already answered |
+| `publishable` | whether the whole review is here to show (see below) |
+| `cause`, `note` | why a run that is not complete stopped, and a limit that fired after the review was written |
+| `stage` | `startup` when no session ever ran and no subscription usage was spent, `session` once one did |
+| `findings`, `body`, `appendix` | the findings, de-duplicated per `finding_uid`, split the way the editor placed them |
+| `findings_source` | `editor-package`, `ledger` or `none` |
+| `counts` | `findings`, `body`, `appendix`, `quarantined`, and the server's own `findings_delivered`/`findings_submitted` |
+| `quarantined`, `guard_status` | what the guard threw out, and `clean` or `quarantined` |
+| `escalations`, `escalation_rulings` | the specialist findings that asked for a ruling, and the rulings given |
+| `summary`, `verdict`, `limitations` | the editor's own three, or `None`/`[]` |
+| `identity` | paper id, source hash, PDF path, arm, reviewers, specialist tracks, versions |
+| `stages` | the stages the run recorded, or `None` |
+| `runtime` | wall time, total tokens, rate limits, both token ceilings, the Claude Code version |
+| `agents` | one row per agent slot: role, track, model, tool calls, tokens, state |
+| `usage` | observed subscription tokens from the usage receipts, with `unknown` set if any receipt was unreadable |
+| `reports` | absolute paths to what exists — `REVIEW.md`, `REVIEW.txt`, `editor-package.json`, and `audits` keyed by track |
+| `startup_problems` | what the start-up probe refused to launch over |
+| `problems` | every file that could not be read in full, named |
+| `files` | the run files that exist, by name |
+
+Findings come from `editor-package.json` when the editor got that far and from
+the `findings.jsonl` ledger when it did not, de-duplicated to the latest row
+per `finding_uid` either way: the ledger is append-only, so a finding restated
+during the run is one finding, not three. A uid the editor placed in both lists
+is in `body` only, so each finding is counted once.
+
+**The status rule.** One function decides it — `peerreviewagents.runs.run_status`
+— and `REVIEW.md` is rendered from the same answer, so a folder never reads one
+way through the library and another way in its own report. A status recorded in
+`progress.json` that means finished wins over a later block in `runtime.json`:
+the starter records a rate limit or a token ceiling that fired *after*
+`write_review`, and a review that was written is written. That late limit
+becomes `note` rather than `cause`. Otherwise `runtime.json` decides, then
+`progress.json`, then a run with a cause but no status is `blocked`, and
+anything else is `unknown`. `complete-without-findings` means the review was
+written and every finding in it had been quarantined by the guard: the run
+worked and there is nothing to publish.
+
+**`publishable`** is the one flag to gate publishing on. It is true only when
+the status is `complete`, the findings came from a readable
+`editor-package.json`, the guard is `clean`, and `problems` is empty. A run with
+quarantined findings is complete and *not* publishable — `quarantined` says what
+was thrown out, and that is a judgement for a person.
+
+**Damaged folders are read, not raised on.** A truncated `runtime.json`, a
+half-written last line in a usage receipt, a ledger with bytes that are not
+UTF-8, a status file holding a list: the normal state of a run somebody killed.
+Each unreadable file or skipped line is named in `problems` and everything else
+is still returned, because the reason a run stopped is exactly what you need
+when it stopped badly. A reading with problems is a reading; just do not publish
+it or quote a number out of it without saying so.
+
+That is the whole supported surface. `peerreviewagents.engine` is not an
 integration boundary: it holds the manuscript workspace, the investigation
 tools and the report writer the plugin server calls, and
 [`peerreviewagents/engine/README.md`](peerreviewagents/engine/README.md)
-documents them.
+documents them. Neither is `peerreviewagents.plugin` — if something you need
+is only reachable there, that is a gap in this list, so say so.
 
 ## Tests
 

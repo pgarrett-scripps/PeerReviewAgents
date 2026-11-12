@@ -44,6 +44,38 @@ including 32 test modules, and nothing was left behind as a shim.
 - `review-finding-v3`: a `finding_uid` stable across re-reviews of the same
   paper, a `track`, a specialist `escalate` flag, and a `basis` the server
   assigns rather than the agent asserting it.
+- `peerreviewagents.read_run(path)`, which reads any run folder: the status,
+  the cause and the stage of a run that stopped, the findings de-duplicated to
+  the latest row per `finding_uid` (from `editor-package.json` when the editor
+  got that far, from the `findings.jsonl` ledger when it did not), body against
+  appendix, the escalations and the editor's rulings, the manifest identity and
+  source hash, the report paths and the runtime of each agent. Complete,
+  complete without findings, blocked, killed by the starter on a ceiling, a
+  timeout, a rate limit or a session error, and start-up blocked with only
+  `startup.json` and `runtime.json` are all folders it reads. It refuses a run
+  file that is a symlink, by name, and raises `runs.NotARunFolder` for a folder
+  that is not a run. The first application to show PRA runs had to reach into
+  private names and parse these files by hand. It returns the same 30 keys for
+  every folder, among them `publishable` — status `complete`, the findings from
+  a readable editor package, a clean guard and nothing in `problems` — which is
+  the flag to gate publishing on, and `problems`, which names every file or
+  line that could not be read.
+- `peerreviewagents.runs.run_status`, the one rule that decides a run's status,
+  used by `read_run` and by the report writer, so a folder cannot read one way
+  through the library and another way in its own `REVIEW.md`. A limit that
+  fired after the review was written is a `note`, not a `cause`, and the run is
+  complete.
+- `review_main(argv, prog=...)` and `report_main(argv)`: the two commands as
+  functions — argument list in, the command's JSON on stdout, the exit code
+  returned rather than raised — so a wrapper does not copy `starter.main` or
+  import `starter.build_parser`, `starter.exit_code` or `cli.main.report`, and
+  names itself in its own `--help`.
+- `peerreviewagents.names`, a module that imports nothing, holding the names an
+  integration needs as constants: `RUN_DIRECTORY`, `MANUSCRIPT_DIRECTORY`,
+  `RUN_STATUSES`, `COMPLETE_STATUSES` and `FINDING_SCHEMA_VERSION`. They were
+  literals inside `plugin.server`, which an app had to import a launcher and an
+  MCP SDK to read. The server now imports them from there, so there is one
+  definition and nothing to drift.
 
 ### Changed
 
@@ -80,9 +112,54 @@ including 32 test modules, and nothing was left behind as a shim.
   check its work — which is one of the things the arms compare.
 - The tool allowance belongs to the slot: a retry continues the first
   attempt's count instead of buying 30 more calls.
+- The supported library surface is `review`, `review_main`, `report_main`,
+  `read_run`, `write_reports`, `import_paper`, `verify_workspace`,
+  `export_draft` and the five constants, all importable from
+  `peerreviewagents` and documented in `README.md` and
+  `docs/INTEGRATIONS.md`. The callables still resolve lazily, so reading a run
+  imports neither the launcher nor the MCP SDK.
+- `write_reports(run)` takes a run folder on its own: the workspace argument is
+  needed only when the manuscript lives outside the run.
+- `export_draft` no longer emits `component_decisions` or `epistemic_audit`.
+  They were the debate's keys, and 0.9 has no debate, so every export carried
+  two empty fields a consumer had to interpret.
 
 ### Fixed
 
+- `read_run` returns a reading for a damaged folder instead of raising, which
+  is the state a killed run is normally in: a truncated `runtime.json`, a
+  half-written last line in a usage receipt, a status file holding a list, a
+  ledger with bytes that are not UTF-8. Each one is named in `problems` and
+  everything else still comes back; `usage['unknown']` marks observed tokens as
+  a lower bound when a receipt could not be read in full. `peerreview report`
+  printed a traceback for exactly the runs whose cause one wants to read.
+- `read_run` and `REVIEW.md` agreed on `running` and `blocked` but not on a run
+  whose review was written before a rate limit fired: one read `progress.json`
+  first and the other `runtime.json`. Both now call `run_status`.
+- `report_main` returns `1` with the message on stderr for a folder that is not
+  a run and for a run file that is a symlink, as documented, instead of raising
+  `SystemExit` with a string or leaking a `ValueError`. `review` raises
+  `ValueError` for an unusable argument — an unknown arm, a missing manuscript,
+  a plugin directory with no plugin — before writing anything, and
+  `review_main` turns it into the message and the code `2`.
+- A status word `read_run` does not know is `unknown` with a line in
+  `problems`, rather than passed through to a consumer as if it were a status.
+- A symlinked `review/` directory and a symlinked `usage.jsonl` were followed
+  while a symlinked `audit_*.md` was dropped in silence. Every symlink anywhere
+  under the review folder is now refused by name.
+- A `finding_uid` the editor placed in both the body and the appendix was
+  counted twice, in `findings` and again in `escalations`. It is one finding,
+  in `body`.
+- A corrupt `editor-package.json` on a complete run fell back to the ledger in
+  silence and read as a whole review. The fallback is reported in `problems`
+  and the run is not `publishable`.
+- `write_identity` recorded `specialists: []` for a start-up-blocked
+  `full-two-track` run, so the folder said the plan was something it was not.
+  It records the arm's default tracks when none were named.
+- A retry in a folder that already holds a finished or killed run read as the
+  old run's block until the new one ended. The starter supersedes the previous
+  `runtime.json` and `progress.json` at the start, keeping the old state under
+  `superseded`.
 - A finding submitted after the stage closed, after the editor ruled, or after
   the run was blocked is refused rather than stored and then dropped from the
   package.
@@ -96,6 +173,16 @@ including 32 test modules, and nothing was left behind as a shim.
 - A workflow that ends without writing the review or marking the run blocked
   leaves the run `blocked` with a reason, not `running`. A missing `claude`
   binary says so rather than blaming the plugin.
+- `protocol.json` and `manifest.json` are written at ingest, before any agent
+  reports, instead of only by `write_review` and `mark_blocked`. A run killed
+  on a token ceiling used to leave a folder that could not say which paper it
+  held; and when the probe never launched a session, the starter writes a thin
+  pair itself — the arm, the PDF and its hash — without ever overwriting the
+  server's own.
+- `peerreview report` renders a blocked, killed or start-up-blocked run and
+  prints its cause. It refused anything without a `protocol.json` with "not a
+  review run folder", which is the message for exactly the runs whose cause one
+  wants to read.
 - The starter drains the session's stderr on its own thread, so a chatty
   session cannot deadlock the run, and it drops `ANTHROPIC_AUTH_TOKEN` as well
   as `ANTHROPIC_API_KEY` from the child environment. The rate-limit ceiling
