@@ -544,12 +544,30 @@ def test_an_unknown_status_is_unknown_and_publishable_says_what_is_showable(tmp_
     """``complete`` answers whether the run finished; ``publishable`` whether to show it."""
     assert read_run(complete_run(tmp_path / 'clean'))['publishable'] is True
 
+    # A review with no findings in it, and nothing quarantined: the reviewers
+    # read the manuscript and raised nothing. "Nothing make-or-break" is a
+    # review, and the editor wrote a package for it, so it is publishable.
     none = read_run(complete_run(tmp_path / 'none', status='complete-without-findings',
                                  findings=False))
     assert (none['status'], none['complete'], none['publishable']) == (
-        'complete-without-findings', True, False)
-    assert none['counts']['findings'] == 0, 'the guard threw out every finding there was'
-    assert any('nothing to publish' in reason for reason in none['not_publishable_reasons'])
+        'complete-without-findings', True, True)
+    assert none['counts']['findings'] == 0
+    assert none['not_publishable_reasons'] == []
+
+    # The same status, the other way round: the reviewers did raise findings and
+    # the guard threw out every one of them, so what they raised is not in the
+    # review and there is nothing to publish. The reason says how many.
+    emptied = complete_run(tmp_path / 'emptied', status='complete-without-findings',
+                           findings=False)
+    _rows(emptied / 'quarantined.jsonl', [{'finding_uid': 'ddd4', 'reason': 'no such block'},
+                                          {'finding_uid': 'eee5', 'reason': 'quote not found'}])
+
+    held_all = read_run(emptied)
+
+    assert (held_all['status'], held_all['publishable']) == ('complete-without-findings', False)
+    assert any('quarantined 2' in reason and 'nothing to publish' in reason
+               for reason in held_all['not_publishable_reasons']), \
+        held_all['not_publishable_reasons']
 
     guarded = complete_run(tmp_path / 'guarded')
     package = json.loads((guarded / 'editor-package.json').read_text(encoding='utf-8'))
@@ -732,3 +750,109 @@ def test_the_readme_names_every_key_read_run_returns(tmp_path):
 
     for key in read_run(complete_run(tmp_path)):
         assert f'`{key}`' in readme, f'README.md does not name the {key} key'
+
+
+# -- what a wrapper used to reach into private modules for -------------------
+
+
+def test_the_installation_checks_are_public_and_are_the_ones_the_review_uses():
+    """A wrapper checks the install through this surface, not `plugin.starter`."""
+    assert peerreviewagents.plugin_directory is starter.plugin_dir
+    assert peerreviewagents.claude_code_version is starter.claude_version
+
+    plugin = peerreviewagents.plugin_directory()
+
+    assert (plugin / '.claude-plugin' / 'plugin.json').is_file(), plugin
+    # Either a version string or None, and nothing raised when Claude Code is
+    # not installed: that is the whole contract a precondition check needs.
+    version = peerreviewagents.claude_code_version()
+    assert version is None or isinstance(version, str)
+
+
+def test_the_two_parsers_and_the_command_list_are_public():
+    """The real parsers, so a wrapper's documented options cannot drift from them."""
+    assert peerreviewagents.CLI_COMMANDS == names.CLI_COMMANDS == ('review', 'report')
+    # The CLI module keeps its historical name for the same tuple.
+    from peerreviewagents.cli import main as cli_main
+
+    assert cli_main.COMMANDS is names.CLI_COMMANDS
+    assert peerreviewagents.review_parser is starter.build_parser
+    assert peerreviewagents.report_parser is cli_main.report_parser
+
+    review = peerreviewagents.review_parser(prog='wrapper review')
+    report = peerreviewagents.report_parser(prog='wrapper report')
+
+    assert review.prog == 'wrapper review' and report.prog == 'wrapper report'
+    options = {action.dest for action in review._actions}
+    assert {'workspace', 'output', 'arm'} <= options, sorted(options)
+    assert {'run', 'workspace', 'output_dir'} <= {a.dest for a in report._actions}
+
+
+def test_read_run_carries_the_facts_an_integration_read_from_the_folder(tmp_path):
+    """The provider, the code digests and the start-up probe, without opening a file."""
+    review = complete_run(tmp_path)
+    _write(review / 'manifest.json', {**json.loads((review / 'manifest.json').read_text()),
+                                      'code': {'peerreviewagents/runs.py': 'ab' * 32,
+                                               'plugin/pra/agents/stats.md': 'cd' * 32}})
+    _write(review / 'startup.json', {'probe': {'ok': True, 'pdf': str(tmp_path / 'paper.pdf')},
+                                     'problems': [], 'tools_expected': ['pra:begin_review']})
+
+    run = read_run(review)
+
+    assert run['identity']['provider'] == 'claude-code'
+    assert run['identity']['code_hashes'] == {'peerreviewagents/runs.py': 'ab' * 32,
+                                              'plugin/pra/agents/stats.md': 'cd' * 32}
+    assert run['startup'] == {'probe': {'ok': True, 'pdf': str(tmp_path / 'paper.pdf')},
+                              'problems': []}
+    assert run['problems'] == []
+
+
+def test_the_three_new_facts_are_present_and_empty_when_the_files_do_not_hold_them(tmp_path):
+    """A run that stopped early still answers; it answers None or empty."""
+    run = read_run(startup_blocked_run(tmp_path))
+
+    assert run['identity']['provider'] is None
+    assert run['identity']['code_hashes'] == {}
+    assert run['startup']['probe'] is None
+    assert run['startup']['problems'] == ['the pra plugin was not loaded']
+
+
+def test_a_damaged_provider_code_map_and_probe_are_named_in_problems(tmp_path):
+    review = complete_run(tmp_path)
+    _write(review / 'protocol.json', {**json.loads((review / 'protocol.json').read_text()),
+                                      'provider': 7})
+    _write(review / 'manifest.json', {**json.loads((review / 'manifest.json').read_text()),
+                                      'code': {'runs.py': None, 'stats.md': 'ef' * 32}})
+    _write(review / 'startup.json', {'probe': 'launched', 'problems': []})
+
+    run = read_run(review)
+
+    assert run['identity']['provider'] is None
+    assert run['identity']['code_hashes'] == {'stats.md': 'ef' * 32}
+    assert run['startup']['probe'] is None
+    named = ' '.join(run['problems'])
+    assert 'provider' in named and 'code map' in named and 'probe' in named, run['problems']
+
+
+def test_one_agent_that_ran_two_tasks_is_one_row(tmp_path):
+    """The recorder ingests and later writes the review; that is one agent."""
+    review = complete_run(tmp_path)
+    _write(review / 'protocol.json', {
+        **json.loads((review / 'protocol.json').read_text()),
+        'agents': {'recorder': {'role': 'recorder', 'track': 'ingest', 'tool_calls': 4,
+                                'model': None}}})
+    _write(review / 'runtime.json', {
+        **json.loads((review / 'runtime.json').read_text()),
+        'agents': [{'label': 'ingest', 'agentType': 'pra:recorder', 'tokens': 12000,
+                    'toolCalls': 5, 'state': 'completed', 'model': 'claude-sonnet-5-5'},
+                   {'label': 'write review', 'agentType': 'pra:recorder', 'tokens': 30000,
+                    'toolCalls': 7, 'state': 'completed', 'model': 'claude-sonnet-5-5'},
+                   {'label': 'spec-field'}]})
+
+    rows = read_run(review)['agents']
+
+    assert [row['slot'] for row in rows] == ['recorder'], rows
+    assert rows[0]['tokens'] == 42000 and rows[0]['session_calls'] == 12
+    assert rows[0]['tool_calls'] == 4  # the server's own count, untouched
+    assert rows[0]['labels'] == ['ingest', 'write review']
+    assert rows[0]['model'] == 'claude-sonnet-5-5'

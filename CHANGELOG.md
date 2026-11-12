@@ -55,14 +55,30 @@ including 32 test modules, and nothing was left behind as a shim.
   `startup.json` and `runtime.json` are all folders it reads. It refuses a run
   file that is a symlink, by name, and raises `runs.NotARunFolder` for a folder
   that is not a run. The first application to show PRA runs had to reach into
-  private names and parse these files by hand. It returns the same 31 keys for
-  every folder, among them `publishable` — status `complete`, the findings from
-  a readable editor package, a guard verdict on the record and nothing in
+  private names and parse these files by hand. It returns the same 32 keys for
+  every folder, among them `publishable` — status `complete`, or
+  `complete-without-findings` with nothing quarantined, the findings from a
+  readable editor package, a guard verdict on the record and nothing in
   `problems` — which is the flag to gate publishing on, with
   `not_publishable_reasons` naming every reason when it is false, and
   `problems`, which names every file or line that could not be read. A finding
   the guard quarantined does not hold a review back: the guard threw out a
-  quote it could not anchor, and the rest of the review is whole.
+  quote it could not anchor, and the rest of the review is whole. A review with
+  no findings in it is publishable when the reviewers simply raised nothing, and
+  not publishable when the guard emptied it, where the reason says how many were
+  held back: `counts['quarantined']` is what tells the two apart.
+  `identity['provider']`, `identity['code_hashes']` (the manifest's digest per
+  engine and plugin file) and `startup` (the harness's own start-up event and
+  the probe's problems) are the three facts the first integration was still
+  reading out of the folder by hand.
+- One agent is one row in `agents`. The stream names a task and the protocol
+  names a slot, and for the recorder those are different words — `ingest` and
+  `write review` against `recorder` — so one agent appeared as three rows with
+  its spend under names the protocol does not use. The tokens and session calls
+  of a slot's tasks are now added to that slot, `labels` says which tasks they
+  were, and a stream row carrying nothing but a label is the harness's
+  placeholder for an agent it never ran and is left out. `runtime.json` keeps
+  its raw record; this is the reader's reading of it.
 - `peerreviewagents.runs.run_status`, the one rule that decides a run's status,
   used by `read_run` and by the report writer, so a folder cannot read one way
   through the library and another way in its own `REVIEW.md`. A limit that
@@ -73,9 +89,19 @@ including 32 test modules, and nothing was left behind as a shim.
   returned rather than raised — so a wrapper does not copy `starter.main` or
   import `starter.build_parser`, `starter.exit_code` or `cli.main.report`, and
   names itself in its own `--help`.
+- `plugin_directory()`, `claude_code_version()`, `review_parser(prog=...)`,
+  `report_parser(prog=...)` and `CLI_COMMANDS` on the top level: the plugin that
+  ships inside the package, the installed Claude Code probe (`None`, never an
+  exception, when it is not on this PATH), the real parsers behind the two
+  commands so a wrapper can diff its documented options against them instead of
+  against a copy, and the two command names. These were `plugin.starter.plugin_dir`,
+  `plugin.starter.claude_version`, `plugin.starter.build_parser` and
+  `cli.main.COMMANDS`/`cli.main.report_parser`, which an integration was still
+  importing from private modules.
 - `peerreviewagents.names`, a module that imports nothing, holding the names an
   integration needs as constants: `RUN_DIRECTORY`, `MANUSCRIPT_DIRECTORY`,
-  `RUN_STATUSES`, `COMPLETE_STATUSES` and `FINDING_SCHEMA_VERSION`. They were
+  `RUN_STATUSES`, `COMPLETE_STATUSES`, `CLI_COMMANDS` and
+  `FINDING_SCHEMA_VERSION`. They were
   literals inside `plugin.server`, which an app had to import a launcher and an
   MCP SDK to read. The server now imports them from there, so there is one
   definition and nothing to drift.

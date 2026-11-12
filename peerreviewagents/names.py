@@ -36,5 +36,14 @@ RUN_STATUSES = (RUNNING, BLOCKED, COMPLETE, COMPLETE_WITHOUT_FINDINGS)
 #: findings is finished: it is not an error and not an empty folder.
 COMPLETE_STATUSES = (COMPLETE, COMPLETE_WITHOUT_FINDINGS)
 
+#: Every command ``peerreview`` has, in the order its help lists them. A wrapper
+#: that offers its own commands checks them against this rather than against a
+#: list of its own: ``review`` runs a review and ``report`` re-renders one, and
+#: there is no third. The parsers behind them are
+#: :func:`peerreviewagents.review_parser` and
+#: :func:`peerreviewagents.report_parser`.
+CLI_COMMANDS = ('review', 'report')
+
 __all__ = ['RUN_DIRECTORY', 'MANUSCRIPT_DIRECTORY', 'FINDING_SCHEMA_VERSION', 'RUN_STATUSES',
-           'COMPLETE_STATUSES', 'RUNNING', 'BLOCKED', 'COMPLETE', 'COMPLETE_WITHOUT_FINDINGS']
+           'COMPLETE_STATUSES', 'RUNNING', 'BLOCKED', 'COMPLETE', 'COMPLETE_WITHOUT_FINDINGS',
+           'CLI_COMMANDS']
