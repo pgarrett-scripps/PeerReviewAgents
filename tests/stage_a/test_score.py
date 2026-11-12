@@ -109,18 +109,59 @@ def test_a_quote_too_short_to_identify_a_place_does_not_count(tmp_path):
 def test_a_blocked_run_scores_as_a_miss_and_keeps_its_cause(tmp_path):
     run = write_run(tmp_path / 'run', [], runtime={
         'status': 'blocked', 'blocked_reason': 'usage limit reached', 'wall_seconds': 61,
-        'tokens_total': 12000, 'agents': []})
+        'tokens_total': 12000, 'agents': []},
+        progress={'status': 'blocked', 'findings_delivered': 0})
     result = score.score(run, KEY)
     assert result['caught'] is False and result['findings_total'] == 0
     assert result['status'] == 'blocked'
     assert result['blocked_reason'] == 'usage limit reached'
+    assert result['publishable'] is False
+
+
+def test_a_limit_after_the_review_was_written_is_a_note_not_a_miss(tmp_path):
+    """The arm still answered the paper, so the row must not read as blocked.
+
+    This is the status rule the library decides: the review was written and the
+    ledger says complete, so the run is complete and the limit that ended the
+    session afterwards is a note. Scoring it as blocked would throw away a real
+    catch and understate the arm.
+    """
+    run = write_run(tmp_path / 'run', [finding(
+        block_id='b0010', comment='The text says 548 randomised while Table 1 says 530.')],
+        runtime={'status': 'blocked', 'blocked_reason': 'rate limit: five_hour',
+                 'wall_seconds': 300.0, 'tokens_total': 500000, 'agents': []})
+    result = score.score(run, KEY)
+    assert result['status'] == 'complete' and result['caught'] is True
+    assert 'rate limit: five_hour' in (result['note'] or '')
+    assert result['blocked_reason'] is None
 
 
 def test_a_run_folder_with_nothing_in_it_does_not_raise(tmp_path):
     empty = tmp_path / 'run'
     empty.mkdir()
     result = score.score(empty, KEY)
-    assert result['caught'] is False and result['tokens'] == 0 and result['status'] is None
+    assert result['caught'] is False and result['tokens'] == 0
+    assert result['status'] == 'unknown' and result['publishable'] is False
+    assert result['problems'] and 'not a run folder' in result['problems'][0].lower()
+
+
+def test_a_finding_the_editor_placed_twice_is_one_catch(tmp_path):
+    """A uid in both the body and the appendix is one finding, so it is one catch.
+
+    Stage A counts catches and findings per arm, and the body/appendix split is
+    the editor's placement, not two findings: counting it twice would make the
+    full two-track arm look more productive than it was.
+    """
+    caught = finding(finding_uid='f7', block_id='b0010',
+                     comment='548 in the text against 530 in Table 1.')
+    run = write_run(tmp_path / 'run', [caught])
+    package = {'findings': [caught], 'appendix': [caught], 'review_guard_status': 'clean',
+               'summary': 'one finding', 'verdict': 'major revision'}
+    (run / 'review' / 'editor-package.json').write_text(json.dumps(package), encoding='utf-8')
+    result = score.score(run, KEY)
+    assert result['findings_total'] == 1 and result['findings_appendix'] == 0
+    assert len(result['caught_by']) == 1
+    assert result['findings_source'] == 'editor-package' and result['publishable'] is True
 
 
 def test_a_control_counts_only_severe_allegations(tmp_path):

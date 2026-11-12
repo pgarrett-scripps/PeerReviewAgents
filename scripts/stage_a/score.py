@@ -31,6 +31,15 @@ planted sort where none was planted? That is counted by the same kind of
 written rule — a finding that claims a contradiction, a number that does not
 follow, or a reference that does not exist, at major severity or above.
 
+**Where the numbers come from.** The run folder is read once, by
+:func:`peerreviewagents.runs.read_run`, and never by opening the run's files
+here. That matters for a results table in three ways: the findings are
+de-duplicated to one row per ``finding_uid``, so a finding the editor placed in
+both the body and the appendix is one catch and not two; a run that was killed
+mid-write is read as far as it can be read instead of raising; and every row
+carries ``publishable`` and ``problems``, so a score computed from a damaged
+folder says so in the table rather than passing as a whole review.
+
 Nothing here makes a model call.
 """
 
@@ -41,6 +50,8 @@ import json
 import re
 import sys
 from pathlib import Path
+
+from peerreviewagents.runs import NotARunFolder, read_run
 
 ALLEGATION = re.compile(
     r'does not match|do not match|does not agree|disagree|inconsisten|contradict'
@@ -106,44 +117,51 @@ def about_it(finding: dict, key: dict) -> bool:
     return all(hits) if key['detect'].get('mention_rule') == 'all' else any(hits)
 
 
+def reading_of(run: Path) -> dict:
+    """The run folder, read the supported way, or an empty reading for no folder.
+
+    A run that never got as far as writing a review folder is a result too — it
+    is the arm's answer for that paper — so it is read as a row with no findings
+    and a problem naming it, rather than as a crash in the driver.
+    """
+    try:
+        return read_run(Path(run))
+    except (NotARunFolder, FileNotFoundError, ValueError) as refusal:
+        return {'status': 'unknown', 'publishable': False, 'findings': [], 'body': [],
+                'appendix': [], 'findings_source': 'none', 'counts': {}, 'quarantined': [],
+                'guard_status': None, 'cause': str(refusal), 'note': None,
+                'runtime': {}, 'usage': {}, 'agents': [], 'problems': [str(refusal)]}
+
+
 def findings_of(run: Path) -> list:
-    """The findings a run delivered, in the order they were recorded."""
-    path = Path(run) / 'review' / 'findings.jsonl'
-    if not path.is_file():
-        return []
-    rows = []
-    for line in path.read_text(encoding='utf-8').splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rows.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-    return rows
+    """The findings a run delivered, de-duplicated, as :func:`read_run` reads them."""
+    return reading_of(run)['findings']
 
 
-def runtime_of(run: Path) -> dict:
-    path = Path(run) / 'review' / 'runtime.json'
-    return json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {}
+def cost_of(reading: dict) -> dict:
+    """Tokens, minutes, agents and status, as the run itself recorded them.
 
-
-def progress_of(run: Path) -> dict:
-    path = Path(run) / 'review' / 'progress.json'
-    return json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {}
-
-
-def cost_of(run: Path) -> dict:
-    """Tokens, minutes, agents and status, as the run itself recorded them."""
-    runtime = runtime_of(run)
-    agents = runtime.get('agents') or []
+    Two token numbers, because they answer different questions: ``tokens`` is
+    the starter's own accounting, which is what the matrix's ceiling is checked
+    against, and ``observed_tokens`` is what the usage receipts add up to, which
+    is a lower bound when a timed-out attempt spent an amount nobody counted.
+    """
+    runtime, usage = reading.get('runtime') or {}, reading.get('usage') or {}
+    agents = reading.get('agents') or []
     return {
-        'status': runtime.get('status'),
-        'blocked_reason': runtime.get('blocked_reason'),
+        'status': reading.get('status'),
+        'publishable': reading.get('publishable'),
+        'problems': reading.get('problems') or [],
+        'blocked_reason': reading.get('cause'),
+        'note': reading.get('note'),
+        'guard_status': reading.get('guard_status'),
+        'findings_source': reading.get('findings_source'),
         'tokens': runtime.get('tokens_total') or 0,
+        'observed_tokens': usage.get('observed_tokens') or 0,
+        'tokens_unknown': bool(usage.get('unknown')),
         'minutes': round((runtime.get('wall_seconds') or 0) / 60.0, 1),
         'agents': len(agents),
-        'tool_calls': sum(row.get('toolCalls') or 0 for row in agents),
+        'tool_calls': sum((row.get('toolCalls') or 0) for row in agents),
         'models': sorted({str(row.get('model')) for row in agents if row.get('model')}),
     }
 
@@ -155,9 +173,10 @@ def brief(finding: dict) -> dict:
              'block_id', 'quote', 'escalate')}
 
 
-def score(run: Path, key: dict) -> dict:
+def score(run: Path, key: dict, reading: dict | None = None) -> dict:
     """Did this run catch the planted error, and what did it cost?"""
-    findings = findings_of(run)
+    reading = reading if reading is not None else reading_of(run)
+    findings = reading['findings']
     caught, near_place, near_content = [], [], []
     for finding in findings:
         placed, about = in_place(finding, key), about_it(finding, key)
@@ -182,12 +201,14 @@ def score(run: Path, key: dict) -> dict:
         'near_miss_right_place': near_place,
         'near_miss_right_content': near_content,
         'findings_total': len(findings),
+        'findings_body': len(reading['body']),
+        'findings_appendix': len(reading['appendix']),
         'findings_by_track': tracks,
         'findings_by_slot': counts(findings, 'slot'),
         'findings_by_severity': counts(findings, 'severity'),
         'escalated': sum(1 for finding in findings if finding.get('escalate')),
-        'quarantined': progress_of(run).get('quarantined_findings_count'),
-        **cost_of(run),
+        'quarantined': len(reading.get('quarantined') or []),
+        **cost_of(reading),
     }
 
 
@@ -199,7 +220,7 @@ def counts(findings: list, field: str) -> dict:
     return dict(sorted(out.items()))
 
 
-def score_control(run: Path, paper: str = '') -> dict:
+def score_control(run: Path, paper: str = '', reading: dict | None = None) -> dict:
     """What a run alleged on a paper with nothing planted in it.
 
     The rule is the same shape as the catching rule: a finding counts as a
@@ -208,7 +229,8 @@ def score_control(run: Path, paper: str = '') -> dict:
     major severity or above. A question about an unclear method is not an
     allegation of this sort, however fair it is.
     """
-    findings = findings_of(run)
+    reading = reading if reading is not None else reading_of(run)
+    findings = reading['findings']
     alleged = [brief(finding) for finding in findings
                if ALLEGATION.search(words_of(finding))
                and str(finding.get('severity') or '').lower() in SEVERE]
@@ -217,11 +239,14 @@ def score_control(run: Path, paper: str = '') -> dict:
         'paper': paper or Path(run).name,
         'kind': 'control',
         'findings_total': len(findings),
+        'findings_body': len(reading['body']),
+        'findings_appendix': len(reading['appendix']),
         'planted_style_allegations': len(alleged),
         'allegations': alleged,
         'findings_by_slot': counts(findings, 'slot'),
         'findings_by_severity': counts(findings, 'severity'),
-        **cost_of(run),
+        'quarantined': len(reading.get('quarantined') or []),
+        **cost_of(reading),
     }
 
 

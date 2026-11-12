@@ -100,14 +100,16 @@ def jobs(root: Path, stages=STAGES, control_slugs=()) -> list:
 
 
 def already_done(run: Path) -> bool:
-    """Has this run folder already finished? A finished run is never redone."""
-    runtime = Path(run) / 'review' / 'runtime.json'
-    if not runtime.is_file():
+    """Has this run folder already finished? A finished run is never redone.
+
+    The reading is :func:`read_run`'s, so a folder whose status word this
+    version does not know, or whose ``runtime.json`` was truncated by a kill,
+    reads as ``unknown`` and is run again rather than counted as finished.
+    """
+    if not Path(run).is_dir():
         return False
-    try:
-        return bool(json.loads(runtime.read_text(encoding='utf-8')).get('status'))
-    except json.JSONDecodeError:
-        return False
+    reading = scoring.reading_of(Path(run))
+    return reading['status'] in ('complete', 'complete-without-findings', 'blocked')
 
 
 def execute(spec: dict, peerreview: str, timeout: int) -> int:
@@ -126,13 +128,19 @@ def execute(spec: dict, peerreview: str, timeout: int) -> int:
 
 
 def result(spec: dict, exit_code: int) -> dict:
-    """Score the run that just finished, by the written rule."""
+    """Score the run that just finished, by the written rule.
+
+    The folder is read once, with :func:`read_run`, and the reading is handed to
+    the scorer, so the status, the token counts and the findings in a row all
+    come from the same reading of the same folder.
+    """
     run = Path(spec['run'])
+    reading = scoring.reading_of(run)
     if spec['key']:
         key = json.loads(Path(spec['key']).read_text(encoding='utf-8'))
-        row = scoring.score(run, key)
+        row = scoring.score(run, key, reading)
     else:
-        row = scoring.score_control(run, spec['paper'])
+        row = scoring.score_control(run, spec['paper'], reading)
     row.update({'id': spec['id'], 'stage': spec['stage'], 'arm': spec['arm'],
                 'reviewers': spec['reviewers'], 'exit_code': exit_code})
     return row
@@ -150,9 +158,13 @@ def line(row: dict) -> str:
     caught = row.get('caught')
     verdict = ('caught' if caught else 'missed') if row['kind'] != 'control' else \
         f'{row.get("planted_style_allegations", 0)} allegations'
+    # `publishable` is printed because a row scored from a folder that could not
+    # be read in full is not the same evidence as a row scored from a whole one.
+    flag = 'publishable' if row.get('publishable') else \
+        f'NOT publishable ({len(row.get("problems") or [])} problems)'
     return (f'{row["id"]:70} {row.get("status") or "?":8} {verdict:14} '
             f'{row.get("findings_total", 0):3} findings  '
-            f'{row.get("tokens", 0):>9,} tokens  {row.get("minutes", 0):5.1f} min')
+            f'{row.get("tokens", 0):>9,} tokens  {row.get("minutes", 0):5.1f} min  {flag}')
 
 
 def drive(root: Path, stages=STAGES, control_slugs=(), peerreview='peerreview',
