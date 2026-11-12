@@ -16,6 +16,10 @@ Rules this driver keeps to, because they are the ones that stop a long night of
 real runs from going wrong:
 
 * One review at a time. Never two at once, never a retry loop.
+* Every queued input is checked for a ``%PDF`` header before anything runs. A
+  candidate that is really a saved HTML error page cannot be ingested, so the
+  review comes back blocked after a few thousand wasted tokens and stops the
+  matrix; refusing it up front costs nothing and names the file to fix.
 * A run that comes back `blocked` stops the matrix there. Whatever has already
   been scored stays scored; nothing is thrown away and nothing is retried.
 * A token ceiling, checked after every run against the run's own accounting.
@@ -68,6 +72,26 @@ def controls(root: Path, slugs: tuple) -> list:
         if pdf.is_file():
             out.append({'paper': slug, 'kind': 'control', 'pdf': str(pdf), 'key': ''})
     return out
+
+
+def is_pdf(path) -> bool:
+    """Does this file begin with a PDF header?
+
+    The PMC bulk fetch sometimes saves an HTML error page under a ``.pdf``
+    name. The engine's ingest refuses it — ``malformed pdf: no %PDF header`` —
+    and the run is blocked rather than reviewed, which is how Stage A lost a
+    control run. Anything unreadable counts as not a PDF.
+    """
+    try:
+        with open(path, 'rb') as handle:
+            return handle.read(4) == b'%PDF'
+    except OSError:
+        return False
+
+
+def unusable(specs) -> list:
+    """The queued jobs whose input is not a PDF, as ``(id, path)`` pairs."""
+    return [(spec['id'], spec['pdf']) for spec in specs if not is_pdf(spec['pdf'])]
 
 
 def job(paper: dict, arm: str, reviewers: int, root: Path, stage: str) -> dict:
@@ -217,10 +241,19 @@ def drive(root: Path, stages=STAGES, control_slugs=(), peerreview='peerreview',
              'tokens': 0, 'stopped_because': '', 'rows': []}
     if dry_run:
         for spec in queue:
-            print(f'{spec["stage"]:10} {spec["id"]}')
+            print(f'{spec["stage"]:10} {spec["id"]}'
+                  + ('' if is_pdf(spec['pdf']) else f'   NOT A PDF: {spec["pdf"]}'))
         return state
     if rescore_only:
         return rescore(root, queue)
+    refused = unusable(queue)
+    if refused:
+        for name, pdf in refused:
+            print(f'refused {name}: {pdf} does not start with %PDF')
+        state['stopped_because'] = (
+            f'{len(refused)} of {len(queue)} queued inputs are not PDFs; '
+            'nothing was run')
+        queue = []
     for spec in queue:
         if already_done(Path(spec['run'])):
             row = result(spec, 0)

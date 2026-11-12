@@ -29,15 +29,45 @@ evidence: `review/protocol.json` records what each run was allowed to do.
 3. **n is small.** Eight papers in the main stage, one run each per arm, no
    repeats. A one-paper difference moves a catch rate by 12.5 points. Treat
    every number as a direction, not an effect size.
-4. **The engine changed between stages.** Pilot and main ran on the engine at
-   `aa4113b` (branch `stage-a`); the control and reviewers1 arms ran after
-   `main` 45d6834 was merged in, which changed when a run counts as
-   `publishable`. Every row's `publishable` in these tables is the value
-   `--rescore` derived from the run folder with the *later* rule, so the column
-   is comparable across stages even though the runs are not. (pending: confirm
-   after the rescore pass)
+4. **One engine ran the whole matrix.** Every run in the tables below — pilot,
+   main, control and reviewers1 — was made by the same non-editable install of
+   the engine at commit `f8d8d3b`, in the virtual environment built at 02:22.
+   Commits landing on the branch afterwards (the merge of `main` 45d6834, and
+   the brief fix) did not reach those runs: the install holds a *copy* of the
+   package, not a link to the working tree. See "Which engine each venv held".
 5. **Tokens are the engine's own count** from `review/runtime.json`, summed over
    every agent in the run.
+
+## Which engine each venv held
+
+| Venv | Engine | What it ran |
+| --- | --- | --- |
+| built 02:22 | `f8d8d3b` | every matrix run: pilot, main, control, reviewers1 |
+| built for the rerun | `brief-exact-quotes` (45d6834 + the brief fix) | the four brief-fix reruns, and the final `--rescore` of every row |
+
+Both are plain (non-editable) installs, so each run is pinned to the code that
+was installed when its venv was built, whatever the working tree says.
+
+The diff from `f8d8d3b` to 45d6834 touches six files under `peerreviewagents/`:
+`__init__.py`, `cli/main.py`, `engine/usage.py`, `names.py`, `runs.py` and the
+new `workspace.py`. **Nothing under `peerreviewagents/plugin/` changed**, which
+is where the reviewer briefs, the MCP server and the quote guard live — so no
+run in this document was reviewed or guarded differently from any other. The
+check was made against the diff, not assumed.
+
+Two of those files do matter for how the numbers are *read*, and both are read
+after a review is over, not during it:
+
+* `runs.py` changed the `publishable` rule. Under `f8d8d3b` a run was
+  publishable only if it was `complete`, with findings from the editor package
+  and a clean guard; 45d6834 replaced that with `publishable_reasons`, under
+  which a `complete-without-findings` run with nothing quarantined is also
+  publishable. The `publishable` column below is the **45d6834 rule applied to
+  every row**, because the final `--rescore` was run from the rerun venv. It is
+  therefore comparable across stages, and it is the rule that ships in 0.9.0.
+* `engine/usage.py` changed how agent rows are totalled for the report's agent
+  table. The token figures here are summed by `score.py` from
+  `review/runtime.json` itself, so this does not move them.
 
 ## What ran
 
@@ -52,6 +82,33 @@ The arms are defined in [`study-arms.md`](study-arms.md): `single` is one core
 reviewer and no editor, `reviewers-only` is three core reviewers and the editor
 with no specialist track, `full-two-track` is the default review — three core
 reviewers, all six specialists, the editor.
+
+### Candidates that could not be used
+
+The corpus fetch collected 41 candidate files. **Twenty of them are not PDFs**:
+each is PMC's "Preparing to download" interstitial HTML page saved under a
+`.pdf` name. The engine's ingest refuses them — `malformed pdf: no %PDF
+header` — and the review comes back `blocked` without reviewing anything, which
+is how the first control run was lost (that row is kept in the data as an input
+failure, not a review failure; 6,250 tokens).
+
+`matrix.py` now checks every queued input for a `%PDF` header before it starts
+any session and refuses the whole queue if one fails, naming the file. These
+twenty are unusable until the fetch is fixed:
+
+| | | | |
+| --- | --- | --- | --- |
+| economics-pmc10364581 | economics-pmc6227754 | economics-pmc6227755 | economics-pmc7084952 |
+| economics-pmc8500697 | epidemiology-pmc6227754 | genomics-pmc10850029 | materials-pmc5831698 |
+| materials-pmc7144564 | microbiology-pmc11718157 | microbiology-pmc6300481 | microbiology-pmc7145624 |
+| microbiology-pmc9763654 | microbiology-pmc9825576 | neuroscience-pmc5770339 | trial-pmc6145832 |
+| trial-pmc6319250 | trial-pmc6796530 | trial-pmc7262592 | trial-pmc9542252 |
+
+None of them is a planted paper: the ten planted PDFs and the altered copies
+made from them are all real PDFs, so no row in the tables below rests on one of
+these files. The loss is to the pool the controls were drawn from — twenty of
+the thirty-one unplanted candidates are gone, which is also why the controls are
+two papers and not more.
 
 ## Per-arm summary
 
