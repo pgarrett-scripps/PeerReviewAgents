@@ -27,8 +27,14 @@ python scripts/stage_a/corpus.py roster                      # ~12 PDFs
 python scripts/stage_a/plant.py <pdf> --kind statistic       # plus the key
 python scripts/stage_a/matrix.py --dry-run                   # the run order
 python scripts/stage_a/matrix.py --stage pilot               # real reviews
+python scripts/stage_a/matrix.py --rescore                   # re-score, run nothing
 python scripts/stage_a/score.py <run folder> --key <key.json>
 ```
+
+`--rescore` exists because the scoring rule is written down and gets corrected:
+when it does, every run already on disk is scored again by the new rule and
+`runs/results.jsonl` is rewritten, so one table is never half one rule and half
+another. No review is run and no run folder is touched.
 
 `matrix.py` runs one review at a time, never retries, stops the moment a run
 comes back `blocked`, and stops at a token ceiling. Every run is scored and
@@ -57,7 +63,9 @@ the right thing:
 * **place** — it names one of the blocks the key lists, or its quote lies inside
   the altered text;
 * **content** — the finding's *own words* name every value the key lists: the
-  altered number together with the number it now contradicts.
+  altered number together with the number it now contradicts. A short value has
+  to stand on its own as a number: `.72` is not the `72` of `72%`, and not the
+  `72.18` of some other calculation's receipt.
 
 Quoting the altered sentence while saying something else about it is a near miss,
 not a catch. Near misses are recorded too, because they are what tell an agent

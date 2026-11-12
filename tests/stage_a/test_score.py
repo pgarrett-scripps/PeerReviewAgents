@@ -179,6 +179,57 @@ def test_a_control_counts_only_severe_allegations(tmp_path):
     assert result['allegations'][0]['finding_uid'] == 'f1'
 
 
+P_VALUE_KEY = {
+    'paper': 'education-pmc6085180',
+    'kind': 'statistic',
+    'rule': 'p-value-against-its-own-claim',
+    'detect': {'blocks': ['b0010'],
+               'quotes': ['and at 6 months (D = 1.29; P = .72; d = 0.29)'],
+               'must_mention': ['.72'], 'mention_rule': 'all'},
+}
+
+
+def test_a_percentage_that_happens_to_share_the_digits_is_not_the_p_value(tmp_path):
+    """`.72` is not the `72` of `72%`, and the pilot's first run contained both.
+
+    A core finding about attrition said `109 of 151, 72%` and another carried an
+    arithmetic receipt holding `72.185430463`. Scored on digits alone both read
+    as naming the planted p-value, which would have counted either of them as a
+    catch had they pointed at the altered block.
+    """
+    run = write_run(tmp_path / 'run', [
+        finding(finding_uid='f1', block_id='b0010',
+                comment='Deaths were numerically higher in the intervention arm (109 of 151, '
+                        '72%) than in usual care.'),
+        finding(finding_uid='f2', block_id='b0010',
+                calculate_receipt="{'values': [19.205298013245034, 72.185430463]}"),
+    ])
+    result = score.score(run, P_VALUE_KEY)
+    assert result['caught'] is False and not result['near_miss_right_content']
+
+
+def test_the_same_p_value_with_a_leading_zero_is_the_same_number(tmp_path):
+    run = write_run(tmp_path / 'run', [finding(
+        block_id='b0010',
+        comment='The abstract calls the 6-month result significant but reports P = 0.72.')])
+    assert score.score(run, P_VALUE_KEY)['caught'] is True
+
+
+def test_a_longer_number_containing_the_digits_is_not_the_value(tmp_path):
+    run = write_run(tmp_path / 'run', [finding(
+        block_id='b0010', comment='The effect size of 10.72 is implausibly large.')])
+    assert score.score(run, P_VALUE_KEY)['caught'] is False
+
+
+def test_a_sample_size_must_stand_on_its_own(tmp_path):
+    joined = write_run(tmp_path / 'one', [finding(
+        block_id='b0010', comment='The cohort of 11548 patients and 530 controls.')])
+    assert score.score(joined, KEY)['caught'] is False
+    plain = write_run(tmp_path / 'two', [finding(
+        block_id='b0010', comment='The text says n = 548. Table 1 says 530.')])
+    assert score.score(plain, KEY)['caught'] is True
+
+
 def test_a_fake_doi_key_is_matched_on_the_suffix(tmp_path):
     key = {'paper': 'epidemiology-pmc7611074', 'kind': 'fake-doi', 'rule': 'doi',
            'detect': {'blocks': ['b0094'], 'quotes': ['Reference 41. 10.1101/2020.04.23.20076486'],

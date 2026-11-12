@@ -153,6 +153,33 @@ def record(root: Path, row: dict) -> None:
         handle.write(json.dumps(row) + '\n')
 
 
+def rescore(root: Path, specs: list) -> dict:
+    """Score every run that is already on disk again, and rewrite the results.
+
+    The scoring rule is written down and it gets corrected — the pilot's first
+    run showed that a short planted value matched as a run of digits — and a
+    corrected rule has to be applied to every run, not only the ones that run
+    after it. No review is run here and no run folder is touched.
+    """
+    state = {'root': str(root), 'planned': len(specs), 'ran': 0, 'skipped': 0,
+             'tokens': 0, 'stopped_because': '', 'rows': []}
+    lines = []
+    for spec in specs:
+        if not already_done(Path(spec['run'])):
+            continue
+        row = result(spec, 0)
+        state['skipped'] += 1
+        state['tokens'] += row.get('tokens') or 0
+        state['rows'].append(row)
+        lines.append(json.dumps(row))
+        print(line(row))
+    path = Path(root) / 'runs' / 'results.jsonl'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(''.join(text + '\n' for text in lines), encoding='utf-8')
+    print(f'\nrescored {state["skipped"]} run(s) into {path}')
+    return state
+
+
 def line(row: dict) -> str:
     """One line a person can read while the matrix is running."""
     caught = row.get('caught')
@@ -168,7 +195,8 @@ def line(row: dict) -> str:
 
 
 def drive(root: Path, stages=STAGES, control_slugs=(), peerreview='peerreview',
-          ceiling=CEILING, timeout=7200, dry_run=False, only='', limit=0) -> dict:
+          ceiling=CEILING, timeout=7200, dry_run=False, only='', limit=0,
+          rescore_only=False) -> dict:
     """Run the matrix in order and stop on the first rule that says to stop."""
     queue = [spec for spec in jobs(root, stages, control_slugs)
              if not only or only in spec['id']]
@@ -180,6 +208,8 @@ def drive(root: Path, stages=STAGES, control_slugs=(), peerreview='peerreview',
         for spec in queue:
             print(f'{spec["stage"]:10} {spec["id"]}')
         return state
+    if rescore_only:
+        return rescore(root, queue)
     for spec in queue:
         if already_done(Path(spec['run'])):
             row = result(spec, 0)
@@ -231,6 +261,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--only', default='', help='only jobs whose id contains this')
     parser.add_argument('--limit', type=int, default=0, help='at most this many jobs')
     parser.add_argument('--dry-run', action='store_true', help='print the order, run nothing')
+    parser.add_argument('--rescore', action='store_true',
+                        help='score the runs already on disk again and rewrite results.jsonl')
     return parser
 
 
@@ -238,7 +270,7 @@ def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     state = drive(Path(args.root), tuple(args.stage or STAGES), tuple(args.control),
                   args.peerreview, args.ceiling, args.timeout, args.dry_run,
-                  args.only, args.limit)
+                  args.only, args.limit, args.rescore)
     return 1 if state['stopped_because'] else 0
 
 

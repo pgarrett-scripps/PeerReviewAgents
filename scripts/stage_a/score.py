@@ -17,8 +17,11 @@ sessions, which is exactly the comparison Stage A is for.
   contradicts. Naming one of the two is not enough, because the number that was
   not altered is still correct and quoting it shows nothing.
 
-Both are decided on digits and letters only (`squash`), because a finding
-quotes a paper's text as the model saw it, with its own spacing.
+Both ignore spacing, because a finding quotes a paper's text as the model saw
+it. Place is decided on digits and letters alone (`squash`). Content keeps the
+decimal points (`numeric_form`) and makes a short value sit on its own
+(`names_value`), because `.72` is not the `72` of `72%` and not the `72.18` of
+an arithmetic receipt.
 
 A finding that is about the right thing in the wrong place, or in the right
 place about something else, is recorded as a near miss rather than silently
@@ -66,6 +69,42 @@ def squash(text: str) -> str:
     return re.sub(r'[^0-9a-z]', '', str(text).lower())
 
 
+def numeric_form(text: str) -> str:
+    """Letters, digits and decimal points, with a leading zero before a point dropped.
+
+    The place rule can throw punctuation away, because a quote is matched
+    against a whole passage. The content rule cannot: ``.72`` and ``72`` are
+    different numbers, and a p-value written ``P = 0.72`` is the same number as
+    ``P = .72``. Anything that is not part of a number becomes a space rather
+    than nothing, because deleting it joins numbers to whatever precedes them —
+    ``Table 1; 548`` would read as the single run of digits ``1548`` — and a
+    comma between digits is dropped, because ``11,548`` is one number.
+    """
+    text = re.sub(r'(?<=[0-9]),(?=[0-9])', '', str(text).lower())
+    spaced = re.sub(r'[^0-9a-z.]+', ' ', text)
+    return re.sub(r'(?<![0-9])0\.', '.', spaced)
+
+
+def names_value(said: str, mention: str) -> bool:
+    """Do these words name this value, as a number and not as a run of digits?
+
+    A short number has to sit on its own. The pilot showed why: with ``.72``
+    matched as the digits ``72``, a finding that said ``109 of 151, 72%`` about
+    another part of the paper, and one whose arithmetic receipt happened to
+    contain ``72.185430463``, both counted as naming the planted p-value. A
+    long value — a DOI suffix — is specific enough to match wherever it appears,
+    and has to be, because it is written inside a longer string of digits.
+    """
+    mention = numeric_form(mention)
+    if not mention:
+        return False
+    digits = sum(1 for character in mention if character.isdigit())
+    if digits == 0 or digits > 5:
+        return mention in said
+    before = r'(?<![0-9])' if mention.startswith('.') else r'(?<![0-9.])'
+    return re.search(before + re.escape(mention) + r'(?![0-9])', said) is not None
+
+
 def words_of(finding: dict) -> str:
     """Everything the finding says, quotes included."""
     parts = [finding.get(field) or '' for field in
@@ -109,11 +148,11 @@ def in_place(finding: dict, key: dict) -> bool:
 
 def about_it(finding: dict, key: dict) -> bool:
     """Do the finding's own words name the planted values?"""
-    said = squash(own_words_of(finding))
-    mentions = [squash(value) for value in key['detect']['must_mention'] if squash(value)]
+    said = numeric_form(own_words_of(finding))
+    mentions = [value for value in key['detect']['must_mention'] if numeric_form(value)]
     if not mentions:
         return False
-    hits = [mention in said for mention in mentions]
+    hits = [names_value(said, mention) for mention in mentions]
     return all(hits) if key['detect'].get('mention_rule') == 'all' else any(hits)
 
 
