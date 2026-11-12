@@ -8,6 +8,7 @@ wrote about itself: ``protocol.json`` for the arm and the agent slots,
 import textwrap
 from pathlib import Path
 
+from ..plugin import models as model_plan
 from .storage import read
 from .usage import agent_rows, observed_usage, runtime_usage
 
@@ -246,6 +247,13 @@ def report_blocks(run, workspace=None):
     for limit in runtime.get('rate_limits') or []:
         blocks.append(('labeled', 'Rate limit', str(limit.get('reason'))))
     blocks += _agent_table(agents)
+    # A slot nothing observed does not hold a review back, but a page showing
+    # `Model asked` for it and nothing beside it would read as agreement. The
+    # line says plainly that those slots are unverified. See `models.unverified`.
+    missing = model_plan.unverified(agents)
+    if missing:
+        blocks.append(('labeled', 'Models unverified',
+                       model_plan.unverified_line(missing).capitalize() + '.'))
     final = _final_review(run)
     if final or reviewers:
         blocks.append(('paragraph', NOTICE))

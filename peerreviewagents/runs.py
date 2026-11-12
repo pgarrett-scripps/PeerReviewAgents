@@ -262,7 +262,7 @@ def _reviewer_models(*candidates):
     return []
 
 
-def _identity(manifest, protocol, paper, pdf_from_startup=None, problems=None):
+def _identity(manifest, protocol, paper, pdf_from_startup=None, problems=None, agents=None):
     """Who the run reviewed, from the files that say so rather than from a name."""
     manifest, protocol, paper = manifest or {}, protocol or {}, paper or {}
     problems = problems if problems is not None else []
@@ -283,6 +283,13 @@ def _identity(manifest, protocol, paper, pdf_from_startup=None, problems=None):
         'models': _models(protocol.get('models'), plan.get('models')),
         'reviewer_models': _reviewer_models(protocol.get('reviewer_models'),
                                             plan.get('reviewer_models')),
+        # The slots that were assigned a model and never reported running one.
+        # Not a problem and not a reason the review cannot be published — a
+        # slot nothing observed is not a slot that ran something else — but the
+        # plan for those slots is a plan nobody checked, and an application
+        # showing `models` has to be able to say so. The report writer draws
+        # its own line from the same rule, `models.unverified`.
+        'models_unverified': model_plan.unverified(agents),
         'literature_cutoff': protocol.get('literature_cutoff'),
         'workflow_version': manifest.get('workflow_version') or protocol.get('version'),
         'finding_schema_version': (manifest.get('finding_schema_version')
@@ -495,6 +502,12 @@ def read_run(path):
         each slot was asked to run and ``reviewer_models`` the ordered list the
         core reviewers were drawn from — both empty for a run written before
         0.9.0, which pinned one model per slot in the plugin agent files.
+        ``models_unverified`` names the slots that were assigned a model and
+        never reported running one: the review is still publishable, because
+        nothing was seen to disagree with the plan, but for those slots the
+        plan is all there is. A slot that ran a *different* model family is a
+        different matter and is in ``problems`` and
+        ``not_publishable_reasons``.
     ``startup``
         The start-up probe: ``probe`` is the harness's own init event, the
         plugins, MCP servers, agents and commands the session reported, or
@@ -618,7 +631,7 @@ def read_run(path):
         'verdict': package.get('verdict'),
         'limitations': package.get('limitations') or [],
         'identity': _identity(manifest, protocol, paper,
-                              (probe or {}).get('pdf'), problems),
+                              (probe or {}).get('pdf'), problems, agents),
         'stages': progress.get('stages') or (runtime.get('stages') if runtime else None),
         'runtime': {'wall_seconds': runtime.get('wall_seconds'),
                     'tokens_total': runtime.get('tokens_total'),

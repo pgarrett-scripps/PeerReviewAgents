@@ -255,7 +255,10 @@ log('arm ' + opened.arm + ': ' + coreSlots.length + ' core reviewer(s), '
   + specSlots.length + ' specialist(s), editor ' + (hasEditor ? 'yes' : 'no'))
 if (coreSlots.length > 0) {
   log('models: ' + coreSlots.concat(hasEditor ? ['editor'] : [])
-    .map(s => s + ' ' + (assigned[s] || 'as its agent file pins')).join(', '))
+    // Every planned slot has a model by here, or the check above stopped the
+    // run, so there is no agent-file case left to name: the spawn name is the
+    // fallback only because it is the same entry's shorter spelling.
+    .map(s => s + ' ' + (assigned[s] || spawns[s])).join(', '))
 }
 
 phase('Review')

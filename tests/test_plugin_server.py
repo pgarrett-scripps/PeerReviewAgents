@@ -801,6 +801,38 @@ def test_a_slot_that_ran_another_version_of_its_own_family_is_not_a_problem(tmp_
     assert reading['publishable'] is True, reading['not_publishable_reasons']
 
 
+def test_a_slot_that_reported_no_model_is_unverified_and_still_publishable(tmp_path):
+    """Nothing was seen to disagree with the plan, so the review stands.
+
+    What cannot be said is that the slot ran what it was asked to run: the
+    session reported no model and the agent never said. `models_unverified`
+    names those slots so an application can show the plan as a plan, and it is
+    deliberately not a problem and not a reason to withhold the review.
+    """
+    open_run(tmp_path, arm='single')
+    close(claim('core-1')['agent_token'], none_found=True)
+    srv.write_review(claim('recorder')['agent_token'])
+
+    reading = read_run(srv.current().review)
+    assert 'core-1' in reading['identity']['models_unverified']
+    assert reading['identity']['models']['core-1'] == 'claude-sonnet-5-5', 'the plan is recorded'
+    assert [row['model'] for row in reading['agents'] if row['slot'] == 'core-1'] == [None], \
+        'never the assignment repeated back'
+    assert reading['problems'] == []
+    assert reading['publishable'] is True, reading['not_publishable_reasons']
+
+
+def test_a_slot_that_reported_its_model_is_not_unverified(tmp_path):
+    run, uids = two_track_run(tmp_path)
+    editor, accepted = accept_editor(run, uids)
+    assert accepted['accepted'] is True, accepted
+    close(editor, model='claude-fable-5-2')
+    srv.write_review(claim('recorder')['agent_token'])
+    reading = read_run(run.review)
+    assert 'core-1' not in reading['identity']['models_unverified']
+    assert 'editor' not in reading['identity']['models_unverified']
+
+
 def test_a_run_where_nobody_found_anything_is_complete_without_findings(tmp_path):
     open_run(tmp_path, arm='single')
     close(claim('core-1')['agent_token'], none_found=True,

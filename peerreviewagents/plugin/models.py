@@ -390,22 +390,35 @@ def subagent_override(version, environ=None):
 
     The variable is the user's and is never unset here: a process that quietly
     removed it would be deciding something the user set deliberately, and a
-    session started from a different environment is their call to make. An
-    unparseable version is not refused either, because "older than 2.1.251" is
-    not something it says.
+    session started from a different environment is their call to make.
+
+    A version that could not be read is refused the same way. The question the
+    refusal answers is whether this run's per-slot plan will hold, and a
+    version nobody could read cannot answer it: treating silence as "new
+    enough" would run the whole review on one model and record the plan, which
+    is the outcome this check exists to prevent. Unset the variable or install a
+    Claude Code that answers ``--version``, and either way nothing was spent.
     """
     environ = os.environ if environ is None else environ
     value = str(environ.get(SUBAGENT_MODEL) or '').strip()
     if not value:
         return None
     numbers = version_numbers(version)
-    if not numbers or numbers >= SUBAGENT_PRECEDENCE_FIXED:
+    fixed = '.'.join(str(part) for part in SUBAGENT_PRECEDENCE_FIXED)
+    if not numbers:
+        return (f'{SUBAGENT_MODEL} is set to {value} and this Claude Code\'s version could not be '
+                f'read, so whether that variable outranks the per-spawn model this plugin sends '
+                f'cannot be told: before Claude Code {fixed} it does, and every slot would run '
+                f'{normalize(value)} while the run recorded the models it asked for. Start this '
+                f'review from an environment where {SUBAGENT_MODEL} is not set, or from a Claude '
+                'Code that answers --version (no model was run)')
+    if numbers >= SUBAGENT_PRECEDENCE_FIXED:
         return None
     return (f'{SUBAGENT_MODEL} is set to {value} and this Claude Code is '
             f'{str(version).strip()}, where that variable outranks both the per-spawn model this '
             f'plugin sends and the agent files: every slot would run {normalize(value)} and the '
             f'run would record the models it asked for instead. Claude Code '
-            f'{".".join(str(part) for part in SUBAGENT_PRECEDENCE_FIXED)} ranks it below both, so '
+            f'{fixed} ranks it below both, so '
             f'upgrade, or start this review from an environment where {SUBAGENT_MODEL} is not set '
             '(no model was run)')
 
@@ -450,6 +463,34 @@ def substitution_line(slot, assigned, observed):
     """One sentence naming the slot, what it was assigned and what ran."""
     return (f'{slot} was assigned {normalize(assigned)} but ran {observed}: a different model '
             'family ran in that slot, so this run did not run the models it records')
+
+
+def unverified(rows):
+    """The slots that were assigned a model and never reported running one.
+
+    A slot with a plan and no observation is not a substitution — nothing was
+    seen to disagree with the plan — and it does not hold a review back. What
+    it does mean is that the plan for those slots is only a plan: the stream
+    carried no model for them and the agent never said, so nobody can tell from
+    this folder whether they ran it. Named here once, so the report and
+    :func:`peerreviewagents.read_run` say the same thing about the same folder.
+
+    A row with no ``assigned_model`` is not counted: a pre-0.9.0 run recorded no
+    plan at all, and there is nothing there to be unverified against.
+    """
+    return [row.get('slot') or 'a slot' for row in rows or ()
+            if row.get('assigned_model') and not row.get('model')]
+
+
+def unverified_line(slots):
+    """One sentence naming the slots whose assigned model nothing observed."""
+    names = list(slots or ())
+    if not names:
+        return ''
+    return ('the model that ran was not recorded for ' + str(len(names))
+            + (' slot (' if len(names) == 1 else ' slots (') + ', '.join(names)
+            + '), so the plan for ' + ('it' if len(names) == 1 else 'them')
+            + ' is unverified')
 
 
 def substitutions(rows):

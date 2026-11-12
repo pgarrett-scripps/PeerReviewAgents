@@ -1361,9 +1361,11 @@ def _editor_package(run):
         'escalated_count': sum(1 for f in pooled if f['escalate']),
         'findings_by_track': counts,
         'reviewer_count': run.reviewers,
-        # `model` is what the agent reported running as; `assigned_model` is
-        # what the run asked that slot to run. A published review names the
-        # second and can show the first disagreeing with it.
+        # `assigned_model` is the plan — what the run asked that slot to run —
+        # and `model` is the observation, what the agent reported running as.
+        # Both are published, never one in place of the other: a reader can see
+        # the observation disagree with the plan, or see that nothing observed
+        # the slot at all, and neither reads as the other.
         'reviewer_provenance': [{'slot': r['slot'], 'track': r['track'], 'model': r['model'],
                                  'assigned_model': run.models.get(r['slot']),
                                  'attempt': r['attempt'], 'tool_calls': r['tool_calls'],

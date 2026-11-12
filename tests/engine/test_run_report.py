@@ -194,6 +194,36 @@ def test_the_agent_table_shows_an_assigned_model_that_did_not_run(run):
     assert rows(markdown)['Models that ran'] == 'claude-haiku-5-5, claude-sonnet-5-5'
 
 
+def test_a_slot_nothing_observed_is_called_unverified_in_both_reports(run):
+    """A plan nobody checked is not the same as a plan that held.
+
+    The run is still publishable — nothing was seen to disagree with the plan,
+    and a missing observation is the ordinary state of a slot whose session
+    reported no model — but a page showing `Model asked` with nothing beside it
+    would read as agreement. Both reports say which slots those are.
+    """
+    protocol = json.loads((run / 'protocol.json').read_text(encoding='utf-8'))
+    protocol['agents']['core-1'].pop('model')
+    protocol['agents']['core-2'].pop('model')
+    write(run / 'protocol.json', protocol)
+    runtime = json.loads((run / 'runtime.json').read_text(encoding='utf-8'))
+    runtime['agents'] = [row for row in runtime['agents']
+                         if row['label'] not in ('core-1', 'core-2')]
+    write(run / 'runtime.json', runtime)
+    markdown, text = reports(run)
+
+    line = ('the model that ran was not recorded for 2 slots (core-1, core-2), '
+            'so the plan for them is unverified')
+    assert '**Models unverified:** ' + line.capitalize() + '.' in markdown
+    assert 'Models unverified' in text and 'core-1, core-2' in text
+    assert '| core-1 | claude-sonnet-5-5 | not recorded |' in markdown
+
+
+def test_a_report_whose_slots_all_reported_a_model_says_nothing_about_it(run):
+    markdown, text = reports(run)
+    assert 'Models unverified' not in markdown and 'Models unverified' not in text
+
+
 def test_a_retry_is_labelled_as_one_and_an_unplanned_agent_is_still_shown(run):
     """A slot the protocol never recorded is a discrepancy worth seeing, not a tidy-up."""
     runtime = json.loads((run / 'runtime.json').read_text(encoding='utf-8'))

@@ -25,8 +25,8 @@ including 32 test modules, and nothing was left behind as a shim.
   takes `core-1`'s model. The specialists stay on `claude-sonnet-5-5`, the
   editor is `claude-fable-5-2` and the recorder `claude-haiku-5-5`. Every one
   of them is configurable — `--reviewer-models A,B,C`, `--specialist-model`,
-  `--editor-model` on `peerreview review`, the same three as arguments to
-  `ingest` for a session that drives the workflow itself, and
+  `--editor-model` and `--recorder-model` on `peerreview review`, the same four
+  as arguments to `ingest` for a session that drives the workflow itself, and
   `PEERREVIEW_REVIEWER_MODELS`, `PEERREVIEW_SPECIALIST_MODEL`,
   `PEERREVIEW_EDITOR_MODEL`, `PEERREVIEW_RECORDER_MODEL` in a session the
   starter launched. There is no billing or usage gate anywhere in it: which
@@ -41,10 +41,26 @@ including 32 test modules, and nothing was left behind as a shim.
   to substitute one — a blocked family alias runs the newest permitted version
   of that family — so a run that asked for Opus and got Sonnet would be
   recorded as an arm it was not. Availability is the `availableModels` allowlist
-  in the settings files Claude Code reads, managed settings first; where no
-  allowlist is set, the models the plugin knows are available and any other
-  name is refused. A folder already holding a run under different models is
-  refused too, the way a folder holding a different arm already was.
+  in the settings files Claude Code reads, concatenated across them the way
+  Claude Code concatenates it rather than the highest-precedence file replacing
+  the others — reading only the first file would refuse a model that is in fact
+  available, which is a refusal with nothing wrong behind it. Where no allowlist
+  is set anywhere, the models this version knows are available and any other
+  name is refused as a name this version does not know. A list with an empty
+  item in it — `sonnet,,opus`, a stray comma — is refused rather than quietly
+  dropped, because a three-reviewer run drawing from a two-model list is a
+  different arm from the one that was typed. A folder already holding a run
+  under different models is refused too, the way a folder holding a different
+  arm already was, and that check covers every slot rather than the reviewers
+  alone.
+- `CLAUDE_CODE_SUBAGENT_MODEL` stops a run before it starts on Claude Code
+  older than 2.1.251, where that variable outranked both the per-spawn model
+  override the workflow sends and the agent files: every slot would have run
+  the one model it names while `protocol.json` recorded the per-slot plan. The
+  same refusal covers a `claude --version` that cannot be read, because "new
+  enough" is not something an unreadable version says. The variable is refused,
+  never unset — it is the user's, and quietly removing it would override a
+  deliberate choice.
 - The model each slot was asked to run, written into the run folder, so a
   published review can say which model wrote which report: `models` and
   `reviewer_models` in `protocol.json` and in `plan` in both `protocol.json`
@@ -54,8 +70,33 @@ including 32 test modules, and nothing was left behind as a shim.
   and `agents[]['assigned_model']` from `read_run`, and `models_requested`
   beside the observed `models` in the `review` summary. The two are different
   facts and both are kept: what the run asked for, and what the agent reported
-  having run as. They are empty for a run written before 0.9.0, which pinned
-  one model per slot in the plugin agent files.
+  having run as. Neither is ever shown as the other — a slot nothing observed
+  reads as `None` from `read_run` and `not recorded` in the report, and never
+  as the model it was asked to run. They are empty for a run written before
+  0.9.0, which pinned one model per slot in the plugin agent files.
+- A slot that ran a different model *family* from the one it was assigned is a
+  problem and a reason the run is not publishable. `read_run` names the slot,
+  the assigned model and the observed one in `problems` and again in
+  `not_publishable_reasons`: that run did not run the models it is filed under,
+  and no later reading of the folder repairs it. A different *version* of the
+  same family is neither — which version a family alias resolves to is the
+  login's business, and the observed id is simply what gets reported.
+- `identity['models_unverified']` from `read_run`, and a **Models unverified**
+  line in `REVIEW.md` and `REVIEW.txt`: the slots that were assigned a model
+  and never reported running one. The review is still publishable, because
+  nothing was seen to disagree with the plan, but for those slots the plan is
+  all there is and a page showing the assignment alone would read as agreement.
+- `Model asked` and `Model ran` as two columns of the report's agent table,
+  where there was one `Model` column, and `Models asked for` beside `Models
+  that ran` in its header. The slots do not all run one model, so there is no
+  single model for a run; the table is the only honest answer, and it is
+  allowed past the report's prose width rather than shortening a model id.
+- Stage A puts the pin in the job id for every stage, not only `rerun`: a
+  `--reviewer-models` value becomes a suffix such as `--sonnet-opus`, and an
+  explicit `--tag` wins over it. A pinned `main` run otherwise lands in the
+  recorded run's folder, where `already_done` reads it as finished and the
+  pinned arm never runs at all. With neither given the ids are byte-identical
+  to the ones already in `results.jsonl` and on disk.
 - `peerreviewagents/plugin/pra`, the plugin that now runs every review: a
   workflow that fans out N core reviewers and six specialist tracks and then an
   editor, agent files that pin a turn limit per slot and a fallback model the

@@ -520,6 +520,12 @@ def test_a_subagent_variable_that_outranks_the_plan_stops_the_run(tmp_path, monk
     assert os.environ['CLAUDE_CODE_SUBAGENT_MODEL'] == 'haiku', 'refused, never unset'
     assert not (tmp_path / 'run').exists(), 'nothing written, nothing spent'
 
+    monkeypatch.setattr(starter, 'claude_version', lambda binary=None: None)
+    with pytest.raises(ValueError) as unreadable:
+        starter.review(str(FIXTURE), str(tmp_path / 'run'), arm='single')
+    assert 'could not be read' in str(unreadable.value), \
+        'a version nobody could read cannot say the plan will hold'
+
     monkeypatch.setattr(starter, 'claude_version', lambda binary=None: '2.1.251')
     monkeypatch.setattr(starter, 'claude_binary', lambda: None)
     summary = starter.review(str(FIXTURE), str(tmp_path / 'run'), arm='single')

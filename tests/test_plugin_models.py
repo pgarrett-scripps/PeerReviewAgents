@@ -212,8 +212,17 @@ def test_an_old_claude_code_with_the_subagent_variable_set_is_refused():
     assert model_plan.subagent_override('2.1.250', environ={}) is None
     assert model_plan.subagent_override('2.1.250', environ={'CLAUDE_CODE_SUBAGENT_MODEL': ' '}) \
         is None
-    assert model_plan.subagent_override('unknown', environ=set_to) is None, \
-        'a version that says nothing is not a version older than 2.1.251'
+    # A version nobody could read cannot answer the only question the check
+    # asks, which is whether this run's per-slot plan will hold. Reading
+    # silence as "new enough" would run the whole review on one model and
+    # record the plan, which is the outcome being prevented.
+    for unreadable in ('unknown', '', None, 'Claude Code'):
+        refused = model_plan.subagent_override(unreadable, environ=set_to)
+        assert refused and 'could not be read' in refused
+        assert 'CLAUDE_CODE_SUBAGENT_MODEL' in refused and HAIKU in refused
+        assert 'no model was run' in refused
+    assert model_plan.subagent_override('unknown', environ={}) is None, \
+        'an unreadable version with the variable unset is nothing to refuse'
 
 
 def test_the_agent_files_pin_the_same_models_this_module_defaults_to():
