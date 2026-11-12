@@ -55,7 +55,7 @@ def import_paper(pdf, output, xml=None, title=None, source_url='', supplements=N
     shutil.copy2(pdf, output / 'original.pdf')
     markdown, doc = rustypaper.convert(str(pdf))
     write(output / 'converter.json', doc)
-    (output / 'converter.md').write_text(markdown)
+    (output / 'converter.md').write_text(markdown, encoding='utf-8')
     raw_pages = page_text(pdf)
     if raw_pages and not raw_pages[-1].strip():
         raw_pages.pop()
@@ -191,10 +191,10 @@ def import_paper(pdf, output, xml=None, title=None, source_url='', supplements=N
     write(output/'paper.json',paper)
     write(output/'references.json',references)
     write(output/'statistics.json',stats)
-    (output/'manuscript.md').write_text('\n\n'.join(f"[{b['id']} | {b['section']} | {b['document']} page {b['page'] or '?'}]\n{b['text']}" for b in blocks))
+    (output/'manuscript.md').write_text('\n\n'.join(f"[{b['id']} | {b['section']} | {b['document']} page {b['page'] or '?'}]\n{b['text']}" for b in blocks),encoding='utf-8')
     for i,page in enumerate(raw_pages,1):
         p=output/'pages'/f'{i:03d}.txt'
         p.parent.mkdir(exist_ok=True)
-        p.write_text(page)
+        p.write_text(page,encoding='utf-8')
     write(output/'manifest.json',{'paper_id':paper['id'],'files':{str(p.relative_to(output)):digest(p.read_bytes()) for p in sorted(output.rglob('*')) if p.is_file() and p.name!='manifest.json'}})
     return paper

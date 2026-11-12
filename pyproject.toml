@@ -67,7 +67,11 @@ dependencies = [
 # `dev` runs the whole suite on its own. pyyaml is transitive today, but
 # tests/test_metadata.py parses CITATION.cff directly — declare it so CI
 # cannot lose it to a dependency change.
-dev = ["pytest>=8", "ruff>=0.6", "pyyaml>=6"]
+# setuptools is here as a test dependency, not only a build one: tests build the
+# real wheel and look inside it, because a wheel that ships no plugin cannot run
+# a review and nothing short of the artifact itself proves the package data.
+# 70 is where the wheel is built without a separate `wheel` package.
+dev = ["pytest>=8", "ruff>=0.6", "pyyaml>=6", "setuptools>=70"]
 
 [project.urls]
 Homepage = "https://github.com/pgarrett-scripps/PeerReviewAgents"
@@ -78,6 +82,12 @@ Issues = "https://github.com/pgarrett-scripps/PeerReviewAgents/issues"
 
 [project.scripts]
 peerreview = "peerreviewagents.cli.main:run"
+# The plugin's `.mcp.json` launches its MCP server through this name by
+# default, so an installed wheel can start a review without a checkout and
+# without guessing an interpreter. `peerreview review` overrides it with
+# PEERREVIEW_MCP_COMMAND set to the very interpreter running the starter, so a
+# venv that is not on PATH still serves its own run.
+peerreview-plugin-server = "peerreviewagents.plugin.server:main"
 
 [tool.ruff]
 # Pinned explicitly: ruff's default rule selection widens between releases, so
@@ -109,4 +119,15 @@ include = ["peerreviewagents*"]
     "domains/*/manifest.json",
     "domains/*/skills/*/SKILL.md",
     "domains/*/fixtures/cases.json",
+]
+# The plugin *is* the review in 0.9, so the wheel has to carry it: the starter
+# loads `pra` from the installed package, not from a checkout. The two dotted
+# paths are named in full because a `*` glob does not match a leading dot.
+"peerreviewagents.plugin" = [
+    "pra/.claude-plugin/plugin.json",
+    "pra/.mcp.json",
+    "pra/README.md",
+    "pra/agents/*.md",
+    "pra/skills/*/SKILL.md",
+    "pra/workflows/*.js",
 ]

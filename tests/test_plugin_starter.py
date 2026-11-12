@@ -13,6 +13,7 @@ import json
 import os
 import stat
 import sys
+import time
 from pathlib import Path
 
 from peerreviewagents.cli.main import review_argv
@@ -20,11 +21,14 @@ from peerreviewagents.plugin import starter
 
 FIXTURE = Path(__file__).resolve().parent / 'fixtures' / 'single-column.pdf'
 
-STUB = '''import json, os, sys
+STUB = '''import json, os, re, sys
 
-log = os.environ['PEERREVIEW_STUB_LOG']
 argv = sys.argv[1:]
-with open(log, 'a') as stream:
+if argv == ['--version']:
+    print('2.1.999 (Claude Code stub)', flush=True)
+    sys.exit(0)
+log = os.environ['PEERREVIEW_STUB_LOG']
+with open(log, 'a', encoding='utf-8') as stream:
     stream.write(json.dumps(argv) + '\\n')
 prompt = argv[argv.index('-p') + 1] if '-p' in argv else ''
 print(json.dumps({
@@ -47,23 +51,47 @@ print(json.dumps({'type': 'system', 'subtype': 'task_progress', 'workflow_progre
      'attempt': 1, 'agentType': 'pra:recorder', 'model': 'claude-haiku-5-5'}]}), flush=True)
 print(json.dumps({'type': 'system', 'subtype': 'task_notification',
                   'task': {'status': 'completed'}}), flush=True)
+# What the server would have written, written from inside the session: the
+# starter has to read the real file rather than be handed one by the test.
+wanted = os.environ.get('PEERREVIEW_STUB_PROGRESS') or ''
+found = re.search(r'run folder to (.+?)[,.](?:\\s|$)', prompt)
+if wanted and found:
+    review = os.path.join(found.group(1), 'review')
+    os.makedirs(review, exist_ok=True)
+    with open(os.path.join(review, 'progress.json'), 'w', encoding='utf-8') as stream:
+        stream.write(wanted)
 print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False, 'num_turns': 7,
                   'session_id': 'stub', 'result': {'status': 'complete'}}), flush=True)
 '''
 
 
-def install_stub(tmp_path, monkeypatch):
-    """A fake ``claude`` on PATH, and nothing else: no codex, no real provider."""
+def install_stub(tmp_path, monkeypatch, progress=None):
+    """A fake ``claude`` on PATH, and nothing else: no codex, no real provider.
+
+    ``progress`` is what the stub session writes to ``review/progress.json``,
+    the way the server would: no test pre-writes that file, because then the
+    starter's reading of it is never exercised.
+    """
     binaries = tmp_path / 'bin'
     binaries.mkdir()
-    stub = binaries / 'claude'
-    stub.write_text(f'#!{sys.executable}\n{STUB}')
-    stub.chmod(stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    if os.name == 'nt':
+        # A shebang means nothing on Windows. A real install puts `claude.cmd`
+        # on PATH and the shell finds it through PATHEXT, so the stub does too.
+        script = binaries / 'stub.py'
+        script.write_text(STUB, encoding='utf-8')
+        (binaries / 'claude.cmd').write_text(
+            f'@"{sys.executable}" "{script}" %*\n', encoding='utf-8')
+    else:
+        stub = binaries / 'claude'
+        stub.write_text(f'#!{sys.executable}\n{STUB}', encoding='utf-8')
+        stub.chmod(stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     log = tmp_path / 'argv.jsonl'
     monkeypatch.setenv('PATH', str(binaries))
     monkeypatch.setenv('PEERREVIEW_STUB_LOG', str(log))
     monkeypatch.setenv('PEERREVIEW_STUB_TOOLS', json.dumps(list(starter.tool_names())))
+    monkeypatch.setenv('PEERREVIEW_STUB_PROGRESS', json.dumps(progress) if progress else '')
     monkeypatch.setenv('ANTHROPIC_API_KEY', 'must-not-be-used')
+    starter.VERSIONS.clear()  # each stub is a new binary path, not the cached one
     return log
 
 
@@ -121,10 +149,10 @@ def test_no_claude_on_path_is_a_blocked_run_not_a_traceback(tmp_path, monkeypatc
     summary = starter.review(str(FIXTURE), str(out), arm='single')
     assert (summary['status'], summary['stage']) == ('blocked', 'startup')
     assert starter.exit_code(summary) == 2, 'nothing was spent: that is its own exit code'
-    startup = json.loads((out / 'review' / 'startup.json').read_text())
+    startup = json.loads((out / 'review' / 'startup.json').read_text(encoding='utf-8'))
     assert startup['problems']
     assert startup['tools_expected']
-    runtime = json.loads((out / 'review' / 'runtime.json').read_text())
+    runtime = json.loads((out / 'review' / 'runtime.json').read_text(encoding='utf-8'))
     assert runtime['status'] == 'blocked'
     assert 'probe failed' in runtime['blocked_reason']
 
@@ -141,12 +169,10 @@ def test_an_unknown_arm_and_a_missing_manuscript_are_both_refused(tmp_path):
 
 
 def test_the_stub_run_is_launched_the_way_the_spec_requires(tmp_path, monkeypatch):
-    log = install_stub(tmp_path, monkeypatch)
+    log = install_stub(tmp_path, monkeypatch, progress={
+        'status': 'complete', 'findings_delivered': 4, 'quarantined_findings_count': 0,
+        'stages': {'missing': []}})
     out = tmp_path / 'run'
-    (out / 'review').mkdir(parents=True)
-    (out / 'review' / 'progress.json').write_text(json.dumps(
-        {'status': 'complete', 'findings_delivered': 4, 'quarantined_findings_count': 0,
-         'stages': {'missing': []}}))
 
     summary = starter.review(str(FIXTURE), str(out), reviewers=3, arm='full-two-track')
     assert starter.exit_code(summary) == 0
@@ -155,7 +181,7 @@ def test_the_stub_run_is_launched_the_way_the_spec_requires(tmp_path, monkeypatc
     assert summary['models'] == ['claude-haiku-5-5', 'claude-sonnet-5-5']
     assert summary['findings_delivered'] == 4
 
-    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    calls = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
     assert len(calls) == 2, 'the probe runs first, then the review'
     for call in calls:
         assert '--bare' not in call
@@ -167,14 +193,16 @@ def test_the_stub_run_is_launched_the_way_the_spec_requires(tmp_path, monkeypatc
     assert calls[0][calls[0].index('-p') + 1].startswith('Reply with')
     assert 'peer-review-manuscript' in calls[1][calls[1].index('-p') + 1]
 
-    runtime = json.loads((out / 'review' / 'runtime.json').read_text())
+    runtime = json.loads((out / 'review' / 'runtime.json').read_text(encoding='utf-8'))
     assert runtime['status'] == 'complete'
     assert runtime['blocked_reason'] is None
+    assert runtime['claude_code_version'] == '2.1.999 (Claude Code stub)', \
+        'provenance records the harness that actually ran, asked of the binary'
     assert runtime['tokens_total'] == 124000
     assert {row['label']: row['model'] for row in runtime['agents']} == {
         'core-1': 'claude-sonnet-5-5', 'write review': 'claude-haiku-5-5'}
     assert runtime['result']['num_turns'] == 7
-    usage = (out / 'review' / 'usage' / 'core-1' / 'usage.jsonl').read_text()
+    usage = (out / 'review' / 'usage' / 'core-1' / 'usage.jsonl').read_text(encoding='utf-8')
     assert json.loads(usage.splitlines()[0])['observed_tokens'] == 120000
     assert (out / 'review' / 'usage' / 'core-1' / 'core-1-1.started.json').is_file()
     assert (out / 'review' / 'usage' / 'write-review').is_dir()
@@ -185,12 +213,40 @@ def test_a_complete_run_is_not_claimed_when_the_server_wrote_no_progress(tmp_pat
     out = tmp_path / 'run'
     summary = starter.review(str(FIXTURE), str(out), arm='single')
     assert starter.exit_code(summary) == 1
-    runtime = json.loads((out / 'review' / 'runtime.json').read_text())
+    runtime = json.loads((out / 'review' / 'runtime.json').read_text(encoding='utf-8'))
     assert runtime['status'] == 'blocked'
     assert runtime['blocked_reason'] == 'the server wrote no progress file'
 
 
-def test_the_api_key_never_reaches_the_session(tmp_path, monkeypatch):
+def test_a_workflow_that_closed_nothing_leaves_the_run_blocked_not_running(tmp_path, monkeypatch):
+    """A session can end with every stage still open. That is not a review.
+
+    The server only writes ``complete`` from ``write_review`` and ``blocked``
+    from ``mark_blocked``; a workflow that falls through does neither, and a run
+    left at ``running`` would read as still in flight forever.
+    """
+    install_stub(tmp_path, monkeypatch, progress={'status': 'running', 'stages': {'missing': []}})
+    out = tmp_path / 'run'
+    summary = starter.review(str(FIXTURE), str(out), arm='single')
+    assert summary['status'] == 'blocked'
+    assert 'without writing the review or marking the run blocked' in summary['blocked_reason']
+    assert 'running' in summary['blocked_reason']
+    assert starter.exit_code(summary) == 1
+    on_disk = json.loads((out / 'review' / 'progress.json').read_text(encoding='utf-8'))
+    assert on_disk['status'] == 'blocked' and on_disk['error'] == summary['blocked_reason']
+
+
+def test_a_missing_claude_says_so_rather_than_blaming_the_plugin(tmp_path, monkeypatch):
+    monkeypatch.setenv('PATH', str(tmp_path / 'empty'))
+    problems, found = starter.probe(starter.plugin_dir(), tmp_path)
+    assert problems == [starter.MISSING_CLAUDE]
+    assert 'not installed or not on this PATH' in problems[0]
+    assert 'server tool(s) absent' not in ' '.join(problems), \
+        'absent tools describe a misconfigured plugin, not a missing harness'
+    assert found['raw'] is None
+
+
+def test_neither_the_api_key_nor_the_auth_token_reaches_the_session(tmp_path, monkeypatch):
     seen = {}
 
     def fake_popen(command, **kwargs):
@@ -199,13 +255,54 @@ def test_the_api_key_never_reaches_the_session(tmp_path, monkeypatch):
         raise FileNotFoundError('stopping here')
 
     monkeypatch.setenv('ANTHROPIC_API_KEY', 'must-not-be-used')
+    monkeypatch.setenv('ANTHROPIC_AUTH_TOKEN', 'must-not-be-used-either')
+    monkeypatch.setattr(starter, 'claude_binary', lambda: '/opt/claude/bin/claude')
+    monkeypatch.setattr(starter, 'claude_version', lambda binary=None: '2.1.400')
     monkeypatch.setattr(starter.subprocess, 'Popen', fake_popen)
     events, stop, code = starter.launch('hello', tmp_path, 0.0, lambda event: None, tmp_path)
     assert (events, code) == (0, 127)
     assert 'could not be started' in stop
     assert 'ANTHROPIC_API_KEY' not in seen['env']
-    assert seen['command'][0] == 'claude'
+    assert 'ANTHROPIC_AUTH_TOKEN' not in seen['env']
+    assert seen['command'][0] == '/opt/claude/bin/claude'
     assert seen['env']['PEERREVIEW_PLUGIN_RUN'] == '1'
+    assert seen['env']['PEERREVIEW_CLAUDE_VERSION'] == '2.1.400'
+    assert seen['env']['PEERREVIEW_MCP_COMMAND'] == sys.executable, \
+        'the server has to run on the interpreter that started the review'
+
+
+def test_the_launch_reads_both_pipes_without_select(tmp_path, monkeypatch):
+    """stderr is drained for the whole run, and stdout is not polled.
+
+    ``select`` cannot wait on a pipe on Windows, and stderr read only at the end
+    fills its pipe and wedges the session that is writing to it.
+    """
+    source = Path(starter.__file__).read_text(encoding='utf-8')
+    assert 'import select' not in source and 'select.select' not in source
+    assert 'threading.Thread' in source
+
+    binaries = tmp_path / 'bin'
+    binaries.mkdir()
+    noisy = ('import sys\n'
+             'if sys.argv[1:] == ["--version"]:\n'
+             '    print("0.0.0-noisy"); sys.exit(0)\n'
+             'for index in range(4000):\n'
+             '    sys.stderr.write("plugin diagnostic line %d\\n" % index)\n'
+             'print(\'{"type": "result", "subtype": "success"}\', flush=True)\n')
+    if os.name == 'nt':
+        (binaries / 'noisy.py').write_text(noisy, encoding='utf-8')
+        (binaries / 'claude.cmd').write_text(
+            f'@"{sys.executable}" "{binaries / "noisy.py"}" %*\n', encoding='utf-8')
+    else:
+        stub = binaries / 'claude'
+        stub.write_text(f'#!{sys.executable}\n{noisy}', encoding='utf-8')
+        stub.chmod(stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    monkeypatch.setenv('PATH', str(binaries))
+    starter.VERSIONS.clear()
+    seen, stop, code = starter.launch('hello', tmp_path, time.monotonic() + 60,
+                                      lambda event: None, tmp_path)
+    assert (seen, stop) == (1, None), 'the event arrived although stderr filled first'
+    assert code == 0
 
 
 # -- the accounting ---------------------------------------------------------
@@ -266,26 +363,45 @@ def test_the_first_result_is_not_the_answer():
     assert accounting.last_result()['result'] == 'done'
 
 
-def test_a_rate_limit_window_at_the_ceiling_blocks_the_run():
-    accounting = starter.Accounting(1_000_000, 1_000_000)
-    stop = accounting.on_event({'type': 'rate_limit_event', 'unifiedWindows': {
-        'five_hour': {'utilization': 0.2}, 'seven_day': {'utilization': 0.994}}})
-    assert 'seven_day rate-limit window' in stop
-    assert accounting.rate_limits
+# The event a real stream sends, captured from a 0.8 run of this repo's own
+# runtime tests. A subscription with no overage credit reports `rejected`
+# overage on every call it serves perfectly well, so this one is healthy.
+HEALTHY_RATE_LIMIT = {
+    'type': 'rate_limit_event',
+    'rate_limit_info': {'status': 'allowed', 'overageStatus': 'rejected',
+                        'overageDisabledReason': 'member_zero_credit_limit',
+                        'isUsingOverage': False},
+}
 
 
-def test_a_window_below_the_ceiling_is_left_alone():
+def test_the_rate_limit_event_a_real_stream_sends_does_not_block_the_run():
     accounting = starter.Accounting(1_000_000, 1_000_000)
-    assert accounting.on_event({'type': 'rate_limit_event', 'unifiedWindows': {
-        'seven_day': {'utilization': 0.5}}}) is None
+    assert accounting.on_event(HEALTHY_RATE_LIMIT) is None, \
+        'a rejected overage status is the normal state of a plan without credit'
     assert accounting.rate_limits == []
 
 
-def test_a_rate_limit_message_blocks_the_run_whatever_its_shape():
+def test_a_rate_limit_status_that_is_not_allowed_blocks_the_run():
     accounting = starter.Accounting(1_000_000, 1_000_000)
-    stop = accounting.on_event({'type': 'system', 'subtype': 'rate_limit_event',
-                                'rate_limit': {'status': 'limit_reached'}})
-    assert 'rate limit was reached' in stop
+    event = {'type': 'rate_limit_event',
+             'rate_limit_info': dict(HEALTHY_RATE_LIMIT['rate_limit_info'],
+                                     status='rejected',
+                                     overageDisabledReason='member_zero_credit_limit')}
+    stop = accounting.on_event(event)
+    assert 'status rejected' in stop and 'member_zero_credit_limit' in stop
+    assert accounting.rate_limits
+
+
+def test_a_window_at_the_ceiling_blocks_the_run_and_one_below_it_does_not():
+    accounting = starter.Accounting(1_000_000, 1_000_000)
+    below = {'type': 'rate_limit_event', 'rate_limit_info': {
+        'status': 'allowed', 'windows': {'seven_day': {'utilization': 0.5}}}}
+    assert accounting.on_event(below) is None
+    at = {'type': 'rate_limit_event', 'rate_limit_info': {
+        'status': 'allowed', 'windows': {'five_hour': {'utilization': 0.2},
+                                         'seven_day': {'utilization': 0.994}}}}
+    assert 'rate-limit window is at 99%' in accounting.on_event(at)
+    assert len(accounting.rate_limits) == 1
 
 
 def test_an_ordinary_event_is_not_a_rate_limit():
@@ -303,27 +419,42 @@ def test_the_prompt_names_the_skill_the_arm_belongs_to():
     assert 'check-draft' in draft and 'stats' in draft and '2024-01-01' in draft
 
 
-def test_the_version_recorded_with_the_run_comes_from_the_environment(tmp_path, monkeypatch):
-    monkeypatch.setenv('PEERREVIEW_CLAUDE_VERSION', '2.1.322')
+def test_the_version_recorded_with_the_run_is_asked_of_the_binary(tmp_path, monkeypatch):
+    """Nothing in the system sets ``PEERREVIEW_CLAUDE_VERSION``, so the starter asks.
+
+    The environment stays as a fallback for a caller that knows better, but a
+    run whose provenance says ``null`` cannot be reproduced, and that is what
+    reading an unset variable recorded every time.
+    """
+    monkeypatch.setattr(starter, 'claude_version', lambda binary=None: '2.1.322')
     accounting = starter.Accounting(10, 10)
-    (tmp_path / 'progress.json').write_text(json.dumps({'status': 'reviewing'}))
+    (tmp_path / 'progress.json').write_text(json.dumps({'status': 'reviewing'}), encoding='utf-8')
     starter.finish(tmp_path, 'blocked', 'because', accounting, 1.0, None)
-    runtime = json.loads((tmp_path / 'runtime.json').read_text())
+    runtime = json.loads((tmp_path / 'runtime.json').read_text(encoding='utf-8'))
     assert runtime['claude_code_version'] == '2.1.322'
     assert runtime['status'] == 'blocked' and runtime['wall_seconds'] == 1.0
-    patched = json.loads((tmp_path / 'progress.json').read_text())
+    patched = json.loads((tmp_path / 'progress.json').read_text(encoding='utf-8'))
     assert patched['status'] == 'blocked' and patched['error'] == 'because'
 
+    monkeypatch.setattr(starter, 'claude_version', lambda binary=None: None)
+    monkeypatch.setenv('PEERREVIEW_CLAUDE_VERSION', '2.1.999')
+    starter.finish(tmp_path, 'blocked', 'because', accounting, 1.0, None)
+    again = json.loads((tmp_path / 'runtime.json').read_text(encoding='utf-8'))
+    assert again['claude_code_version'] == '2.1.999'
 
-def test_a_finished_run_is_not_patched_to_blocked(tmp_path):
+
+def test_a_finished_run_is_not_patched_to_blocked(tmp_path, monkeypatch):
+    monkeypatch.setattr(starter, 'claude_version', lambda binary=None: None)
     accounting = starter.Accounting(10, 10)
-    (tmp_path / 'progress.json').write_text(json.dumps({'status': 'complete'}))
+    (tmp_path / 'progress.json').write_text(json.dumps({'status': 'complete'}), encoding='utf-8')
     starter.finish(tmp_path, 'blocked', 'late rate limit', accounting, 1.0, None)
-    assert json.loads((tmp_path / 'progress.json').read_text())['status'] == 'complete'
+    assert json.loads(
+        (tmp_path / 'progress.json').read_text(encoding='utf-8'))['status'] == 'complete'
 
 
 def test_nothing_in_the_starter_needs_codex_or_a_key():
-    source = Path(starter.__file__).read_text()
+    source = Path(starter.__file__).read_text(encoding='utf-8')
     assert 'codex' not in source.lower()
     assert source.count('ANTHROPIC_API_KEY') == 1  # popped from the child environment
+    assert source.count('ANTHROPIC_AUTH_TOKEN') == 1
     assert os.environ.get('PEERREVIEW_PLUGIN_RUN') is None

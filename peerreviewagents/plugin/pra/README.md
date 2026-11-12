@@ -13,7 +13,7 @@ can only ask it for text and hand it findings.
 
 | Part | Where | What it is |
 | --- | --- | --- |
-| `peerreview` server | `.mcp.json` → `peerreviewagents.plugin.server` | 22 tools, and every piece of state worth forging |
+| `peerreview` server | `.mcp.json` → `peerreviewagents.plugin.server` | 23 tools, and every piece of state worth forging |
 | Agents | `agents/*.md` | `core-reviewer`, six specialists, `editor`, `recorder`; each pins `model:` and `maxTurns:` and may call only server tools |
 | Workflow | `workflows/review.js` | ingest → reviewers ∥ specialists → (revision) → editor → record |
 | Skills | `skills/*/SKILL.md` | `peer-review-manuscript` (a full review), `check-draft` (your own draft), `follow-up` (what changed since the last run) |
@@ -46,9 +46,14 @@ Claude Code subscription login only.
 
 ## What the server owns
 
-- **Identity.** An agent calls `claim_agent` for a slot and gets a token; every
-  other tool takes that token. A token is derived from a per-run salt, so one
-  cannot be guessed, and claiming a slot twice supersedes the old token.
+- **Identity.** `ingest` mints one claim code per slot and returns them to the
+  recorder, which gives each agent its own code in its own prompt. An agent
+  calls `claim_agent` with that code and gets a token; every other tool takes
+  the token. A code works once, a slot someone else holds is not re-claimed,
+  and a retry asks the recorder for a fresh code through `reissue_claim_code`,
+  which drops the stuck holder's token. A slot name is not an identity: without
+  the codes, a reviewer that guessed `recorder` read every other reviewer's
+  findings.
 - **Tools per track.** Each slot has an allow list. A citations specialist
   asking for figure pages is refused, and `manuscript-only` has the page and
   lookup tools removed outright.

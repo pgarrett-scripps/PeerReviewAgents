@@ -36,7 +36,7 @@ class SourceClient:
     def reserve_target(self, block_id, provider='targeted-source'):
         if not isinstance(block_id, str) or not block_id.strip() or len(block_id) > 160:
             raise ValueError('Source investigation requires a short manuscript block ID')
-        with (self.state / 'targets.lock').open('a') as lock:
+        with (self.state / 'targets.lock').open('a', encoding='utf-8') as lock:
             exclusive_lock(lock)
             target_path = self.state / 'targets.json'
             targets = read(target_path) if target_path.exists() else []
@@ -62,7 +62,7 @@ class SourceClient:
                     'cutoff', 'raw_sha256', 'record_version', 'status', 'evidence_text')}
         stored = dict(card)
         stored['evidence_id'] = 'source-' + digest(json.dumps(identity, sort_keys=True))[:20]
-        with (self.state / 'cards.lock').open('a') as lock:
+        with (self.state / 'cards.lock').open('a', encoding='utf-8') as lock:
             exclusive_lock(lock)
             path = self.state / 'cards.json'
             cards = read(path) if path.exists() else []
@@ -77,7 +77,7 @@ class SourceClient:
             raise ValueError('Source endpoint is outside the public provider allowlist')
         key = digest(url)
         meta, raw_path = self.cache / (key + '.json'), self.cache / (key + '.raw')
-        with (self.state / 'requests.lock').open('a') as lock:
+        with (self.state / 'requests.lock').open('a', encoding='utf-8') as lock:
             exclusive_lock(lock)
             budget_path = self.state / 'requests.json'
             budget = read(budget_path) if budget_path.exists() else {'limit': self.limit, 'requests': []}

@@ -45,7 +45,7 @@ class Investigation:
             result={'request_rejected':str(exc)}
         result['tool_receipt']={'call_index':self.calls,'tool':name}
         log={ 'tool':name,'arguments':args,'result':{k:v for k,v in result.items() if k!='image'}}
-        with (self.out/'tool-log.jsonl').open('a') as stream:
+        with (self.out/'tool-log.jsonl').open('a',encoding='utf-8') as stream:
             stream.write(json.dumps(log,ensure_ascii=False)+'\n')
         return result
 
@@ -63,7 +63,7 @@ class Investigation:
             from .result_map import compare_observations
             result = compare_observations(self.paper, args['observations'])
             target = self.out/'comparisons.jsonl'
-            with target.open('a') as stream:
+            with target.open('a',encoding='utf-8') as stream:
                 stream.write(json.dumps(result, ensure_ascii=False)+'\n')
             return result
         if name == 'lookup_source':
@@ -90,7 +90,7 @@ class Investigation:
             if len(args['text'])>4000:raise ValueError('Note exceeds 4000 characters')
             ids=args['evidence_blocks']
             if any(i not in self.by for i in ids):raise ValueError('Unknown evidence block')
-            with (self.out/'notes.jsonl').open('a') as stream:
+            with (self.out/'notes.jsonl').open('a',encoding='utf-8') as stream:
                 stream.write(json.dumps(args,ensure_ascii=False)+'\n')
             return {'saved':True,'limitation':'A saved hypothesis is not a verified finding.'}
         if name=='view_page':

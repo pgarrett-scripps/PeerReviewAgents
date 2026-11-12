@@ -19,8 +19,9 @@ from .storage import read
 def jsonl(path):
     """Every JSON object in a line-delimited file, or nothing if it is absent."""
     path = Path(path)
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()] \
-        if path.exists() else []
+    if not path.exists(): return []
+    return [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()
+            if line.strip()]
 
 
 def attempt_key(record):

@@ -3,7 +3,8 @@
 An arm is a **workflow** now: which agents run, in what order, and what they
 can see. It is not a policy, a preset, a mode or a model — 0.9 deleted all four.
 Effort, turn limits and the model each slot runs on are pinned in the plugin's
-own agent files (`plugins/pra/agents/*.md`), identically for every arm, so what
+own agent files (`peerreviewagents/plugin/pra/agents/*.md`), identically for
+every arm, so what
 an arm changes is the shape of the review and nothing else.
 
 `peerreview review` has one default, and that default is what a person should
@@ -139,7 +140,7 @@ in a comparison.
 ## What an arm cannot change
 
 - **The model.** Each slot's model is pinned in its agent file. To vary it you
-  edit `plugins/pra/agents/<agent>.md`, which changes the plugin's provenance
+  edit `peerreviewagents/plugin/pra/agents/<agent>.md`, which changes the plugin's provenance
   hash in `protocol.json` — a different plugin, honestly recorded, not a flag.
 - **The transport.** Every arm runs in a headless Claude Code session on a
   subscription login. There is no provider flag and no API-key path: 0.9

@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "peerreview": {
-      "command": "${CLAUDE_PROJECT_DIR}/.venv/bin/python",
+      "command": "${PEERREVIEW_MCP_COMMAND:-peerreview-plugin-server}",
       "args": [
         "-m",
         "peerreviewagents.plugin.server",

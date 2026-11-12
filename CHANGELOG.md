@@ -15,10 +15,20 @@ including 32 test modules, and nothing was left behind as a shim.
 
 ### Added
 
-- `plugins/pra`, the plugin that now runs every review: a workflow that fans
-  out N core reviewers and six specialist tracks and then an editor, agent
-  files that pin a model and a turn limit per slot, and three skills
-  (`peer-review-manuscript`, `check-draft`, `follow-up`).
+- `peerreviewagents/plugin/pra`, the plugin that now runs every review: a
+  workflow that fans out N core reviewers and six specialist tracks and then an
+  editor, agent files that pin a model and a turn limit per slot, and three
+  skills (`peer-review-manuscript`, `check-draft`, `follow-up`). It ships
+  inside the package, so an installed wheel carries the plugin it runs; the
+  starter resolves it from the installed package rather than from a checkout,
+  and `peerreview review` starts the server with its own interpreter through
+  `PEERREVIEW_MCP_COMMAND`.
+- One-time claim codes. `ingest` mints a code per slot and returns them to the
+  recorder alone; an agent claims its slot with the code in its own prompt, a
+  code works once, and a slot already held is not re-claimed. A retry gets a
+  fresh code from `reissue_claim_code`, which only the recorder's run key
+  opens. Before this, naming a slot was being it: a core reviewer could claim
+  `recorder` and read every other reviewer's findings.
 - `peerreviewagents.plugin.server`, the MCP server the agents work through. It
   owns the manuscript, the agent identities and their tokens, the per-track
   tool allow lists, the call and external-request budgets, the finding guard
@@ -60,6 +70,40 @@ including 32 test modules, and nothing was left behind as a shim.
 - Arms: `full-two-track` (the default), `reviewers-only`, `single`,
   `single-revision`, `manuscript-only`, and `draft-check` for a draft of your
   own.
+- A `finding_uid` is the slot plus the quotation and the evidence handles, not
+  the model-written title: a reviewer restating the same issue in better words
+  filed one finding, not two, and two reviewers who agree stay two rows for the
+  editor to merge. Storage merges nothing, and `reviewers_raising` is counted
+  from the editor's own duplicate rulings.
+- A reviewer's ledger shows its own stage only. The full ledger named every
+  slot in the run, so a core reviewer could read that six specialists would
+  check its work — which is one of the things the arms compare.
+- The tool allowance belongs to the slot: a retry continues the first
+  attempt's count instead of buying 30 more calls.
+
+### Fixed
+
+- A finding submitted after the stage closed, after the editor ruled, or after
+  the run was blocked is refused rather than stored and then dropped from the
+  package.
+- `mark_blocked` needs the recorder's run key, and never flips a finished run
+  to blocked. `write_review` computes the status and the guard status it
+  reports instead of hard-coding `clean` and calling a run with an appendix
+  finding `complete-without-findings`.
+- An out folder that already holds a different manuscript, or a different arm,
+  is refused at ingest instead of reviewing the first PDF under the second
+  plan.
+- A workflow that ends without writing the review or marking the run blocked
+  leaves the run `blocked` with a reason, not `running`. A missing `claude`
+  binary says so rather than blaming the plugin.
+- The starter drains the session's stderr on its own thread, so a chatty
+  session cannot deadlock the run, and it drops `ANTHROPIC_AUTH_TOKEN` as well
+  as `ANTHROPIC_API_KEY` from the child environment. The rate-limit ceiling
+  reads the real `rate_limit_event` shape, and provenance records the version
+  the `claude` binary reports.
+- Windows: every file the engine, the server and the starter open is opened as
+  UTF-8, and the starter reads the session's pipes with reader threads instead
+  of `select`, which does not take a pipe there.
 
 ### Removed
 

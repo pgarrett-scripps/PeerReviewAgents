@@ -12,7 +12,7 @@ def catalog(root=ROOT):
     packages = []
     ids, codes = set(), set()
     for path in sorted(Path(root).glob('*/manifest.json')):
-        item = json.loads(path.read_text())
+        item = json.loads(path.read_text(encoding='utf-8'))
         ident = item.get('id', '')
         if (item.get('schema_version') != 1 or not re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*', ident)
                 or path.parent.name != ident or ident in ids or item.get('catalog_id') in codes):
@@ -30,7 +30,7 @@ def catalog(root=ROOT):
             skill = (path.parent / relative).resolve()
             if not skill.is_relative_to(path.parent.resolve()) or not skill.is_file():
                 raise ValueError('Invalid domain skill path')
-            text = skill.read_text()
+            text = skill.read_text(encoding='utf-8')
             if not text.startswith('---\n') or '\n---\n' not in text[4:]:
                 raise ValueError('Skill frontmatter missing')
             header, body = text[4:].split('\n---\n', 1)

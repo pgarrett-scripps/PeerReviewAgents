@@ -27,12 +27,15 @@ which is an outcome and not an error to paper over.
 from __future__ import annotations
 
 import argparse
+import collections
 import datetime
 import json
 import os
-import select
+import queue
+import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -55,6 +58,9 @@ PER_RUN_TOKENS = 6_000_000
 WALL_TIMEOUT = 5400
 PROBE_TIMEOUT = 180
 RATE_LIMIT_CEILING = 0.99
+MISSING_CLAUDE = ('claude is not installed or not on this PATH, so no session can be started: '
+                  'install Claude Code and check that `claude --version` runs in this shell')
+VERSIONS = {}
 
 
 def tool_names():
@@ -66,11 +72,85 @@ def allow_list():
 
 
 def plugin_dir():
-    return Path(__file__).resolve().parent.parent.parent / 'plugins' / PLUGIN
+    """The plugin that ships inside this package.
+
+    It is package data, not a checkout: an installed wheel has no ``plugins/``
+    folder beside it, and a review that cannot find its own plugin is the one
+    failure the starter must never have.
+    """
+    return Path(__file__).resolve().parent / PLUGIN
+
+
+def claude_binary():
+    """Claude Code, resolved the way a shell resolves it.
+
+    ``shutil.which`` honours PATHEXT, so it finds the ``claude.cmd`` shim a
+    Windows install puts on PATH, where naming the bare word would not.
+    """
+    return shutil.which('claude')
+
+
+def claude_version(binary=None):
+    """What ``claude --version`` prints, for provenance. ``None`` if it will not say."""
+    binary = binary or claude_binary()
+    if not binary:
+        return None
+    if binary not in VERSIONS:
+        VERSIONS[binary] = None
+        try:
+            done = subprocess.run([binary, '--version'], capture_output=True, text=True,
+                                  timeout=60, encoding='utf-8', errors='replace')
+            first = ((done.stdout or '') + (done.stderr or '')).strip().splitlines()
+            VERSIONS[binary] = first[0][:120] if first else None
+        except (OSError, subprocess.SubprocessError):
+            VERSIONS[binary] = None
+    return VERSIONS[binary]
+
+
+def child_environment(binary):
+    """The environment a session runs in: subscription login, own interpreter."""
+    environment = {**os.environ, 'PEERREVIEW_PLUGIN_RUN': '1',
+                   # The plugin's `.mcp.json` launches its MCP server through
+                   # this, so the run is served by the very interpreter that
+                   # started it even when that virtualenv is not on PATH.
+                   'PEERREVIEW_MCP_COMMAND': sys.executable}
+    for key in ('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'):
+        environment.pop(key, None)  # subscription login only, never a key
+    version = claude_version(binary)
+    if version:
+        # Provenance records the harness that ran the review. Nothing else sets
+        # this, so the starter is the one place that can know it.
+        environment['PEERREVIEW_CLAUDE_VERSION'] = version
+    return environment
 
 
 def now():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def pump(stream, lines):
+    """Read one pipe to its end, in its own thread."""
+    try:
+        for line in stream:
+            lines.put(line)
+    except (OSError, ValueError):  # the pipe closed under us; EOF either way
+        pass
+    finally:
+        lines.put(None)
+
+
+def drain(stream, into):
+    """Keep a pipe empty and remember its tail.
+
+    Claude Code writes plugin and MCP diagnostics to stderr. Left unread, that
+    pipe fills and the session stops writing events, which looked like a hung
+    review; the tail is what gets shown if the run then fails.
+    """
+    try:
+        for line in stream:
+            into.append(line)
+    except (OSError, ValueError):
+        pass
 
 
 def launch(prompt, directory, timeout_at, on_event, cwd):
@@ -78,9 +158,16 @@ def launch(prompt, directory, timeout_at, on_event, cwd):
 
     ``on_event`` returns a reason to stop, or ``None`` to carry on; a reason
     terminates the session. Returns ``(events_seen, stop_reason, exit_code)``.
+
+    Both pipes are read by threads rather than polled: ``select`` cannot wait on
+    a pipe on Windows, and stderr has to be drained for the whole run and not
+    only at the end.
     """
+    binary = claude_binary()
+    if not binary:
+        return 0, MISSING_CLAUDE, 127
     command = [
-        'claude', '-p', prompt,
+        binary, '-p', prompt,
         '--plugin-dir', str(directory),
         '--permission-mode', 'dontAsk',
         '--allowed-tools', allow_list(),
@@ -88,30 +175,32 @@ def launch(prompt, directory, timeout_at, on_event, cwd):
         '--verbose',
         '--forward-subagent-text',
     ]
-    environment = {**os.environ, 'PEERREVIEW_PLUGIN_RUN': '1'}
-    environment.pop('ANTHROPIC_API_KEY', None)  # subscription login only
     try:
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   text=True, bufsize=1, cwd=str(cwd), env=environment)
-    except (FileNotFoundError, PermissionError) as exc:
-        # No Claude Code on this machine is a blocked run, not a traceback.
+                                   text=True, bufsize=1, cwd=str(cwd),
+                                   env=child_environment(binary),
+                                   encoding='utf-8', errors='replace')
+    except (OSError, ValueError) as exc:
+        # A claude that will not start is a blocked run, not a traceback.
         return 0, 'claude could not be started: ' + str(exc), 127
+    lines = queue.Queue()
+    errors = collections.deque(maxlen=400)
+    readers = (threading.Thread(target=pump, args=(process.stdout, lines), daemon=True),
+               threading.Thread(target=drain, args=(process.stderr, errors), daemon=True))
+    for reader in readers:
+        reader.start()
     seen, stop = 0, None
     try:
         while True:
             if time.monotonic() > timeout_at:
                 stop = 'the session passed its wall-clock limit'
                 break
-            ready = select.select([process.stdout], [], [], 5)[0]
-            if not ready:
-                if process.poll() is not None:
-                    break
+            try:
+                line = lines.get(timeout=5)
+            except queue.Empty:
                 continue
-            line = process.stdout.readline()
-            if not line:
-                if process.poll() is not None:
-                    break
-                continue
+            if line is None:  # the session closed its stream
+                break
             try:
                 event = json.loads(line)
             except ValueError:
@@ -127,7 +216,10 @@ def launch(prompt, directory, timeout_at, on_event, cwd):
                 process.wait(timeout=20)
             except subprocess.TimeoutExpired:
                 process.kill()
-        rest = process.stderr.read() if process.stderr else ''
+                process.wait(timeout=20)
+        for reader in readers:
+            reader.join(timeout=5)
+        rest = ''.join(errors)
         if rest.strip():
             sys.stderr.write(rest[-4000:])
     return seen, stop, process.returncode
@@ -137,6 +229,10 @@ def probe(directory, cwd):
     """Assert the plugin and the server are really there before spending a run."""
     found = {'plugin': False, 'server': False, 'tools': set(), 'agents': set(), 'raw': None}
     expected = set(tool_names())
+    if not claude_binary():
+        # Without a harness there is nothing to say about the plugin, and
+        # "the plugin was not loaded" would send the fix to the wrong place.
+        return [MISSING_CLAUDE], found
 
     def on_event(event):
         if event.get('type') != 'system' or event.get('subtype') != 'init':
@@ -154,8 +250,12 @@ def probe(directory, cwd):
         return 'probe complete'
 
     deadline = time.monotonic() + PROBE_TIMEOUT
-    launch('Reply with the single word ready.', directory, deadline, on_event, cwd)
+    _, stop, _ = launch('Reply with the single word ready.', directory, deadline, on_event, cwd)
     problems = []
+    if stop and stop != 'probe complete':
+        # The session never reached its init event, so say what actually went
+        # wrong instead of reporting every tool as absent.
+        return [stop], found
     if not found['plugin']:
         problems.append(f'the {PLUGIN} plugin was not loaded')
     if not found['server']:
@@ -166,22 +266,39 @@ def probe(directory, cwd):
     return problems, found
 
 
+ALLOWED_LIMIT_STATUS = ('allowed', 'allowed_warning', 'warning', 'ok')
+
+
 def rate_limit_reason(event):
-    """A rate limit, read from whatever shape the event arrives in."""
-    text = json.dumps(event)
-    if 'unifiedWindows' not in text and 'rate_limit' not in text:
+    """A rate limit, read from the shape the real stream sends.
+
+    The event is ``{'type': 'rate_limit_event', 'rate_limit_info': {...}}``, and
+    a healthy one says ``status: 'allowed'`` — a subscription with no overage
+    credit reports ``overageStatus: 'rejected'`` on every call it serves
+    perfectly well, so only ``status`` itself blocks a run. Any nested object
+    that reports a numeric ``utilization`` is also honoured, without this code
+    asserting what those windows are called.
+    """
+    if not isinstance(event, dict):
         return None
-    for marker in ('limit_reached', 'rate_limit_exceeded', 'exceeded', 'upgrade'):
-        if marker in text:
-            return 'the subscription rate limit was reached: ' + marker
-    windows = None
-    for holder in (event, event.get('rate_limit') or {}, event.get('data') or {}):
-        if isinstance(holder, dict) and isinstance(holder.get('unifiedWindows'), dict):
-            windows = holder['unifiedWindows']
-    for name, window in (windows or {}).items():
-        used = (window or {}).get('utilization')
-        if isinstance(used, (int, float)) and used >= RATE_LIMIT_CEILING:
-            return f'the {name} rate-limit window is at {used:.0%}'
+    info = event.get('rate_limit_info')
+    if not isinstance(info, dict):
+        info = event.get('rate_limit')
+    if not isinstance(info, dict):
+        return None
+    status = str(info.get('status') or '').strip().lower()
+    if status and status not in ALLOWED_LIMIT_STATUS:
+        detail = info.get('overageDisabledReason') or info.get('reason') or 'no reason given'
+        return f'the subscription rate limit reported status {status} ({detail})'
+    for name, window in info.items():
+        levels = [(name, window)]
+        if isinstance(window, dict):
+            levels += list(window.items())
+        for label, level in levels:
+            used = level.get('utilization') if isinstance(level, dict) else None
+            if isinstance(used, (int, float)) and not isinstance(used, bool):
+                if used >= RATE_LIMIT_CEILING:
+                    return f'the {label} rate-limit window is at {used:.0%}'
     return None
 
 
@@ -259,7 +376,7 @@ def write_usage(review, accounting):
         attempt = int(row.get('attempt') or 1)
         write(folder / f'{slot}-{attempt}.started.json',
               {'label': key, 'attempt': attempt, 'agent': row.get('agentType')})
-        with (folder / 'usage.jsonl').open('a') as stream:
+        with (folder / 'usage.jsonl').open('a', encoding='utf-8') as stream:
             stream.write(json.dumps({'label': key, 'attempt': attempt,
                                      'observed_tokens': row.get('tokens') or 0,
                                      'tool_calls': row.get('toolCalls') or 0,
@@ -277,7 +394,7 @@ def finish(review, status, reason, accounting, wall, result):
         'rate_limits': accounting.rate_limits,
         'per_agent_token_ceiling': accounting.per_agent,
         'per_run_token_ceiling': accounting.per_run,
-        'claude_code_version': os.environ.get('PEERREVIEW_CLAUDE_VERSION'),
+        'claude_code_version': claude_version() or os.environ.get('PEERREVIEW_CLAUDE_VERSION'),
         'result': {key: result.get(key) for key in ('subtype', 'is_error', 'num_turns',
                                                     'duration_ms', 'session_id')}
         if result else None,
@@ -381,11 +498,17 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     status = 'blocked' if blocked else None
     progress = review_dir / 'progress.json'
     if status is None:
-        status = read(progress).get('status') if progress.is_file() else 'blocked'
+        recorded = read(progress) if progress.is_file() else {}
+        status = str(recorded.get('status') or '') or None
         if status not in ('complete', 'complete-without-findings'):
-            blocked = (read(progress).get('error') if progress.is_file()
-                       else 'the server wrote no progress file')
-            status = status or 'blocked'
+            # A workflow that ends without write_review or mark_blocked leaves
+            # the server's own status at `running`, which would read as a review
+            # still in flight long after the session is gone.
+            blocked = recorded.get('error') or (
+                f'the workflow ended without writing the review or marking the run blocked;'
+                f' the server last recorded {status}' if status
+                else 'the server wrote no progress file')
+            status = 'blocked'
     finish(review_dir, status, blocked, accounting, wall, result)
     report = rerender(review_dir, root / MANUSCRIPT_DIRECTORY)
     summary = {

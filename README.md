@@ -28,7 +28,8 @@ program that called a model CLI per reviewer: `ensemble`, `reviewer`,
 and `run_review`. All of it is gone, along with the Codex provider, the web UI
 and the standalone MCP server.
 
-What runs a review now is a Claude Code plugin — `plugins/pra` — whose workflow
+What runs a review now is a Claude Code plugin — `peerreviewagents/plugin/pra`,
+shipped inside the package, so an installed wheel carries it — whose workflow
 fans out the agents and whose MCP server owns the manuscript, the agent
 identities, the tool allowances, the budgets, the stage ledger and the run
 files. No agent's account of its own work is taken on trust: it can only ask
@@ -42,9 +43,11 @@ unchanged; the LangGraph panel that preceded it is frozen at
 
 ## Install
 
-You need a virtual environment, and it has to be `.venv` in the checkout: the
-plugin launches its MCP server as `${CLAUDE_PROJECT_DIR}/.venv/bin/python`, and
-`${CLAUDE_PROJECT_DIR}` is the package root the starter runs the session from.
+Install it anywhere a Python environment runs. `peerreview review` starts the
+plugin's MCP server with the very interpreter running the command — it passes
+it in `PEERREVIEW_MCP_COMMAND` — so neither the venv's name nor its place
+matters, and a plain `pip install peerreviewagents` can run a review with no
+checkout at all.
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
@@ -159,8 +162,9 @@ leaves the run `blocked`: that is an outcome recorded in `runtime.json` and
   specialist escalation. Leaving a `computed` finding out of the body needs an
   anchored rebuttal quotation.
 
-[`plugins/pra/README.md`](plugins/pra/README.md) documents the plugin itself:
-the agents, the workflow, the 22 server tools and the arms.
+[`peerreviewagents/plugin/pra/README.md`](peerreviewagents/plugin/pra/README.md)
+documents the plugin itself: the agents, the workflow, the 23 server tools and
+the arms.
 
 ## Manuscript ingest
 
@@ -199,7 +203,7 @@ one did it. Give it the PDF.
 The same plugin is what you load interactively. From a checkout:
 
 ```bash
-claude --plugin-dir /absolute/path/to/PeerReviewAgents/plugins/pra
+claude --plugin-dir /absolute/path/to/PeerReviewAgents/peerreviewagents/plugin/pra
 ```
 
 Or add the repository as a marketplace and install it by name:
@@ -208,6 +212,11 @@ Or add the repository as a marketplace and install it by name:
 claude plugin marketplace add /absolute/path/to/PeerReviewAgents
 claude plugin install pra@peer-review-agents-local
 ```
+
+Loaded by hand like this, nothing sets `PEERREVIEW_MCP_COMMAND`, so the server
+starts through the `peerreview-plugin-server` console script instead: install
+this package in the environment that shell uses, or the plugin loads with its
+tools absent. `peerreview review` needs nothing of the sort.
 
 It carries three skills: `peer-review-manuscript` for a full review,
 `check-draft` for a draft of your own, and `follow-up` for what changed since

@@ -25,6 +25,7 @@ from __future__ import annotations
 import base64
 import datetime
 import json
+import math
 import os
 import re
 import secrets
@@ -50,6 +51,14 @@ SEVERITIES = ('major', 'moderate', 'minor')
 KINDS = ('question', 'edit', 'literature')
 PLACEMENTS = ('body', 'appendix', 'duplicate')
 NUMERIC = r'(?<![\w.])[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?(?![\w.])'
+# The same number without its sign. An expression is tokenised with this one:
+# `b - a` and `b * -a` are arithmetic on the two printed values, not on a
+# negative number nobody printed.
+NUMERIC_UNSIGNED = r'(?<![\w.])\d+(?:\.\d+)?(?:[eE][-+]?\d+)?(?![\w.])'
+# A finding may point at a handful of blocks, not at the whole manuscript. With
+# no cap, citing every block makes every number in the paper available to a
+# receipt, which turns `computed` into a label an agent can arrange.
+MAX_EVIDENCE_BLOCKS = 6
 
 OFFLINE_TOOLS = ('read_blocks', 'search', 'calculate', 'save_note', 'inspect_results',
                  'record_comparison')
@@ -109,6 +118,32 @@ def rejection(message, **extra):
     return {'request_rejected': message, **extra}
 
 
+def as_number(text):
+    """One token as a float, or ``None``. ``0.50`` and ``0.5`` are the same number."""
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def same_number(one, other):
+    """Numeric equality, so a receipt is checked on values and not on spelling."""
+    return abs(one - other) <= 1e-9 * max(1.0, abs(one), abs(other))
+
+
+def is_power_of_ten(value):
+    """``1``, ``100``, ``0.01``: a unit or percentage conversion, which claims nothing.
+
+    The only constants a receipt may carry that the manuscript does not print.
+    Everything else — an effect size, a sample size, a threshold — has to come
+    from a block the finding cites, or the finding is judgement.
+    """
+    if value == 0:
+        return False
+    exponent = round(math.log10(abs(value)))
+    return same_number(abs(value), 10.0 ** exponent)
+
+
 @dataclass
 class Agent:
     slot: str
@@ -151,6 +186,7 @@ class Run:
         self.review = self.root / RUN_DIRECTORY
         self.cutoff = literature_cutoff
         self.plugin_root = Path(plugin_root).resolve() if plugin_root else None
+        self.refuse_foreign_folder(pdf)
         self.review.mkdir(parents=True, exist_ok=True)
         if (self.workspace / 'paper.json').is_file():
             self.paper = read(self.workspace / 'paper.json')
@@ -161,6 +197,7 @@ class Run:
         self.salt = secrets.token_hex(16)
         self.agents = {}
         self.tokens = {}
+        self.slot_calls = {}
         self.findings = []
         self.quarantined = []
         self.calls = 0
@@ -168,7 +205,45 @@ class Run:
         self.error = None
         self.started = now()
         self.required = self.required_slots()
+        # Identity. A slot is claimed with the one code minted for it here, and
+        # the codes go back to `ingest`'s caller — the recorder — and nowhere
+        # else. Without this a reviewer that knows a slot name is that slot.
+        self.recorder_key = secrets.token_hex(16)
+        self.claim_codes = {slot: secrets.token_hex(8)
+                            for slot in (*self.required, 'recorder')}
         self.write_progress()
+
+    def refuse_foreign_folder(self, pdf):
+        """An out folder holds one paper under one plan, or the run is not this run.
+
+        A folder reused for a different PDF keeps the first import — the review
+        would quote a manuscript nobody passed in — and a folder reused under a
+        different arm pools two arms the study design keeps apart.
+        """
+        kept = self.workspace / 'paper.json'
+        if kept.is_file():
+            try:
+                before = read(kept)
+            except (ValueError, OSError):
+                before = {}
+            source = Path(pdf)
+            incoming = digest(source.read_bytes()) if source.is_file() else None
+            if incoming and before.get('source_sha256') and incoming != before['source_sha256']:
+                raise ValueError(
+                    'The folder ' + str(self.root) + ' already holds a different manuscript ('
+                    + str(before.get('title'))[:60] + '). Review this PDF in a fresh folder.')
+        progress = self.review / 'progress.json'
+        if progress.is_file():
+            try:
+                before = read(progress)
+            except (ValueError, OSError):
+                before = {}
+            if before.get('arm') and (before['arm'] != self.arm
+                                      or before.get('reviewers') != self.reviewers):
+                raise ValueError(
+                    'The folder ' + str(self.root) + ' already holds a ' + str(before['arm'])
+                    + ' run with ' + str(before.get('reviewers')) + ' core reviewer(s). Two arms '
+                    'are never pooled in one folder: use a fresh one for ' + self.arm + '.')
 
     # -- plan ---------------------------------------------------------------
 
@@ -183,10 +258,14 @@ class Run:
         return tuple(slots)
 
     def resolve_slot(self, slot):
-        """Role, track and what a slot may see. Unknown slots are refused, not invented."""
+        """Role, track and what a slot may see. Unknown slots are refused, not invented.
+
+        The refusal names no other slot. Listing them tells a core reviewer that
+        the specialists exist, and reviewer isolation is one of the things the
+        study arms compare.
+        """
         if slot not in (*self.required, 'recorder'):
-            raise ValueError('Slot ' + slot + ' is not part of this run. Slots: '
-                             + ', '.join((*self.required, 'recorder')))
+            raise ValueError('Slot ' + slot + ' is not part of this run.')
         if slot == 'recorder':
             return 'recorder', 'recorder', tuple(self.required)
         if slot == 'editor':
@@ -197,8 +276,24 @@ class Run:
             return 'core', 'core', ('core-1', 'revision-1')
         return 'core', 'core', (slot,)
 
-    def claim(self, slot):
+    def claim(self, slot, claim_code):
+        """Bind one holder to one slot, against the code minted for it at ingest.
+
+        The code works once. A slot already claimed is not re-claimed by a
+        second holder: a retry goes through the recorder, which reissues the
+        code and so drops the stuck holder's token.
+        """
         role, track, sees = self.resolve_slot(slot)
+        expected = self.claim_codes.get(slot)
+        if expected is None:
+            raise ValueError(
+                'Slot ' + slot + ' has already been claimed in this run. A slot is claimed once; '
+                'a retry needs a fresh code, which only the recorder can reissue.')
+        if not secrets.compare_digest(str(claim_code or ''), expected):
+            raise ValueError(
+                'That is not the claim code for ' + slot + '. Your code is in your own prompt, it '
+                'belongs to your slot alone, and it works once.')
+        self.claim_codes.pop(slot, None)
         previous = self.agents.get(slot)
         attempt = (previous.attempt + 1) if previous else 1
         if previous is not None:
@@ -206,17 +301,20 @@ class Run:
         allowed = tuple(name for name in TRACK_TOOLS[track if track in TRACK_TOOLS else 'core']
                         if name in self.plan['tools'])
         budget = CALL_BUDGET['specialist' if role == 'specialist' else role]
+        # The allowance belongs to the slot, not to the claim. A second attempt
+        # continues the first one's count, so a re-claim cannot buy more calls.
+        used = self.slot_calls.get(slot, 0)
         token = digest(f'{self.salt}:{slot}:{attempt}')[:32]
         out = self.review / slot
         out.mkdir(parents=True, exist_ok=True)
         agent = Agent(slot=slot, role=role, track=track, token=token, attempt=attempt,
-                      out=out, allowed=allowed, call_budget=budget, sees=sees)
+                      out=out, allowed=allowed, call_budget=budget, sees=sees, calls=used)
         if allowed:
             agent.investigation = Investigation({
                 'paper': str(self.workspace),
                 'output': str(out),
                 'cache': str(self.root / 'cache'),
-                'tool_limit': budget,
+                'tool_limit': max(0, budget - used),
                 'literature_cutoff': self.cutoff,
                 'external_request_limit': EXTERNAL_BUDGET[
                     'specialist' if role == 'specialist' else role],
@@ -224,6 +322,15 @@ class Run:
         self.agents[slot] = agent
         self.tokens[token] = agent
         return agent
+
+    def reissue(self, slot):
+        """A fresh claim code for one slot, which also unbinds whoever holds it."""
+        self.resolve_slot(slot)
+        previous = self.agents.get(slot)
+        if previous is not None:
+            self.tokens.pop(previous.token, None)
+        self.claim_codes[slot] = secrets.token_hex(8)
+        return self.claim_codes[slot]
 
     def agent_for(self, token):
         agent = self.tokens.get(token)
@@ -234,9 +341,20 @@ class Run:
     # -- guard --------------------------------------------------------------
 
     def finding_uid(self, agent, raw):
-        key = ':'.join([self.paper['id'], agent.track, str(raw.get('block_id', '')),
+        """One issue's identity: who raised it, and the evidence it cites.
+
+        The model-written title is deliberately not in it. With the title in the
+        key, the same reviewer restating the same issue in better words filed a
+        second finding, while two reviewers who happened to agree on a title
+        filed one — the count said four and the ledger held three. The slot is
+        in the key so that agreement between reviewers stays visible as two
+        rows for the editor to merge, rather than being merged here.
+        """
+        handles = sorted({str(handle) for handle
+                          in [raw.get('block_id'), *(raw.get('evidence_blocks') or [])] if handle})
+        key = ':'.join([self.paper['id'], agent.slot,
                         ' '.join(str(raw.get('quote', '')).split()).casefold(),
-                        ' '.join(str(raw.get('title', '')).split()).casefold()])
+                        '|'.join(handles)])
         return digest(key)[:16]
 
     def cited_blocks(self, stored, corroborating):
@@ -258,9 +376,17 @@ class Run:
         inside the quotation marks, so the whole text of every cited block
         counts — and no text that the finding does not cite.
         """
-        printed = set(re.findall(NUMERIC, stored.get('quote', '')))
+        texts = [stored.get('quote', '')]
         for block_id in self.cited_blocks(stored, corroborating):
-            printed |= set(re.findall(NUMERIC, self.blocks.get(block_id, {}).get('text', '')))
+            texts.append(self.blocks.get(block_id, {}).get('text', ''))
+        printed = set()
+        for text in texts:
+            for token in re.findall(NUMERIC, text or ''):
+                value = as_number(token)
+                if value is not None:
+                    # Both signs: a receipt is tokenised unsigned, so a printed
+                    # −0.5 has to match the 0.5 in `a - 0.5` as well.
+                    printed |= {value, abs(value)}
         return printed
 
     def basis(self, agent, stored, receipt_id, corroborating):
@@ -280,12 +406,22 @@ class Run:
         receipt = agent.receipts.get(receipt_id) if receipt_id else None
         if receipt:
             printed = self.printed_numbers(stored, corroborating)
-            inputs = set(re.findall(NUMERIC, receipt['expression']))
-            if inputs and inputs <= printed:
+            inputs = {}
+            for token in re.findall(NUMERIC_UNSIGNED, str(receipt.get('expression') or '')):
+                value = as_number(token)
+                if value is not None:
+                    inputs[token] = value
+            unmatched = sorted(token for token, value in inputs.items()
+                               if not is_power_of_ten(value)
+                               and not any(same_number(value, other) for other in printed))
+            if inputs and not unmatched:
                 return 'computed', ('Arithmetic receipt over numbers printed in the blocks this '
-                                    'finding cites.')
-            return ('judgement', 'The receipt uses numbers that none of the cited blocks print: '
-                    + ', '.join(sorted(inputs - printed)))
+                                    'finding cites, matched by value.')
+            if inputs:
+                return ('judgement',
+                        'The receipt uses numbers that none of the cited blocks print: '
+                        + ', '.join(unmatched))
+            return 'judgement', 'The receipt works on no numbers at all.'
         if corroborating:
             return 'two-quotes', ('Two guard-checked passages. This shows both exist; it does not '
                                   'prove they conflict.')
@@ -323,17 +459,34 @@ class Run:
         if receipt_id and receipt_id in agent.receipts:
             stored['calculate_receipt'] = {'receipt': receipt_id, **agent.receipts[receipt_id]}
         stored['recorded'] = now()
-        self.findings = [f for f in self.findings
-                         if not (f['slot'] == agent.slot and f['review_id'] != stored['review_id'])]
+        # Nothing is merged or dropped here. Every submission is a row, and the
+        # editor rules on one row per `finding_uid` — the latest. Storage that
+        # silently replaced a slot's earlier findings lost them from the ledger
+        # while the counts still reported them.
         self.findings.append(stored)
         self.append(self.review / 'findings.jsonl', stored)
         return stored, None
+
+    def pooled(self):
+        """One row per ``finding_uid``: the latest submission of each, in first-seen order."""
+        order, latest = [], {}
+        for finding in self.findings:
+            uid = finding['finding_uid']
+            if uid not in latest:
+                order.append(uid)
+            latest[uid] = finding
+        return [latest[uid] for uid in order]
+
+    def guard_status(self, slot=None):
+        """``quarantined`` when the guard threw out one of *this* reviewer's findings."""
+        rows = [q for q in self.quarantined if slot is None or q.get('slot') == slot]
+        return 'quarantined' if rows else 'clean'
 
     # -- disk ---------------------------------------------------------------
 
     @staticmethod
     def append(path, record):
-        with Path(path).open('a') as stream:
+        with Path(path).open('a', encoding='utf-8') as stream:
             stream.write(json.dumps(record, ensure_ascii=False) + '\n')
 
     def outline(self, limit=400):
@@ -354,6 +507,29 @@ class Run:
                                     and self.agents['editor'].editor_package),
         }
 
+    def visible_ledger(self, agent):
+        """The ledger as one caller may read it.
+
+        A core reviewer or a specialist is shown its own stage and no other. The
+        full ledger names every slot in the run, and a reviewer that can read
+        ``spec-stats`` in it knows the specialist track exists.
+        """
+        if agent.role in ('editor', 'recorder'):
+            return self.ledger()
+        slots = [slot for slot in agent.sees if slot in self.required]
+        reported = [slot for slot in slots
+                    if slot in self.agents and self.agents[slot].report]
+        return {
+            'required': slots,
+            'reported': sorted(reported),
+            'missing': [slot for slot in slots if slot not in reported],
+            'none_found': sorted(slot for slot in reported
+                                 if self.agents[slot].report.get('none_found')),
+            'attempts': {slot: self.agents[slot].attempt for slot in slots
+                         if slot in self.agents},
+            'scope': 'your own stage only',
+        }
+
     def write_progress(self):
         write(self.review / 'progress.json', {
             'status': self.status,
@@ -361,9 +537,10 @@ class Run:
             'reviewers': self.reviewers,
             'arm': self.arm,
             'stages': self.ledger(),
-            'findings_delivered': len(self.findings),
+            'findings_delivered': len(self.pooled()),
+            'findings_submitted': len(self.findings),
             'quarantined_findings_count': len(self.quarantined),
-            'review_guard_status': 'clean' if not self.quarantined else 'quarantined',
+            'review_guard_status': self.guard_status(),
             'tool_calls': {slot: agent.calls for slot, agent in self.agents.items()},
             'tool_calls_total': self.calls,
             'started': self.started,
@@ -450,7 +627,15 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
     """
     run = STATE['run']
     if run is not None and str(Path(out).resolve()) == str(run.root):
-        return {**summary_of(run), 'attached': True}
+        wanted = ARMS[arm]['reviewers'] if arm in ARMS else reviewers
+        if arm != run.arm or (wanted if wanted is not None else reviewers) != run.reviewers:
+            return rejection('This run is the ' + run.arm + ' arm with ' + str(run.reviewers)
+                             + ' core reviewer(s). An attach does not change the plan: review '
+                             'the ' + str(arm) + ' arm in a fresh out folder.')
+        # The claim codes are minted once and go back once. A second caller
+        # attaching to a live run is not the recorder: no identities, and not
+        # the slot list either.
+        return {k: v for k, v in summary_of(run).items() if k != 'slots'} | {'attached': True}
     if run is not None:
         return rejection('This server process already serves the run at ' + str(run.root))
     try:
@@ -459,7 +644,12 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
     except (ValueError, KeyError, TypeError, OSError) as exc:
         return rejection(str(exc))
     STATE['run'] = run
-    return {**summary_of(run), 'attached': False}
+    return {**summary_of(run), 'attached': False, 'recorder_key': run.recorder_key,
+            'claim_codes': [{'slot': slot, 'claim_code': code}
+                            for slot, code in run.claim_codes.items()],
+            'identity': ('Give each agent only its own claim_code, in its own prompt. A code '
+                         'works once. recorder_key is yours: it reissues a code for a retry and '
+                         'marks the run blocked.')}
 
 
 def summary_of(run):
@@ -479,11 +669,16 @@ def summary_of(run):
     }
 
 
-def claim_agent(slot: str) -> dict:
-    """Take one slot in this run and get the token every later call needs."""
+def claim_agent(slot: str, claim_code: str = '') -> dict:
+    """Take your slot with the claim code in your prompt, and get your agent token.
+
+    One code per slot, minted at ingest and good for one claim. A slot someone
+    else already holds is not claimable, and a code for another slot is not
+    yours: both are refused, so a track is an identity and not a string.
+    """
     run = current()
     try:
-        agent = run.claim(slot)
+        agent = run.claim(slot, claim_code)
     except (ValueError, KeyError) as exc:
         return rejection(str(exc))
     run.write_progress()
@@ -515,6 +710,25 @@ def claim_agent(slot: str) -> dict:
     }
 
 
+def reissue_claim_code(recorder_key: str, slot: str) -> dict:
+    """Recorder only: a fresh claim code for one slot, to retry a stage that failed.
+
+    Reissuing drops the token of whoever holds the slot, so the stuck attempt
+    cannot keep filing findings beside its replacement.
+    """
+    run = current()
+    if not secrets.compare_digest(str(recorder_key or ''), run.recorder_key):
+        return rejection('A claim code is reissued by the recorder, with the run key ingest '
+                         'returned.')
+    try:
+        code = run.reissue(slot)
+    except (ValueError, KeyError) as exc:
+        return rejection(str(exc))
+    run.write_progress()
+    return {'slot': slot, 'claim_code': code, 'attempt_next': run.agents[slot].attempt + 1
+            if slot in run.agents else 1}
+
+
 def _call(token, name, args):
     run = current()
     try:
@@ -531,6 +745,7 @@ def _call(token, name, args):
         return rejection('Tool allowance exhausted. Finish from existing evidence.',
                          budget_exhausted=True)
     agent.calls += 1
+    run.slot_calls[agent.slot] = agent.calls
     run.calls += 1
     result = agent.investigation.call(name, args)
     if name == 'calculate' and 'receipt' in result:
@@ -645,6 +860,20 @@ def submit_finding(agent_token: str, title: str, block_id: str, quote: str, comm
         return rejection('Only a reviewer or a specialist submits findings.')
     if severity not in SEVERITIES:
         return rejection('severity is one of ' + ', '.join(SEVERITIES))
+    # Nothing arrives after the ledger has moved on. A finding stored after the
+    # stage closed, or after the editor ruled, was written to findings.jsonl and
+    # then silently left out of the package: refusing it says so to the agent.
+    if run.status != 'running':
+        return rejection('This run is ' + run.status + '. Nothing was stored.')
+    if agent.report is not None:
+        return rejection('You closed this stage with submit_report. Nothing was stored: a finding '
+                         'after the stage is not part of the review.')
+    editor = run.agents.get('editor')
+    if editor is not None and editor.editor_package:
+        return rejection('The pooled review has already been ruled on. Nothing was stored.')
+    if len(list(evidence_blocks or [])) > MAX_EVIDENCE_BLOCKS:
+        return rejection(f'Cite at most {MAX_EVIDENCE_BLOCKS} evidence blocks: name the blocks the '
+                         'finding rests on, not every block that holds a number.')
     corroborating = None
     if corroborating_block_id and corroborating_quote:
         if run.anchor(corroborating_block_id, corroborating_quote) is None:
@@ -664,7 +893,8 @@ def submit_finding(agent_token: str, title: str, block_id: str, quote: str, comm
             'basis_reason': stored['basis_reason'], 'escalate': stored['escalate'],
             'kind': stored['kind'], 'edit_withheld': stored.get('edit_withheld'),
             'receipt': digest(json.dumps(stored, sort_keys=True))[:16],
-            'findings_stored_by_you': sum(f['slot'] == agent.slot for f in run.findings)}
+            'findings_stored_by_you': sum(f['slot'] == agent.slot for f in run.pooled()),
+            'submissions_by_you': sum(f['slot'] == agent.slot for f in run.findings)}
 
 
 def submit_report(agent_token: str, summary: str, limitations: list = None,
@@ -681,7 +911,7 @@ def submit_report(agent_token: str, summary: str, limitations: list = None,
         agent = run.agent_for(agent_token)
     except ValueError as exc:
         return rejection(str(exc))
-    mine = [f for f in run.findings if f['slot'] == agent.slot]
+    mine = [f for f in run.pooled() if f['slot'] == agent.slot]
     if none_found and mine:
         return rejection(f'You stored {len(mine)} finding(s); none_found contradicts the ledger.')
     agent.report = {'slot': agent.slot, 'role': agent.role, 'track': agent.track,
@@ -699,7 +929,7 @@ def submit_report(agent_token: str, summary: str, limitations: list = None,
             f'# {agent.track} audit\n\n{body}\n', encoding='utf-8')
     run.write_progress()
     return {'closed': True, 'slot': agent.slot, 'findings': len(mine),
-            'none_found': agent.report['none_found'], 'ledger': run.ledger()}
+            'none_found': agent.report['none_found'], 'ledger': run.visible_ledger(agent)}
 
 
 def _audit_markdown(agent, findings):
@@ -721,8 +951,8 @@ def list_findings(agent_token: str, track: str = '', include_comment: bool = Tru
         agent = run.agent_for(agent_token)
     except ValueError as exc:
         return rejection(str(exc))
-    rows = [f for f in run.findings if f['slot'] in agent.sees or agent.role in ('editor',
-                                                                                'recorder')]
+    rows = [f for f in run.pooled() if f['slot'] in agent.sees or agent.role in ('editor',
+                                                                                 'recorder')]
     if track:
         rows = [f for f in rows if f['track'] == track]
     if agent.role in ('editor', 'recorder'):
@@ -740,7 +970,7 @@ def list_findings(agent_token: str, track: str = '', include_comment: bool = Tru
     return {'count': len(out), 'findings': out, 'order': 'randomised per run',
             'reports': [a.report for a in run.agents.values() if a.report
                         and (a.slot in agent.sees or agent.role in ('editor', 'recorder'))],
-            'ledger': run.ledger()}
+            'ledger': run.visible_ledger(agent)}
 
 
 def submit_editor(agent_token: str, summary: str, decisions: list,
@@ -761,7 +991,8 @@ def submit_editor(agent_token: str, summary: str, decisions: list,
         return rejection(str(exc))
     if agent.role != 'editor':
         return rejection('Only the editor submits the pooled review.')
-    by_uid = {f['finding_uid']: f for f in run.findings}
+    # One row per uid, the latest submission of each: what the editor was shown.
+    by_uid = {f['finding_uid']: f for f in run.pooled()}
     problems, seen, body = [], {}, []
     for index, decision in enumerate(decisions or [], 1):
         uid = str(decision.get('finding_uid', ''))
@@ -835,9 +1066,20 @@ def submit_editor(agent_token: str, summary: str, decisions: list,
             'escalated_ruled': len(escalated), 'next': 'The recorder calls write_review.'}
 
 
-def mark_blocked(reason: str) -> dict:
-    """Mark the run blocked: a rate limit, or a stage that returned nothing twice."""
+def mark_blocked(recorder_key: str, reason: str) -> dict:
+    """Recorder only: mark the run blocked — a rate limit, or a stage that failed twice.
+
+    A finished review is never flipped to blocked, and the run key keeps the
+    decision with the recorder: a reviewer that could call this could end a run
+    whose findings it did not like.
+    """
     run = current()
+    if not secrets.compare_digest(str(recorder_key or ''), run.recorder_key):
+        return rejection('The run is marked blocked by the recorder, with the run key ingest '
+                         'returned.')
+    if str(run.status).startswith('complete'):
+        return rejection('This run is ' + run.status + ' and its review is written. A finished '
+                         'run is not marked blocked.', status=run.status)
     run.status = 'blocked'
     run.error = reason
     run.write_progress()
@@ -846,13 +1088,22 @@ def mark_blocked(reason: str) -> dict:
     return {'status': run.status, 'error': reason}
 
 
-def run_status() -> dict:
-    """The run's status and its stage ledger, without a token."""
+def run_status(recorder_key: str = '') -> dict:
+    """How the run stands, without a token. The stage ledger needs the run key.
+
+    The counts are safe for anyone in the run to read; the ledger names every
+    slot, so it goes only to the holder of the recorder's key.
+    """
     run = current()
-    return {'status': run.status, 'error': run.error, 'arm': run.arm,
-            'reviewers': run.reviewers, 'ledger': run.ledger(),
-            'findings': len(run.findings), 'quarantined': len(run.quarantined),
-            'tool_calls': run.calls, 'run': str(run.root)}
+    ledger = run.ledger()
+    status = {'status': run.status, 'error': run.error, 'arm': run.arm,
+              'reviewers': run.reviewers, 'stages_required': len(ledger['required']),
+              'stages_reported': len(ledger['reported']),
+              'findings': len(run.pooled()), 'quarantined': len(run.quarantined),
+              'tool_calls': run.calls, 'run': str(run.root)}
+    if recorder_key and secrets.compare_digest(str(recorder_key), run.recorder_key):
+        status['ledger'] = ledger
+    return status
 
 
 def write_review(agent_token: str) -> dict:
@@ -888,13 +1139,16 @@ def write_review(agent_token: str) -> dict:
             continue
         write(run.review / f'reviewer-{index}' / 'editor-package.json', {
             'summary': (reviewer.report or {}).get('summary', ''),
-            'findings': [_public(f) for f in run.findings if f['slot'] == slot],
+            'findings': [_public(f) for f in run.pooled() if f['slot'] == slot],
             'limitations': (reviewer.report or {}).get('limitations', []),
             'reviewer_count': 1,
             'workflow_version': WORKFLOW_VERSION,
-            'review_guard_status': 'clean',
+            'review_guard_status': run.guard_status(slot),
         })
-    run.status = 'complete' if package['findings'] else 'complete-without-findings'
+    # The appendix is part of the review: a run that delivered one appendix
+    # finding did not complete without findings.
+    delivered = len(package['findings']) + len(package['appendix'])
+    run.status = 'complete' if delivered else 'complete-without-findings'
     run.error = None
     run.write_progress()
     run.write_protocol()
@@ -922,14 +1176,15 @@ def _public(finding):
 def _editor_package(run):
     editor = run.agents.get('editor')
     package = editor.editor_package if editor and editor.editor_package else None
-    by_uid = {f['finding_uid']: f for f in run.findings}
+    pooled = run.pooled()
+    by_uid = {f['finding_uid']: f for f in pooled}
     decisions = package['decisions'] if package else [
         {'finding_uid': uid, 'placement': 'body', 'reason': 'No editor stage in this arm.'}
         for uid in by_uid]
     placement = {d['finding_uid']: d for d in decisions}
     body_uids = [d['finding_uid'] for d in decisions if d['placement'] == 'body']
     counts = {}
-    for finding in run.findings:
+    for finding in pooled:
         counts[finding['track']] = counts.get(finding['track'], 0) + 1
     raised_by = {}
     for decision in decisions:
@@ -952,7 +1207,7 @@ def _editor_package(run):
         'decisions': decisions,
         'verdict': (package or {}).get('verdict'),
         'escalation_rulings': (package or {}).get('escalation_rulings', []),
-        'escalated_count': sum(1 for f in run.findings if f['escalate']),
+        'escalated_count': sum(1 for f in pooled if f['escalate']),
         'findings_by_track': counts,
         'reviewer_count': run.reviewers,
         'reviewer_provenance': [{'slot': r['slot'], 'track': r['track'], 'model': r['model'],
@@ -963,8 +1218,9 @@ def _editor_package(run):
         'synthesis_policy': 'editor' if package else 'none',
         'workflow_version': WORKFLOW_VERSION,
         'finding_schema_version': FINDING_SCHEMA_VERSION,
-        'review_guard_status': 'clean' if not run.quarantined else 'quarantined',
-        'findings_delivered': len(run.findings),
+        'review_guard_status': run.guard_status(),
+        'findings_delivered': len(pooled),
+        'findings_submitted': len(run.findings),
         'quarantined_findings_count': len(run.quarantined),
         'quarantined_findings': run.quarantined,
         'stages': run.ledger(),
@@ -1003,10 +1259,10 @@ def _write_reports(run):
         return {'renderer': 'plugin fallback', 'engine_error': str(exc)}
 
 
-TOOLS = (ingest, claim_agent, read_blocks, search, calculate, save_note, view_page,
-         view_supplement, check_citation, search_literature, resolve_identifier, lookup_source,
-         inspect_results, record_comparison, validate_synthesis, submit_finding, submit_report,
-         list_findings, submit_editor, mark_blocked, run_status, write_review)
+TOOLS = (ingest, claim_agent, reissue_claim_code, read_blocks, search, calculate, save_note,
+         view_page, view_supplement, check_citation, search_literature, resolve_identifier,
+         lookup_source, inspect_results, record_comparison, validate_synthesis, submit_finding,
+         submit_report, list_findings, submit_editor, mark_blocked, run_status, write_review)
 
 
 def create_server(plugin_root=None):
@@ -1023,6 +1279,14 @@ def main(argv=None):
     import sys
 
     argv = list(sys.argv[1:] if argv is None else argv)
+    # One `args` array in .mcp.json serves both launchers: the console script
+    # `peerreview-plugin-server`, which an installed wheel puts on PATH, and
+    # `<python> -m peerreviewagents.plugin.server`, which is what `peerreview
+    # review` points the session at so the run uses its own interpreter. The
+    # console script is handed the interpreter switch as an argument; drop it
+    # rather than make the plugin config pick one launcher.
+    if argv[:1] == ['-m'] and len(argv) > 1 and argv[1].startswith('peerreviewagents.'):
+        argv = argv[2:]
     plugin_root = None
     if '--plugin-root' in argv:
         index = argv.index('--plugin-root')

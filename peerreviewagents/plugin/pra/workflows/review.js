@@ -35,8 +35,28 @@ const OPENED = {
       type: 'array', items: { type: 'string' },
       description: 'the slot list ingest returned, verbatim',
     },
+    recorder_key: { type: 'string', description: 'the recorder_key ingest returned, verbatim' },
+    claim_codes: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { slot: { type: 'string' }, claim_code: { type: 'string' } },
+        required: ['slot', 'claim_code'],
+      },
+      description: 'every {slot, claim_code} pair ingest returned, verbatim',
+    },
   },
-  required: ['paper_id', 'arm', 'slots'],
+  required: ['paper_id', 'arm', 'slots', 'recorder_key', 'claim_codes'],
+}
+
+// A retry needs a code the first attempt has not spent.
+const REISSUED = {
+  type: 'object',
+  properties: {
+    slot: { type: 'string' },
+    claim_code: { type: 'string', description: 'the fresh code reissue_claim_code returned' },
+  },
+  required: ['claim_code'],
 }
 
 const STAGE = {
@@ -88,11 +108,41 @@ function label(slot, attempt) {
   return attempt > 1 ? slot + ' (retry)' : slot
 }
 
+// The claim code is the agent's identity: it is minted per slot at ingest,
+// returned only to the agent that opened the run, and spent on first use. The
+// script is the only thing that knows which agent gets which code, so an agent
+// cannot claim a slot that was not assigned to it even by guessing the name.
+let codes = {}
+let recorderKey = ''
+const codeFor = slot => codes[slot] || ''
+
+// A spent code cannot be reused, so a retry has to be issued a fresh one, and
+// only the holder of the recorder key can ask for that.
+async function reissue(slot, phaseName) {
+  const fresh = await agent(
+    'A stage of this run has to be retried, so its slot needs a new claim code. Call'
+    + ' reissue_claim_code with recorder_key="' + recorderKey + '" and slot="' + slot
+    + '". Report the claim_code it returned, verbatim, and nothing else.',
+    { label: 'reissue ' + slot, phase: phaseName, agentType: 'pra:recorder', schema: REISSUED },
+  )
+  if (fresh && fresh.claim_code) {
+    codes[slot] = fresh.claim_code
+    return fresh.claim_code
+  }
+  return ''
+}
+
 // One retry, then blocked: a stage that returns nothing, or returns without
-// closing its slot in the ledger, is not a stage that ran.
-async function stage(slot, agentType, phaseName, prompt, schema) {
+// closing its slot in the ledger, is not a stage that ran. `promptFor` takes
+// the claim code, because attempt 2 runs on a different one.
+async function stage(slot, agentType, phaseName, promptFor, schema) {
   for (let attempt = 1; attempt <= 2; attempt += 1) {
-    const result = await agent(prompt, {
+    const code = attempt === 1 ? codeFor(slot) : await reissue(slot, phaseName)
+    if (!code) {
+      log(slot + ': no claim code, so the slot cannot be claimed; the run is blocked')
+      return null
+    }
+    const result = await agent(promptFor(code), {
       label: label(slot, attempt), phase: phaseName, agentType, schema,
     })
     const ok = result && (schema === EDITED ? result.accepted : result.closed)
@@ -105,8 +155,9 @@ async function stage(slot, agentType, phaseName, prompt, schema) {
 
 async function block(reason) {
   await agent(
-    'A stage of this run failed twice. Call mark_blocked with this reason, exactly as written:'
-    + ' "' + reason + '". Then report the status it returned.',
+    'A stage of this run failed twice. Call mark_blocked with recorder_key="' + recorderKey
+    + '" and this reason, exactly as written: "' + reason + '".'
+    + ' Then report the status it returned.',
     { label: 'mark blocked', phase: 'Record', agentType: 'pra:recorder' },
   )
   throw new Error('review: ' + reason)
@@ -118,12 +169,22 @@ const opened = await agent(
   + '", reviewers=' + REVIEWERS + ', arm="' + ARM + '"'
   + (run.literature_cutoff ? ', literature_cutoff="' + run.literature_cutoff + '"' : '')
   + (run.tracks ? ', tracks=' + JSON.stringify(run.tracks) : '')
-  + '. Report the paper id, the title, the block count and the slot list it returned.',
+  + '. Report the paper id, the title, the block count and the slot list it returned, and copy'
+  + ' the recorder_key and every claim_code out of the response verbatim: they are the only'
+  + ' copies, and each stage is handed its own code from here.',
   { label: 'ingest', phase: 'Ingest', agentType: 'pra:recorder', schema: OPENED },
 )
 if (!opened || !opened.slots || opened.slots.length === 0) {
   throw new Error('review: ingest returned no plan, so no stage can be assigned')
 }
+if (!opened.recorder_key || !opened.claim_codes || opened.claim_codes.length === 0) {
+  throw new Error('review: ingest returned no claim codes, so no agent can prove which slot it is')
+}
+recorderKey = opened.recorder_key
+codes = {}
+opened.claim_codes.forEach(entry => {
+  if (entry && entry.slot) codes[entry.slot] = entry.claim_code
+})
 
 // The server's slot list is the plan. The arm decides it, so the script never
 // has to hold a second copy of which stages a given arm requires.
@@ -136,16 +197,19 @@ log('arm ' + opened.arm + ': ' + coreSlots.length + ' core reviewer(s), '
   + specSlots.length + ' specialist(s), editor ' + (hasEditor ? 'yes' : 'no'))
 
 phase('Review')
-const reviewPrompt = slot =>
+const reviewPrompt = slot => code =>
   'You are reviewing a manuscript that has already been ingested into this run.'
-  + ' Call claim_agent with slot="' + slot + '" first: it returns your token, the paper'
-  + ' outline and the domain guidance. Then read what you need and submit the findings you'
+  + ' Call claim_agent with slot="' + slot + '" and claim_code="' + code + '" first: it returns'
+  + ' your token, the paper outline and the domain guidance. The code is yours alone and works'
+  + ' once, so do not claim any other slot. Then read what you need and submit the findings you'
   + ' would defend, or none. Close with submit_report.'
 
 const specialistPrompt = slot => {
   const track = slot.slice('spec-'.length)
-  return 'You are the ' + track + ' specialist on this run. Call claim_agent with slot="'
-    + slot + '" first: it returns your token and the paper outline. Audit ' + SPECIALIST_BRIEF[track]
+  return code => 'You are the ' + track + ' specialist on this run. Call claim_agent with slot="'
+    + slot + '" and claim_code="' + code + '" first: it returns your token and the paper outline.'
+    + ' The code is yours alone and works once, so do not claim any other slot. Audit '
+    + SPECIALIST_BRIEF[track]
     + '. Submit the findings you would defend, or none, and set escalate only where the finding'
     + ' bears on the central claim. Close with submit_report, passing report_markdown.'
 }
@@ -172,9 +236,10 @@ if (hasRevision) {
   phase('Revision')
   const revised = await stage(
     'revision-1', 'pra:core-reviewer', 'Revision',
-    'You reviewed this manuscript as core-1. Claim slot="revision-1" and revise your own work:'
-    + ' list_findings shows what you stored. Withdraw nothing, but add what a second pass'
-    + ' finds and sharpen what you now see differently. Close with submit_report.',
+    code => 'You reviewed this manuscript as core-1. Claim slot="revision-1" with claim_code="'
+    + code + '" and revise your own work: list_findings shows what you stored. Withdraw nothing,'
+    + ' but add what a second pass finds and sharpen what you now see differently.'
+    + ' Close with submit_report.',
     STAGE,
   )
   if (!revised) await block('The revision stage returned nothing twice')
@@ -186,7 +251,8 @@ if (hasEditor) {
   phase('Editor')
   edited = await stage(
     'editor', 'pra:editor', 'Editor',
-    'Every reviewer and specialist has reported. Claim slot="editor", read every finding with'
+    code => 'Every reviewer and specialist has reported. Claim slot="editor" with claim_code="'
+    + code + '", read every finding with'
     + ' list_findings, then submit_editor: one decision per finding with a reason, duplicates'
     + ' merged, at most about eight findings in the body, a ruling by name on every escalated'
     + ' finding, and the two-axis verdict in words. If it returns problems, fix them and submit'
@@ -198,7 +264,8 @@ if (hasEditor) {
 
 phase('Record')
 const recorded = await agent(
-  'Close the run. Call claim_agent with slot="recorder", then write_review with that token.'
+  'Close the run. Call claim_agent with slot="recorder" and claim_code="' + codeFor('recorder')
+  + '", then write_review with that token.'
   + ' Report the status, the body and appendix counts and the escalated count. If it refuses,'
   + ' report the refusal text verbatim in the refusal field.',
   { label: 'write review', phase: 'Record', agentType: 'pra:recorder', schema: RECORDED },

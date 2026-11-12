@@ -292,6 +292,6 @@ def write_reports(run, workspace=None, output_dir=None):
     target = Path(output_dir).resolve() if output_dir else Path(run).resolve()
     target.mkdir(parents=True, exist_ok=True)
     paths = {'markdown': target / 'REVIEW.md', 'text': target / 'REVIEW.txt'}
-    paths['markdown'].write_text(render_markdown(blocks))
-    paths['text'].write_text(render_text(blocks))
+    paths['markdown'].write_text(render_markdown(blocks), encoding='utf-8')
+    paths['text'].write_text(render_text(blocks), encoding='utf-8')
     return paths

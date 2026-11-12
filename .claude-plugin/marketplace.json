@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "pra",
-      "source": "./plugins/pra",
+      "source": "./peerreviewagents/plugin/pra",
       "description": "Review a manuscript PDF with N core reviewers, six specialist tracks and an editor, every finding anchored to a quotation, on a Claude Code subscription login",
       "category": "research",
       "tags": ["peer-review", "research", "manuscripts", "mcp"]

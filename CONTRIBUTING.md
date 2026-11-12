@@ -19,9 +19,12 @@ The suite ingests a PDF fixture, so it also needs Poppler's `pdftotext` —
 poppler`. That is a runtime requirement of the importer, not of the tests, so
 CI installs it rather than skipping what needs it.
 
-Keep the virtual environment at `.venv` in the checkout. The plugin launches
-its MCP server as `${CLAUDE_PROJECT_DIR}/.venv/bin/python`, so a venv anywhere
-else gives you a review that cannot start.
+The plugin launches its MCP server through `PEERREVIEW_MCP_COMMAND`, which
+`peerreview review` sets to the very interpreter running the starter, so a
+review runs from any venv — or from an installed wheel with no checkout at all.
+Started by hand (`claude --plugin-dir …`), the server falls back to the
+`peerreview-plugin-server` console script, which has to be on the PATH of that
+shell.
 
 ## Before you open a PR
 
@@ -49,7 +52,8 @@ again on macOS and Windows.
 Use a `v<VERSION>` tag to trigger `.github/workflows/release.yml`.
 Before tagging, update `project.version` in `pyproject.toml`, the matching
 `version` and release date in `CITATION.cff`, and the `version` in
-`plugins/pra/.claude-plugin/plugin.json`, then commit the release changes.
+`peerreviewagents/plugin/pra/.claude-plugin/plugin.json`, then commit the
+release changes.
 `pytest tests/test_metadata.py -q` checks the citation metadata locally.
 
 The workflow checks the tag against the package version, runs the tests, and
@@ -74,7 +78,7 @@ Since 0.9 the review *is* the plugin. Three places:
 
 | Place | What lives there |
 | --- | --- |
-| `plugins/pra/` | the workflow (`workflows/review.js`), the agent files that pin each slot's model and turn limit, and the three skills. [Its README](plugins/pra/README.md) describes the run. |
+| `peerreviewagents/plugin/pra/` | the plugin itself, shipped inside the package so an installed wheel can run a review: the workflow (`workflows/review.js`), the agent files that pin each slot's model and turn limit, and the three skills. [Its README](peerreviewagents/plugin/pra/README.md) describes the run. |
 | `peerreviewagents/plugin/` | `server.py`, the MCP server that owns the manuscript, the identities, the tool allowances, the budgets, the guards and the run files; `starter.py`, which probes a session, launches it headless, enforces the token ceilings from the session's own stream, and re-renders the reports. |
 | `peerreviewagents/engine/` | the manuscript workspace, the tool implementations behind the server, the domain checklists, the usage accounting and the report writer. [Its README](peerreviewagents/engine/README.md) lists the modules and the boundaries. |
 

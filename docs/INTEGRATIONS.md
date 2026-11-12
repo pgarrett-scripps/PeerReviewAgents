@@ -5,9 +5,9 @@ the only way a review runs, whether you start it from the command line or from
 inside a session, so there is nothing to wire up twice.
 
 ```
-peerreview review            plugins/pra            peerreviewagents.plugin.server
-  (the command)      →     (workflow, agents,   →   (22 MCP tools, the ledger,
-                            skills, .mcp.json)       the run files)
+peerreview review     peerreviewagents/plugin/pra   peerreviewagents.plugin.server
+  (the command)      →     (workflow, agents,     →   (23 MCP tools, the ledger,
+                            skills, .mcp.json)         the run files)
 ```
 
 The command launches a headless Claude Code session on the plugin. A session
@@ -20,10 +20,12 @@ budgets and the files.
 - The standalone Claude Code CLI, signed in to a subscription, with `claude` on
   `PATH`. Claude Desktop alone does not install it; see
   [the quickstart](https://code.claude.com/docs/en/quickstart).
-- A checkout of this repository with its virtual environment at `.venv`. The
-  plugin's `.mcp.json` launches `${CLAUDE_PROJECT_DIR}/.venv/bin/python -m
-  peerreviewagents.plugin.server`, and `${CLAUDE_PROJECT_DIR}` is the package
-  root the run starts from, so the venv has to be in that one place.
+- This package installed in any Python environment — a checkout or a wheel. The
+  plugin ships inside it, and `peerreview review` starts the server with the
+  interpreter running the command, passed in `PEERREVIEW_MCP_COMMAND`. A
+  session you load by hand has nothing setting that variable, so there the
+  server starts through the `peerreview-plugin-server` console script and that
+  shell's PATH has to carry it.
 - Poppler's `pdftotext` on `PATH`, which does the PDF text extraction:
   `sudo apt install poppler-utils`, `brew install poppler`, or `choco install
   poppler`.
@@ -48,7 +50,7 @@ run with its reasons, not a traceback.
 From a checkout:
 
 ```bash
-claude --plugin-dir /absolute/path/to/PeerReviewAgents/plugins/pra
+claude --plugin-dir /absolute/path/to/PeerReviewAgents/peerreviewagents/plugin/pra
 ```
 
 Or add the repository as a local marketplace and install it by name:
@@ -67,7 +69,7 @@ Then ask for one of its three skills:
 | `follow-up` | what changed since a previous run of the same paper |
 
 The agents may call only the server's tools — the allow list the starter passes
-is `Workflow`, `Skill`, `TodoWrite` and the 22 `peerreview` tools, and nothing
+is `Workflow`, `Skill`, `TodoWrite` and the 23 `peerreview` tools, and nothing
 else. No `Read`, `Write`, `Edit`, `Bash`, `WebSearch` or `WebFetch` reaches a
 reviewer, which is why a quotation cannot come from anywhere but a source
 block.
@@ -117,18 +119,22 @@ folder.
 
 ### The probe says the plugin was not loaded
 
-`claude --plugin-dir` has to point at `plugins/pra`, not at the repository
-root. Check `run-output/review/startup.json`: it records the plugins, MCP
-servers, agents and slash commands the session reported.
+`claude --plugin-dir` has to point at `peerreviewagents/plugin/pra`, not at the
+repository root. Check `run-output/review/startup.json`: it records the plugins,
+MCP servers, agents and slash commands the session reported.
 
 ### The probe says the server did not connect
 
-The server is launched as `${CLAUDE_PROJECT_DIR}/.venv/bin/python`. Confirm
-that interpreter exists and has the project installed:
+`peerreview review` launches the server with its own interpreter, so confirm
+that interpreter can import it:
 
 ```bash
-.venv/bin/python -c "import peerreviewagents.plugin.server"
+python -c "import peerreviewagents.plugin.server"
 ```
+
+In a session you started yourself, the launcher is the
+`peerreview-plugin-server` script instead: check that `which
+peerreview-plugin-server` finds it.
 
 A missing MCP SDK is the usual cause on an old environment. It is a dependency
 in 0.9, so `pip install -e .` installs it; re-run that after upgrading.
