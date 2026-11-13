@@ -3,8 +3,10 @@
 Each specialist audits one dimension and is told in its own brief which
 dimensions belong to the other five, by name, so two of them cannot file the
 same finding against the same sentence and leave the editor to reconcile it.
-These tests read the briefs as files and check the one boundary the server can
-enforce rather than ask for — the numbers lane has no way to look at a page.
+These tests read the briefs as files, check that the ten ownership claims
+between them agree, and check the numbers lane's page-image rule in both
+halves: the tool is in its slot, and its brief is what forbids reading a value
+off a plot.
 
 Nothing here starts Claude Code, Codex or any provider, and no model runs.
 """
@@ -106,27 +108,41 @@ def test_the_core_reviewer_is_still_not_told_the_specialists_exist():
         'the reviewer is not told where its judgement ends'
 
 
-def test_the_numbers_lane_has_no_way_to_look_at_a_page(tmp_path):
-    """Printed quantities are text, and the boundary is enforced, not asked for.
+def test_the_numbers_lane_may_confirm_a_printed_digit_but_not_read_a_plot(tmp_path):
+    """The lane's boundary is a plot, not a page, and the brief is what draws it.
 
-    A number that can only be had by reading a plot belongs to
-    `figures-tables`. Removing the page image tools from the numbers slot is
-    the one place the lane split is a server rule rather than a line in a
-    prompt, so it is checked in the plan, in the brief and at the call.
+    A number that exists only as a position in a picture belongs to
+    `figures-tables`. A number printed in a table cell is this lane's, and the
+    reader garbles table cells — escaped tabs, a two-column page linearised
+    into interleaved rows — so a lane that could only see the extracted text
+    would either miss a real cell disagreement or file one it could have
+    cleared by looking at the page. `view_page` is therefore in the slot and
+    the prohibition is in the brief; `view_supplement` is not, which is the
+    difference from the lanes that audit what a panel shows.
     """
-    for tool in srv.IMAGE_TOOLS:
-        assert tool not in srv.TRACK_TOOLS['numbers']
-        assert tool not in brief('numbers'), \
-            f'the numbers brief claims {tool}, which its slot is refused'
-    assert set(srv.TRACK_TOOLS['numbers']) == set(srv.OFFLINE_TOOLS)
+    assert 'view_page' in srv.TRACK_TOOLS['numbers']
+    assert 'view_supplement' not in srv.TRACK_TOOLS['numbers']
+    assert set(srv.TRACK_TOOLS['numbers']) == {*srv.OFFLINE_TOOLS, 'view_page'}
+
+    # The brief has to carry both halves: what the page image is for, and the
+    # plot it is never for. A tool granted with no boundary in the prompt is
+    # the lane overlap this PR exists to remove.
+    text = re.sub(r'\s+', ' ', brief('numbers'))
+    assert 'view_page' in text, 'the lane is granted a tool its brief never mentions'
+    assert 'garbled' in text and 'table cell' in text, \
+        'the brief does not say what the page image is for'
+    assert 'never for reading a value off a plot' in text, \
+        'the brief does not hand plot reading back to figures-tables'
+    assert '`figures-tables`' in handed_away(brief('numbers'))
 
     open_run(tmp_path)
     taken = srv.claim_agent('spec-numbers', CODES['spec-numbers'])
-    assert 'view_page' not in taken['allowed_tools']
+    assert 'view_page' in taken['allowed_tools']
+    assert 'view_supplement' not in taken['allowed_tools']
     assert 'inspect_results' in taken['allowed_tools'], \
         'captions and table values are how the lane compares across the paper'
-    refusal = srv.view_page(taken['agent_token'], 1)['request_rejected']
-    assert 'may not call view_page' in refusal
+    refusal = srv.view_supplement(taken['agent_token'], 1)['request_rejected']
+    assert 'may not call view_supplement' in refusal
 
 
 def test_the_workflow_briefs_the_tracks_the_server_plans():

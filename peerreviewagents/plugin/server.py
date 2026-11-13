@@ -57,8 +57,10 @@ WORKFLOW_VERSION = 'plugin-two-track-v1'
 #: drawn from them, `figures-tables` what a panel shows, `methods-reporting`
 #: what is absent from the methods, `citations` the reference list and every
 #: in-text use of it, `field` what this kind of study is required to do. The
-#: boundaries are written into the agent briefs, and the server backs the one
-#: that can be enforced: `numbers` gets no page image tool.
+#: boundaries are written into the agent briefs, and the server backs them
+#: where a tool list can: `numbers` has `view_page` to confirm a printed digit
+#: the reader may have garbled, and no `view_supplement`, while reading a value
+#: off a plot is forbidden by its brief rather than by the tool list.
 SPECIALIST_TRACKS = ('stats', 'figures-tables', 'methods-reporting', 'citations',
                      'numbers', 'field')
 MAX_REVIEWERS = 8
@@ -93,13 +95,18 @@ TRACK_TOOLS = {
     'figures-tables': (*OFFLINE_TOOLS, *IMAGE_TOOLS),
     'methods-reporting': (*OFFLINE_TOOLS, 'view_page', 'resolve_identifier', 'lookup_source'),
     'citations': (*OFFLINE_TOOLS, *NETWORK_TOOLS),
-    # The numbers lane is text only. A quantity you can read is comparable
-    # against another quantity you can read; a quantity you had to get by
-    # looking at a plot is the figures-and-tables lane's, and taking the page
-    # image tool away is the one place the lane boundary can be enforced
-    # instead of asked for. `inspect_results` still gives it captions and
-    # table values as text, which is where the cross-location comparisons are.
-    'numbers': OFFLINE_TOOLS,
+    # The numbers lane gets `view_page` and not `view_supplement`, the same
+    # pair as `stats`. Its boundary is a plot, not a page: a quantity that
+    # exists only as a position in a picture is the figures-and-tables lane's,
+    # and the brief says so. But the reader garbles tables — escaped tabs, a
+    # two-column page linearised into interleaved rows, a cell under the wrong
+    # heading — and a lane that can only see mangled table text either misses
+    # a real cell disagreement or files one it could have cleared by looking,
+    # which is the one error this lane exists to not make. So the page image is
+    # for confirming a printed digit; `inspect_results` still carries the
+    # captions and table values as text, where the cross-location comparisons
+    # are.
+    'numbers': (*OFFLINE_TOOLS, 'view_page'),
     'field': (*OFFLINE_TOOLS, *IMAGE_TOOLS, *NETWORK_TOOLS),
     'editor': ('read_blocks', 'search', 'calculate', 'inspect_results'),
     'recorder': (),

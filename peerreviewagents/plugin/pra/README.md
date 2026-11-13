@@ -125,8 +125,10 @@ the settings files Claude Code reads, managed settings first.
   findings.
 - **Tools per track.** Each slot has an allow list. A citations specialist
   asking for figure pages is refused, `manuscript-only` has the page and
-  lookup tools removed outright, and `spec-numbers` has no page image tool so
-  that the lane split below is a server rule and not a request. The three ledger tools are split the same way:
+  lookup tools removed outright, and `spec-numbers` has `view_page` to confirm
+  a printed digit the text extraction may have garbled but no
+  `view_supplement`, while reading a value off a plot is forbidden by its brief
+  rather than by its allow list. The three ledger tools are split the same way:
   a `cite-N` worker may call only `claim_citation_batch` and
   `submit_citation_verdict`, `citation_rows` belongs to the citations
   specialist alone, and `resolve_citations` to the recorder alone.

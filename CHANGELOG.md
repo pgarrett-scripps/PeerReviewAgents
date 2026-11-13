@@ -358,9 +358,15 @@ including 32 test modules, and nothing was left behind as a shim.
   specialist that sees something outside its lane writes one line under
   **Seen, not mine** in its audit and files no finding — it is never told which
   other tracks are running, so that line is the right answer in every arm. The
-  split is enforced where it can be: `spec-numbers` has no page image tool at
-  all, so a quantity that could only be read off a plot is the
-  figures-and-tables lane by server rule rather than by request.
+  boundary between `numbers` and `figures-tables` is a plot, not a page:
+  `spec-numbers` keeps `view_page`, because the text extraction garbles tables
+  — escaped tabs, a two-column page linearised into interleaved rows — and a
+  lane that could only read the extracted text would either miss a real cell
+  disagreement or file one it could have cleared by looking. Its brief scopes
+  the tool to confirming a printed table cell or a number in running text, and
+  requires that check before any finding that involves a table cell; reading a
+  value off a plot, axis, error bar or colour scale stays with
+  `figures-tables`, and `view_supplement` is still not in the slot.
 - The core reviewers are told what a review is **not** — a catalogue of surface
   defects — without being told that specialists exist. The blinding is the
   property `reviewers-only`, `single` and `manuscript-only` are measured
