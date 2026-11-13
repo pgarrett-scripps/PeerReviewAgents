@@ -1,9 +1,10 @@
 export const meta = {
   name: 'review',
   description: 'Two-track peer review: ingest, N core reviewers and six specialists in parallel, editor, write the run',
-  whenToUse: 'Reviewing one manuscript PDF with PeerReviewAgents 0.9. Pass {pdf, out, reviewers, arm}, and {reviewer_models, specialist_model, editor_model, recorder_model} to choose the models.',
+  whenToUse: 'Reviewing one manuscript PDF with PeerReviewAgents 0.9. Pass {pdf, out, reviewers, arm}, and {reviewer_models, specialist_model, editor_model, recorder_model, citation_worker_model} to choose the models.',
   phases: [
     { title: 'Ingest', detail: 'import the PDF and fix the plan for this arm' },
+    { title: 'Citations', detail: 'resolve every reference, then judge each in-text use against the source' },
     { title: 'Review', detail: 'core reviewers and specialists, in parallel, each isolated' },
     { title: 'Revision', detail: 'single-revision arm only: the reviewer revises its own findings' },
     { title: 'Editor', detail: 'pool the findings, decide body against appendix, rule on escalations' },
@@ -58,6 +59,10 @@ const OPENED = {
       },
       description: 'every {slot, model, spawn} entry ingest returned, verbatim, one per slot',
     },
+    citation_workers: {
+      type: 'array', items: { type: 'string' },
+      description: 'the citation_workers list ingest returned, verbatim; [] where the arm has none',
+    },
   },
   // `models` is required because the plan has to arrive for the run to be the
   // run the server recorded. This script has no tool access and no filesystem
@@ -104,6 +109,35 @@ const EDITED = {
   required: ['accepted', 'body', 'summary'],
 }
 
+// Stage 2 of the citation ledger: the server's own lookups, no model involved.
+// The recorder calls the tool until nothing is left to look up, so what comes
+// back is how far it got, not what it intended.
+const RESOLVED = {
+  type: 'object',
+  properties: {
+    remaining: { type: 'integer', description: 'references still not looked up, from the last call' },
+    references: { type: 'integer' },
+    resolved: { type: 'integer' },
+    lookups: { type: 'integer', description: 'lookups_total from the last call' },
+    calls: { type: 'integer', description: 'how many times you called resolve_citations' },
+    refusal: { type: 'string', description: 'the request_rejected text, if it refused' },
+  },
+  required: ['remaining'],
+}
+
+// Stage 3: one worker's share of the in-text uses.
+const JUDGED = {
+  type: 'object',
+  properties: {
+    judged: { type: 'integer', description: 'verdicts submit_citation_verdict stored for you' },
+    batches: { type: 'integer', description: 'how many batches you claimed' },
+    refused: { type: 'integer', description: 'verdicts the server refused' },
+    left: { type: 'integer', description: 'uses_unjudged from your last call' },
+    model: { type: 'string', description: 'the model you are running as' },
+  },
+  required: ['judged'],
+}
+
 const RECORDED = {
   type: 'object',
   properties: {
@@ -120,7 +154,7 @@ const SPECIALIST_BRIEF = {
   'stats': 'the statistics: tests against the design, n, multiplicity, effect sizes and the arithmetic of the reported numbers',
   'figures-tables': 'the figures and tables against their captions, the text that cites them and the numbers they should match',
   'methods-reporting': 'whether the work could be repeated from what is written, and whether the required declarations are there',
-  'citations': 'whether each cited work supports the sentence it is attached to, and whether the references resolve',
+  'citations': 'the citation ledger the server filled: every reference it looked up and every verdict a worker left, re-checking each problem row yourself before any of it becomes a finding',
   'consistency': 'whether the paper agrees with itself across abstract, results, figures and supplements',
   'field': 'the paper against the standards of its own field, working from the domain pack the server routes to you',
 }
@@ -209,7 +243,11 @@ const opened = await agent(
   + (run.specialist_model ? ', specialist_model="' + run.specialist_model + '"' : '')
   + (run.editor_model ? ', editor_model="' + run.editor_model + '"' : '')
   + (run.recorder_model ? ', recorder_model="' + run.recorder_model + '"' : '')
-  + '. Report the paper id, the title, the block count and the slot list it returned, and copy'
+  + (run.citation_workers !== undefined && run.citation_workers !== null
+    ? ', citation_workers=' + run.citation_workers : '')
+  + (run.citation_worker_model ? ', citation_worker_model="' + run.citation_worker_model + '"' : '')
+  + '. Report the paper id, the title, the block count, the slot list and the citation_workers'
+  + ' list it returned, and copy'
   + ' the recorder_key, every claim_code and every models entry out of the response verbatim:'
   + ' they are the only copies, and each stage is handed its own code and its own model'
   + ' from here.',
@@ -241,7 +279,16 @@ const slots = opened.slots
 // run whatever its agent file pins while `protocol.json` records the plan, and
 // the relay is the only way the plan reaches this script, so a relay that drops
 // one stops the run rather than producing a record that disagrees with it.
-const unplanned = slots.filter(slot => !spawns[slot])
+// The citation workers are planned beside the stages and are not stages: they
+// fill the ledger the citations specialist reads, and a worker that never runs
+// leaves rows unjudged instead of holding the review open. The list arrives
+// twice over — ingest returns it, and the model plan carries one entry per
+// worker — so a relay that drops the list is caught by the plan.
+const workerSlots = Object.keys(spawns).filter(slot => /^cite-[0-9]+$/.test(slot))
+  .concat((opened.citation_workers || []).filter(slot => /^cite-[0-9]+$/.test(slot)))
+  .filter((slot, index, all) => all.indexOf(slot) === index)
+  .filter(slot => !!codes[slot])
+const unplanned = slots.concat(workerSlots).filter(slot => !spawns[slot])
 if (unplanned.length > 0) {
   await block('ingest returned no model for ' + unplanned.join(', ') + ', so '
     + (unplanned.length === 1 ? 'that slot' : 'those slots')
@@ -260,6 +307,107 @@ if (coreSlots.length > 0) {
     // fallback only because it is the same entry's shorter spelling.
     .map(s => s + ' ' + (assigned[s] || spawns[s])).join(', '))
 }
+
+// -- the citation ledger ----------------------------------------------------
+//
+// Stage 1 happened inside ingest. Stage 2 is the server's own lookups, which
+// cost no model call and are driven by the recorder. Stage 3 is the workers.
+// None of it can block the review: an unfinished ledger is a smaller claim
+// about the citations, which the specialist then reports as that.
+//
+// This lane starts before the review fan-out and only the citations specialist
+// waits for it, so the lookups run while the core reviewers read the paper.
+const LOOKUP_LIMIT = 20
+const RESOLVE_CALLS = 12
+
+async function resolveReferences() {
+  return agent(
+    'This run keeps a citation ledger: ingest already filled one row per reference and one per'
+    + ' in-text use. Resolve the references now. Call resolve_citations with recorder_key="'
+    + recorderKey + '" and limit=' + LOOKUP_LIMIT + ', and call it again while it answers'
+    + ' remaining above zero — at most ' + RESOLVE_CALLS + ' times. Call no other tool. Report'
+    + ' the last answer\'s remaining, its counts.references, its counts.resolved and its'
+    + ' lookups_total, and how many times you called it. If it refuses, report the refusal'
+    + ' verbatim and stop.',
+    options('recorder', {
+      label: 'resolve references', phase: 'Citations', agentType: 'pra:recorder', schema: RESOLVED,
+    }),
+  )
+}
+
+const judgePrompt = slot => 'You judge in-text citations against the sources this run has already'
+  + ' resolved. Call claim_agent with slot="' + slot + '" and claim_code="' + codes[slot] + '"'
+  + ' first; the code is yours alone and works once. Then call claim_citation_batch with size=10'
+  + ' and model set to the model you are running as. Each row gives you one citing sentence and'
+  + ' the stored source text for the work it cites. For every row, call'
+  + ' submit_citation_verdict once: the verdict, and the exact passage of the source text you'
+  + ' relied on, copied character for character. A row with no source text can only be "cannot'
+  + ' tell", which is the only verdict that takes no passage. Judge the sentence against that'
+  + ' source and nothing else — you cannot read the manuscript and you are not looking for'
+  + ' findings. Claim another batch when you have finished one, and stop when a claim comes back'
+  + ' with no rows or your allowance runs out. Report how many verdicts were stored, how many'
+  + ' batches you claimed, how many the server refused, the uses_unjudged from your last call,'
+  + ' and the model you ran as.'
+
+async function judgeUses(workers) {
+  const answers = await parallel(workers.map(slot => () => agent(judgePrompt(slot), options(slot, {
+    label: slot, phase: 'Citations', agentType: 'pra:citation-worker', schema: JUDGED,
+  }))))
+  return answers.filter(Boolean)
+}
+
+async function citationLane(workers) {
+  const resolved = await resolveReferences()
+  if (resolved && resolved.refusal) {
+    log('the citation ledger was refused: ' + resolved.refusal)
+    return { resolved: resolved, verdicts: 0, unjudged: null }
+  }
+  if (!resolved) {
+    log('the reference lookups reported nothing back, so the ledger holds whatever they managed')
+  } else {
+    log('references: ' + (resolved.resolved || 0) + ' of ' + (resolved.references || 0)
+      + ' resolved, ' + resolved.remaining + ' never looked up, ' + (resolved.lookups || 0)
+      + ' lookups')
+  }
+  // Resolving and judging are separate stages, and a run asked for zero
+  // workers asked for the lookups without the verdicts. That is a legitimate
+  // arm, so the lane does the lookups and stops: the specialist then reads a
+  // resolved table whose uses are all unjudged, and the run says so.
+  if (workers.length === 0) {
+    log('no citation worker was asked for, so the resolved references go unjudged')
+    return { resolved: resolved || null, verdicts: 0, unjudged: null, workers: [] }
+  }
+  const judged = await judgeUses(workers)
+  const verdicts = judged.reduce((total, one) => total + (one.judged || 0), 0)
+  const lefts = judged.map(one => one.left).filter(one => typeof one === 'number')
+  const unjudged = lefts.length > 0 ? Math.min.apply(null, lefts) : null
+  log(judged.length + ' of ' + workers.length + ' citation worker(s) reported, ' + verdicts
+    + ' verdict(s) stored' + (unjudged ? ', ' + unjudged + ' in-text use(s) left unjudged' : ''))
+  return {
+    resolved: resolved || null,
+    verdicts: verdicts,
+    unjudged: unjudged,
+    workers: judged.map(one => ({ judged: one.judged || 0, batches: one.batches || 0,
+      model: one.model || null })),
+  }
+}
+
+let citations = null
+// The lane runs where the ledger does, which is where the citations specialist
+// does — not where the workers do. Gating it on the worker count would have
+// `--citation-workers 0` leave the references unresolved as well as unjudged,
+// and the one arm that asks for the lookups without the verdicts would get
+// neither.
+const citationWork = specSlots.indexOf('spec-citations') >= 0
+  ? citationLane(workerSlots).then(
+    result => { citations = result; return result },
+    error => {
+      log('the citation ledger did not finish (' + error + '); the citations specialist will'
+        + ' report what is in it')
+      return null
+    },
+  )
+  : Promise.resolve(null)
 
 phase('Review')
 const reviewPrompt = slot => code =>
@@ -281,8 +429,13 @@ const specialistPrompt = slot => {
 
 const reviewStages = coreSlots.map(slot => () =>
   stage(slot, 'pra:core-reviewer', 'Review', reviewPrompt(slot), STAGE))
-const specialistStages = specSlots.map(slot => () =>
-  stage(slot, 'pra:' + slot.slice('spec-'.length), 'Review', specialistPrompt(slot), STAGE))
+// The citations specialist is the one stage that waits: its instrument is the
+// ledger, and starting it before the workers have filled one would have it
+// reading an empty table. Everything else runs while the lookups do.
+const specialistStages = specSlots.map(slot => () => (
+  slot === 'spec-citations'
+    ? citationWork.then(() => stage(slot, 'pra:citations', 'Review', specialistPrompt(slot), STAGE))
+    : stage(slot, 'pra:' + slot.slice('spec-'.length), 'Review', specialistPrompt(slot), STAGE)))
 
 // One barrier, and it is the right one: the editor needs every finding at
 // once, and nothing downstream can start per-item.
@@ -360,6 +513,7 @@ return {
   editor: edited && {
     body: edited.body, escalated_ruled: edited.escalated_ruled || 0, attempts: edited.attempts,
   },
+  citations: citations,
   findings_stored: findingsStored,
   body_findings: recorded.body_findings,
   appendix_findings: recorded.appendix_findings,

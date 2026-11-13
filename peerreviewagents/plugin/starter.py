@@ -44,12 +44,15 @@ from ..names import COMPLETE_STATUSES, FINDING_SCHEMA_VERSION
 from . import models as model_plan
 from .server import (
     ARMS,
+    CITATION_WORKERS,
     DEFAULT_ARM,
     MANUSCRIPT_DIRECTORY,
+    MAX_CITATION_WORKERS,
     RUN_DIRECTORY,
     SPECIALIST_TRACKS,
     TOOLS,
     WORKFLOW_VERSION,
+    citation_slots,
     plan_slots,
 )
 
@@ -552,7 +555,7 @@ def rerender(review, workspace=None):
         return {'error': str(exc)}
 
 
-def prompt_for(pdf, out, reviewers, arm, cutoff, tracks, models=None):
+def prompt_for(pdf, out, reviewers, arm, cutoff, tracks, models=None, citation_workers=None):
     text = (f'Use the peer-review-manuscript skill from the {PLUGIN} plugin. Review the '
             f'manuscript at {pdf} and write the run folder to {out}. Use {reviewers} core '
             f'reviewer(s) and the {arm} arm.')
@@ -562,6 +565,11 @@ def prompt_for(pdf, out, reviewers, arm, cutoff, tracks, models=None):
                 f'write the run folder to {out}, and run these tracks: {chosen}.')
     if cutoff:
         text += f' The literature cutoff is {cutoff}.'
+    if citation_workers is not None:
+        # The count is planned out here, so the session has to be told it: the
+        # server's own default would otherwise plan a different number of
+        # workers than the models were settled for.
+        text += f' Judge the citations with {citation_workers} worker(s).'
     if models:
         # The models are already in the session's environment, where the server
         # reads them. Saying so stops the session from passing model arguments
@@ -576,7 +584,7 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
            per_agent_tokens=PER_AGENT_TOKENS, per_run_tokens=PER_RUN_TOKENS,
            wall_timeout=WALL_TIMEOUT, directory=None, cwd=None,
            reviewer_models=None, specialist_model=None, editor_model=None,
-           recorder_model=None):
+           recorder_model=None, citation_workers=CITATION_WORKERS, citation_worker_model=None):
     """Run one review and return its summary.
 
     The summary is a dict, not an exit code: ``status``, ``blocked_reason``,
@@ -591,7 +599,11 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     ``reviewer_models`` is the ordered list the core reviewers are drawn from,
     reviewer *i* running ``list[(i - 1) % len(list)]``; the default makes three
     reviewers three different models. ``specialist_model``, ``editor_model``
-    and ``recorder_model`` are one model each. Anything not given here falls
+    and ``recorder_model`` are one model each. ``citation_workers`` is how many
+    workers judge the in-text citations against the sources the server
+    resolved, and ``citation_worker_model`` is the model they run — Haiku by
+    default, because a worker reads one sentence and one stored passage. They
+    exist only in an arm that runs the citations specialist. Anything not given here falls
     back to the ``PEERREVIEW_*_MODEL(S)`` variables in this process's
     environment, and only then to the defaults — one merge, in
     :func:`peerreviewagents.plugin.models.settle`, because the session this
@@ -626,10 +638,17 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     # with the server inside the session: with PEERREVIEW_REVIEWER_MODELS set
     # and no argument given, this folder was written with the defaults and the
     # server then refused it for already holding a run under other models.
-    settled = model_plan.settle(reviewer_models, specialist_model, editor_model, recorder_model)
+    settled = model_plan.settle(reviewer_models, specialist_model, editor_model, recorder_model,
+                                citation_worker_model)
     reviewer_list = list(model_plan.parse_list(settled.get('reviewers'))
                          or model_plan.DEFAULT_REVIEWER_MODELS)
-    wanted = model_plan.assign((*plan_slots(arm, reviewers, tracks), 'recorder'), **settled)
+    # The citation workers are planned here too, so a login that cannot run the
+    # worker model is refused before the probe spends anything — the same rule
+    # as every other slot. They are not part of `plan_slots`: a worker closes
+    # no stage of the review.
+    workers = citation_slots(arm, citation_workers, tracks)
+    wanted = model_plan.assign((*plan_slots(arm, reviewers, tracks), *workers, 'recorder'),
+                               **settled)
     model_plan.refuse(wanted)
     # A variable that outranks the per-spawn override makes every slot one
     # model while the run records the plan. Refused, never unset: the variable
@@ -656,7 +675,8 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
 
     accounting = Accounting(per_agent_tokens, per_run_tokens)
     started = time.monotonic()
-    prompt = prompt_for(source, root, reviewers, arm, literature_cutoff, tracks, wanted)
+    prompt = prompt_for(source, root, reviewers, arm, literature_cutoff, tracks, wanted,
+                        citation_workers=len(workers) if workers else None)
     seen, stop, code = launch(prompt, directory, started + wall_timeout,
                               accounting.on_event, cwd, chosen)
     wall = time.monotonic() - started
@@ -758,6 +778,14 @@ def build_parser(prog='peerreview review'):
     parser.add_argument('--recorder-model', default=None, metavar='MODEL',
                         help='the model the recorder runs: ingest, the ledger and the '
                              'write-up (default: ' + model_plan.DEFAULT_RECORDER_MODEL + ')')
+    parser.add_argument('--citation-workers', type=int, default=CITATION_WORKERS,
+                        metavar='N', choices=range(0, MAX_CITATION_WORKERS + 1),
+                        help='workers judging the in-text citations against the resolved '
+                             'sources, where the arm runs the citations specialist '
+                             '(default: %(default)s)')
+    parser.add_argument('--citation-worker-model', default=None, metavar='MODEL',
+                        help='the model every citation worker runs (default: '
+                             + model_plan.DEFAULT_CITATION_WORKER_MODEL + ')')
     parser.add_argument('--per-agent-tokens', type=int, default=PER_AGENT_TOKENS)
     parser.add_argument('--per-run-tokens', type=int, default=PER_RUN_TOKENS)
     parser.add_argument('--timeout', type=int, default=WALL_TIMEOUT,
@@ -798,7 +826,9 @@ def review_main(argv=None, prog='peerreview review'):
                          reviewer_models=args.reviewer_models,
                          specialist_model=args.specialist_model,
                          editor_model=args.editor_model,
-                         recorder_model=args.recorder_model)
+                         recorder_model=args.recorder_model,
+                         citation_workers=args.citation_workers,
+                         citation_worker_model=args.citation_worker_model)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2

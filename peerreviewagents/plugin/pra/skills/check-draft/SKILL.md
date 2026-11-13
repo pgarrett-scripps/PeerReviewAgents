@@ -29,6 +29,14 @@ your own does not need one — it needs the list.
 3. Wait for it, then report what it returns, and point at the per-track audits
    the run wrote: `<run folder>/review/audit_<track>.md`, one per track.
 
+With `citations` among the tracks, the run also keeps a citation ledger —
+`<run folder>/review/citations/ledger.jsonl`, one row per reference and one per
+in-text use, with each reference looked up and each use judged against the
+source before the specialist reads the table. It is the slowest track and the
+only one that needs the network. Report its counts as the run gives them, and
+keep "could not be checked" apart from "not found": a lookup that failed says
+nothing about whether a reference exists.
+
 The `draft-check` arm runs no core reviewer and no editor, so every finding
 stands on its own and all of them are in the review's body. There is no
 verdict, and you should not invent one — if the request wants a judgement on

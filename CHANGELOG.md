@@ -15,6 +15,52 @@ including 32 test modules, and nothing was left behind as a shim.
 
 ### Added
 
+- A citation ledger: the `citations` track no longer samples the reference
+  list, it checks all of it from a table the server owns.
+  `<run>/review/citations/ledger.jsonl` is append-only, one row per reference
+  and one per in-text use, last record per `row_id` winning, so a run that
+  stopped halfway resumes from it instead of being redone. Four stages fill it,
+  and the first two spend no model tokens at all. **Fill** happens inside
+  `ingest`: a row for every extracted reference, with or without a DOI, and a
+  row for every sentence that cites one. **Resolve** is the server's own
+  lookups, driven by the recorder through `resolve_citations` and bounded by
+  `limit`: a DOI goes to Crossref, a reference without one is searched by
+  bibliographic title against Crossref and then Europe PMC, and each row
+  records `exists` as yes, no or **could not check** — a lookup that failed is
+  never read as a reference that does not exist — with a per-field comparison
+  of title, first author, year and venue, any retraction notice, and the
+  abstract or open-access full text beside the URL it came from. Every response
+  is cached under `citations/lookups/` with a receipt, and the requests carry a
+  generic `User-Agent` with no address and nothing identifying whoever ran the
+  review. **Judge** is `--citation-workers` Haiku workers, `cite-1`, `cite-2`,
+  …, each claiming a batch with `claim_citation_batch` and writing one verdict
+  per use with `submit_citation_verdict` — supports, partly supports, does not
+  support, cannot tell — quoting the exact source passage it relied on, where
+  `cannot tell` is the only verdict allowed no passage. **Confirm** is the
+  citations specialist, which now reads the whole table with `citation_rows`,
+  re-checks every problem row itself, and keeps the one-query
+  missing-literature search and the cutoff rule it already had. A worker's
+  verdict is a row and never a finding: a `cite-N` slot cannot call
+  `submit_finding` at all, and only what the specialist confirmed is stored.
+  The workers are planned, claimable and modelled like every other slot and
+  required like none of them, so one that never reports leaves rows unjudged
+  instead of holding `write_review` open. `--citation-workers N` is 0 to 12,
+  default 4, `--citation-worker-model` defaults to `claude-haiku-5-5`, both are
+  `ingest` arguments too, and `PEERREVIEW_CITATION_WORKER_MODEL` does the same
+  in a session the starter launched. The ledger exists only where the citations
+  specialist does, so an arm without that track writes no `citations/` folder
+  and reports no counts — absent is not zero, and two arms are never compared
+  on numbers one of them cannot have.
+- `read_run()['citations']` and the review's own **Citations** section report
+  what the ledger says: `enabled`, the absolute `ledger` path, `counts` (one
+  per state of a reference and per verdict, plus the lookups spent and what
+  each stage did), `complete`, a one-sentence `summary`, and one `problems`
+  line per stage that did not finish. `manifest.json` names the ledger among
+  the run's files. Those lines go in `problems` and never in
+  `not_publishable_reasons`: **an unfinished ledger is reported, not published
+  over.** A finding the specialist confirmed stands whether or not the rest of
+  the table was finished, and the counts say in numbers how much of the
+  reference list this run actually checked.
 - A different model per core reviewer. Stage A ran three core reviewers on one
   model and they caught no more than one of them did — three readings of the
   same manuscript by the same reader — so the reviewers are now drawn in order
@@ -206,6 +252,14 @@ including 32 test modules, and nothing was left behind as a shim.
 
 ### Changed
 
+- The server has 27 tools rather than 23: `resolve_citations` for the recorder,
+  `citation_rows` for the citations specialist, and `claim_citation_batch` and
+  `submit_citation_verdict` for a citation worker, each on the allow list of
+  that slot alone. The per-run tool-call ceiling rises from 600 to 900 with
+  them, because a 60-reference paper has roughly 90 in-text uses and one
+  verdict is one call; a worker gets 40 calls and no external requests, since
+  everything it may see is already in the row it claimed. No reviewer's own
+  allowance changed.
 - Every reviewer brief now says to copy the `quote` out of the block text
   rather than retype it, and names the two ways it goes wrong: numbers or terms
   reordered, and a clause dropped from the middle. A quote written from memory

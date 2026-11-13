@@ -2,13 +2,15 @@
 
 Nothing here makes a model call. Everything on the page comes from files the run
 wrote about itself: ``protocol.json`` for the arm and the agent slots,
-``runtime.json`` and the usage receipts for what the run really spent, and
+``runtime.json`` and the usage receipts for what the run really spent,
+``citations/ledger.jsonl`` for what the citation checks reached, and
 ``editor-package.json`` for the review.
 """
 import textwrap
 from pathlib import Path
 
 from ..plugin import models as model_plan
+from . import citation_ledger
 from .storage import read
 from .usage import agent_rows, observed_usage, runtime_usage
 
@@ -143,6 +145,57 @@ def _agent_table(agents):
     return [('heading2', 'Agents'), ('table', list(AGENT_COLUMNS), body)]
 
 
+def _citation_blocks(run):
+    """What the citation ledger checked, in numbers, and what it did not.
+
+    The page prints the table's own counts rather than the specialist's prose
+    about them, because the one thing a reader cannot get from a findings list
+    is how much of the reference list was looked at. A run whose citations
+    specialist found nothing and a run that checked nothing both show no
+    citation findings; these counts are the difference.
+
+    An unfinished stage is printed as a line of its own and is not a failure of
+    the run: see :func:`peerreviewagents.engine.citation_ledger.problems`.
+    """
+    ledger = citation_ledger.Ledger(run)
+    if not ledger.exists():
+        return []
+    try:
+        totals = citation_ledger.counts(ledger)
+    except (OSError, UnicodeDecodeError, ValueError):
+        # Same rule as `_optional`: a half-written ledger must not cost the
+        # reader the rest of the page, including why the run stopped.
+        return [('heading2', 'Citations'),
+                ('paragraph', 'A citation ledger is in this run folder but it could not be '
+                              'read, so none of its counts are shown.')]
+    rows = [('References', totals['references']),
+            ('Resolved', totals['resolved']),
+            ('Metadata mismatch', totals['mismatched']),
+            ('Not found', totals['not_found']),
+            ('Could not be checked', totals['could_not_check']),
+            ('Never looked up', totals['unresolved']),
+            ('Retracted', totals['retracted']),
+            ('In-text uses', totals['uses']),
+            ('Uses judged', totals['uses_judged']),
+            ('Supported', totals['supported']),
+            ('Partly supported', totals['partly_supported']),
+            ('Not supported', totals['not_supported']),
+            ('Cannot tell', totals['cannot_tell']),
+            ('Uses never judged', totals['uses_unjudged']),
+            ('Lookups made', totals['lookups']),
+            ('Ledger', str(Path(run) / citation_ledger.LEDGER_PATH))]
+    blocks = [('heading2', 'Citations'),
+              ('paragraph', citation_ledger.summary_line(totals)),
+              ('fields', [(key, value) for key, value in rows])]
+    unfinished = citation_ledger.problems(totals)
+    if unfinished:
+        blocks.append(('labeled', 'Citation checks unfinished',
+                       'the findings below still stand; these are the parts of the reference '
+                       'list this run did not finish checking'))
+        blocks.append(('bullets', unfinished))
+    return blocks
+
+
 def _location(finding):
     if finding.get('placement') not in (None, 'anchored'):
         return f"unplaced ({finding['placement']})"
@@ -254,6 +307,7 @@ def report_blocks(run, workspace=None):
     if missing:
         blocks.append(('labeled', 'Models unverified',
                        model_plan.unverified_line(missing).capitalize() + '.'))
+    blocks += _citation_blocks(run)
     final = _final_review(run)
     if final or reviewers:
         blocks.append(('paragraph', NOTICE))

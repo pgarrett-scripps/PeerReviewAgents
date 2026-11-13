@@ -15,10 +15,54 @@ HOSTS = {'api.crossref.org', 'api.datacite.org', 'www.ebi.ac.uk', 'rest.uniprot.
          'api.gbif.org', 'string-db.org'}
 HOSTS.update({'rest.ensembl.org', 'reactome.org', 'cmr.earthdata.nasa.gov', 'api.worldbank.org'})
 
+#: How this software names itself to a public API. Generic on purpose: a request
+#: a reviewer's tool makes says what the software is and nothing about whose
+#: manuscript it is, which rules out the mailto address these APIs invite.
+USER_AGENT = 'PRA/0.2 (bounded scientific record verification)'
+#: An HTTP code as the reason a lookup did not answer. None of these mean a
+#: cited work does not exist; a caller that cannot tell must say it cannot tell.
+HTTP_STATUS = {404: 'not_found', 401: 'auth_required', 403: 'access_denied',
+               429: 'rate_limited'}
+#: The largest response any public-source lookup will read.
+RESPONSE_LIMIT = 2_000_000
+
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
+
+
+def check_url(url):
+    """Refuse anything but plain https to an allowlisted public API host."""
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != 'https' or parsed.hostname not in HOSTS or parsed.username or parsed.port:
+        raise ValueError('Source endpoint is outside the public provider allowlist')
+    return url
+
+
+def retrieve(url, opener=None, headers=None, timeout=20, limit=RESPONSE_LIMIT):
+    """One allowlisted HTTPS GET as a status and, when it worked, raw bytes.
+
+    The transport only: no cache, no budget, no parsing. Shared by the agents'
+    rationed :class:`SourceClient` and by the citation ledger, which resolves
+    every reference with its own allowance — so the allowlist, the redirect
+    policy and the client name stay in one place, and bytes that are not JSON
+    (an open-access full text, say) can be read by a caller that wants them.
+    """
+    check_url(url)
+    call = opener or urllib.request.build_opener(NoRedirect()).open
+    req = urllib.request.Request(url, headers={'User-Agent': USER_AGENT, **(headers or {})})
+    try:
+        with call(req, timeout=timeout) as response:
+            raw = response.read(limit + 1)
+    except urllib.error.HTTPError as exc:
+        return {'status': HTTP_STATUS.get(exc.code, 'http_error'), 'source_url': url,
+                'http_status': exc.code}
+    except (OSError, ValueError) as exc:
+        return {'status': 'unavailable', 'source_url': url, 'error_type': type(exc).__name__}
+    if len(raw) > limit:
+        return {'status': 'response_too_large', 'source_url': url}
+    return {'status': 'ok', 'source_url': url, 'raw': raw}
 
 
 class SourceClient:
@@ -72,9 +116,7 @@ class SourceClient:
         return stored
 
     def fetch(self, url):
-        parsed = urllib.parse.urlsplit(url)
-        if parsed.scheme != 'https' or parsed.hostname not in HOSTS or parsed.username or parsed.port:
-            raise ValueError('Source endpoint is outside the public provider allowlist')
+        check_url(url)
         key = digest(url)
         meta, raw_path = self.cache / (key + '.json'), self.cache / (key + '.raw')
         with (self.state / 'requests.lock').open('a', encoding='utf-8') as lock:
@@ -95,22 +137,20 @@ class SourceClient:
             budget['requests'].append(receipt)
             write(budget_path, budget)
             try:
-                req = urllib.request.Request(url, headers={'User-Agent': 'PRA/0.2 (bounded scientific record verification)', 'Accept': 'application/json'})
-                with self.opener(req, timeout=20) as response:
-                    raw = response.read(2_000_001)
-                if len(raw) > 2_000_000:
-                    receipt['status'] = 'response_too_large'
-                    return {'status': receipt['status'], 'source_url': url}
+                answer = retrieve(url, opener=self.opener,
+                                  headers={'Accept': 'application/json'})
+                if answer['status'] != 'ok':
+                    receipt['status'] = answer['status']
+                    if 'http_status' in answer:
+                        receipt['http_status'] = answer['http_status']
+                    return {name: value for name, value in answer.items() if name != 'raw'}
+                raw = answer['raw']
                 data = json.loads(raw)
                 record = {'status': 'ok', 'source_url': url, 'retrieved_at': now, 'raw_sha256': digest(raw)}
                 raw_path.write_bytes(raw)
                 write(meta, record)
                 receipt.update(status='ok', raw_sha256=record['raw_sha256'])
                 return {**record, 'data': data, 'cache_hit': False}
-            except urllib.error.HTTPError as exc:
-                receipt['status'] = {404: 'not_found', 401: 'auth_required', 403: 'access_denied', 429: 'rate_limited'}.get(exc.code, 'http_error')
-                receipt['http_status'] = exc.code
-                return {'status': receipt['status'], 'source_url': url, 'http_status': exc.code}
             except (OSError, ValueError) as exc:
                 receipt['status'] = 'unavailable'
                 return {'status': 'unavailable', 'source_url': url, 'error_type': type(exc).__name__}
