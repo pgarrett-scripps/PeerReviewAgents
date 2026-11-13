@@ -125,7 +125,15 @@ def test_the_unreadable_ledger_line_names_the_file_from_the_run_folder(tmp_path,
 
 
 def test_a_real_unreadable_ledger_reads_the_same_way(tmp_path):
-    """The same, through a file the process genuinely may not open."""
+    """The same, through a file the process genuinely may not open.
+
+    Only where the mode bits mean that. ``os.geteuid`` is POSIX-only, and on
+    Windows ``chmod`` toggles the read-only attribute and nothing else, so the
+    file stays readable and there is nothing here to refuse. The monkeypatched
+    twin below pins the promise on every platform.
+    """
+    if not hasattr(os, 'geteuid'):
+        pytest.skip('chmod does not make a file unreadable on this platform')
     if os.geteuid() == 0:
         pytest.skip('root may read a file with no permission bits, so there is nothing to refuse')
     root, review = run_folder(tmp_path, [reference(), use()])
@@ -275,7 +283,10 @@ def test_the_public_reader_refuses_a_symlinked_ledger_and_degrades_on_damage(tmp
     elsewhere = Path(tmp_path) / 'somebody-elses-ledger.jsonl'
     elsewhere.write_text(rows, encoding='utf-8')
     path.unlink()
-    path.symlink_to(elsewhere)
+    try:
+        path.symlink_to(elsewhere)
+    except OSError as exc:  # Windows without the privilege. The guard is still there.
+        pytest.skip(f'this machine cannot create a symlink to test against: {exc}')
     with pytest.raises(ValueError) as refused:
         read_citation_ledger(root)
     assert 'citations/ledger.jsonl' in str(refused.value), \
