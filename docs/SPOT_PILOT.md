@@ -284,9 +284,11 @@ smaller of the two.
    were reported as "could not be checked", which reads as the indexes having
    been asked and failed. Fixed since: the driver hands the session its own
    deadline, and the resolve stage waits a retry gap out when the gap ends
-   inside the run and otherwise comes straight back and records which rows
-   were left and why — so a 90-minute run now finishes the lookups this run
-   could not, and a 7-minute run says that is what happened instead of
+   inside the run and inside the 15 minutes one tool call may spend waiting —
+   in a worker thread, so the rest of the session keeps answering and the run's
+   progress file keeps moving — and otherwise comes straight back and records
+   which rows were left and why. A 90-minute run now finishes the lookups this
+   run could not, and a 7-minute run says that is what happened instead of
    implying the indexes answered.
 
 ## A finding about the benchmark, not the engine

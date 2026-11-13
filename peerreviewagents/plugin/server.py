@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import base64
 import datetime
+import functools
 import json
 import math
 import os
@@ -31,6 +32,9 @@ import re
 import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
+
+import anyio.from_thread
+import anyio.to_thread
 
 from ..engine import citation_ledger
 from ..engine.annotations import normalize_review, quarantine_findings
@@ -1456,7 +1460,7 @@ def _ledger_call(token, name):
     return agent, None
 
 
-def resolve_citations(recorder_key: str, limit: int = 15) -> dict:
+async def resolve_citations(recorder_key: str, limit: int = 15) -> dict:
     """Recorder only: look the next references up. Stage 2, and no model runs.
 
     The server resolves every reference the paper lists — the printed DOI at
@@ -1490,20 +1494,49 @@ def resolve_citations(recorder_key: str, limit: int = 15) -> dict:
                          'citations specialist.')
     if type(limit) is not int or limit < 0:
         return rejection('Resolve a whole number of references, or 0 for every one left.')
+    # This is the one tool in this server that is a coroutine, and the wait is
+    # why. FastMCP calls a sync tool inline on the event loop (mcp 1.29.1,
+    # `fastmcp/utilities/func_metadata.py`: `return await fn(...)` if the tool
+    # is async, `return fn(...)` if it is not), and the lowlevel server starts
+    # every request as a task on that one loop. A `time.sleep` inside a sync
+    # tool therefore stops the whole session for the length of the gap — every
+    # reviewer, every citation worker, the editor — and `stop` below could
+    # never become true, because the `mark_blocked` call that would flip it
+    # cannot run either. So the pass goes to a worker thread and the loop stays
+    # free. Everything the worker touches is the ledger on disk, which is
+    # locked; `run` itself is only ever read from it (`run.status`), and the
+    # heartbeat that writes `progress.json` is handed back to this loop.
+    def heartbeat():
+        # Called from the worker thread, between slices of a wait and after
+        # each pass. `run.write_progress` reads the run's dicts and the ledger,
+        # so it runs here, on the loop, not in the worker. It is never called
+        # while the ledger lock is held — that would be this thread waiting on
+        # the loop while the loop waits on this thread.
+        anyio.from_thread.run_sync(run.write_progress)
+
     # The run's own wall clock decides whether this call waits a retry gap out
     # or reports it. `stop` is asked between slices of that wait, so a run that
     # is marked blocked or written up underneath it stops waiting at once
     # instead of holding this call open for the rest of the gap.
     patience = citation_ledger.Patience(deadline=run_deadline(),
-                                        stop=lambda: run.status != 'running')
+                                        stop=lambda: run.status != 'running',
+                                        tick=heartbeat)
+    lookups = run.citation_lookups()
     try:
-        progress = citation_ledger.resolve(run.citations, run.citation_lookups(), limit=limit,
-                                           patience=patience)
+        progress = await anyio.to_thread.run_sync(
+            functools.partial(citation_ledger.resolve, run.citations, lookups, limit=limit,
+                              patience=patience))
     except (OSError, ValueError) as exc:
         return rejection('The citation ledger could not be resolved: ' + str(exc))
     run.write_progress()
     remaining, wait = progress['remaining'], progress.get('retry_after') or 0
-    if remaining and wait:
+    if remaining and wait and progress.get('budget_spent'):
+        nxt = (str(remaining) + ' reference(s) are owed another lookup and are still waiting out '
+               'the retry wait: ' + (progress.get('unchecked_reason')
+                                     or 'the earliest is due in ' + str(wait) + ' seconds')
+               + '. This call waited as long as one call may. Call again to take that wait back '
+                 'up if the run has the time, and otherwise report that remaining as it is.')
+    elif remaining and wait:
         nxt = (str(remaining) + ' reference(s) are owed another lookup and are waiting out the '
                'retry wait: ' + (progress.get('unchecked_reason')
                                  or 'the earliest is due in ' + str(wait) + ' seconds')

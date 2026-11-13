@@ -54,6 +54,7 @@ name, with no email address and nothing about whose run this is.
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import difflib
 import json
@@ -74,6 +75,13 @@ LEDGER_DIRECTORY = 'citations'
 LEDGER_FILE = 'ledger.jsonl'
 STATE_FILE = 'stages.json'
 CACHE_DIRECTORY = 'lookups'
+#: The sentinel files the table and the stage record are locked on. They are
+#: opened and never written: the rows file is appended to and read back, and
+#: the stage record is replaced whole, so neither can be the thing a reader and
+#: a writer agree on. The resolve stage runs in a worker thread now, so "one
+#: writer, one process" is no longer "one caller at a time" by itself.
+ROWS_LOCK_FILE = 'rows.lock'
+STATE_LOCK_FILE = 'stages.lock'
 #: The relative path a consumer is given, so it never has to join these itself.
 LEDGER_PATH = LEDGER_DIRECTORY + '/' + LEDGER_FILE
 
@@ -128,6 +136,19 @@ RESOLVE_MARGIN_SECONDS = 45
 #: closer than it looked, or an interrupt ends it in about a second instead of
 #: in five minutes.
 RESOLVE_WAIT_SLICE = 1.0
+#: How often the stage says it is still there while it waits. The driver reads
+#: the run folder to decide whether a review is still happening, and a stage
+#: that waits two gaps out in silence is over ten minutes of a folder that has
+#: not changed — which is the stillness the driver ends a run on. So the wait
+#: ticks, and the caller's tick is what moves the folder.
+RESOLVE_TICK_SECONDS = 30
+#: The most of one tool call that may go on waiting. The run's deadline bounds
+#: the *run*, not the call, and rows whose attempts fall due one after another
+#: can hand the stage gap after gap. The client has its own patience — a stdio
+#: MCP server gets 30 minutes of silence per call in Claude Code 2.1.325, and
+#: a progress notification does not extend the per-call ceiling — so the call
+#: stops waiting well inside that and reports what is left instead.
+RESOLVE_WAIT_BUDGET_SECONDS = 900
 #: The shortest passage a worker may quote as the source's own words. Shorter
 #: than one clause is not evidence that a source says anything: ``ABSTRACT``,
 #: ``the`` and a single number all appear in almost any source text, and all
@@ -746,6 +767,14 @@ class Ledger:
     half-written line. A line that is not readable JSON is skipped and counted,
     the same way the run readers degrade: one corrupt line must not hide the
     other fifty.
+
+    The *read* is locked too, against the same sentinel. One process was once
+    enough on its own, because every tool call ran one at a time on the
+    server's event loop; the resolve stage now runs in a worker thread so that
+    a retry wait does not hold that loop, and a worker's claim landing while
+    the stage replays the table would otherwise be a torn line — which this
+    class counts as unreadable and drops. A dropped claim is two workers handed
+    the same citation, which is the bug :meth:`append` already exists to avoid.
     """
 
     def __init__(self, review):
@@ -753,9 +782,31 @@ class Ledger:
         self.path = self.directory / LEDGER_FILE
         self.cache = self.directory / CACHE_DIRECTORY
         self.state_path = self.directory / STATE_FILE
+        self.rows_lock = self.directory / ROWS_LOCK_FILE
+        self.state_lock = self.directory / STATE_LOCK_FILE
 
     def exists(self):
         return self.path.is_file()
+
+    @contextlib.contextmanager
+    def _locked(self, sentinel):
+        """Hold the exclusive lock on one of this ledger's sentinel files.
+
+        The lock is on a sentinel and not on the file it guards, because
+        neither file keeps its identity: the rows file is appended to and read
+        back through separate handles, and the stage record is replaced whole,
+        so a lock taken on it is a lock on an inode the next writer has already
+        swapped out.
+
+        Never nested. The lock is advisory and per open file, so taking it
+        twice in one thread through two handles is a deadlock rather than a
+        reentrant acquire: every method here takes it, does its one file
+        operation, and lets it go.
+        """
+        self.directory.mkdir(parents=True, exist_ok=True)
+        with sentinel.open('a', encoding='utf-8') as lock:
+            exclusive_lock(lock)
+            yield
 
     def append(self, row):
         """One row on the end of the file, after the file is sound to append to.
@@ -772,9 +823,8 @@ class Ledger:
         issued itself, and the last byte of a UTF-8 file is not a character
         boundary to seek to.
         """
-        self.directory.mkdir(parents=True, exist_ok=True)
         line = (json.dumps(row, ensure_ascii=False) + '\n').encode('utf-8')
-        with self.path.open('a+b') as stream:
+        with self._locked(self.rows_lock), self.path.open('a+b') as stream:
             exclusive_lock(stream)
             stream.seek(0, 2)
             if stream.tell():
@@ -818,7 +868,7 @@ class Ledger:
         rows, broken = {}, 0
         if not self.path.is_file():
             return rows, broken
-        with self.path.open('rb') as stream:
+        with self._locked(self.rows_lock), self.path.open('rb') as stream:
             for raw in stream:
                 try:
                     line = raw.decode('utf-8').strip()
@@ -852,10 +902,20 @@ class Ledger:
         return stored if isinstance(stored, dict) else {}
 
     def record_stage(self, stage, **fields):
-        stored = self.state()
-        stored[stage] = {**stored.get(stage, {}), **fields, 'at': now()}
-        self.directory.mkdir(parents=True, exist_ok=True)
-        write(self.state_path, stored)
+        """Merge one stage's record into the stage file.
+
+        Read, merge, write. The lock is what makes those three one step: the
+        fill, resolve and judge stages each own a key in the same file, and the
+        resolve stage runs in a worker thread now, so a judge verdict landing
+        between this read and this write would be a stage record written on top
+        of a stage record. :meth:`state` does not lock — a reader that sees the
+        file as it was a moment ago is reading the thing a reader reads — so it
+        is safe to call under the lock here.
+        """
+        with self._locked(self.state_lock):
+            stored = self.state()
+            stored[stage] = {**stored.get(stage, {}), **fields, 'at': now()}
+            write(self.state_path, stored)
         return stored
 
 
@@ -2081,17 +2141,40 @@ class Patience:
     idea of one. Without it nothing here waits: a stage that cannot tell how
     much run is left must not gamble the rest of it on a sleep.
 
-    ``clock`` and ``sleep`` are injected so a test can run a five-minute wait
-    in no time, and ``stop`` is asked between slices so that a wait ends when
-    the run does rather than when the gap does.
+    ``clock`` and ``sleep`` are resolved in ``__init__`` rather than captured as
+    default arguments, so that a test which replaces this module's ``time`` runs
+    a five-minute wait in no time. ``stop`` is asked between slices so that a
+    wait ends when the run does rather than when the gap does.
+
+    Two bounds, not one. The deadline bounds the *run*; ``budget`` bounds this
+    *call*. They are not the same number, because rows go unanswered at
+    different moments: with the gaps staggered down a long reference list, one
+    tool call can be handed gap after gap and hold itself open for most of a
+    ninety-minute run, and the client that called the tool has its own patience
+    — a stdio MCP server in Claude Code 2.1.325 gets 30 minutes of silence per
+    call, and nothing this process writes to the run folder extends it. A call
+    that comes back after its budget leaves the rows owed, and the next call
+    takes them up with a fresh budget.
+
+    ``tick`` is called while the stage waits, at most every ``tick_every``
+    seconds, and it is how the driver can tell the difference between a stage
+    sleeping out a retry gap and a session that has died. The driver watches the
+    run folder for movement, and two gaps is over ten minutes of a folder that
+    does not change.
     """
 
-    def __init__(self, deadline=None, margin=RESOLVE_MARGIN_SECONDS, clock=time.time,
-                 sleep=time.sleep, stop=None, slice_seconds=RESOLVE_WAIT_SLICE):
+    def __init__(self, deadline=None, margin=RESOLVE_MARGIN_SECONDS, clock=None,
+                 sleep=None, stop=None, slice_seconds=RESOLVE_WAIT_SLICE, tick=None,
+                 tick_every=RESOLVE_TICK_SECONDS, budget=RESOLVE_WAIT_BUDGET_SECONDS):
         self.deadline = float(deadline) if deadline else None
         self.margin = max(0.0, float(margin))
-        self.clock, self.sleep, self.stop = clock, sleep, stop
+        self.clock = clock or time.time
+        self.sleep = sleep or time.sleep
+        self.stop = stop
         self.slice_seconds = max(0.01, float(slice_seconds))
+        self.budget = max(0.0, float(budget))
+        self.tick, self.tick_every = tick, max(0.01, float(tick_every))
+        self._ticked = None
         #: Seconds actually slept, so the stage record can say it waited.
         self.waited = 0.0
         #: Whether a wait was abandoned rather than finished.
@@ -2103,10 +2186,52 @@ class Patience:
             return None
         return self.deadline - self.clock() - self.margin
 
-    def fits(self, due):
-        """Whether a gap of ``due`` seconds ends inside the run, margin included."""
+    def spare(self):
+        """Seconds this call may still spend waiting, whatever the run allows."""
+        return self.budget - self.waited
+
+    def out_of_budget(self, due):
+        """Whether a gap the *run* had room for is one this call has no room left for.
+
+        It is the one case where calling the tool again picks the wait back up
+        instead of doing nothing, so the caller is told which case it is. A gap
+        longer than the whole budget is not this case: nobody waits that one
+        out, and the answer there is a later call, not another one now.
+        """
         left = self.left()
-        return left is not None and 0 < due <= left
+        if not due or left is None or self.interrupted:
+            return False
+        return due <= left and due > self.spare() and self.waited > 0
+
+    def fits(self, due):
+        """Whether a gap of ``due`` seconds ends inside the run and this call."""
+        left = self.left()
+        if left is None or due <= 0:
+            return False
+        return due <= left and due <= self.spare()
+
+    def touch(self, force=False):
+        """Say the stage is alive, at most once every ``tick_every`` seconds.
+
+        ``force`` is for the end of a pass, which is real progress and should be
+        recorded whenever it happens. The in-between calls are a heartbeat and
+        are rate-limited, because what reads them is a file the driver polls.
+
+        A heartbeat that raises is not allowed to end the stage — it is the
+        least important thing happening here — and it is not tried again.
+        """
+        if self.tick is None:
+            return False
+        at = self.clock()
+        if not force and self._ticked is not None and at - self._ticked < self.tick_every:
+            return False
+        self._ticked = at
+        try:
+            self.tick()
+        except Exception:  # noqa: BLE001 - a missed heartbeat is not a failed stage
+            self.tick = None
+            return False
+        return True
 
     def wait(self, due):
         """Sleep ``due`` seconds out in slices. ``True`` only if the whole gap passed."""
@@ -2121,10 +2246,11 @@ class Patience:
                 self.interrupted = True
                 return False
             if not self.fits(remaining):
-                # The deadline is nearer than it was when the wait began: a run
-                # that is about to be ended should spend what is left of it
-                # recording what the table holds.
+                # The deadline is nearer than it was when the wait began, or this
+                # call has spent its budget: a run that is about to be ended
+                # should spend what is left of it recording what the table holds.
                 return False
+            self.touch()
             nap = min(self.slice_seconds, remaining)
             before = self.clock()
             self.sleep(nap)
@@ -2145,6 +2271,18 @@ class Patience:
         if left is None:
             return (f'the next attempt was not due for another {int(due)} second(s) and the '
                     'stage was not told how much of the run was left, so it did not wait')
+        if self.out_of_budget(due):
+            return (f'the next attempt was not due for another {int(due)} second(s), which the '
+                    f'run had room for, but this call had already spent {int(self.waited)} of '
+                    f'the {int(self.budget)} second(s) one call may wait — call again and it '
+                    'will be taken up')
+        if due > self.spare() and due <= left:
+            # A gap longer than any one call may wait for. Nobody waits this one
+            # out; a call made after it has passed finds the rows due and takes
+            # them, which is a true thing to say and a different instruction.
+            return (f'the next attempt was not due for another {int(due)} second(s), which the '
+                    f'run had room for, but one call may spend only {int(self.budget)} '
+                    'second(s) waiting — a call made once that gap has passed will take them up')
         return (f'the next attempt was not due for another {int(due)} second(s) and only '
                 f'{max(0, int(left))} second(s) of the run were left to wait in')
 
@@ -2216,6 +2354,10 @@ def resolve(ledger, lookups, limit=0, retry=True, wait=RETRY_WAIT_SECONDS, patie
             resolution['attempts'] = attempts
             ledger.append({**row, 'stage': 'resolve', 'resolution': resolution})
         resolved_now += len(taken)
+        # A finished pass is movement, and the driver can only see movement it
+        # is told about: it polls the run folder, and a stage that comes back
+        # after two silent retry gaps looks exactly like a session that died.
+        patience.touch(force=True)
         # Read the table again and ask what is still owed, rather than subtracting
         # what this call took from what it found. A row this call attempted and
         # could not check is owed another attempt, and it is owed whether or not
@@ -2248,6 +2390,10 @@ def resolve(ledger, lookups, limit=0, retry=True, wait=RETRY_WAIT_SECONDS, patie
     return {'resolved_now': resolved_now, 'remaining': remaining,
             'retry_after': retry_after, 'retry_wait': wait,
             'waited': round(patience.waited, 1), 'unchecked_reason': unchecked_reason,
+            # A call that stopped because *it* had waited long enough is the one
+            # case where calling again picks the wait back up instead of doing
+            # nothing, and the caller is told which case it is.
+            'budget_spent': bool(remaining and patience.out_of_budget(retry_after)),
             'lookups_now': lookups.count() - before, 'lookups_total': lookups.count(),
             'counts': totals}
 

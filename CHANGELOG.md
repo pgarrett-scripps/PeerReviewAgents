@@ -42,7 +42,14 @@ including 32 test modules, and nothing was left behind as a shim.
   rather than written off: it stays counted in `resolve_citations`'s
   `remaining`, and `retry_after` says how many seconds until the earliest owed
   row is due, because the attempts are five minutes apart and a host that just
-  rate-limited the run has not recovered in the same turn. Each row also
+  rate-limited the run has not recovered in the same turn. A gap that ends
+  inside the run's own deadline — which the driver now hands the session — is
+  waited out by `resolve_citations` itself rather than handed back, on a worker
+  thread so every other tool call in the session is still answered and the
+  run's progress file keeps moving while it waits, interruptibly, and for no
+  more than fifteen minutes in any one call; a gap that does not fit comes
+  straight back, and the stage record says which rows were left and why rather
+  than letting the lane report them as asked and failed. Each row also
   carries a per-field comparison of title, first author, year and venue,
   any retraction or correction notice — matched on the record's own type and
   update-pointing fields as well as on a leading "Retraction of", "Correction
