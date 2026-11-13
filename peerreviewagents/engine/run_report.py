@@ -172,6 +172,12 @@ def _citation_blocks(run):
             ('Resolved', totals['resolved']),
             ('Metadata mismatch', totals['mismatched']),
             ('Not found', totals['not_found']),
+            # Beside the others, because a reference two indexes do not list is
+            # a state of its own: much of the literature is in neither, so it
+            # is not the same answer as an unregistered DOI, and leaving it off
+            # the page let a reader add the printed numbers, miss the total and
+            # read the difference as resolved.
+            ('Not located', totals['not_located']),
             ('Could not be checked', totals['could_not_check']),
             ('Never looked up', totals['unresolved']),
             ('Retracted', totals['retracted']),
@@ -190,8 +196,8 @@ def _citation_blocks(run):
     unfinished = citation_ledger.problems(totals)
     if unfinished:
         blocks.append(('labeled', 'Citation checks unfinished',
-                       'the findings below still stand; these are the parts of the reference '
-                       'list this run did not finish checking'))
+                       'the findings below still stand, and these are the parts of the '
+                       'reference list this run did not finish checking'))
         blocks.append(('bullets', unfinished))
     return blocks
 

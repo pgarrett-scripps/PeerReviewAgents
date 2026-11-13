@@ -605,7 +605,9 @@ def test_a_row_with_no_source_text_can_only_be_cannot_tell(tmp_path):
     """Nothing to read is not a judgement, and the ledger will not record one."""
     ledger = judging_ledger(tmp_path, abstract=None)
     row = cl.batch(ledger, 'cite-1')[0]
-    assert row['source_text'] == '' and row['source_kind'] == 'none'
+    # `None`, not the string 'none': a worker shown nothing has no source kind,
+    # and a page that printed the string had a row claiming a kind called none.
+    assert row['source_text'] == '' and row['source_kind'] is None
     for answer in ('supports', 'partly supports', 'does not support'):
         stored, why = cl.verdict(ledger, 'cite-1', row['row_id'], answer, 'anything at all')
         assert stored is None and 'cannot tell' in why

@@ -1360,7 +1360,7 @@ def submit_editor(agent_token: str, summary: str, decisions: list,
     if missing:
         problems.append(f'{len(missing)} finding(s) have no decision: ' + ', '.join(missing[:10]))
     if len(body) > BODY_LIMIT:
-        problems.append(f'the body holds at most about {BODY_LIMIT} findings; you placed '
+        problems.append(f'the body holds at most about {BODY_LIMIT} findings and you placed '
                         f'{len(body)}')
     escalated = [uid for uid, f in by_uid.items() if f['escalate']]
     rulings = {str(r.get('finding_uid', '')): r for r in (escalation_rulings or [])}

@@ -27,6 +27,10 @@ Reading a run
     do first — ``(run folder, review folder)`` from either spelling — for an
     app that lists folders before reading them, and
     :class:`NotARunFolder` is what both raise for a folder that is not a run.
+    :func:`read_citation_ledger` is the citation table itself rather than its
+    counts — one row per reference and per in-text use, the last row written
+    for each, with the fetched abstract and full text left out unless asked
+    for — for a consumer that shows which reference resolved to which record.
 
 Checking an installation
     :func:`plugin_directory` is the ``pra`` plugin that ships inside this
@@ -90,7 +94,7 @@ if TYPE_CHECKING:  # Static tooling sees the real objects, not the fallback.
     from .plugin.starter import claude_version as claude_code_version
     from .plugin.starter import plugin_dir as plugin_directory
     from .plugin.starter import review, review_main
-    from .runs import NotARunFolder, read_run
+    from .runs import NotARunFolder, read_citation_ledger, read_run
     from .runs import locate as locate_run
 
 __all__ = [
@@ -98,6 +102,7 @@ __all__ = [
     "review_main",
     "report_main",
     "read_run",
+    "read_citation_ledger",
     "locate_run",
     "NotARunFolder",
     "import_paper",
@@ -121,6 +126,9 @@ _LAZY = {
     "review_main": (".plugin.starter", "review_main"),
     "report_main": (".cli.main", "report_main"),
     "read_run": (".runs", "read_run"),
+    # The ledger rows themselves, for the consumers that were re-implementing
+    # "the last row for a row_id is the row" against the engine module.
+    "read_citation_ledger": (".runs", "read_citation_ledger"),
     # The run-folder resolution and the error both of those raise, so an app
     # that lists folders never imports `runs` for them.
     "locate_run": (".runs", "locate"),

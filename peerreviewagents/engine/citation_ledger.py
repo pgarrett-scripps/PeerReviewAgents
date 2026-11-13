@@ -2072,7 +2072,10 @@ def source_window(reference_row):
     text = '\n\n'.join(parts)[:SOURCE_TEXT_LIMIT]
     return {
         'source_text': text,
-        'source_kind': ' and '.join(kinds) or 'none',
+        # `None` rather than the string "none": a row with nothing to read has
+        # no source kind, and a consumer filtering on the field read the word
+        # as a kind of source. It is what a `cannot tell` verdict stores.
+        'source_kind': ' and '.join(kinds) or None,
         'source_url': resolution.get('full_text_url') or resolution.get(
             'abstract_url') or resolution.get('source_url'),
         'truncated': bool(full_text) and len(full_text) > max(0, room - 20),
@@ -2315,6 +2318,20 @@ def use_view(row):
     }
 
 
+def joined(reasons):
+    """Several reasons as one sentence, with no semicolon in it.
+
+    These strings are printed verbatim on other people's pages, and two of the
+    applications that print them forbid a semicolon in authored text, so the
+    list is joined the way a sentence joins one: ``a``, ``a and b``, ``a, b and
+    c``.
+    """
+    reasons = [reason for reason in reasons if reason]
+    if len(reasons) < 2:
+        return reasons[0] if reasons else ''
+    return ', '.join(reasons[:-1]) + ' and ' + reasons[-1]
+
+
 def reference_problem(row):
     """Why one reference row needs a second look, or ``''`` if it does not.
 
@@ -2352,7 +2369,7 @@ def reference_problem(row):
         reasons.append('a near-title work was found but nothing corroborates it as this one')
     if resolution.get('error'):
         reasons.append('looking it up failed inside the ledger: ' + str(resolution['error']))
-    return '; '.join(reasons)
+    return joined(reasons)
 
 
 def use_problem(row):
@@ -2381,7 +2398,10 @@ def supported_rows(ledger, limit=60):
            if row.get('kind') == 'use' and row.get('verdict') == 'supports']
     return {'uses': out[:limit], 'omitted': max(0, len(out) - limit),
             'untrusted_text': UNTRUSTED_NOTE,
-            'instruction': ('A verdict here is one Haiku worker reading one abstract. Re-read '
+            # "citation worker", not the model family it usually runs: the
+            # worker model is an option, and a run that set it to something
+            # else was told its table had been judged by a model nobody ran.
+            'instruction': ('A verdict here is one citation worker reading one abstract. Re-read '
                             'the rows behind the manuscript\'s central claims yourself and say '
                             'in your report how many of them you checked.')}
 
@@ -2522,6 +2542,14 @@ def problems(totals):
     confirmed are still findings, and the counts say plainly how much of the
     reference list was checked. What it must not do is read as a clean bill of
     health, which is what silence would have done.
+
+    Two rules hold for every line here, because consumers print them verbatim
+    on their own pages: no line contains a semicolon, and no line contains the
+    phrase "do not exist" unless it is about a reference the DOI resolver has
+    no handle for. A line about rows that could not be checked, or that two
+    indexes do not list, said nothing about whether the work exists, and
+    reusing the phrase to say so was read by a page as the table making that
+    claim.
     """
     lines = []
     if not totals:
@@ -2552,11 +2580,11 @@ def problems(totals):
                      'looked up, so the citations were not fully checked')
     if totals.get('could_not_check'):
         lines.append(f"{totals['could_not_check']} reference(s) could not be checked because the "
-                     'lookups did not answer; this says nothing about whether they exist')
+                     'lookups did not answer, which says nothing about whether they exist')
     if totals.get('not_located'):
         lines.append(f"{totals['not_located']} reference(s) are listed in neither Crossref nor "
-                     'Europe PMC; much of the literature is in neither, so this is not evidence '
-                     'that they do not exist')
+                     'Europe PMC, and much of the literature is in neither, so this is weak '
+                     'evidence about the references themselves')
     if totals.get('errors'):
         lines.append(f"{totals['errors']} reference(s) failed inside the ledger while being "
                      'looked up and were left unchecked')
@@ -2569,6 +2597,23 @@ def problems(totals):
     return lines
 
 
+def _state_clause(totals):
+    """The reference states, as a clause, with every state the counts hold.
+
+    ``unresolved`` is in it because it is a state of its own: a reference the
+    run never looked up is not one it checked and found nothing for. Leaving it
+    out of the sentence while counting it in ``counts`` let a reader add the
+    four printed numbers, miss the total, and read the difference as resolved.
+    """
+    return (f"{totals['resolved']} resolved, "
+            f"{totals['mismatched']} with a metadata mismatch, "
+            f"{totals['not_found']} with an unregistered DOI, "
+            f"{totals.get('not_located', 0)} not located in either index, "
+            f"{totals['could_not_check']} could not be checked, "
+            f"{totals.get('unresolved', 0)} never looked up, "
+            f"{totals['retracted']} retracted")
+
+
 def summary_line(totals):
     """One sentence a brief or a report can print about the ledger's state."""
     if not totals or not totals.get('references'):
@@ -2579,11 +2624,7 @@ def summary_line(totals):
             return (f"No citation was checked: the paper has {totals['uses']} in-text citation "
                     'marker(s) and no reference list this version could read.')
         return 'No citation ledger was filled for this run.'
-    return (f"{totals['references']} references: {totals['resolved']} resolved, "
-            f"{totals['mismatched']} with a metadata mismatch, "
-            f"{totals['not_found']} with an unregistered DOI, "
-            f"{totals.get('not_located', 0)} not located in either index, "
-            f"{totals['could_not_check']} could not be checked, {totals['retracted']} retracted. "
+    return (f"{totals['references']} references: {_state_clause(totals)}. "
             f"{totals['uses']} in-text uses, {totals['uses_judged']} judged "
             f"({totals['supported']} supported, {totals['partly_supported']} partly, "
             f"{totals['not_supported']} not supported, {totals['cannot_tell']} cannot tell).")

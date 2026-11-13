@@ -146,6 +146,7 @@ this list and say so, because those modules change without notice.
 from peerreviewagents import (
     review, review_main, report_main,      # run a review; the two commands
     read_run, write_reports,               # read and re-render a run folder
+    read_citation_ledger,                  # the citation table's own rows
     locate_run, NotARunFolder,             # resolve a run folder, and the error
     import_paper, verify_workspace, export_draft,
     plugin_directory, claude_code_version,  # check an installation
@@ -348,7 +349,7 @@ shape for every folder:
 ```python
 cites = read_run("run-output")["citations"]
 if cites["enabled"]:
-    print(cites["summary"])                 # one sentence, already written
+    print(cites["summary"])                 # one sentence, for a brief — see below
     print(cites["counts"].get("references", 0), "references,",
           cites["counts"].get("not_found", 0), "with an unregistered DOI,",
           cites["counts"].get("not_located", 0), "in neither index,",
@@ -365,22 +366,45 @@ if cites["enabled"]:
   The third case reads differently on purpose: an arm that planned a citations
   lane and left no table behind has `enabled: True`, `ledger: None`, `counts:
   {}` and one `problems` line saying the run planned a citations lane and wrote
-  no citation ledger. Do not fold that into "no lane" — the lane was paid for
-  and produced nothing, which is a failure worth showing.
+  no citation ledger, so there are no ledger counts. Do not fold that into "no
+  lane" — the lane was paid for and produced nothing, which is a failure worth
+  showing. The line stops there on purpose: it does not say that not one
+  reference was checked, because a run whose ledger stage never ran holds no
+  record of what the specialist did or did not look at.
+- A ledger file that is **there and cannot be read** is reported the same way:
+  `enabled: True`, `counts: {}`, and one `problems` line naming the file from
+  the run folder (`review/citations/ledger.jsonl`) and why it could not be
+  read. It is not in `not_publishable_reasons`. It is the strongest form of an
+  unfinished table rather than a different kind of damage, and a citation check
+  never withholds a review.
 - `ledger` is the absolute path of
   `<run>/review/citations/ledger.jsonl`, an append-only table with one row per
-  reference and one per in-text use, last record per `row_id` winning. Read it
-  if you want the rows; `counts` is there so you do not have to.
-- `counts` holds `references`, `resolved`, `not_found`, `not_located`,
-  `could_not_check`,
+  reference and one per in-text use, last record per `row_id` winning. Use
+  `read_citation_ledger` for the rows (below); `counts` is there so you do not
+  have to read them at all.
+- `counts` holds twenty-one integers: `references`, `resolved`, `not_found`,
+  `not_located`, `could_not_check`, `candidates`, `errors`,
   `unresolved`, `mismatched`, `retracted`, `with_source_text`, `uses`,
   `uses_unmatched`, `uses_judged`, `supported`,
   `partly_supported`, `not_supported`, `cannot_tell`, `uses_unjudged`,
-  `lookups`, `unreadable_rows`, `ledger` (the relative path), `stages` (what
-  fill, resolve and judge each did, with the per-stage lookup and verdict
-  counts) and `complete`.
-- A reference lands in exactly one of four buckets, and only one of them is an
-  existence claim. `not_found` counts the rows where the reference list gave a
+  `lookups` and `unreadable_rows`.
+- **Four entries under `counts` are not numbers**, and an integration that maps
+  the dict to an integer schema will trip over them: `ledger` is a string, the
+  path `citations/ledger.jsonl` relative to the review folder; `stages` is a
+  mapping — what fill, resolve and judge each did, with their own per-stage
+  lookup and verdict counts; `complete` and `stages_done` are booleans.
+  `complete` is repeated one level up as `citations['complete']`, which is the
+  copy to read. Iterate `counts` by name rather than over its values, or pull
+  the numbers you print by key.
+- A reference lands in exactly one of **five** states, and only one of them is
+  an existence claim. Four are answers to a lookup — `resolved`, `not_found`,
+  `not_located`, `could_not_check` — and the fifth, `unresolved`, is the rows
+  the run never looked up at all. It is a state of its own, not the gap between
+  the other four, and `summary_line` prints it beside them ("… N never looked
+  up …") so the printed states add up to `references`. A reference nobody
+  looked up is not one that was checked and came back empty, and an integration
+  that subtracts the four from the total and calls the remainder resolved is
+  reporting the opposite of what happened. `not_found` counts the rows where the reference list gave a
   DOI as its own field and the DOI resolver has no handle for it — doi.org's
   handle API answering `responseCode` 100 with a 404, the one service whose
   whole job is to say whether a DOI was ever registered. A DOI read out of the
@@ -408,7 +432,112 @@ if cites["enabled"]:
   on them.
 - A verdict in the table is not a finding. Findings are in `run['findings']`
   as always, written by the citations specialist after it re-checked the row
-  itself. Nothing a Haiku worker wrote reaches `findings` on its own.
+  itself. Nothing a citation worker wrote reaches `findings` on its own.
+
+#### What in `citations` is written to be printed
+
+`problems` is. Every line in it is a sentence for a person to read as it stands
+— see [Problem lines are printed verbatim](#problem-lines-are-printed-verbatim)
+below for the three rules that hold for all of them.
+
+**`summary` is not, on a public page.** It is one sentence for two readers who
+already have the context: the reviewer's brief, and `REVIEW.md`. It puts the
+reference existence states and the in-text use verdicts together — "N
+references: … M not located …. K in-text uses, J judged (… N not supported
+…)" — and that sentence, printed under the title of a paper with named authors,
+reads as an accusation about those authors rather than as a report on how far
+an automated lookup got. The states behind it mean much less than they sound
+like: `not_located` is two indexes not listing a title, which is ordinary for
+books, theses and standards, and `not_supported` is one worker's reading of one
+abstract.
+
+For a page anyone can see, build your own lines from `counts` and say what the
+numbers are: how much of the reference list the run was able to check, and how
+much it could not. Keep the existence states and the use verdicts in separate
+sentences, and do not sum `not_found`, `not_located` and `could_not_check` into
+one number — only `not_found` is the table saying a work does not exist.
+
+#### Reading the rows: `read_citation_ledger`
+
+`counts` answers how much of the reference list was checked. When you need the
+table itself — which reference resolved to which record, which in-text use was
+judged how — `read_citation_ledger` is the supported reading. Do not open
+`ledger.jsonl` yourself and do not import
+`peerreviewagents.engine.citation_ledger`: that module is private and changes
+without notice, and the "last record per `row_id` wins" rule is the one thing
+every consumer that went there ended up re-implementing.
+
+```python
+from peerreviewagents import read_citation_ledger
+
+cites = read_citation_ledger("run-output")        # run folder or its review/ folder
+for row in cites["references"]:
+    resolution = row.get("resolution") or {}
+    print(row["label"], resolution.get("exists"), resolution.get("has_source_text"))
+for row in cites["uses"]:
+    print(row["sentence"], "->", row.get("verdict"))
+```
+
+- `run`, `review`, `ledger`, `exists` — the folders, the absolute path of the
+  file, and whether it is there. A run from an arm without the lane reads as
+  `exists: False` with empty lists, and raises nothing.
+- `references`, `uses` — the rows, the last one written for each `row_id`,
+  ordered by `row_id` so two readings of a folder agree.
+- `counts`, `complete`, `summary`, `problems` — identical to
+  `read_run(path)["citations"]`, from the same functions, so a page showing
+  rows and a page showing counts cannot disagree about one run.
+- **Source text is left out by default.** A resolved reference carries the
+  abstract and the opening of the full text the worker was shown, which is most
+  of the bytes in the file and is someone else's copyrighted prose. Those rows
+  come back without `resolution['abstract']` and `resolution['full_text']` and
+  with `resolution['has_source_text']` instead, so you can tell a reference
+  nobody fetched text for from one whose text was dropped here. Pass
+  `source_text=True` for the rows exactly as stored.
+- The guards are `read_run`'s. A symlinked `review/`, `citations/` or
+  `ledger.jsonl` is refused by name — `ValueError`, naming the file with its
+  folder — rather than followed, and damaged content never raises: an
+  unreadable line is skipped, counted in `counts['unreadable_rows']` and named
+  in `problems`. `NotARunFolder` for a folder that is not a run is the only
+  other raise.
+- **A ledger this process may not open is not a raise either.** It comes back
+  as `references: []`, `uses: []`, `counts: {}`, `exists: True`, `ledger` set to
+  the file, and the one `problems` line `read_run` gives it. It is the same
+  answer from both readings, because the state where nothing in the table can
+  be counted is the state a page that prints the table is most likely to meet,
+  and it must not be the one that crashes it.
+
+**Building a ledger fixture.** There is no fixture writer in the public
+surface, and the supported way to build one is to write the file: the ledger is
+JSON lines at `<run>/review/citations/ledger.jsonl`, append-only, one JSON
+object per line, and the last line written for a `row_id` is that row. A
+reference row is `{"kind": "reference", "row_id": "ref:<reference_id>",
+"reference_id": …, "label": …, "raw": …, "printed": {…}}` plus a `resolution`
+object once it was looked up; a use row is `{"kind": "use", "row_id":
+"use:<block>:<sentence>:<reference_id>", "reference_id": …, "sentence": …,
+"marker": …}` plus a `verdict` once a worker judged it. The stage record beside
+it, `citations/stages.json`, is what `complete` and `lookups` are read from:
+`{"fill": {"done": true}, "resolve": {"done": true, "lookups": 2}}`.
+`tests/test_ledger_consumer_surface.py` builds its fixtures exactly this way
+and is the worked example to copy.
+
+#### Problem lines are printed verbatim
+
+Every line in `run['problems']`, in `run['citations']['problems']` and in
+`run['not_publishable_reasons']` is written to be shown to a person as it
+stands. They are for showing, not for gating — a publishable run can carry a
+non-empty `problems`, see [Gating on `publishable`](#gating-on-publishable).
+Two rules hold for all of them:
+
+- **No semicolons.** Several reasons about one row are joined with commas and a
+  final "and".
+- **No absolute paths.** A line names a file the way the reader can find it in
+  the run folder they already have — `review/citations/ledger.jsonl`, not
+  wherever the machine that read it keeps its runs.
+
+A third rule is the ledger's own: no line says a reference **does not exist**
+unless the DOI resolver has no handle for the DOI the reference list printed.
+Rows that two indexes do not list, and rows whose lookups never answered, say
+nothing either way about whether the work is real.
 
 Two options on the run side feed this: `--citation-workers N` (0 to 12,
 default 4) and `--citation-worker-model` (default `claude-haiku-5-5`). Those
@@ -459,6 +588,18 @@ When it is `False`, `not_publishable_reasons` holds one sentence per reason and
 is never empty, so the flag is never `False` with nothing named. A complete run
 whose `editor-package.json` was truncated is the usual case: the ledger findings
 are real, but they are not the editor's review, and the reason says so.
+
+**`problems` is not a gate.** `publishable` and `not_publishable_reasons` are
+the gate; `problems` is for showing. The fourth condition above is `problems`
+*as it stands when the flag is decided*, and three kinds of line are appended to
+it afterwards on purpose: the citation stage lines, the line for a ledger that
+could not be read, and the line for a citation worker that ran a substituted
+model. None of them is a reason against publishing, and each of them is
+something a reader should see. So **a publishable run can come back with a
+non-empty `problems`**, and that is the normal case for any run with an
+unfinished citation table. An application that treats a non-empty `problems` as
+a refusal will withhold reviews that are whole — read `publishable`, print
+`problems`.
 
 **A quarantined finding does not make a run unpublishable.** The guard throws
 out a finding whose quote it could not match to the block the finding names. A
