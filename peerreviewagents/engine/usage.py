@@ -34,7 +34,7 @@ def jsonl(path, on_problem=None):
     except UnicodeDecodeError:
         if on_problem is None: raise
         text = raw.decode('utf-8', errors='replace')
-        on_problem(f'{path.name} is not valid UTF-8; the bytes that are not were replaced')
+        on_problem(f'{path.name} is not valid UTF-8, and the bytes that are not were replaced')
     rows, skipped = [], 0
     for line in text.splitlines():
         if not line.strip(): continue
@@ -154,8 +154,8 @@ def runtime_usage(run, on_problem=None):
         # The starter writes this file last, so a run killed while writing it
         # leaves exactly this, and it is the file naming the reason it stopped.
         if on_problem is None: raise
-        on_problem(f'runtime.json could not be read ({exc.__class__.__name__}); it is read as '
-                   'absent, so the tokens and the wall time of this run are lost')
+        on_problem(f'runtime.json could not be read ({exc.__class__.__name__}), so it is read as '
+                   'absent and the tokens and the wall time of this run are lost')
         return None
     return value if isinstance(value, dict) else None
 

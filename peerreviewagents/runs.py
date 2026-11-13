@@ -56,20 +56,64 @@ class NotARunFolder(ValueError):
     """The path is not a run folder and not the review folder inside one."""
 
 
-def _refusal(path):
-    return ValueError(f'Refusing to read {Path(path).name}: a run file must not be a symlink '
-                      f'({path})')
+def _relative(path, base):
+    """``path`` written from ``base``, or its bare name when it is not under one.
+
+    Problem lines are printed verbatim by consumers, next to a run folder the
+    reader already has, so a path in one says where in that folder to look
+    rather than where this machine keeps it. ``os.path.relpath`` is the whole
+    of it, with the bare name for the cases it cannot answer — no ``base``, or
+    a different drive on Windows.
+    """
+    path = Path(path)
+    if base is None:
+        return path.name
+    try:
+        written = Path(os.path.relpath(path, Path(base))).as_posix()
+    except ValueError:  # a different drive on Windows, which has no relative form
+        return path.name
+    # ``.`` is ``base`` itself and ``../`` is somewhere outside it, and neither
+    # is a name a reader can look up in the folder they are holding.
+    return path.name if written == '.' or written.startswith('..') else written
 
 
-def _no_symlink(path):
+def _why(exc):
+    """Why a file could not be read, in words, with no absolute path in them.
+
+    ``str`` of an :class:`OSError` is ``[Errno 13] Permission denied:
+    '/home/someone/runs/2026-03-04/review/citations/ledger.jsonl'`` — the
+    reason and then the whole path of the machine that read it. The reason is
+    the half a reader needs, and the path is already in the line the reason is
+    put into, written from the run folder.
+    """
+    if isinstance(exc, UnicodeDecodeError):
+        return 'it is not valid UTF-8'
+    if isinstance(exc, OSError):
+        return exc.strerror or exc.__class__.__name__
+    return str(exc)
+
+
+def _refusal(path, base=None):
+    """The refusal for one symlinked run file, naming it with its folder.
+
+    ``base`` is the folder the name is written from, so the file that is
+    refused is ``citations/ledger.jsonl`` rather than ``ledger.jsonl``: a run
+    holds more than one file called ``usage.jsonl``, and a reader told only the
+    bare name cannot go and look at the one that is a link.
+    """
+    return ValueError(f'Refusing to read {_relative(path, base)}: a run file must not be a '
+                      f'symlink ({path})')
+
+
+def _no_symlink(path, base=None):
     """``path`` itself, or a refusal naming it. A run file is never a link."""
     path = Path(path)
     if path.is_symlink():
-        raise _refusal(path)
+        raise _refusal(path, base)
     return path
 
 
-def refuse_symlinks(review):
+def refuse_symlinks(review, base=None):
     """Refuse the review folder, or anything in it, being a symlink.
 
     One walk, so a symlinked ``review/`` directory, a symlinked
@@ -78,13 +122,20 @@ def refuse_symlinks(review):
     and the third dropped without a word. The walk does not descend through a
     symlinked directory, so a link that points at its own parent is named, not
     followed round.
+
+    Each one is named from the review folder — ``citations/ledger.jsonl``, not
+    ``ledger.jsonl`` — because the bare name of a file a run keeps several of
+    does not say which one to go and look at. ``base`` is that folder, for a
+    caller walking one directory inside the review folder and wanting the name
+    written from the review folder itself.
     """
-    review = _no_symlink(review)
+    base = base or review
+    review = _no_symlink(review, base)
     for folder, folders, files in os.walk(review, followlinks=False):
         for name in sorted(folders) + sorted(files):
             path = Path(folder) / name
             if path.is_symlink():
-                raise _refusal(path)
+                raise _refusal(path, base)
     return review
 
 
@@ -101,20 +152,20 @@ def _mapping(path, problems, label=None):
     try:
         text = path.read_bytes().decode('utf-8')
     except OSError as exc:
-        problems.append(f'{label} could not be read ({exc.strerror or exc}); it is read as absent')
+        problems.append(f'{label} could not be read ({_why(exc)}), so it is read as absent')
         return None
     except UnicodeDecodeError:
-        problems.append(f'{label} is not valid UTF-8; it is read as absent')
+        problems.append(f'{label} is not valid UTF-8, so it is read as absent')
         return None
     try:
         value = json.loads(text)
     except ValueError:
         problems.append(f'{label} is not valid JSON, which is what a process killed mid-write '
-                        'leaves; it is read as absent')
+                        'leaves, so it is read as absent')
         return None
     if not isinstance(value, dict):
-        problems.append(f'{label} holds a {type(value).__name__} where a JSON object belongs; '
-                        'it is read as absent')
+        problems.append(f'{label} holds a {type(value).__name__} where a JSON object belongs, '
+                        'so it is read as absent')
         return None
     return value
 
@@ -132,14 +183,14 @@ def _rows(path, problems, label=None):
     try:
         raw = path.read_bytes()
     except OSError as exc:
-        problems.append(f'{label} could not be read ({exc.strerror or exc}); it is read as empty')
+        problems.append(f'{label} could not be read ({_why(exc)}), so it is read as empty')
         return []
     try:
         text = raw.decode('utf-8')
     except UnicodeDecodeError:
         text = raw.decode('utf-8', errors='replace')
-        problems.append(f'{label} is not valid UTF-8; the bytes that are not were replaced, so '
-                        'a quotation from it may not be the bytes the agent wrote')
+        problems.append(f'{label} is not valid UTF-8, and the bytes that are not were replaced, '
+                        'so a quotation from it may not be the bytes the agent wrote')
     rows, skipped = [], 0
     for line in text.splitlines():
         if not line.strip():
@@ -154,7 +205,7 @@ def _rows(path, problems, label=None):
         else:
             skipped += 1
     if skipped:
-        problems.append(f'{skipped} unreadable line(s) in {label} were skipped; a run killed '
+        problems.append(f'{skipped} unreadable line(s) in {label} were skipped, and a run killed '
                         'mid-write leaves one')
     return rows
 
@@ -186,7 +237,7 @@ def _citations_planned(protocol, agents):
                for row in agents or () if isinstance(row, dict))
 
 
-def _citations(review, problems, enabled=False):
+def _citations(review, enabled=False, root=None):
     """What the citation ledger says, and one line per stage that did not finish.
 
     Two separate lists come out of this. The counts and the stage lines go to
@@ -196,30 +247,40 @@ def _citations(review, problems, enabled=False):
     confirmed are real whether or not the table behind them was finished, and
     the counts say in numbers how much of the reference list was checked.
 
-    A ledger that cannot be read at all is a different matter and goes in
-    ``problems`` like any other damaged file, because then the counts are not
-    the run's own numbers.
+    A ledger that cannot be read at all is the same kind of answer and is
+    reported the same way. It is the strongest version of an unfinished table —
+    nothing in it can be counted rather than some of it — and the rule the
+    citations lane is built on is that a citation check never withholds a
+    review. The counts come back empty and the line says the file is there and
+    could not be read, so no reader mistakes the empty counts for a reference
+    list nobody had anything to say about.
 
     ``enabled`` is what the arm planned, from :func:`_citations_planned`. With
     no ledger file it is the whole of the answer: planned and missing is a
-    reported gap, not planned is nothing to report.
+    reported gap, not planned is nothing to report. ``root`` is the run folder
+    the paths in the lines are written from.
     """
     ledger = citation_ledger.Ledger(review)
+    where = _relative(Path(review) / citation_ledger.LEDGER_PATH, root)
     empty = {'enabled': False, 'ledger': None, 'counts': {}, 'complete': False,
              'summary': citation_ledger.summary_line({}), 'problems': []}
     if not ledger.exists():
         if not enabled:
             return empty, []
-        lines = ['this run planned a citations lane and wrote no citation ledger, so not one '
-                 'reference or in-text use was checked']
+        # What this run did is known — it planned the lane and wrote no table.
+        # What the specialist did is not: a run whose ledger stage never ran
+        # has no record of a reference anybody looked at or did not, so saying
+        # not one was checked would claim more than the folder holds.
+        lines = ['this run planned a citations lane and wrote no citation ledger, so there are '
+                 'no ledger counts']
         return {**empty, 'enabled': True, 'problems': lines}, lines
     try:
         totals = citation_ledger.counts(ledger)
     except (OSError, UnicodeDecodeError, ValueError) as exc:
-        problems.append(f'{citation_ledger.LEDGER_PATH} is present but could not be read '
-                        f'({exc}); the citation counts are read as absent')
-        return {**empty, 'enabled': True,
-                'ledger': str(Path(review) / citation_ledger.LEDGER_PATH)}, []
+        lines = [f'{where} is present and could not be read ({_why(exc)}), so this run has no '
+                 'citation counts']
+        return {**empty, 'enabled': True, 'problems': lines,
+                'ledger': str(Path(review) / citation_ledger.LEDGER_PATH)}, lines
     lines = citation_ledger.problems(totals)
     return ({'enabled': True,
              'ledger': str(Path(review) / citation_ledger.LEDGER_PATH),
@@ -285,7 +346,7 @@ def _code_hashes(value, problems):
         return {}
     if not isinstance(value, dict):
         problems.append(f"manifest.json's code holds a {type(value).__name__} where a map of "
-                        'file to digest belongs; it is read as empty')
+                        'file to digest belongs, so it is read as empty')
         return {}
     hashes = {str(name): digest for name, digest in value.items() if isinstance(digest, str)}
     if len(hashes) != len(value):
@@ -305,7 +366,7 @@ def _provider(protocol, problems):
         return None
     if not isinstance(value, str):
         problems.append(f"protocol.json's provider holds a {type(value).__name__} where a name "
-                        'belongs; it is read as absent')
+                        'belongs, so it is read as absent')
         return None
     return value
 
@@ -395,7 +456,7 @@ def _known(value, label, problems):
         return None
     if text not in RUN_STATUSES:
         problems.append(f'{label} records the status {text!r}, which is not one of '
-                        + ', '.join(RUN_STATUSES) + '; it is reported as unknown')
+                        + ', '.join(RUN_STATUSES) + ', so it is reported as unknown')
         return UNKNOWN
     return text
 
@@ -554,7 +615,9 @@ def read_run(path):
         folder. A reading with problems is still a reading — that is the point —
         but a consumer should not publish it or quote a number from it without
         saying so. The citation lines are the exception and are not in
-        ``not_publishable_reasons``: see ``citations``.
+        ``not_publishable_reasons``: see ``citations``. No line here contains a
+        semicolon or an absolute path — consumers print them verbatim on their
+        own pages, beside a run folder the reader already has.
     ``citations``
         The citation ledger. ``ledger`` is the absolute path to
         ``citations/ledger.jsonl`` or ``None`` when this run kept none —
@@ -569,7 +632,11 @@ def read_run(path):
         ``problems`` as well, and they are deliberately *not* reasons against
         publishing: a confirmed finding is a finding whether or not the table
         behind it was finished, and the counts say how much of the reference
-        list this run actually checked.
+        list this run actually checked. A ledger file that is there and cannot
+        be read is one of those lines too, naming the file from the run folder:
+        it is the strongest form of an unfinished table rather than a different
+        kind of damage, and a citation check does not withhold a review.
+        :func:`read_citation_ledger` is the same reading with the rows in it.
     ``stage``
         ``startup`` when no session ever ran and no subscription usage was
         spent, ``session`` once one did.
@@ -688,17 +755,17 @@ def read_run(path):
     # that becomes one is re-read by the citations specialist first.
     worker_swapped = model_plan.worker_substitutions(agents)
     # The citation stage lines are deliberately not in `problems` yet: an
-    # unfinished ledger is reported, not published over. A ledger that could
-    # not be read *is* in `problems` already, from `_citations` itself.
-    citations, citation_lines = _citations(review, problems,
-                                           enabled=_citations_planned(protocol, agents))
+    # unfinished ledger is reported, not published over, and a ledger that
+    # could not be read at all is the same answer rather than a stronger one.
+    citations, citation_lines = _citations(review, enabled=_citations_planned(protocol, agents),
+                                          root=root)
     reasons = publishable_reasons(status, source, guard, problems, len(quarantined), swapped)
     problems += swapped + worker_swapped + citation_lines
 
     probe = startup.get('probe')
     if probe is not None and not isinstance(probe, dict):
         problems.append(f"startup.json's probe holds a {type(probe).__name__} where the harness's "
-                        'own start-up event belongs; it is read as absent')
+                        'own start-up event belongs, so it is read as absent')
         probe = None
 
     return {
@@ -750,5 +817,99 @@ def read_run(path):
     }
 
 
-__all__ = ['read_run', 'locate', 'dedupe', 'run_status', 'cause_of', 'refuse_symlinks',
-           'NotARunFolder', 'RUN_MARKERS', 'UNKNOWN']
+def read_citation_ledger(path, source_text=False):
+    """The citation ledger's own rows, for a caller that needs more than counts.
+
+    :func:`read_run` reports the ledger in numbers, which is what a page that
+    shows a review needs. A caller that wants the table itself — which
+    reference resolved to which record, which in-text use was judged how —
+    had only ``peerreviewagents.engine.citation_ledger`` to reach for, and the
+    engine is not a public module: every consumer that went there
+    re-implemented the one rule the file has, that the last row written for a
+    ``row_id`` is that row. This is that reading, kept beside the writer.
+
+    ``path`` is a run folder or the review folder inside one, the same two
+    spellings :func:`read_run` takes. Returns:
+
+    ``run``, ``review``, ``ledger``
+        The folders, and the absolute path of ``citations/ledger.jsonl`` or
+        ``None`` when this run kept no table.
+    ``exists``
+        Whether the file is there. A run from an arm without the citations
+        lane keeps no table, which is not a damaged run.
+    ``references``, ``uses``
+        The rows, the last one written for each ``row_id``, ordered by
+        ``row_id`` so two readings of the same folder agree. A reference row
+        carries the printed entry and, once the lane looked it up, its
+        ``resolution``; a use row carries the in-text marker, the reference it
+        points at and the verdict a worker gave it.
+    ``counts``, ``complete``, ``summary``, ``problems``
+        Exactly what ``read_run()['citations']`` holds, from the same
+        functions, so the two readings cannot disagree.
+
+    **Source text is left out by default.** A resolved reference carries the
+    abstract and the opening of the full text that a worker was shown, which
+    is most of the bytes in the file and is someone else's copyrighted prose. A
+    row that had them comes back without them and with
+    ``resolution['has_source_text']`` true instead, so a caller can tell a
+    reference nobody fetched text for from one whose text was dropped here.
+    Pass ``source_text=True`` for the rows exactly as stored.
+
+    The guards are :func:`read_run`'s. A symlinked ``review/``, ``citations/``
+    or ``ledger.jsonl`` is refused by name rather than followed, because the
+    server writes them in place and a link in their place points at a file
+    another process owns. Damaged content never raises: a line that is not
+    readable JSON is skipped and counted in ``counts['unreadable_rows']``, with
+    a line in ``problems`` saying so. :class:`NotARunFolder` for a folder that
+    is not a run and ``ValueError`` for a symlink are the only two raises.
+    """
+    root, review = locate(path)
+    _no_symlink(review, review)
+    folder = review / citation_ledger.LEDGER_DIRECTORY
+    if folder.is_dir() or folder.is_symlink():
+        refuse_symlinks(folder, review)
+    ledger = citation_ledger.Ledger(review)
+    # The plan, from ``protocol.json`` alone: it is the only thing that tells a
+    # run which kept no table whether it was meant to. ``read_run`` also falls
+    # back to the claimed slots, which means reading every usage receipt, and
+    # this reader is not asked for those numbers.
+    planned = _citations_planned(_mapping(review / 'protocol.json', []), None)
+    citations, _ = _citations(review, enabled=planned, root=root)
+    rows, _ = ledger.load() if ledger.exists() else ({}, 0)
+    kept = {'reference': [], 'use': []}
+    for row_id in sorted(rows):
+        row = rows[row_id]
+        if row.get('kind') in kept:
+            kept[row['kind']].append(row if source_text else _without_source_text(row))
+    return {
+        'run': str(root),
+        'review': str(review),
+        'ledger': str(ledger.path) if ledger.exists() else None,
+        'exists': ledger.exists(),
+        'references': kept['reference'],
+        'uses': kept['use'],
+        'counts': citations['counts'],
+        'complete': citations['complete'],
+        'summary': citations['summary'],
+        'problems': citations['problems'],
+    }
+
+
+def _without_source_text(row):
+    """``row`` with the fetched abstract and full text replaced by a flag.
+
+    A copy, because the caller is handed these rows and the ledger's own
+    reading is not this function's to edit.
+    """
+    resolution = row.get('resolution')
+    if not isinstance(resolution, dict):
+        return row
+    if not (resolution.get('abstract') or resolution.get('full_text')):
+        return {**row, 'resolution': {**resolution, 'has_source_text': False}}
+    kept = {name: value for name, value in resolution.items()
+            if name not in ('abstract', 'full_text')}
+    return {**row, 'resolution': {**kept, 'has_source_text': True}}
+
+
+__all__ = ['read_run', 'read_citation_ledger', 'locate', 'dedupe', 'run_status', 'cause_of',
+           'refuse_symlinks', 'NotARunFolder', 'RUN_MARKERS', 'UNKNOWN']

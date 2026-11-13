@@ -341,6 +341,22 @@ including 32 test modules, and nothing was left behind as a shim.
   rather than agreeing; any Crossref `update-to` marks a record as a notice,
   including one that points at a dataset version; and a `<title> (Reply)`
   suffix in parentheses is not caught by the notice matching.
+- `peerreviewagents.read_citation_ledger(path, source_text=False)` reads the
+  citation table's own rows from a run folder: `references` and `uses`, the
+  last record written for each `row_id`, ordered by `row_id`, plus the same
+  `counts`, `complete`, `summary` and `problems` `read_run(path)['citations']`
+  holds, from the same functions. `read_run` reports the ledger in numbers and
+  there was no public way to read the rows, so every consumer that wanted them
+  imported `peerreviewagents.engine.citation_ledger` — a private module — and
+  re-implemented the one rule the format has. It takes `read_run`'s guards: a
+  symlinked `review/`, `citations/` or `ledger.jsonl` is refused by name rather
+  than followed, and a damaged line is skipped, counted in
+  `counts['unreadable_rows']` and named in `problems` rather than raised. The
+  fetched abstract and full text are left out by default — most of the bytes in
+  the file, and someone else's prose — with `resolution['has_source_text']` in
+  their place, and `source_text=True` returns the rows exactly as stored.
+  `docs/INTEGRATIONS.md` documents it and the supported way to build a ledger
+  fixture, which is to write the JSON lines yourself.
 
 ### Changed
 
@@ -442,6 +458,39 @@ including 32 test modules, and nothing was left behind as a shim.
 
 ### Fixed
 
+- **An unreadable citation ledger blocked publishing.** `read_run` put that one
+  citation failure in `problems` before `publishable` was decided, so a run
+  whose `ledger.jsonl` was present and could not be opened came back
+  `publishable: False` while every other unfinished-ledger state came back
+  publishable. It is now a `problems` line like the rest and never a reason
+  against publishing: a confirmed finding is a finding whether or not the table
+  behind it could be read. The line also carried the absolute path of the file
+  on the machine that read it, through the formatted `OSError`; it now names
+  the file from the run folder (`review/citations/ledger.jsonl`) and gives the
+  reason without the path.
+- A run that planned the citations lane and wrote no ledger was reported as one
+  where "not one reference or in-text use was checked". That is a claim about
+  what the specialist did, and a run whose ledger stage never ran holds no
+  record of what was looked at. The line now says only what the folder shows:
+  the run planned a citations lane and wrote no citation ledger, so there are
+  no ledger counts.
+- `unresolved` — a reference the run never looked up — is a fifth reference
+  state and was missing from `summary_line`, so the printed states did not add
+  up to `references` and a reader could take the difference for resolved rows.
+  The sentence now carries all five, `docs/INTEGRATIONS.md` documents five
+  rather than four, and the `REVIEW.md` Citations section prints the
+  `not_located` count beside the others instead of leaving it to be inferred.
+- Wording a consumer prints verbatim. No problem line contains a semicolon any
+  more — insilico and paper-workbench ban them in authored text and print these
+  lines as they stand — and no line says a reference does not exist unless the
+  DOI resolver has no handle for the DOI the reference list printed. The
+  citation worker's instruction said "one Haiku worker reading one abstract"
+  and now names the role rather than a model family, since `assigned_model` is
+  the plan and `model` is what was observed and a hardcoded family is neither.
+  A `cannot tell` verdict with nothing to read stores `source_kind: null`
+  rather than the string `"none"`, which a page printed as a kind of source.
+  The symlink refusal names the file with its folder — `citations/ledger.jsonl`
+  — because a run holds more than one file called `usage.jsonl`.
 - The Stage A corpus fetch asked a web page for a file, so 20 of the 41
   candidates on disk were HTML saved under a `.pdf` name: PMC's "Preparing to
   download" interstitial and a bot challenge, both served with status 200, and
