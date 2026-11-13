@@ -344,6 +344,40 @@ including 32 test modules, and nothing was left behind as a shim.
 
 ### Changed
 
+- The six specialists audit six disjoint dimensions, and the `consistency`
+  track is now `numbers`. Each brief carries a **Not yours** table naming the
+  other five lanes and what each of them owns, because two specialists filing
+  the same defect spends two allowances and lands on the editor to merge.
+  `numbers` owns every printed quantity and the arithmetic between them — the
+  same value in two places, one n followed through, parts against the whole;
+  `stats` owns the inference drawn from those numbers and drops the arithmetic
+  item it shared with `numbers`, gaining what the result licenses the paper to
+  say; `figures-tables` owns what a panel shows, how a table is built and the
+  panel inventory, and drops the value-against-value comparisons; both the
+  methods lane and the field lane now say where the line between them runs. A
+  specialist that sees something outside its lane writes one line under
+  **Seen, not mine** in its audit and files no finding — it is never told which
+  other tracks are running, so that line is the right answer in every arm. The
+  boundary between `numbers` and `figures-tables` is a plot, not a page:
+  `spec-numbers` keeps `view_page`, because the text extraction garbles tables
+  — escaped tabs, a two-column page linearised into interleaved rows — and a
+  lane that could only read the extracted text would either miss a real cell
+  disagreement or file one it could have cleared by looking. Its brief scopes
+  the tool to confirming a printed table cell or a number in running text, and
+  requires that check before any finding that involves a table cell; reading a
+  value off a plot, axis, error bar or colour scale stays with
+  `figures-tables`, and `view_supplement` is still not in the slot.
+- The core reviewers are told what a review is **not** — a catalogue of surface
+  defects — without being told that specialists exist. The blinding is the
+  property `reviewers-only`, `single` and `manuscript-only` are measured
+  against, so naming the auditors in the reviewer brief would change every one
+  of those arms rather than only the reference arm.
+- `--track consistency` is gone; it is `--track numbers`, the `draft-check`
+  default is `stats`, `numbers`, `methods-reporting`, and a run writes
+  `audit_numbers.md` where it wrote `audit_consistency.md`. Any saved command,
+  prompt or adapter naming the old track is refused by the parser rather than
+  silently dropped, and `docs/stage-a-results.md` keeps the name the recorded
+  runs ran under.
 - The server has 27 tools rather than 23: `resolve_citations` for the recorder,
   `citation_rows` for the citations specialist, and `claim_citation_batch` and
   `submit_citation_verdict` for a citation worker, each on the allow list of
