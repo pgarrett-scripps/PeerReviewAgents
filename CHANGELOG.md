@@ -343,9 +343,12 @@ including 32 test modules, and nothing was left behind as a shim.
   suffix in parentheses is not caught by the notice matching.
 - `peerreviewagents.read_citation_ledger(path, source_text=False)` reads the
   citation table's own rows from a run folder: `references` and `uses`, the
-  last record written for each `row_id`, ordered by `row_id`, plus the same
-  `counts`, `complete`, `summary` and `problems` `read_run(path)['citations']`
-  holds, from the same functions. `read_run` reports the ledger in numbers and
+  last record written for each `row_id`, in natural `row_id` order — a run of
+  digits compared as the number it is, so `ref:r2` comes before `ref:r10` and
+  `use:b2:2:r1` before `use:b2:10:r1`, which is the reference order and the
+  sentence order a reader counts in — plus the same `counts`, `complete`,
+  `summary` and `problems` `read_run(path)['citations']` holds, from the same
+  functions and the same reading of what the arm planned. `read_run` reports the ledger in numbers and
   there was no public way to read the rows, so every consumer that wanted them
   imported `peerreviewagents.engine.citation_ledger` — a private module — and
   re-implemented the one rule the format has. It takes `read_run`'s guards: a
@@ -463,6 +466,24 @@ including 32 test modules, and nothing was left behind as a shim.
 
 ### Fixed
 
+- **A ledger row whose `row_id` was not a string raised out of both readers.**
+  `row_id` is the table's key, and a line carrying a list or an object under it
+  raised `TypeError` on an unhashable key out of `read_run` and
+  `read_citation_ledger` alike, while a number raised later, wherever the rows
+  were sorted. Neither is among the raises a consumer is told to expect, and
+  both are what a half-written line or a hand-edited file produces. A readable
+  line whose `row_id` is missing, or is not a non-empty string, is now an
+  unreadable row like a torn line: skipped, counted in
+  `counts['unreadable_rows']` and named in `problems`. `reference_id` and
+  `sentence_index` are guarded the same way where the server assembles a
+  worker's batch, so one damaged row no longer takes the batch with it.
+- **The two readers disagreed about a run that planned the lane.**
+  `read_citation_ledger` decided whether the arm planned citations from the
+  protocol's `plan` alone, while `read_run` falls back to the citation slots
+  when there is no plan. A `protocol.json` recording `spec-citations` and
+  `cite-1` with no plan therefore got the planned-lane problem line from one
+  reader and an empty `problems` from the other, against the reader's own
+  promise that the two cannot disagree. Both now read it through one function.
 - **An unreadable citation ledger blocked publishing.** `read_run` put that one
   citation failure in `problems` before `publishable` was decided, so a run
   whose `ledger.jsonl` was present and could not be opened came back

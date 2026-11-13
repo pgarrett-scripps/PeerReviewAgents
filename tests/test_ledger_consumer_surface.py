@@ -421,3 +421,102 @@ def test_the_worker_instruction_names_the_role_rather_than_a_model(tmp_path):
     text = json.dumps(rows)
     assert 'citation worker' in text
     assert 'Haiku' not in text and 'haiku' not in text
+
+
+# -- the two readers read one run folder one way ----------------------------
+
+
+#: A run folder whose protocol records the citation slots and no plan, which is
+#: every run written before the plan carried the lane and every run whose
+#: protocol was assembled from the agents it started.
+SLOTS_ONLY = {'arm': 'full-two-track', 'reviewers': 1, 'paper_id': 'abc',
+              'agents': {'spec-citations': {'role': 'specialist', 'track': 'citations'},
+                         'cite-1': {'role': 'citation-worker', 'track': 'citations'},
+                         'rev-1': {'role': 'reviewer', 'track': 'review'}}}
+
+
+def test_the_two_readers_never_disagree_about_one_run_folder(tmp_path, monkeypatch):
+    """One reading of what the arm planned, shared, rather than two of them.
+
+    :func:`read_citation_ledger` decided ``enabled`` from the protocol's plan
+    alone while :func:`read_run` asked :func:`_citations_planned`, which falls
+    back to the citation slots when there is no plan. A folder with the slots
+    and no plan therefore got the planned-lane line from one reader and no
+    problem at all from the other, which is the one thing the reader's
+    docstring promises cannot happen. Both now read it through the same
+    function, so the five shapes a run folder comes in agree row for row.
+    """
+    torn = [json.dumps(reference()), '{"kind": "use", "row_id": "use:b1:1']
+
+    def folders():
+        yield 'planned, no ledger', run_folder(tmp_path / 'planned')
+        yield 'not planned, no ledger', run_folder(
+            tmp_path / 'bare', protocol={'arm': 'reviewers-only',
+                                         'plan': {'arm': 'reviewers-only', 'specialists': []}})
+        yield 'the slots and no plan', run_folder(tmp_path / 'slots', protocol=SLOTS_ONLY)
+        yield 'a torn line', run_folder(tmp_path / 'torn', [reference(), use()])
+        yield 'unreadable', run_folder(tmp_path / 'unreadable', [reference(), use()])
+
+    for name, (root, review) in folders():
+        if name == 'a torn line':
+            (review / cl.LEDGER_PATH).write_text('\n'.join(torn), encoding='utf-8')
+        if name == 'unreadable':
+            monkeypatch.setattr(cl, 'counts', _refuses(review))
+        reading, citations = read_citation_ledger(root), read_run(root)['citations']
+        for key in ('counts', 'complete', 'summary', 'problems'):
+            assert reading[key] == citations[key], f'{name}: the two readers disagree on {key}'
+        monkeypatch.undo()
+
+    planned = read_citation_ledger(tmp_path / 'slots' / 'run')
+    assert planned['problems'] == [
+        'this run planned a citations lane and wrote no citation ledger, so there are no '
+        'ledger counts']
+
+
+def _refuses(review):
+    def unreadable(_ledger):
+        raise OSError(13, 'Permission denied', str(review / cl.LEDGER_PATH))
+    return unreadable
+
+
+def test_a_row_id_the_table_cannot_be_keyed_on_reaches_no_consumer(tmp_path):
+    """A row id that is not a string is damage, and damage never raises here.
+
+    ``row_id`` is the ledger's own key, so a line carrying a list or an object
+    under it raised ``TypeError`` out of both readers — an unhashable key — and
+    a number raised out of whatever sorted the rows. Neither is in the three
+    exception types a consumer is told to expect, and both are what a half
+    written line or a hand edited file produces.
+    """
+    root, review = run_folder(tmp_path, [reference(), use()])
+    path = review / cl.LEDGER_PATH
+    damaged = [{**reference(), 'row_id': ['ref', 'r2']},
+               {**reference(), 'row_id': {'id': 'ref:r3'}},
+               {**use(), 'row_id': 4}, {**use(), 'row_id': ''}]
+    path.write_text(path.read_text(encoding='utf-8')
+                    + ''.join(json.dumps(row) + '\n' for row in damaged), encoding='utf-8')
+
+    reading, citations = read_citation_ledger(root), read_run(root)['citations']
+    assert [row['row_id'] for row in reading['references']] == ['ref:r1']
+    assert [row['row_id'] for row in reading['uses']] == ['use:b1:1:r1']
+    assert reading['counts']['unreadable_rows'] == 4
+    assert reading['problems'] == citations['problems']
+    assert any('could not be read and were skipped' in line for line in reading['problems'])
+
+
+def test_the_rows_come_back_in_the_order_a_reader_reads_them_in(tmp_path):
+    """Row ten is after row nine, which sorting the ids as text does not give.
+
+    The ids carry the reference number and the sentence index, so a plain sort
+    puts ``ref:r10`` second and ``use:b2:10`` before ``use:b2:2``. Every
+    consumer that prints the table was re-sorting it, each with its own idea of
+    what the parts mean, so the reader hands back the order they were all
+    reaching for.
+    """
+    references = [reference(row_id=f'ref:r{number}') for number in (2, 10, 1)]
+    uses = [use(row_id=f'use:b2:{index}:r1') for index in (10, 2, 1)]
+    root, _ = run_folder(tmp_path, references + uses)
+    reading = read_citation_ledger(root)
+    assert [row['row_id'] for row in reading['references']] == ['ref:r1', 'ref:r2', 'ref:r10']
+    assert [row['row_id'] for row in reading['uses']] == [
+        'use:b2:1:r1', 'use:b2:2:r1', 'use:b2:10:r1']

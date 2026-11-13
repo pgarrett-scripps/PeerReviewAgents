@@ -482,10 +482,17 @@ for row in cites["uses"]:
   file, and whether it is there. A run from an arm without the lane reads as
   `exists: False` with empty lists, and raises nothing.
 - `references`, `uses` — the rows, the last one written for each `row_id`,
-  ordered by `row_id` so two readings of a folder agree.
+  ordered by `row_id` so two readings of a folder agree. **The order is
+  natural**: a run of digits in the id is compared as the number it is, so
+  `ref:r2` comes before `ref:r10` and `use:b2:2:r1` before `use:b2:10:r1`,
+  which is the reference order and the sentence order a reader counts in. You
+  do not need to re-sort the rows to print them.
 - `counts`, `complete`, `summary`, `problems` — identical to
-  `read_run(path)["citations"]`, from the same functions, so a page showing
-  rows and a page showing counts cannot disagree about one run.
+  `read_run(path)["citations"]`, from the same functions and the same reading
+  of what the arm planned, so a page showing rows and a page showing counts
+  cannot disagree about one run. That holds for a `protocol.json` that records
+  the citation slots and no `plan` as well: both readers call it a planned
+  lane.
 - **Source text is left out by default.** A resolved reference carries the
   abstract and the opening of the full text the worker was shown, which is most
   of the bytes in the file and is someone else's copyrighted prose. Those rows
@@ -497,7 +504,10 @@ for row in cites["uses"]:
   `ledger.jsonl` is refused by name — `ValueError`, naming the file with its
   folder — rather than followed, and damaged content never raises: an
   unreadable line is skipped, counted in `counts['unreadable_rows']` and named
-  in `problems`. `NotARunFolder` for a folder that is not a run is the only
+  in `problems`. A line that is readable JSON but whose `row_id` is missing, or
+  is not a non-empty string, is damage of the same kind and is counted the same
+  way: `row_id` is the table's key, and a line that cannot be the key of a row
+  is not a row. `NotARunFolder` for a folder that is not a run is the only
   other raise.
 - **A ledger this process may not open is not a raise either.** It comes back
   as `references: []`, `uses: []`, `counts: {}`, `exists: True`, `ledger` set to

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 from .engine import citation_ledger
@@ -235,6 +236,29 @@ def _citations_planned(protocol, agents):
         return True
     return any(row.get('track') == 'citations' or row.get('role') == 'citation-worker'
                for row in agents or () if isinstance(row, dict))
+
+
+def _citations_reading(review, root=None, protocol=None, agents=None):
+    """:func:`_citations` with ``enabled`` decided once, for both readers.
+
+    :func:`read_run` and :func:`read_citation_ledger` promise the same answer
+    about one folder, and they were deciding "did this arm plan a citations
+    lane" from different evidence: ``read_run`` from the plan and then the
+    slots, the reader from the plan alone. A ``protocol.json`` written before
+    the plan was recorded, or one whose plan was lost, has the lane only in its
+    slots — a ``spec-citations`` row, a ``cite-N`` row — and the two readings
+    disagreed about whether a missing ledger was worth a word. The decision
+    lives here now, and neither caller makes it.
+
+    ``protocol`` and ``agents`` are passed in by a caller that has already read
+    them, and read here for one that has not.
+    """
+    review = Path(review)
+    if protocol is None:
+        protocol = _mapping(review / 'protocol.json', [])
+    if agents is None:
+        agents = agent_rows(review, protocol)
+    return _citations(review, enabled=_citations_planned(protocol, agents), root=root)
 
 
 def _citations(review, enabled=False, root=None):
@@ -757,8 +781,8 @@ def read_run(path):
     # The citation stage lines are deliberately not in `problems` yet: an
     # unfinished ledger is reported, not published over, and a ledger that
     # could not be read at all is the same answer rather than a stronger one.
-    citations, citation_lines = _citations(review, enabled=_citations_planned(protocol, agents),
-                                          root=root)
+    citations, citation_lines = _citations_reading(review, root=root, protocol=protocol,
+                                                   agents=agents)
     reasons = publishable_reasons(status, source, guard, problems, len(quarantined), swapped)
     problems += swapped + worker_swapped + citation_lines
 
@@ -838,14 +862,20 @@ def read_citation_ledger(path, source_text=False):
         Whether the file is there. A run from an arm without the citations
         lane keeps no table, which is not a damaged run.
     ``references``, ``uses``
-        The rows, the last one written for each ``row_id``, ordered by
-        ``row_id`` so two readings of the same folder agree. A reference row
+        The rows, the last one written for each ``row_id``, in **natural**
+        ``row_id`` order — a run of digits is compared as the number it is, so
+        ``ref:r10`` comes after ``ref:r2`` and ``use:b2:10`` after
+        ``use:b2:2``, which is the order a reference list is printed in and the
+        order every consumer was re-sorting into. Two readings of the same
+        folder agree. A reference row
         carries the printed entry and, once the lane looked it up, its
         ``resolution``; a use row carries the in-text marker, the reference it
         points at and the verdict a worker gave it.
     ``counts``, ``complete``, ``summary``, ``problems``
         Exactly what ``read_run()['citations']`` holds, from the same
-        functions, so the two readings cannot disagree.
+        functions and the same reading of what the arm planned, so the two
+        cannot disagree — including about a ``protocol.json`` that records the
+        citation slots and no plan.
 
     **Source text is left out by default.** A resolved reference carries the
     abstract and the opening of the full text that a worker was shown, which
@@ -859,7 +889,8 @@ def read_citation_ledger(path, source_text=False):
     or ``ledger.jsonl`` is refused by name rather than followed, because the
     server writes them in place and a link in their place points at a file
     another process owns. Damaged content never raises: a line that is not
-    readable JSON is skipped and counted in ``counts['unreadable_rows']``, with
+    readable JSON, or whose ``row_id`` is not a non-empty string, is skipped
+    and counted in ``counts['unreadable_rows']``, with
     a line in ``problems`` saying so, and a ledger this process may not open at
     all comes back as no rows, ``exists`` true and the same ``problems`` line
     :func:`read_run` gives it — the one citation state where nothing can be
@@ -873,12 +904,7 @@ def read_citation_ledger(path, source_text=False):
     if folder.is_dir() or folder.is_symlink():
         refuse_symlinks(folder, review)
     ledger = citation_ledger.Ledger(review)
-    # The plan, from ``protocol.json`` alone: it is the only thing that tells a
-    # run which kept no table whether it was meant to. ``read_run`` also falls
-    # back to the claimed slots, which means reading every usage receipt, and
-    # this reader is not asked for those numbers.
-    planned = _citations_planned(_mapping(review / 'protocol.json', []), None)
-    citations, _ = _citations(review, enabled=planned, root=root)
+    citations, _ = _citations_reading(review, root=root)
     try:
         rows, _ = ledger.load() if ledger.exists() else ({}, 0)
     except (OSError, UnicodeDecodeError, ValueError):
@@ -888,7 +914,7 @@ def read_citation_ledger(path, source_text=False):
         # are empty for the same reason the counts are.
         rows = {}
     kept = {'reference': [], 'use': []}
-    for row_id in sorted(rows):
+    for row_id in sorted(rows, key=_natural):
         row = rows[row_id]
         if row.get('kind') in kept:
             kept[row['kind']].append(row if source_text else _without_source_text(row))
@@ -904,6 +930,23 @@ def read_citation_ledger(path, source_text=False):
         'summary': citations['summary'],
         'problems': citations['problems'],
     }
+
+
+def _natural(row_id):
+    """A sort key that reads a run of digits in ``row_id`` as the number it is.
+
+    Row ids are built from counters — ``ref:r2``, ``ref:r10``,
+    ``use:b2:2:r1``, ``use:b2:10:r1`` — and sorting them as text puts the
+    tenth reference second, because ``'1'`` is before ``'2'``. Every consumer
+    that printed the table in order sorted it again, so the order the ledger
+    hands out is the order it is printed in: digits compared as numbers,
+    everything else as text.
+
+    Each part is tagged with its kind so that no comparison ever puts a number
+    beside a string, whatever a row id holds.
+    """
+    return tuple((1, int(part)) if part.isdigit() else (0, part)
+                 for part in re.split(r'(\d+)', row_id))
 
 
 def _without_source_text(row):

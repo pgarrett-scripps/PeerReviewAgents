@@ -737,6 +737,16 @@ class Ledger:
         in :meth:`append` then wrote a newline after the broken bytes and made
         that permanent. One torn line is one skipped and counted row, which is
         what the rest of this class already promised.
+
+        **A row_id that is not a non-empty string is an unreadable row too.**
+        It is the key every stage replays on, every view sorts by and every
+        consumer joins on, and a line whose ``row_id`` is a list or an object
+        raised ``TypeError`` out of this method — an unhashable key — where a
+        torn line a byte away is skipped and counted. A number raised nothing
+        here and then raised out of whatever sorted the rows next, which is
+        worse: the damage surfaced somewhere that had no idea what it was
+        holding. Readable JSON that cannot be the table's key is damage of the
+        same kind as a torn line, and it is counted the same way.
         """
         rows, broken = {}, 0
         if not self.path.is_file():
@@ -755,8 +765,9 @@ class Ledger:
                 except ValueError:
                     broken += 1
                     continue
-                if isinstance(row, dict) and row.get('row_id'):
-                    rows[row['row_id']] = row
+                row_id = row.get('row_id') if isinstance(row, dict) else None
+                if isinstance(row_id, str) and row_id.strip():
+                    rows[row_id] = row
                 else:
                     broken += 1
         return rows, broken
@@ -2102,6 +2113,18 @@ def judgeable(ledger):
             if row.get('kind') == 'use' and row.get('reference_id') and not row.get('verdict')]
 
 
+def _ordinal(value):
+    """``value`` as a number to sort by, or 0 when it is not one.
+
+    A sentence index a damaged row carries as a string sorted against one
+    another row carries as a number raised ``TypeError`` and took the whole
+    batch with it. Rows the table cannot order go first and keep their order.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return value
+
+
 def _stale(row, seconds):
     """Whether a row's claim has gone cold, so another worker may take it.
 
@@ -2130,13 +2153,20 @@ def batch(ledger, slot, size=10, stale_seconds=900):
     ``stale_seconds`` an unjudged claim is open again.
     """
     rows, _ = ledger.load()
+    # `reference_id` is the other field this file is indexed on, and a row
+    # carrying a list or an object under it raised `TypeError` here on an
+    # unhashable key — the row_id crash one layer along. A row whose join key
+    # is not a string is not one a worker can be handed, so it is left out
+    # rather than allowed to take the batch with it, and the sort reads the
+    # sentence index as a number or not at all, because `2` beside `"2"`
+    # raised too.
     references = {row['reference_id']: row for row in rows.values()
-                  if row.get('kind') == 'reference'}
+                  if row.get('kind') == 'reference' and isinstance(row.get('reference_id'), str)}
     open_rows = [row for row in rows.values()
-                 if row.get('kind') == 'use' and row.get('reference_id')
-                 and not row.get('verdict')
+                 if row.get('kind') == 'use' and isinstance(row.get('reference_id'), str)
+                 and row['reference_id'] and not row.get('verdict')
                  and (row.get('claimed_by') in (None, slot) or _stale(row, stale_seconds))]
-    open_rows.sort(key=lambda row: (str(row.get('block_id')), row.get('sentence_index') or 0,
+    open_rows.sort(key=lambda row: (str(row.get('block_id')), _ordinal(row.get('sentence_index')),
                                     row['row_id']))
     size = max(1, min(int(size or 10), 25))
     out = []
