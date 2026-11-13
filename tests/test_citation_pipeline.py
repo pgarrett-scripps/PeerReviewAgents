@@ -609,6 +609,98 @@ def test_the_rest_of_the_session_keeps_working_while_the_resolve_stage_waits(tmp
     assert run.status == 'blocked'
 
 
+def test_two_resolve_calls_at_once_do_not_both_fetch_the_same_rows(tmp_path, monkeypatch):
+    """One pass at a time, now that the loop is free enough to start a second.
+
+    While the tool was sync, a second call could not begin until the first
+    returned. It is a coroutine with its pass in a worker thread now, so a
+    recorder that issues the call twice — models do — or calls again while one
+    is still waiting would get two passes over the same owed rows: every row
+    fetched twice, two of a row's three attempts spent on one answer, and
+    ``Lookups._record``'s read-modify-write of ``requests.json`` racing itself,
+    which loses receipts and miscounts the allowance. The second call does
+    nothing at all instead, and the recorder is told to wait for the first.
+    """
+    open_run(tmp_path)
+    srv.STATE['opener'] = Index(fail=('crossref.org', 'ebi.ac.uk'))
+    run = srv.current()
+    clock = FakeClock()
+    nap = time.sleep
+
+    class Napping:
+        """Twenty fake seconds and two real milliseconds per slice, as above."""
+
+        @staticmethod
+        def time():
+            return clock.time()
+
+        @staticmethod
+        def sleep(seconds):
+            clock.sleep(seconds)
+            nap(0.002)
+
+    def attempts():
+        return {row['row_id']: (row.get('resolution') or {}).get('attempts')
+                for row in run.citations.rows('reference')}
+
+    monkeypatch.setattr(cl, 'time', Napping)
+    monkeypatch.setattr(cl, 'Patience', functools.partial(cl.Patience, slice_seconds=20))
+    monkeypatch.setenv('PEERREVIEW_RUN_DEADLINE', str(int(clock.time()) + 3600))
+    seen = {}
+
+    async def the_recorder_resolves():
+        seen['first'] = await srv.resolve_citations(CODES['recorder_key'], limit=0)
+
+    async def drive():
+        async with anyio.create_task_group() as group:
+            group.start_soon(the_recorder_resolves)
+            for _ in range(2000):
+                if clock.slept:
+                    break
+                await anyio.sleep(0.001)
+            assert clock.slept, 'the stage never got as far as waiting'
+            assert run.resolving is True
+            spent, owed = run.citation_lookups().count(), attempts()
+            started = time.monotonic()
+            # The same call the first task is still inside, on the same loop.
+            seen['second'] = await srv.resolve_citations(CODES['recorder_key'], limit=0)
+            seen['elapsed'] = time.monotonic() - started
+            seen['spent'] = (spent, run.citation_lookups().count())
+            seen['owed'] = (owed, attempts())
+
+    anyio.run(drive)
+
+    second = seen['second']
+    # Not one request, and not one attempt spent, which is the point: an
+    # attempt spent twice for one answer is a row written off two attempts
+    # early.
+    assert seen['spent'][0] == seen['spent'][1], 'the second call made lookups of its own'
+    assert seen['owed'][0] == seen['owed'][1], 'the second call spent the rows attempts'
+    assert any(seen['owed'][0].values()), 'nothing had been attempted, so nothing was proved'
+    # It answered instead of queueing behind the wait, and it did no work: no
+    # pass ran, so there is nothing of a pass in the answer.
+    assert seen['elapsed'] < 1
+    assert not {'resolved_now', 'remaining', 'counts'} & set(second)
+    assert 'already running' in second['request_rejected']
+    assert second['already_resolving'] is True
+    # The first call is the one that answers, and the stage is open again after
+    # it, so the recorder that waited is not locked out.
+    assert seen['first']['waited'] > 0
+    assert run.resolving is False
+    again = resolving(CODES['recorder_key'], limit=0)
+    assert 'request_rejected' not in again, again
+    assert 'already_resolving' not in again
+
+    # And a pass that raises leaves the stage open rather than shut for the rest
+    # of the run, which is what the `finally` is for.
+    def broken(*args, **kwargs):
+        raise ValueError('the ledger is unreadable')
+
+    monkeypatch.setattr(cl, 'resolve', broken)
+    assert 'could not be resolved' in resolving(CODES['recorder_key'], limit=0)['request_rejected']
+    assert run.resolving is False
+
+
 def test_one_call_waits_only_so_long_and_tells_the_recorder_to_call_again(tmp_path, monkeypatch):
     """The run's deadline bounds the run; it does not bound one tool call.
 

@@ -365,6 +365,13 @@ class Run:
         self.quarantined = []
         self.calls = 0
         self.status = 'running'
+        # True while a `resolve_citations` pass is in flight. The pass runs in a
+        # worker thread, so the loop is free and a recorder that issues the call
+        # twice — models do — would otherwise get two passes over the same owed
+        # rows: each row fetched twice, `attempts` burned two at a time toward
+        # the cap of three, and `Lookups._record`'s read-modify-write of
+        # `requests.json` racing itself. Only one pass at a time, therefore.
+        self.resolving = False
         self.error = None
         self.started = now()
         self.required = self.required_slots()
@@ -1484,6 +1491,10 @@ async def resolve_citations(recorder_key: str, limit: int = 15) -> dict:
     those rows were left unchecked rather than answered. Put that reason in
     the citations summary: "could not be checked" on its own reads as the
     indexes having been asked and having failed.
+
+    One of these calls runs at a time. A second call made while the first is
+    still looking rows up or still waiting does nothing at all and says so:
+    wait for the first call's answer instead of issuing two.
     """
     run = current()
     if not secrets.compare_digest(str(recorder_key or ''), run.recorder_key):
@@ -1494,6 +1505,17 @@ async def resolve_citations(recorder_key: str, limit: int = 15) -> dict:
                          'citations specialist.')
     if type(limit) is not int or limit < 0:
         return rejection('Resolve a whole number of references, or 0 for every one left.')
+    # One pass at a time. Two passes over the same owed rows would fetch every
+    # row twice and burn two of its three attempts for one answer, and the
+    # lookup receipts are a read-modify-write of one file. The check and the set
+    # are both here, with no `await` between them, so they cannot interleave:
+    # every tool call is a task on one event loop and only an `await` hands it
+    # over. This is also what keeps `Lookups._record` to one writer.
+    if run.resolving:
+        return rejection('A resolve_citations call is already running: it is doing the lookups, '
+                         'or waiting out the retry gap for rows that are owed another attempt. '
+                         'Do not call it again until that call returns — this call did nothing. '
+                         'Wait for the answer it will give you.', already_resolving=True)
     # This is the one tool in this server that is a coroutine, and the wait is
     # why. FastMCP calls a sync tool inline on the event loop (mcp 1.29.1,
     # `fastmcp/utilities/func_metadata.py`: `return await fn(...)` if the tool
@@ -1522,12 +1544,17 @@ async def resolve_citations(recorder_key: str, limit: int = 15) -> dict:
                                         stop=lambda: run.status != 'running',
                                         tick=heartbeat)
     lookups = run.citation_lookups()
+    run.resolving = True
     try:
         progress = await anyio.to_thread.run_sync(
             functools.partial(citation_ledger.resolve, run.citations, lookups, limit=limit,
                               patience=patience))
     except (OSError, ValueError) as exc:
         return rejection('The citation ledger could not be resolved: ' + str(exc))
+    finally:
+        # In a `finally` so a raised pass, or a cancelled one, cannot wedge the
+        # stage shut for the rest of the run.
+        run.resolving = False
     run.write_progress()
     remaining, wait = progress['remaining'], progress.get('retry_after') or 0
     if remaining and wait and progress.get('budget_spent'):

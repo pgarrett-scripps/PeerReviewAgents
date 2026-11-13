@@ -49,7 +49,11 @@ including 32 test modules, and nothing was left behind as a shim.
   run's progress file keeps moving while it waits, interruptibly, and for no
   more than fifteen minutes in any one call; a gap that does not fit comes
   straight back, and the stage record says which rows were left and why rather
-  than letting the lane report them as asked and failed. Each row also
+  than letting the lane report them as asked and failed. One resolve call runs
+  at a time: a second one made while the first is still looking rows up or
+  waiting does nothing and says so, because two passes over the same owed rows
+  would fetch each row twice and spend two of its three attempts on one
+  answer. Each row also
   carries a per-field comparison of title, first author, year and venue,
   any retraction or correction notice — matched on the record's own type and
   update-pointing fields as well as on a leading "Retraction of", "Correction
