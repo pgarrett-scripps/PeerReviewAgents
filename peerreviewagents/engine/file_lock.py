@@ -22,6 +22,30 @@ RETRY_SECONDS = 0.05
 TIMEOUT_SECONDS = 30.0
 
 
+def shared_lock(handle, timeout=TIMEOUT_SECONDS):
+    """Take a read lock on an open file, so writers wait and readers do not.
+
+    For a reader, which must be able to work on a run folder it has no right to
+    write to: an archived run, a copy taken for a report, anything handed over
+    read-only. So this takes the lock on the file being read, never on a
+    sentinel beside it — a sentinel has to be *created* to be locked, and
+    creating a file is the one thing a reader may not do.
+
+    ``flock`` grants a shared lock on a handle opened read-only, which is the
+    whole point of it. Windows has no shared mode in ``msvcrt.locking``, so a
+    reader there takes the same one-byte exclusive lock a writer does: readers
+    queue behind each other, which is slower and still correct. Either way the
+    caller must be ready for :class:`OSError` — a lock on a read-only handle is
+    not granted everywhere — and read without one rather than refuse to read.
+    """
+    if fcntl is not None:
+        fcntl.flock(handle, fcntl.LOCK_SH)
+        return 'flock'
+    if msvcrt is not None:  # pragma: no cover - exercised only on Windows
+        return exclusive_lock(handle, timeout=timeout)
+    return 'none'  # pragma: no cover - no platform without one of the two
+
+
 def exclusive_lock(handle, timeout=TIMEOUT_SECONDS):
     """Take an exclusive lock on an open file, blocking until it is granted.
 
