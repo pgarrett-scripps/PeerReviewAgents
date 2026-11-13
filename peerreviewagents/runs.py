@@ -860,8 +860,12 @@ def read_citation_ledger(path, source_text=False):
     server writes them in place and a link in their place points at a file
     another process owns. Damaged content never raises: a line that is not
     readable JSON is skipped and counted in ``counts['unreadable_rows']``, with
-    a line in ``problems`` saying so. :class:`NotARunFolder` for a folder that
-    is not a run and ``ValueError`` for a symlink are the only two raises.
+    a line in ``problems`` saying so, and a ledger this process may not open at
+    all comes back as no rows, ``exists`` true and the same ``problems`` line
+    :func:`read_run` gives it — the one citation state where nothing can be
+    counted is the one a consumer page is most likely to meet, and it must not
+    be the one that raises. :class:`NotARunFolder` for a folder that is not a
+    run and ``ValueError`` for a symlink are the only two raises.
     """
     root, review = locate(path)
     _no_symlink(review, review)
@@ -875,7 +879,14 @@ def read_citation_ledger(path, source_text=False):
     # this reader is not asked for those numbers.
     planned = _citations_planned(_mapping(review / 'protocol.json', []), None)
     citations, _ = _citations(review, enabled=planned, root=root)
-    rows, _ = ledger.load() if ledger.exists() else ({}, 0)
+    try:
+        rows, _ = ledger.load() if ledger.exists() else ({}, 0)
+    except (OSError, UnicodeDecodeError, ValueError):
+        # A file that is there and cannot be opened or read. ``_citations``
+        # above met the same wall and has already written the line that says
+        # so, so there is nothing to add here and nothing to raise: the rows
+        # are empty for the same reason the counts are.
+        rows = {}
     kept = {'reference': [], 'use': []}
     for row_id in sorted(rows):
         row = rows[row_id]

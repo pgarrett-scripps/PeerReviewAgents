@@ -351,7 +351,12 @@ including 32 test modules, and nothing was left behind as a shim.
   re-implemented the one rule the format has. It takes `read_run`'s guards: a
   symlinked `review/`, `citations/` or `ledger.jsonl` is refused by name rather
   than followed, and a damaged line is skipped, counted in
-  `counts['unreadable_rows']` and named in `problems` rather than raised. The
+  `counts['unreadable_rows']` and named in `problems` rather than raised. A
+  ledger file the process may not open at all comes back as empty `references`
+  and `uses` with `exists` true and the same one `problems` line `read_run`
+  gives it, rather than raising the `PermissionError` out of a consumer's page:
+  the state where nothing in the table can be counted is the one such a page is
+  most likely to meet. The
   fetched abstract and full text are left out by default — most of the bytes in
   the file, and someone else's prose — with `resolution['has_source_text']` in
   their place, and `source_text=True` returns the rows exactly as stored.

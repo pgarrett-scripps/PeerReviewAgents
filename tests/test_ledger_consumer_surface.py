@@ -133,10 +133,45 @@ def test_a_real_unreadable_ledger_reads_the_same_way(tmp_path):
     path.chmod(0o000)
     try:
         reading = read_run(root)
+        rows = read_citation_ledger(root)
     finally:
         path.chmod(0o644)
     assert reading['publishable'] is True, reading['not_publishable_reasons']
     assert any('could not be read' in line for line in reading['citations']['problems'])
+    # The reader meets the same wall and answers the same way. A page that
+    # prints the table is the one most likely to be pointed at a ledger it may
+    # not open, and it may not learn that through an exception.
+    assert rows['references'] == [] and rows['uses'] == []
+    assert rows['exists'] is True
+    assert rows['ledger'] == str(path)
+    line, = rows['problems']
+    assert 'could not be read' in line
+    assert line == reading['citations']['problems'][0]
+    assert str(root) not in line and str(review) not in line
+    assert not Path(line.split(' ')[0]).is_absolute()
+
+
+def test_the_public_reader_never_raises_on_a_ledger_it_may_not_open(tmp_path, monkeypatch):
+    """The same wall, reached through ``load`` rather than through a mode bit.
+
+    The real-permissions test above cannot run as root, and this is the one
+    promise the reader's docstring makes about raises, so it is pinned here
+    too: a ledger that cannot be opened is empty rows and a problem line, never
+    an exception out of a consumer's page.
+    """
+    root, review = run_folder(tmp_path, [reference(), use()])
+
+    def unreadable(_ledger):
+        raise OSError(13, 'Permission denied', str(review / cl.LEDGER_PATH))
+
+    monkeypatch.setattr(cl.Ledger, 'load', unreadable)
+    rows = read_citation_ledger(root)
+    assert rows['references'] == [] and rows['uses'] == []
+    assert rows['exists'] is True and rows['counts'] == {}
+    assert rows['ledger'] == str(review / cl.LEDGER_PATH)
+    line, = rows['problems']
+    assert line.startswith('review/citations/ledger.jsonl is present')
+    assert str(root) not in line and str(review) not in line
 
 
 # -- a run with no ledger says only what is known ---------------------------
