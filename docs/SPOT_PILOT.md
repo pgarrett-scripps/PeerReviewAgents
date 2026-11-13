@@ -282,10 +282,14 @@ smaller of the two.
    useless — a 5-minute backoff inside a 7-minute run means the citation lane
    is structurally unfinishable at this run length, and the four affected rows
    were reported as "could not be checked", which reads as the indexes having
-   been asked and failed. Half-fixed on `main` since: the ledger's problems
-   list now names rows still owed an attempt and the retry gap the run did not
-   wait out. Waiting out a gap that fits inside the run's own wall clock is
-   still to do.
+   been asked and failed. Fixed since: the driver hands the session its own
+   deadline, and the resolve stage waits a retry gap out when the gap ends
+   inside the run and inside the 15 minutes one tool call may spend waiting —
+   in a worker thread, so the rest of the session keeps answering and the run's
+   progress file keeps moving — and otherwise comes straight back and records
+   which rows were left and why. A 90-minute run now finishes the lookups this
+   run could not, and a 7-minute run says that is what happened instead of
+   implying the indexes answered.
 
 ## A finding about the benchmark, not the engine
 

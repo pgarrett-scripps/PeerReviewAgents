@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import base64
 import datetime
+import functools
 import json
 import math
 import os
@@ -31,6 +32,9 @@ import re
 import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
+
+import anyio.from_thread
+import anyio.to_thread
 
 from ..engine import citation_ledger
 from ..engine.annotations import normalize_review, quarantine_findings
@@ -174,6 +178,23 @@ def now():
 def rejection(message, **extra):
     """A refusal an agent can act on, not an exception: the agent keeps its turn."""
     return {'request_rejected': message, **extra}
+
+
+def run_deadline():
+    """The POSIX second the launcher will end this run at, or ``None``.
+
+    Set by the starter in this session's environment, because nothing inside
+    the session can see the driver's wall clock otherwise. A tool that is
+    thinking about waiting needs it: the citation resolve stage's retry gap is
+    five minutes, which is a wait inside a ninety-minute run and a pointless
+    sleep inside a seven-minute one. Absent, unreadable or in the past, the
+    answer is ``None`` and whoever asked does not wait.
+    """
+    try:
+        deadline = float(os.environ.get('PEERREVIEW_RUN_DEADLINE') or 0)
+    except ValueError:
+        return None
+    return deadline if deadline > 0 else None
 
 
 def as_number(text):
@@ -344,6 +365,13 @@ class Run:
         self.quarantined = []
         self.calls = 0
         self.status = 'running'
+        # True while a `resolve_citations` pass is in flight. The pass runs in a
+        # worker thread, so the loop is free and a recorder that issues the call
+        # twice — models do — would otherwise get two passes over the same owed
+        # rows: each row fetched twice, `attempts` burned two at a time toward
+        # the cap of three, and `Lookups._record`'s read-modify-write of
+        # `requests.json` racing itself. Only one pass at a time, therefore.
+        self.resolving = False
         self.error = None
         self.started = now()
         self.required = self.required_slots()
@@ -1439,7 +1467,7 @@ def _ledger_call(token, name):
     return agent, None
 
 
-def resolve_citations(recorder_key: str, limit: int = 15) -> dict:
+async def resolve_citations(recorder_key: str, limit: int = 15) -> dict:
     """Recorder only: look the next references up. Stage 2, and no model runs.
 
     The server resolves every reference the paper lists — the printed DOI at
@@ -1455,6 +1483,18 @@ def resolve_citations(recorder_key: str, limit: int = 15) -> dict:
     answer is recorded as 'could not check': nothing here concludes that a
     cited work does not exist unless the DOI resolver has no handle for the
     printed DOI.
+
+    When every row left is waiting out that gap, this call waits with them —
+    but only if the gap ends inside the run's own wall clock, and it may
+    therefore take minutes to answer. If the gap does not fit, it comes back
+    at once with ``remaining`` above zero and ``unchecked_reason`` saying why
+    those rows were left unchecked rather than answered. Put that reason in
+    the citations summary: "could not be checked" on its own reads as the
+    indexes having been asked and having failed.
+
+    One of these calls runs at a time. A second call made while the first is
+    still looking rows up or still waiting does nothing at all and says so:
+    wait for the first call's answer instead of issuing two.
     """
     run = current()
     if not secrets.compare_digest(str(recorder_key or ''), run.recorder_key):
@@ -1465,16 +1505,70 @@ def resolve_citations(recorder_key: str, limit: int = 15) -> dict:
                          'citations specialist.')
     if type(limit) is not int or limit < 0:
         return rejection('Resolve a whole number of references, or 0 for every one left.')
+    # One pass at a time. Two passes over the same owed rows would fetch every
+    # row twice and burn two of its three attempts for one answer, and the
+    # lookup receipts are a read-modify-write of one file. The check and the set
+    # are both here, with no `await` between them, so they cannot interleave:
+    # every tool call is a task on one event loop and only an `await` hands it
+    # over. This is also what keeps `Lookups._record` to one writer.
+    if run.resolving:
+        return rejection('A resolve_citations call is already running: it is doing the lookups, '
+                         'or waiting out the retry gap for rows that are owed another attempt. '
+                         'Do not call it again until that call returns — this call did nothing. '
+                         'Wait for the answer it will give you.', already_resolving=True)
+    # This is the one tool in this server that is a coroutine, and the wait is
+    # why. FastMCP calls a sync tool inline on the event loop (mcp 1.29.1,
+    # `fastmcp/utilities/func_metadata.py`: `return await fn(...)` if the tool
+    # is async, `return fn(...)` if it is not), and the lowlevel server starts
+    # every request as a task on that one loop. A `time.sleep` inside a sync
+    # tool therefore stops the whole session for the length of the gap — every
+    # reviewer, every citation worker, the editor — and `stop` below could
+    # never become true, because the `mark_blocked` call that would flip it
+    # cannot run either. So the pass goes to a worker thread and the loop stays
+    # free. Everything the worker touches is the ledger on disk, which is
+    # locked; `run` itself is only ever read from it (`run.status`), and the
+    # heartbeat that writes `progress.json` is handed back to this loop.
+    def heartbeat():
+        # Called from the worker thread, between slices of a wait and after
+        # each pass. `run.write_progress` reads the run's dicts and the ledger,
+        # so it runs here, on the loop, not in the worker. It is never called
+        # while the ledger lock is held — that would be this thread waiting on
+        # the loop while the loop waits on this thread.
+        anyio.from_thread.run_sync(run.write_progress)
+
+    # The run's own wall clock decides whether this call waits a retry gap out
+    # or reports it. `stop` is asked between slices of that wait, so a run that
+    # is marked blocked or written up underneath it stops waiting at once
+    # instead of holding this call open for the rest of the gap.
+    patience = citation_ledger.Patience(deadline=run_deadline(),
+                                        stop=lambda: run.status != 'running',
+                                        tick=heartbeat)
+    lookups = run.citation_lookups()
+    run.resolving = True
     try:
-        progress = citation_ledger.resolve(run.citations, run.citation_lookups(), limit=limit)
+        progress = await anyio.to_thread.run_sync(
+            functools.partial(citation_ledger.resolve, run.citations, lookups, limit=limit,
+                              patience=patience))
     except (OSError, ValueError) as exc:
         return rejection('The citation ledger could not be resolved: ' + str(exc))
+    finally:
+        # In a `finally` so a raised pass, or a cancelled one, cannot wedge the
+        # stage shut for the rest of the run.
+        run.resolving = False
     run.write_progress()
     remaining, wait = progress['remaining'], progress.get('retry_after') or 0
-    if remaining and wait:
+    if remaining and wait and progress.get('budget_spent'):
+        nxt = (str(remaining) + ' reference(s) are owed another lookup and are still waiting out '
+               'the retry wait: ' + (progress.get('unchecked_reason')
+                                     or 'the earliest is due in ' + str(wait) + ' seconds')
+               + '. This call waited as long as one call may. Call again to take that wait back '
+                 'up if the run has the time, and otherwise report that remaining as it is.')
+    elif remaining and wait:
         nxt = (str(remaining) + ' reference(s) are owed another lookup and are waiting out the '
-               'retry wait; the earliest is due in ' + str(wait) + ' seconds. Calling again now '
-               'would do nothing: stop, and report that remaining as it is.')
+               'retry wait: ' + (progress.get('unchecked_reason')
+                                 or 'the earliest is due in ' + str(wait) + ' seconds')
+               + '. Calling again now would do nothing: stop, report that remaining as it is, '
+                 'and say in the summary that those rows are unchecked rather than answered.')
     elif remaining:
         nxt = ('Call resolve_citations again: ' + str(remaining) + ' references have not been '
                'looked up yet.')

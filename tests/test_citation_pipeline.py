@@ -14,12 +14,17 @@ result back as the run's manuscript — the same workspace an attach reads.
 
 from __future__ import annotations
 
+import datetime
+import functools
+import inspect
 import io
 import json
+import time
 import urllib.error
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+import anyio
 import pytest
 
 from peerreviewagents import names
@@ -39,6 +44,16 @@ ABSTRACT = ('We placed widgets at a fixed position on a level bench and read the
 MARKERS = {'b0006': '[1]', 'b0010': '[2]', 'b0012': '[3]'}
 CODES = {}
 TOKENS = {}
+
+
+def resolving(*args, **kwargs):
+    """``resolve_citations`` as a sync test calls it.
+
+    The tool is a coroutine, because the waiting half of the stage runs in a
+    worker thread so that it cannot hold the server's event loop. ``anyio.run``
+    here is what FastMCP does around it in the real server.
+    """
+    return anyio.run(functools.partial(srv.resolve_citations, *args, **kwargs))
 
 
 @pytest.fixture(autouse=True)
@@ -111,6 +126,30 @@ class Index:
         return {'message': {'items': [item]}}
 
 
+class FakeClock:
+    """A clock that only moves when something sleeps on it.
+
+    Every retry gap in these tests is five minutes long and none of them takes
+    any time. There is no real sleep anywhere in this suite on purpose: a test
+    that waits out a real retry gap is a five-minute test, which is a test
+    nobody runs.
+
+    It starts at the real present rather than at zero, because the rows it
+    decides the due times of carry real ``checked_at`` stamps.
+    """
+
+    def __init__(self, start=None):
+        self.now = float(start if start is not None else time.time())
+        self.slept: list[float] = []
+
+    def time(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.slept.append(seconds)
+        self.now += seconds
+
+
 def citing_workspace(tmp_path):
     """The fixture manuscript, with three of its sentences citing its references.
 
@@ -159,7 +198,7 @@ def resolved_run(tmp_path, index=None, **kwargs):
     """A run whose references are all looked up, and the index that answered."""
     opened = open_run(tmp_path, **kwargs)
     srv.STATE['opener'] = index = index if index is not None else Index()
-    answer = srv.resolve_citations(CODES['recorder_key'], limit=0)
+    answer = resolving(CODES['recorder_key'], limit=0)
     assert 'request_rejected' not in answer, answer
     return opened, answer, index
 
@@ -223,7 +262,7 @@ def test_an_arm_without_the_citations_specialist_keeps_no_ledger(tmp_path):
     assert opened['citation_worker_allowance'] is None
     assert not (run.review / cl.LEDGER_PATH).exists()
     assert 'no citation ledger' in opened['citations_next']
-    refused = srv.resolve_citations(CODES['recorder_key'])
+    refused = resolving(CODES['recorder_key'])
     assert 'keeps no citation ledger' in refused['request_rejected']
 
 
@@ -234,12 +273,12 @@ def test_the_references_are_resolved_by_the_recorder_and_no_model(tmp_path):
     """Every reference, not a sample: resolve until ``remaining`` is zero."""
     open_run(tmp_path)
     index = srv.STATE['opener'] = Index()
-    assert srv.resolve_citations('not-the-run-key')['request_rejected']
-    first = srv.resolve_citations(CODES['recorder_key'], limit=2)
+    assert resolving('not-the-run-key')['request_rejected']
+    first = resolving(CODES['recorder_key'], limit=2)
     assert (first['resolved_now'], first['remaining']) == (2, 1)
     assert 'resolve_citations again' in first['next']
     assert first['lookups_now'] > 0
-    rest = srv.resolve_citations(CODES['recorder_key'], limit=0)
+    rest = resolving(CODES['recorder_key'], limit=0)
     assert (rest['resolved_now'], rest['remaining']) == (1, 0)
     assert 'may claim their batches' in rest['next']
     counts = rest['counts']
@@ -248,7 +287,7 @@ def test_the_references_are_resolved_by_the_recorder_and_no_model(tmp_path):
     assert counts['with_source_text'] == 3
     assert counts['lookups'] == rest['lookups_total'] == len(index.urls)
     # A third call has nothing left to do and makes no further request.
-    again = srv.resolve_citations(CODES['recorder_key'])
+    again = resolving(CODES['recorder_key'])
     assert again['resolved_now'] == 0
     assert again['lookups_now'] == 0
     assert rest['ledger'] == cl.LEDGER_PATH
@@ -336,7 +375,7 @@ def test_a_lookup_that_never_answers_is_could_not_check(tmp_path):
     """A rate limit is not evidence about a paper. 'could not check', never 'no'."""
     open_run(tmp_path)
     srv.STATE['opener'] = Index(fail=('crossref.org', 'ebi.ac.uk'))
-    answer = srv.resolve_citations(CODES['recorder_key'], limit=0)
+    answer = resolving(CODES['recorder_key'], limit=0)
     counts = answer['counts']
     assert counts['could_not_check'] == 3
     assert counts['not_found'] == 0
@@ -358,7 +397,7 @@ def test_the_recorder_is_told_to_stop_while_the_owed_retries_are_waiting(tmp_pat
     """
     open_run(tmp_path)
     srv.STATE['opener'] = Index(fail=('crossref.org', 'ebi.ac.uk'))
-    answer = srv.resolve_citations(CODES['recorder_key'], limit=0)
+    answer = resolving(CODES['recorder_key'], limit=0)
     assert answer['remaining'] == 3
     assert 0 < answer['retry_after'] <= answer['retry_wait']
     assert answer['retry_wait'] == cl.RETRY_WAIT_SECONDS >= 60
@@ -366,7 +405,7 @@ def test_the_recorder_is_told_to_stop_while_the_owed_retries_are_waiting(tmp_pat
     assert 'stop' in answer['next']
     assert answer['counts']['stages']['resolve']['done'] is False
     # And a second call now does nothing, which is what the recorder is told.
-    again = srv.resolve_citations(CODES['recorder_key'], limit=0)
+    again = resolving(CODES['recorder_key'], limit=0)
     assert again['resolved_now'] == 0 and again['remaining'] == 3
 
     # A run can end inside that wait: the retry gap is five minutes and a short
@@ -376,9 +415,414 @@ def test_the_recorder_is_told_to_stop_while_the_owed_retries_are_waiting(tmp_pat
     lines = cl.problems(again['counts'])
     owed = [line for line in lines if 'still owed an attempt' in line]
     assert len(owed) == 1, lines
-    assert '3 row(s)' in owed[0] and 'second(s) that the run did not wait out' in owed[0]
+    assert '3 row(s)' in owed[0]
+    # No PEERREVIEW_RUN_DEADLINE here, so the stage had no run clock to measure
+    # the gap against and says that, rather than implying it chose not to wait.
+    assert 'not told how much of the run was left' in owed[0]
     assert 'counted as unchecked rather than answered' in owed[0]
     assert all(';' not in line and 'do not exist' not in line for line in lines)
+
+
+def test_a_retry_gap_that_fits_inside_the_run_is_waited_out_and_the_rows_are_checked(tmp_path):
+    """The whole point of the retry: a rate limit passes, and the stage is still there.
+
+    Three rows rate-limited, a retry gap of five minutes, and an hour of run
+    left. The stage waits the gap out and takes the rows up itself, so the
+    reference list is checked instead of being reported as unchecked by a run
+    that had the time and spent it ending.
+    """
+    open_run(tmp_path)
+    index = Index(fail=('crossref.org', 'ebi.ac.uk'))
+    srv.STATE['opener'] = index
+    clock = FakeClock()
+
+    def wait_the_rate_limit_out(seconds):
+        clock.sleep(seconds)
+        index.fail = []  # which is the state the retry exists for
+
+    run = srv.current()
+    patience = cl.Patience(deadline=clock.time() + 3600, clock=clock.time,
+                           sleep=wait_the_rate_limit_out,
+                           slice_seconds=cl.RETRY_WAIT_SECONDS)
+    progress = cl.resolve(run.citations, run.citation_lookups(), limit=0, patience=patience)
+    assert progress['remaining'] == 0
+    assert progress['counts']['resolved'] == 3
+    assert progress['counts']['could_not_check'] == 0
+    assert progress['unchecked_reason'] is None
+    # About one gap waited, and no real time spent on it.
+    assert clock.slept
+    assert progress['waited'] == pytest.approx(sum(clock.slept))
+    assert cl.RETRY_WAIT_SECONDS <= progress['waited'] <= cl.RETRY_WAIT_SECONDS + 10
+    stage = progress['counts']['stages']['resolve']
+    assert stage['done'] is True and stage['waited'] == progress['waited']
+    assert stage['unchecked_reason'] is None
+    assert not [line for line in cl.problems(progress['counts'])
+                if 'still owed an attempt' in line]
+
+
+def test_a_retry_gap_longer_than_the_run_has_left_is_not_waited_out_and_says_so(tmp_path):
+    """Two minutes of run and a five-minute gap: report it, do not sleep through it.
+
+    This is the pilot's seven-minute run. Sleeping would hold the tool call
+    open until the driver ended the run, and the rows would be unchecked at the
+    end of it either way — so the stage comes straight back and the record says
+    which rows were left and why.
+    """
+    open_run(tmp_path)
+    srv.STATE['opener'] = Index(fail=('crossref.org', 'ebi.ac.uk'))
+    clock = FakeClock()
+    run = srv.current()
+    patience = cl.Patience(deadline=clock.time() + 120, clock=clock.time, sleep=clock.sleep)
+    progress = cl.resolve(run.citations, run.citation_lookups(), limit=0, patience=patience)
+    assert progress['remaining'] == 3
+    assert clock.slept == [] and progress['waited'] == 0.0
+    reason = progress['unchecked_reason']
+    # 120 seconds of run less the margin the stage keeps for the pass that
+    # would have followed the wait.
+    left = 120 - cl.RESOLVE_MARGIN_SECONDS
+    assert f'{left} second(s) of the run were left to wait in' in reason, reason
+    assert progress['counts']['stages']['resolve']['unchecked_reason'] == reason
+    lines = cl.problems(progress['counts'])
+    owed = [line for line in lines if 'still owed an attempt' in line]
+    assert len(owed) == 1 and reason in owed[0]
+    assert 'counted as unchecked rather than answered' in owed[0]
+    assert all(';' not in line and 'do not exist' not in line for line in lines)
+
+
+def test_the_recorder_is_handed_the_runs_clock_and_not_a_guess(tmp_path, monkeypatch, subtests):
+    """The tool reads the driver's deadline out of the environment, or waits for nothing.
+
+    This is the wiring the fake-clock tests above cannot see: that the server
+    asks the environment the launcher set, that an unusable answer is no
+    deadline rather than a wrong one, and that a run with less left than the
+    gap comes straight back with the reason instead of holding the call open.
+    """
+    with subtests.test('an unusable deadline is no deadline'):
+        for value in ('', 'soon', '0', '-1'):
+            monkeypatch.setenv('PEERREVIEW_RUN_DEADLINE', value)
+            assert srv.run_deadline() is None, value
+        monkeypatch.delenv('PEERREVIEW_RUN_DEADLINE')
+        assert srv.run_deadline() is None
+
+    with subtests.test('a deadline the launcher set is read'):
+        monkeypatch.setenv('PEERREVIEW_RUN_DEADLINE', '1700000124')
+        assert srv.run_deadline() == 1_700_000_124.0
+
+    with subtests.test('a run with less left than the gap does not wait'):
+        open_run(tmp_path)
+        srv.STATE['opener'] = Index(fail=('crossref.org', 'ebi.ac.uk'))
+        monkeypatch.setenv('PEERREVIEW_RUN_DEADLINE', str(int(time.time()) + 90))
+        started = time.monotonic()
+        answer = resolving(CODES['recorder_key'], limit=0)
+        # Held open for no time at all: the point is that it did not sleep.
+        assert time.monotonic() - started < 5
+        assert answer['remaining'] == 3 and answer['waited'] == 0.0
+        assert 'of the run were left to wait in' in answer['unchecked_reason']
+        assert answer['unchecked_reason'] in answer['next']
+        assert 'unchecked rather than answered' in answer['next']
+
+
+def test_the_rest_of_the_session_keeps_working_while_the_resolve_stage_waits(tmp_path,
+                                                                            monkeypatch):
+    """The wait may not hold the server's event loop. Three agents, one loop.
+
+    FastMCP runs a *sync* tool inline on the event loop that serves every agent
+    in the run, so a ``time.sleep`` inside one would stop the reviewers, the
+    workers, the editor and the recorder for the length of the gap — and would
+    stop the one call that could end the wait, which is the recorder marking the
+    run blocked. So the tool is a coroutine and the pass runs in a worker
+    thread. This test holds a resolve in its wait and asks the server for three
+    things while it is there: another agent's tool call, a heartbeat in
+    ``progress.json``, and the wait's own end.
+    """
+    open_run(tmp_path)
+    srv.STATE['opener'] = Index(fail=('crossref.org', 'ebi.ac.uk'))
+    run = srv.current()
+    spec = token_for('spec-citations')
+    clock = FakeClock()
+    nap = time.sleep
+
+    class Napping:
+        """``time`` as the ledger sees it: a fake clock that yields for real.
+
+        A slice is twenty fake seconds and two real milliseconds. The fake part
+        is why a five-minute gap costs nothing; the real part is only there so
+        the worker thread lets go of the interpreter, which is the thing being
+        measured.
+        """
+
+        @staticmethod
+        def time():
+            return clock.time()
+
+        @staticmethod
+        def sleep(seconds):
+            clock.sleep(seconds)
+            nap(0.002)
+
+    # A sync tool would have been called inline on the loop, so this is the
+    # whole fix in one assertion: FastMCP awaits a coroutine function instead.
+    assert inspect.iscoroutinefunction(srv.resolve_citations)
+    monkeypatch.setattr(cl, 'time', Napping)
+    monkeypatch.setattr(cl, 'Patience', functools.partial(cl.Patience, slice_seconds=20))
+    monkeypatch.setenv('PEERREVIEW_RUN_DEADLINE', str(int(clock.time()) + 3600))
+    progress_file = run.review / 'progress.json'
+    run.write_progress()
+    before = json.loads(progress_file.read_text(encoding='utf-8'))['updated']
+    seen = {}
+
+    async def the_recorder_resolves():
+        seen['resolve'] = await srv.resolve_citations(CODES['recorder_key'], limit=0)
+
+    async def drive():
+        async with anyio.create_task_group() as group:
+            group.start_soon(the_recorder_resolves)
+            for _ in range(2000):
+                if clock.slept:
+                    break
+                await anyio.sleep(0.001)
+            assert clock.slept, 'the stage never got as far as waiting'
+            # The citations specialist, mid-wait, on the same loop.
+            seen['rows'] = srv.citation_rows(spec, kind='counts')
+            seen['beat'] = json.loads(progress_file.read_text(encoding='utf-8'))
+            # And the call that a blocking wait made impossible: it is what
+            # `stop` reads, so it ends the wait as well as the run.
+            seen['blocked'] = srv.mark_blocked(CODES['recorder_key'], reason='rate limited')
+
+    started = time.monotonic()
+    anyio.run(drive)
+    # The whole exchange, including two agents and an interrupted five-minute
+    # gap, inside a second or two of real time.
+    assert time.monotonic() - started < 10
+
+    # A tool call from another agent was served while the stage was waiting.
+    assert 'request_rejected' not in seen['rows'], seen['rows']
+    assert seen['rows']['counts']['references'] == 3
+    # Progress moved while the stage waited, which is what the driver watches.
+    assert seen['beat']['updated'] != before
+    # And the wait ended with the run rather than with the gap.
+    assert 'request_rejected' not in seen['blocked'], seen['blocked']
+    answer = seen['resolve']
+    assert answer['remaining'] == 3
+    assert 0 < answer['waited'] < cl.RETRY_WAIT_SECONDS
+    assert 'the run stopped while the stage was waiting' in answer['unchecked_reason']
+    assert run.status == 'blocked'
+
+
+def test_two_resolve_calls_at_once_do_not_both_fetch_the_same_rows(tmp_path, monkeypatch):
+    """One pass at a time, now that the loop is free enough to start a second.
+
+    While the tool was sync, a second call could not begin until the first
+    returned. It is a coroutine with its pass in a worker thread now, so a
+    recorder that issues the call twice — models do — or calls again while one
+    is still waiting would get two passes over the same owed rows: every row
+    fetched twice, two of a row's three attempts spent on one answer, and
+    ``Lookups._record``'s read-modify-write of ``requests.json`` racing itself,
+    which loses receipts and miscounts the allowance. The second call does
+    nothing at all instead, and the recorder is told to wait for the first.
+    """
+    open_run(tmp_path)
+    srv.STATE['opener'] = Index(fail=('crossref.org', 'ebi.ac.uk'))
+    run = srv.current()
+    clock = FakeClock()
+    nap = time.sleep
+
+    class Napping:
+        """Twenty fake seconds and two real milliseconds per slice, as above."""
+
+        @staticmethod
+        def time():
+            return clock.time()
+
+        @staticmethod
+        def sleep(seconds):
+            clock.sleep(seconds)
+            nap(0.002)
+
+    def attempts():
+        return {row['row_id']: (row.get('resolution') or {}).get('attempts')
+                for row in run.citations.rows('reference')}
+
+    monkeypatch.setattr(cl, 'time', Napping)
+    monkeypatch.setattr(cl, 'Patience', functools.partial(cl.Patience, slice_seconds=20))
+    monkeypatch.setenv('PEERREVIEW_RUN_DEADLINE', str(int(clock.time()) + 3600))
+    seen = {}
+
+    async def the_recorder_resolves():
+        seen['first'] = await srv.resolve_citations(CODES['recorder_key'], limit=0)
+
+    async def drive():
+        async with anyio.create_task_group() as group:
+            group.start_soon(the_recorder_resolves)
+            for _ in range(2000):
+                if clock.slept:
+                    break
+                await anyio.sleep(0.001)
+            assert clock.slept, 'the stage never got as far as waiting'
+            assert run.resolving is True
+            spent, owed = run.citation_lookups().count(), attempts()
+            started = time.monotonic()
+            # The same call the first task is still inside, on the same loop.
+            seen['second'] = await srv.resolve_citations(CODES['recorder_key'], limit=0)
+            seen['elapsed'] = time.monotonic() - started
+            seen['spent'] = (spent, run.citation_lookups().count())
+            seen['owed'] = (owed, attempts())
+
+    anyio.run(drive)
+
+    second = seen['second']
+    # Not one request, and not one attempt spent, which is the point: an
+    # attempt spent twice for one answer is a row written off two attempts
+    # early.
+    assert seen['spent'][0] == seen['spent'][1], 'the second call made lookups of its own'
+    assert seen['owed'][0] == seen['owed'][1], 'the second call spent the rows attempts'
+    assert any(seen['owed'][0].values()), 'nothing had been attempted, so nothing was proved'
+    # It answered instead of queueing behind the wait, and it did no work: no
+    # pass ran, so there is nothing of a pass in the answer.
+    assert seen['elapsed'] < 1
+    assert not {'resolved_now', 'remaining', 'counts'} & set(second)
+    assert 'already running' in second['request_rejected']
+    assert second['already_resolving'] is True
+    # The first call is the one that answers, and the stage is open again after
+    # it, so the recorder that waited is not locked out.
+    assert seen['first']['waited'] > 0
+    assert run.resolving is False
+    again = resolving(CODES['recorder_key'], limit=0)
+    assert 'request_rejected' not in again, again
+    assert 'already_resolving' not in again
+
+    # And a pass that raises leaves the stage open rather than shut for the rest
+    # of the run, which is what the `finally` is for.
+    def broken(*args, **kwargs):
+        raise ValueError('the ledger is unreadable')
+
+    monkeypatch.setattr(cl, 'resolve', broken)
+    assert 'could not be resolved' in resolving(CODES['recorder_key'], limit=0)['request_rejected']
+    assert run.resolving is False
+
+
+def test_one_call_waits_only_so_long_and_tells_the_recorder_to_call_again(tmp_path, monkeypatch):
+    """The run's deadline bounds the run; it does not bound one tool call.
+
+    Rows fall behind at different moments, so a stage can be handed gap after
+    gap and hold one call open for most of a ninety-minute run. The client has
+    its own patience — a stdio MCP server gets 30 minutes of silence per call
+    in Claude Code 2.1.325, and nothing this process writes to the run folder
+    extends it — so the call comes back with its budget spent, and the rows it
+    left are rows the next call takes up rather than rows nobody will.
+    """
+    open_run(tmp_path)
+    srv.STATE['opener'] = Index(fail=('crossref.org', 'ebi.ac.uk'))
+    clock = FakeClock()
+    # Room for one gap and not two, against a day of run: the budget is what
+    # bites, and the stage waited once before it did.
+    budget = cl.RETRY_WAIT_SECONDS + 30
+    monkeypatch.setattr(cl, 'time', clock)
+    # The rows are stamped on the same clock the stage sleeps on. Two gaps go by
+    # here, so rows stamped on the system clock would come out due the moment
+    # the fake one moved, and the second gap — the one the budget refuses —
+    # would never be asked for.
+    monkeypatch.setattr(cl, 'now', lambda: datetime.datetime.fromtimestamp(
+        clock.time(), datetime.timezone.utc).isoformat())
+    monkeypatch.setattr(cl, 'Patience', functools.partial(
+        cl.Patience, slice_seconds=cl.RETRY_WAIT_SECONDS, budget=budget))
+    monkeypatch.setenv('PEERREVIEW_RUN_DEADLINE', str(int(clock.time()) + 86_400))
+    answer = resolving(CODES['recorder_key'], limit=0)
+    assert answer['remaining'] == 3
+    assert answer['budget_spent'] is True
+    assert cl.RETRY_WAIT_SECONDS <= answer['waited'] <= budget
+    assert sum(clock.slept) == pytest.approx(answer['waited'])
+    reason = answer['unchecked_reason']
+    assert 'one call may wait' in reason and 'taken up' in reason
+    assert reason in answer['next'] and 'Call again' in answer['next']
+    # Not the other two cases: the run had the time, and nothing stopped it.
+    assert 'of the run were left to wait in' not in reason
+    assert 'the run stopped' not in reason
+
+
+def test_the_stage_waits_only_when_it_knows_the_run_has_the_time(subtests):
+    """:class:`Patience` on its own: every state it may and may not wait in."""
+    with subtests.test('no deadline is no waiting'):
+        clock = FakeClock()
+        blind = cl.Patience(clock=clock.time, sleep=clock.sleep)
+        assert blind.left() is None
+        assert blind.fits(300) is False
+        assert blind.wait(300) is False
+        assert clock.slept == []
+        assert 'not told how much of the run was left' in blind.why(300)
+        assert blind.why(0) is None
+
+    with subtests.test('a gap inside the run is waited out'):
+        clock = FakeClock()
+        roomy = cl.Patience(deadline=clock.time() + 3600, clock=clock.time, sleep=clock.sleep)
+        assert roomy.fits(300) is True
+        assert roomy.wait(300) is True
+        assert roomy.waited == pytest.approx(300)
+        assert roomy.interrupted is False
+
+    with subtests.test('a gap the margin does not leave room for'):
+        clock = FakeClock()
+        tight = cl.Patience(deadline=clock.time() + 300, clock=clock.time, sleep=clock.sleep)
+        assert tight.fits(300) is False
+        assert tight.wait(300) is False
+        assert clock.slept == []
+
+    with subtests.test('a wait ends when the run does, not when the gap does'):
+        clock = FakeClock()
+        asked = []
+
+        def the_run_is_over():
+            asked.append(1)
+            return len(asked) > 3
+
+        stopping = cl.Patience(deadline=clock.time() + 3600, clock=clock.time,
+                               sleep=clock.sleep, stop=the_run_is_over)
+        assert stopping.wait(300) is False
+        assert stopping.interrupted is True
+        # Seconds, not minutes: the wait is slept in slices so that it can end.
+        assert stopping.waited <= 5
+        assert 'the run stopped while the stage was waiting' in stopping.why(300)
+
+    with subtests.test('a sleep that does not move the clock is not a wait'):
+        clock = FakeClock()
+        frozen = cl.Patience(deadline=clock.time() + 3600, clock=clock.time,
+                             sleep=lambda seconds: None)
+        assert frozen.wait(300) is False
+        assert frozen.interrupted is False
+
+    with subtests.test('a day of run left is still not an unbounded call'):
+        clock = FakeClock()
+        patient = cl.Patience(deadline=clock.time() + 86_400, clock=clock.time,
+                              sleep=clock.sleep, slice_seconds=cl.RETRY_WAIT_SECONDS)
+        gaps = 0
+        while patient.wait(cl.RETRY_WAIT_SECONDS):
+            gaps += 1
+        assert gaps == int(cl.RESOLVE_WAIT_BUDGET_SECONDS // cl.RETRY_WAIT_SECONDS) == 3
+        assert patient.waited == pytest.approx(cl.RESOLVE_WAIT_BUDGET_SECONDS)
+        assert patient.spare() == pytest.approx(0)
+        assert patient.interrupted is False, 'a spent budget is not an interrupted run'
+        assert 'one call may wait' in patient.why(cl.RETRY_WAIT_SECONDS)
+
+    with subtests.test('the stage says it is alive while it waits'):
+        clock, beats = FakeClock(), []
+        alive = cl.Patience(deadline=clock.time() + 3600, clock=clock.time, sleep=clock.sleep,
+                            tick=lambda: beats.append(clock.time()))
+        assert alive.wait(cl.RETRY_WAIT_SECONDS) is True
+        # One beat a tick interval, not one a slice: the folder is polled.
+        assert len(beats) == pytest.approx(cl.RETRY_WAIT_SECONDS / cl.RESOLVE_TICK_SECONDS,
+                                           abs=1)
+        assert max(b - a for a, b in zip(beats, beats[1:])) <= cl.RESOLVE_TICK_SECONDS
+
+    with subtests.test('a heartbeat that fails is not a failed stage'):
+        clock = FakeClock()
+
+        def the_loop_is_gone():
+            raise RuntimeError('no running event loop')
+
+        deaf = cl.Patience(deadline=clock.time() + 3600, clock=clock.time, sleep=clock.sleep,
+                           tick=the_loop_is_gone)
+        assert deaf.wait(cl.RETRY_WAIT_SECONDS) is True
+        assert deaf.tick is None, 'and it is not tried again'
 
 
 def test_a_ledger_that_cannot_be_read_is_reported_and_never_read_as_clean(tmp_path, monkeypatch):

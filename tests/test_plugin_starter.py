@@ -464,6 +464,80 @@ def test_the_watch_ends_a_run_only_when_nothing_is_writing_the_folder(tmp_path):
     assert starter.RUN_MARKED_BLOCKED in starter.SETTLED
 
 
+def test_a_stage_waiting_out_its_retry_gaps_is_not_a_dead_session(tmp_path, monkeypatch):
+    """The driver's stillness watch and the resolve stage's wait, on one clock.
+
+    This is the pilot's race in its second form. The watch reads movement from
+    ``progress.json`` alone, and the resolve stage can legitimately be inside a
+    five-minute retry gap with nothing to write — twice over, for three
+    attempts. That is over ten minutes of an unchanged folder against a
+    :data:`starter.STREAM_QUIET` of ten, so a run doing exactly what it was
+    told would have been ended underneath itself as soon as the session closed
+    its stream.
+
+    So the stage beats while it waits, and the beat is the real one:
+    :class:`cl.Patience` with its own tick interval, driving the real watch over
+    two real gaps, polled every slice the way the driver polls.
+    """
+    progress = tmp_path / 'progress.json'
+    beats = []
+
+    class Ticking:
+        """One fake clock for both halves: the stage sleeps on it, the watch reads it."""
+
+        def __init__(self):
+            self.now = 10_000.0
+
+        def monotonic(self):
+            return self.now
+
+        def sleep(self, seconds):
+            self.now += seconds
+            # The driver's own tick, in the middle of the stage's sleep: this is
+            # the interleaving the race is about.
+            polled.append(watch(closed=True, alive=True))
+
+    clock = Ticking()
+    polled = []
+
+    def heartbeat():
+        beats.append(clock.now)
+        progress.write_text(json.dumps({'status': 'running', 'updated': f'{clock.now:.3f}'}),
+                            encoding='utf-8')
+
+    monkeypatch.setattr(starter, 'time', clock)
+    watch = starter.Completion(tmp_path, tick=0.0)
+    heartbeat()  # the stage's first pass, which is movement
+    assert watch(closed=True, alive=True) is None
+
+    patience = cl.Patience(deadline=clock.monotonic() + 3600, clock=clock.monotonic,
+                           sleep=clock.sleep, tick=heartbeat)
+    for _ in range(2):
+        assert patience.wait(cl.RETRY_WAIT_SECONDS) is True
+        heartbeat()  # and the pass that follows it
+
+    # Two full gaps went by — the whole of the window the driver gives a closed
+    # stream, which is the number this race is made of — and it never once read
+    # the run as finished.
+    assert patience.waited == pytest.approx(2 * cl.RETRY_WAIT_SECONDS)
+    assert clock.now - 10_000.0 >= starter.STREAM_QUIET
+    assert polled and set(polled) == {None}, 'the driver ended a run that was waiting'
+    # The beats are the reason, and they are close enough together to be seen.
+    assert len(beats) > 2
+    assert max(b - a for a, b in zip(beats, beats[1:])) <= cl.RESOLVE_TICK_SECONDS
+    # A heartbeat, not a write per slice: the folder is polled by a driver and
+    # one rewrite a second would be noise the run has to pay for.
+    assert len(beats) < len(polled) / 10
+    assert len(beats) <= 2 * (cl.RETRY_WAIT_SECONDS / cl.RESOLVE_TICK_SECONDS) + 3
+
+    # The control: the same watch, the same closed stream, and a folder nobody
+    # is writing any more. That is the case it exists to end.
+    assert watch(closed=True, alive=True) is None, 'the last pass is still movement'
+    clock.now += starter.STREAM_QUIET + 1
+    assert watch(closed=True, alive=True) == starter.NOTHING_LEFT_WRITING
+    assert 'closed its event stream' in watch.note
+
+
 def test_a_half_written_progress_file_is_not_an_answer_about_the_run(tmp_path):
     """The server rewrites that file while the driver is reading it.
 
@@ -819,8 +893,10 @@ def test_asking_for_no_citation_workers_says_so_instead_of_saying_nothing(tmp_pa
     """
     seen = {}
 
-    def fake_launch(prompt, directory, deadline, on_event, cwd, chosen, watch=None):
+    def fake_launch(prompt, directory, timeout_at, on_event, cwd, chosen, watch=None,
+                    deadline=None):
         seen['prompt'] = prompt
+        seen['deadline'] = deadline
         return [], 'the workflow task finished', 0
 
     monkeypatch.setattr(starter, 'claude_version', lambda binary=None: '2.1.400')
@@ -841,6 +917,42 @@ def test_asking_for_no_citation_workers_says_so_instead_of_saying_nothing(tmp_pa
     starter.review(str(FIXTURE), str(tmp_path / 'bare'), reviewers=1, arm='reviewers-only',
                    citation_workers=0)
     assert 'citation worker' not in seen['prompt'] and 'worker(s)' not in seen['prompt']
+
+
+def test_the_session_is_told_when_the_driver_will_end_the_run(tmp_path, monkeypatch,
+                                                              no_allowlist):
+    """The wall clock crosses the process boundary, because a waiting tool needs it.
+
+    A tool inside the session that is deciding whether to wait — the citation
+    resolve stage, whose retry gap is five minutes — cannot see the driver's
+    deadline, and the pilot's seven-minute run spent its last rows on a wait
+    that was never going to end inside it. It goes over as a POSIX timestamp:
+    the driver times itself on a monotonic clock, which means nothing on the
+    other side.
+    """
+    monkeypatch.setattr(starter, 'claude_version', lambda binary=None: '2.1.400')
+    environment = starter.child_environment('claude', {'PEERREVIEW_EDITOR_MODEL': 'opus'},
+                                            deadline=1_700_000_123.6)
+    assert environment['PEERREVIEW_RUN_DEADLINE'] == '1700000124'
+    assert environment['PEERREVIEW_EDITOR_MODEL'] == 'opus'
+    # A run with no deadline to promise says nothing, rather than saying zero,
+    # which a reader would have to parse as a deadline already past.
+    assert 'PEERREVIEW_RUN_DEADLINE' not in starter.child_environment('claude')
+
+    seen = {}
+
+    def fake_launch(prompt, directory, timeout_at, on_event, cwd, chosen, watch=None,
+                    deadline=None):
+        seen['deadline'] = deadline
+        return [], 'the workflow task finished', 0
+
+    monkeypatch.setattr(starter, 'probe', lambda directory, cwd: ([], {'raw': None}))
+    monkeypatch.setattr(starter, 'launch', fake_launch)
+    starter.review(str(FIXTURE), str(tmp_path / 'run'), reviewers=1, arm='reviewers-only',
+                   wall_timeout=600)
+    # The same wall clock the driver holds itself to, read off the clock the
+    # session can also read.
+    assert seen['deadline'] == pytest.approx(time.time() + 600, abs=30)
 
 
 def test_the_prompt_names_the_skill_the_arm_belongs_to():
