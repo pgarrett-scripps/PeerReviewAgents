@@ -2660,6 +2660,21 @@ def problems(totals):
     if totals.get('could_not_check'):
         lines.append(f"{totals['could_not_check']} reference(s) could not be checked because the "
                      'lookups did not answer, which says nothing about whether they exist')
+    resolve = stages.get('resolve') or {}
+    owed = resolve.get('remaining') or 0
+    if owed and not resolve.get('done'):
+        # The stage stopping with rows still owed a lookup is not the same fact
+        # as those rows being unanswerable, and the counts above cannot tell
+        # them apart: a row waiting out a rate limit is recorded as one that
+        # could not be checked. A run can end inside that wait — a seven-minute
+        # review and a five-minute retry gap means the rows were never going to
+        # be taken up again — and the report said only that they could not be
+        # checked, which reads as the indexes having been asked and failed.
+        due = resolve.get('retry_after') or 0
+        lines.append(f'the reference lookups stopped with {owed} row(s) still owed an attempt'
+                     + (f', the next of them not due for another {due} second(s) that the run '
+                        'did not wait out' if due else ' that the run never took up again')
+                     + ', so those rows are counted as unchecked rather than answered')
     if totals.get('not_located'):
         lines.append(f"{totals['not_located']} reference(s) are listed in neither Crossref nor "
                      'Europe PMC, and much of the literature is in neither, so this is weak '

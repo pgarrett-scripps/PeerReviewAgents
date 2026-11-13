@@ -9,9 +9,14 @@ It does five things a workflow script cannot:
   would otherwise look like a review with no findings.
 * **Never uses bare mode.** ``--bare`` skips plugin sync and reads credentials
   only from an API key, so it is both useless here and the wrong login.
-* **Reads the whole stream.** Under ``-p`` the Workflow tool is a background
-  task: the first ``result`` event arrives while the review is still running.
-  The starter waits for the task notification and keeps the last result.
+* **Waits for the review, not for the session's turn.** Under ``-p`` the
+  Workflow tool is a background task: the first ``result`` event arrives while
+  the review is still running, and a session that reports the workflow running
+  and ends its turn closes its event stream with the review alive. The session
+  is therefore only ended when the run folder says the review was written or
+  the run was marked blocked, or when nothing is writing that folder any more
+  — see :class:`Completion`. Terminating on the session's own last word killed
+  live reviews, which is what this is written against.
 * **Enforces budgets and records provenance from the stream.**
   ``system/task_progress`` carries each agent's tokens, tool calls, state and
   model, so a per-agent or per-run token ceiling is enforced here, and the model
@@ -40,7 +45,7 @@ import time
 from pathlib import Path
 
 from ..engine.storage import digest, read, write
-from ..names import COMPLETE_STATUSES, FINDING_SCHEMA_VERSION
+from ..names import BLOCKED, COMPLETE_STATUSES, FINDING_SCHEMA_VERSION
 from . import models as model_plan
 from .server import (
     ARMS,
@@ -72,6 +77,35 @@ MISSING_CLAUDE = ('claude is not installed or not on this PATH, so no session ca
 #: must agree on.
 DRAFT_CHECK_TRACKS = ('stats', 'numbers', 'methods-reporting')
 VERSIONS = {}
+#: Reasons the read loop ended that are not themselves a failure: the work the
+#: session launched reached an end of its own, and the run folder is what says
+#: which end it was. Anything else `stop` can hold is the cause of a blocked
+#: run.
+#: The session's own word that the task is over. Nothing here stops on it any
+#: more — that is the race — but it is still accepted as a settled reason, so a
+#: caller driving :func:`launch` with its own watch reads the same way.
+WORKFLOW_FINISHED = 'the workflow task finished'
+REVIEW_WRITTEN = 'the server recorded the review as written'
+RUN_MARKED_BLOCKED = 'the server marked the run blocked'
+NOTHING_LEFT_WRITING = 'nothing is writing the run folder any more'
+SETTLED = (WORKFLOW_FINISHED, REVIEW_WRITTEN, RUN_MARKED_BLOCKED, NOTHING_LEFT_WRITING)
+#: How long the run folder has to stand still before the driver accepts that no
+#: review is coming, in the three states it can be in. The server rewrites
+#: ``progress.json`` at the end of every tool call, so a folder that is
+#: changing is a review that is working, and these are the windows of silence
+#: that mean it is not. The session's own process being gone is proof: nothing
+#: can write the folder again, so a moment is enough. A session that reported
+#: its workflow task finished has nothing left to do either. A session that
+#: merely stopped talking gets the long window, because an agent can read for
+#: minutes between tool calls, and waiting out the wall clock costs time while
+#: killing a live review costs the whole run.
+EXITED_QUIET = 1.5
+FINISHED_QUIET = 20.0
+STREAM_QUIET = 600.0
+#: How often the driver looks at the run folder while it is waiting.
+WATCH_TICK = 1.0
+#: Agent states the progress stream uses for an agent the harness gave up on.
+FAILED_STATES = ('error', 'errored', 'failed')
 
 
 def tool_names():
@@ -172,11 +206,105 @@ def drain(stream, into):
         pass
 
 
-def launch(prompt, directory, timeout_at, on_event, cwd, chosen=None):
+def recorded_progress(review):
+    """What the server last wrote in ``progress.json``, or ``{}``.
+
+    Read while the review is running, so a file caught half-rewritten is not an
+    answer about the run: an unreadable one reads as nothing, and the next look
+    a second later gets the whole of it.
+    """
+    path = Path(review) / 'progress.json'
+    if not path.is_file():
+        return {}
+    try:
+        current = read(path)
+    except (OSError, ValueError, UnicodeDecodeError):
+        return {}
+    return current if isinstance(current, dict) else {}
+
+
+class Completion:
+    """Whether the review this session launched has reached an end.
+
+    The driver used to end the run when the session stopped talking, which is
+    not the same event: the review is a background workflow, so a session can
+    report it running, end its turn, and close its event stream with ten agents
+    still working. Terminating then takes the workflow down with the process.
+
+    So completion is read from the folder the server writes instead of from the
+    session. Three questions, in order:
+
+    * Did the server record the review as written, or the run as blocked? Then
+      the run is over, whatever the session is doing.
+    * Has the folder stopped changing, for long enough to mean it in the state
+      the session is in — process gone, workflow task reported finished, or
+      merely silent? Then no review is coming and the folder's own account is
+      the cause.
+    * Otherwise: wait. The wall clock is the ceiling, as it always was.
+
+    One cost is worth naming: while the stream is closed no ``task_progress``
+    events arrive, so the token ceilings are not enforced over that stretch.
+    The wall clock is the only limit there.
+    """
+
+    def __init__(self, review, accounting=None, tick=WATCH_TICK):
+        self.review = Path(review)
+        self.accounting = accounting
+        self.tick = tick
+        self.read_at = None
+        self.recorded = {}
+        self.mark = None
+        self.still_since = None
+        #: How the wait ended, for the run record. ``None`` until it has.
+        self.note = None
+
+    def look(self):
+        """The recorded progress, read at most once a tick."""
+        at = time.monotonic()
+        if self.read_at is not None and at - self.read_at < self.tick:
+            return self.recorded
+        self.read_at = at
+        self.recorded = recorded_progress(self.review)
+        mark = (self.recorded.get('updated'), self.recorded.get('status'),
+                len(self.recorded))
+        if mark != self.mark:
+            self.mark, self.still_since = mark, at
+        return self.recorded
+
+    def __call__(self, closed, alive):
+        recorded = self.look()
+        status = str(recorded.get('status') or '')
+        if status in COMPLETE_STATUSES:
+            return REVIEW_WRITTEN
+        if status == BLOCKED:
+            return RUN_MARKED_BLOCKED
+        finished = bool(self.accounting and self.accounting.finished)
+        if not (closed or finished):
+            return None
+        quiet = EXITED_QUIET if not alive else (
+            FINISHED_QUIET if finished else STREAM_QUIET)
+        still = time.monotonic() - (self.still_since or time.monotonic())
+        if still < quiet:
+            return None
+        self.note = ('the session exited' if not alive
+                     else 'the workflow task reported finishing' if finished
+                     else 'the session closed its event stream')
+        self.note += f' and the run folder stood still for {still:.0f}s'
+        return NOTHING_LEFT_WRITING
+
+
+def launch(prompt, directory, timeout_at, on_event, cwd, chosen=None, watch=None):
     """Run one headless session, handing every stream event to ``on_event``.
 
     ``on_event`` returns a reason to stop, or ``None`` to carry on; a reason
     terminates the session. Returns ``(events_seen, stop_reason, exit_code)``.
+
+    ``watch`` is what the driver waits for when the session launches work that
+    outlives its own turn. It is called every tick with ``(stream_closed,
+    session_alive)`` and returns a reason to stop or ``None`` to keep waiting,
+    so a closed stream ends the run only when it says so — see
+    :class:`Completion`. Without one, a closed stream ends the loop, which is
+    right for a session whose whole job is one answer, like the probe.
 
     Both pipes are read by threads rather than polled: ``select`` cannot wait on
     a pipe on Windows, and stderr has to be drained for the whole run and not
@@ -208,25 +336,40 @@ def launch(prompt, directory, timeout_at, on_event, cwd, chosen=None):
                threading.Thread(target=drain, args=(process.stderr, errors), daemon=True))
     for reader in readers:
         reader.start()
-    seen, stop = 0, None
+    seen, stop, closed = 0, None, False
     try:
         while True:
             if time.monotonic() > timeout_at:
                 stop = 'the session passed its wall-clock limit'
                 break
             try:
-                line = lines.get(timeout=5)
+                line = lines.get(timeout=WATCH_TICK if watch else 5)
             except queue.Empty:
-                continue
-            if line is None:  # the session closed its stream
-                break
-            try:
-                event = json.loads(line)
-            except ValueError:
-                continue
-            seen += 1
-            stop = on_event(event)
+                line = ''
+            if line is None:  # the session closed its event stream
+                closed = True
+            elif line.strip():
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    event = None
+                if event is not None:
+                    seen += 1
+                    stop = on_event(event)
             if stop:
+                break
+            if watch is not None:
+                # The stream closing is the session's turn ending, not the
+                # review's. What ends the run is the watch, or the wall clock.
+                # Only ever asked with the queue drained: the events a session
+                # sent before the server wrote the last word are part of the
+                # run's accounting, and reading the folder first would drop
+                # them.
+                if line == '':
+                    stop = watch(closed, process.poll() is None)
+                    if stop:
+                        break
+            elif closed:
                 break
     finally:
         if process.poll() is None:
@@ -330,6 +473,11 @@ class Accounting:
         self.agents = {}
         self.results = []
         self.notified = False
+        #: The workflow task reported finishing: a notification arrived and the
+        #: session has since closed a turn. It is the session's account of the
+        #: work, not the server's, so it shortens the wait rather than ending
+        #: the run — the run folder says what the workflow left behind.
+        self.finished = False
         self.rate_limits = []
 
     def on_event(self, event):
@@ -346,7 +494,7 @@ class Accounting:
         if kind == 'result':
             self.results.append(event)
             if self.notified:
-                return 'the workflow task finished'
+                self.finished = True
         return None
 
     def progress(self, event):
@@ -384,6 +532,20 @@ class Accounting:
 
     def last_result(self):
         return self.results[-1] if self.results else None
+
+    def failures(self):
+        """The agents the stream reported in a failed state, named.
+
+        A run that ends with no review has a cause, and the stream usually
+        knows it: an agent the harness gave up on is reported with a failed
+        state and the tokens it had spent. Naming it is the difference between
+        "the workflow ended without writing the review" and knowing which
+        stage ended it.
+        """
+        broken = [row for row in sorted(self.agents.values(), key=lambda row: row['label'])
+                  if str(row.get('state') or '').strip().lower() in FAILED_STATES]
+        return ', '.join(f"{row['label']} ended in state {row['state']} after "
+                         f"{row.get('tokens') or 0:,} tokens" for row in broken) or None
 
 
 def write_usage(review, accounting):
@@ -687,33 +849,37 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     started = time.monotonic()
     prompt = prompt_for(source, root, reviewers, arm, literature_cutoff, tracks, wanted,
                         citation_workers=len(workers) if citation_lane else None)
+    watch = Completion(review_dir, accounting)
     seen, stop, code = launch(prompt, directory, started + wall_timeout,
-                              accounting.on_event, cwd, chosen)
+                              accounting.on_event, cwd, chosen, watch=watch)
     wall = time.monotonic() - started
     result = accounting.last_result()
+    recorded = recorded_progress(review_dir)
+    written = str(recorded.get('status') or '') in COMPLETE_STATUSES
     blocked = None
     if accounting.rate_limits:
         blocked = accounting.rate_limits[-1]['reason']
-    elif stop and stop != 'the workflow task finished':
+    elif stop and stop not in SETTLED:
         blocked = stop
-    elif not accounting.notified:
-        blocked = 'the workflow task never reported finishing'
-    elif result and result.get('is_error'):
+    elif result and result.get('is_error') and not written:
+        # The orchestrating session's own turn ending badly is not the review
+        # failing, because the review outlives that turn: it is a cause only
+        # where the server never recorded one written.
         blocked = 'the session ended in an error: ' + str(result.get('subtype'))
 
     status = 'blocked' if blocked else None
     progress = review_dir / 'progress.json'
     if status is None:
-        recorded = read(progress) if progress.is_file() else {}
         status = str(recorded.get('status') or '') or None
         if status not in COMPLETE_STATUSES:
             # A workflow that ends without write_review or mark_blocked leaves
             # the server's own status at `running`, which would read as a review
             # still in flight long after the session is gone.
-            blocked = recorded.get('error') or (
-                f'the workflow ended without writing the review or marking the run blocked;'
-                f' the server last recorded {status}' if status
-                else 'the server wrote no progress file')
+            blocked = recorded.get('error') or '; '.join(part for part in (
+                (f'the workflow ended without writing the review or marking the run blocked,'
+                 f' the server last recorded {status}' if status
+                 else 'the server wrote no progress file'),
+                watch.note, accounting.failures()) if part)
             status = 'blocked'
     # A session that ended before the workflow called `ingest` left no protocol
     # and no manifest, so the folder would not name its own paper or arm.
