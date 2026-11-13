@@ -188,7 +188,8 @@ def test_a_fabricated_reference_is_recorded_as_not_existing(tmp_path):
     assert resolution['exists'] == 'no'
     assert resolution['method'] == 'doi-unregistered'
     assert resolution['printed_doi_registered'] is False
-    assert 'The DOI resolver has no handle for the DOI the paper printed' in resolution['note']
+    assert ('The DOI resolver has no handle for the DOI the reference list gives'
+            in resolution['note'])
     # Two routes were asked, and only both together turn the Crossref 404 into
     # a claim about the identifier: no agency claims it, and the DOI system's
     # own resolver has no handle for it.
@@ -1129,3 +1130,176 @@ def test_a_table_of_nothing_but_could_not_check_is_not_complete(tmp_path):
     assert totals['stages_done'] is True
     assert totals['complete'] is False
     assert any('could not be checked' in line for line in cl.problems(totals))
+
+
+def test_a_doi_broken_across_a_line_is_not_a_doi_at_all(tmp_path):
+    """A two-column PDF breaks a DOI mid-suffix, and the fragment is not one.
+
+    ``doi:10.1007/s00134-020-\\n05991-x`` was read as
+    ``10.1007/s00134-020-``, the handle API truthfully said no such handle, and
+    the row accused the paper of printing a DOI that was never registered. The
+    four ways a line break lands — after a hyphen, after the prefix slash,
+    after a dot, after an underscore — all end the fragment on punctuation, so
+    a trimmed DOI that does not end on a letter or a digit is not a DOI.
+    """
+    for text in ('doi:10.1007/s00134-020-\n05991-x',
+                 'https://doi.org/10.1093/bioinformatics/\nbtz123',
+                 '10.1016/j.cell.2020.01.\n001',
+                 'doi: 10.1186/s12859-019-\n2778-5',
+                 'Available at 10.5281/zenodo.\n1234567'):
+        assert cl.doi_in(text) is None, text
+
+    # The two shapes that are *not* breaks and were being thrown away with
+    # them: a DOI at the end of a sentence, and the bracketed suffix every
+    # Lancet DOI has. Both are the real identifier.
+    assert cl.doi_in('doi:10.1016/j.cell.2020.01.001.') == '10.1016/j.cell.2020.01.001'
+    assert cl.doi_in('10.1016/S0140-6736(20)30183-5.') == '10.1016/s0140-6736(20)30183-5'
+    assert cl.doi_in('10.1093/nar/gkh103 (2004)') == '10.1093/nar/gkh103'
+
+    # And the two it still refuses: a suffix cut off before its last segment
+    # (a one- or two-digit tail before the dot is a number, not a sentence),
+    # and a SICI, whose angle brackets make the half that was extracted look
+    # like a whole identifier.
+    assert cl.doi_in('10.1016/j.cell.2020.01.') is None
+    assert cl.doi_in('see 10.1002/(SICI)1097-0258(19980815)17:15<1623::AID-SIM871>'
+                     '3.0.CO;2-S here') is None
+
+
+def test_only_a_doi_the_reference_list_gives_can_be_a_doi_that_does_not_exist(tmp_path):
+    """Where the DOI was read decides what an unregistered DOI is allowed to mean.
+
+    ``10.1038/nature12373Published online…`` extracts as a clean-shaped DOI
+    with a word stuck on the end, so no shape check can catch it; the handle
+    API says no such handle and the row read "the printed DOI is not registered
+    with any agency" about a DOI the paper never printed. A truncated
+    extraction and a wrong printed DOI look the same from here, so only a DOI
+    the reference list hands over as its own field may be ``no``.
+    """
+    run_on = '1. Lin M. ' + TITLE + '. Nature 2013;499:295. 10.1038/nature12373Published online'
+    scraped = [{'id': 'r1', 'label': '1', 'title': TITLE, 'year': '2013',
+                'first_author': 'Lin, M.', 'raw': run_on}]
+    rows = cl.reference_rows({'references': scraped, 'blocks': []})
+    assert rows[0]['printed']['doi'] == '10.1038/nature12373published'
+    assert rows[0]['printed']['extracted']['doi'] == 'raw', 'nobody handed this over'
+
+    # Nothing indexes it and the resolver has no handle for it: still not `no`.
+    ledger = filled(tmp_path, scraped, 'Replay has been reported during quiet rest [1].')
+    net = Net([NO_HANDLE, ('/works/10.1038', 404), ('/works?', crossref_search([])),
+               ('/search?', europepmc([]))])
+    cl.resolve(ledger, lookups(tmp_path, net))
+    row = {r['row_id']: r for r in ledger.rows()}['ref:r1']
+    resolution = row['resolution']
+    assert resolution['exists'] == 'not located'
+    assert resolution['printed_doi_registered'] is False
+    assert resolution['printed_doi_source'] == 'raw'
+    assert 'check the DOI in the PDF' in resolution['note']
+    assert 'check the PDF' in cl.reference_problem(row)
+
+    # The same DOI as the field `ingest` filled is the paper's own claim about
+    # its own reference, and that one the resolver may contradict.
+    given = [dict(scraped[0], doi='10.1038/nature12373published')]
+    field = cl.Ledger(tmp_path / 'field')
+    cl.build(field, paper(given, 'Replay has been reported during quiet rest [1].'))
+    cl.resolve(field, cl.Lookups(tmp_path / 'field' / 'citations' / 'lookups', opener=Net(
+        [NO_HANDLE, ('/works/10.1038', 404), ('/works?', crossref_search([])),
+         ('/search?', europepmc([]))])))
+    decided = {r['row_id']: r for r in field.rows()}['ref:r1']['resolution']
+    assert decided['exists'] == 'no'
+    assert decided['printed_doi_source'] == 'reference'
+    assert 'check the DOI in the PDF' not in (decided['note'] or '')
+
+    # And when the title search does find the work, the row is the work: the
+    # DOI read off the text is not a mismatch against the record's DOI, it is
+    # a line break to go and look at.
+    hit = {'DOI': '10.1038/nature12373', 'title': [TITLE],
+           'author': [{'given': 'Mei', 'family': 'Lin'}],
+           'issued': {'date-parts': [[2013]]}, 'container-title': ['Nature'],
+           'type': 'journal-article', 'abstract': 'Replay during quiet rest.'}
+    found = cl.Ledger(tmp_path / 'found')
+    cl.build(found, paper(scraped, 'Replay has been reported during quiet rest [1].'))
+    cl.resolve(found, cl.Lookups(tmp_path / 'found' / 'citations' / 'lookups', opener=Net(
+        [NO_HANDLE, ('/works/10.1038', 404), ('/works?', crossref_search([hit])),
+         ('/search?', europepmc([]))])))
+    resolved = {r['row_id']: r for r in found.rows()}['ref:r1']['resolution']
+    assert resolved['exists'] == 'yes'
+    assert 'doi' not in resolved['mismatched']
+    assert 'check the PDF' in resolved['note']
+
+
+def test_a_throttled_doi_resolver_is_could_not_check_whatever_its_body_says(tmp_path):
+    """``responseCode: 100`` only means "no such handle" in an answer about one.
+
+    A proxy in front of doi.org answers 429 and 503 with whatever body it
+    likes, and the handle leg read the code out of the body without looking at
+    the status it came with — so a throttled route could make a registered DOI
+    ``no``. ``no`` now needs the 404 the API uses for a handle it does not
+    have.
+    """
+    references = [{'id': 'r1', 'label': '1', 'title': TITLE, 'year': '2019',
+                   'first_author': 'Lin, M.', 'doi': '10.1234/replay',
+                   'raw': '1. Lin M. ' + TITLE + '. J Neurosci, 2019.'}]
+    for status in (429, 503):
+        run = tmp_path / str(status)
+        ledger = cl.Ledger(run)
+        cl.build(ledger, paper(references, 'Replay has been reported during quiet rest [1].'))
+        net = Net([('doi.org/api/handles', (status, {'responseCode': 100, 'handle': 'x'})),
+                   ('/works/10.1234', 404), ('/works?', crossref_search([])),
+                   ('/search?', europepmc([]))])
+        for _ in range(cl.RESOLVE_ATTEMPTS):
+            cl.resolve(ledger, cl.Lookups(run / 'citations' / 'lookups', opener=net), wait=0)
+        resolution = {r['row_id']: r for r in ledger.rows()}['ref:r1']['resolution']
+        assert resolution['exists'] != 'no', status
+        assert resolution['printed_doi_registered'] is None, status
+
+
+def test_an_acronym_is_not_a_different_venue(tmp_path):
+    """The reference list prints *PNAS*; the index holds the words it stands for.
+
+    A token comparison has nothing to compare a one-token acronym against, so
+    every reference printed in the style most journals ask for raised "printed
+    venue differs from the indexed record" — a mismatch the specialist then
+    spent a re-check on. One token is read as an initialism of the other
+    side's significant words, a parenthetical edition is dropped before the
+    comparison, and anything still unclear is not compared rather than wrong.
+    """
+    for printed, record in (('PNAS', 'Proceedings of the National Academy of Sciences'),
+                            ('NEJM', 'The New England Journal of Medicine'),
+                            ('JAMA', 'Journal of the American Medical Association'),
+                            ('BMJ', 'British Medical Journal'),
+                            ('JACS', 'Journal of the American Chemical Society'),
+                            ('NeurIPS', 'Advances in Neural Information Processing Systems'),
+                            ('PNAS', 'Proc Natl Acad Sci U S A')):
+        assert cl._venue_same(printed, record) is True, (printed, record)
+
+    # A parenthetical is an index's own edition note, not part of the name.
+    for printed, record in (('Science (80-. )', 'Science'),
+                            ('Bioinformatics', 'Bioinformatics (Oxford, England)'),
+                            ('Science', 'Science (80-. )')):
+        assert cl._venue_same(printed, record) is True, (printed, record)
+
+    # None of which weakens the comparison that matters: a family name is
+    # still not one journal in the family.
+    for printed, record in (('Nature', 'Nature Methods'),
+                            ('Cell', 'Cell Reports'),
+                            ('Science', 'Science Advances')):
+        assert cl._venue_same(printed, record) is False, (printed, record)
+
+    # And a one-token name that is neither an initialism nor a prefix is not
+    # compared, because this cannot tell which it is.
+    assert cl._venue_same('Methods', 'Nature Methods') is None
+
+    # End to end on the DOI path, the one path a venue mismatch can be raised
+    # from: printed PNAS, indexed in full, and no problem to re-check.
+    references = [{'id': 'r1', 'label': '1', 'title': TITLE, 'year': '2019',
+                   'first_author': 'Lin, M.', 'doi': '10.1234/replay', 'venue': 'PNAS',
+                   'raw': '1. Lin M. ' + TITLE + '. PNAS, 2019.'}]
+    ledger = filled(tmp_path, references, 'Replay has been reported during quiet rest [1].')
+    net = Net([('/works/10.1234', crossref_work(
+                   '10.1234/replay', TITLE, '2019',
+                   venue='Proceedings of the National Academy of Sciences')),
+               ('DOI%3A', europepmc([]))])
+    cl.resolve(ledger, lookups(tmp_path, net))
+    row = {r['row_id']: r for r in ledger.rows()}['ref:r1']
+    assert row['resolution']['exists'] == 'yes'
+    assert row['resolution']['mismatched'] == []
+    assert not cl.reference_problem(row)

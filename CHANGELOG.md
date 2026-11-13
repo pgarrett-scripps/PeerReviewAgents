@@ -27,8 +27,9 @@ including 32 test modules, and nothing was left behind as a shim.
   `limit`: a DOI goes to Crossref, a reference without one is searched by
   bibliographic title against Crossref and then Europe PMC, and each row
   records `exists` in four states, not three: `yes`, `no` only when the DOI
-  resolver itself has no handle for the printed DOI — doi.org's handle API
-  answering `responseCode` 100, the one service whose whole job is to say
+  resolver itself has no handle for a DOI the reference list gives as its own
+  field — doi.org's handle API answering `responseCode` 100 with the 404 it
+  uses for a handle it does not hold, the one service whose whole job is to say
   whether a DOI was ever registered — **`not located`** for a title two indexes
   answered about and neither listed, and **`could not check`** for a lookup that
   did not answer. A metadata index that does not hold the record is not that
@@ -306,6 +307,40 @@ including 32 test modules, and nothing was left behind as a shim.
   literals inside `plugin.server`, which an app had to import a launcher and an
   MCP SDK to read. The server now imports them from there, so there is one
   definition and nothing to drift.
+- **An unregistered DOI is never by itself proof of anything.** A DOI is a
+  claim about an identifier only when the reference list hands it over as its
+  own field. A DOI read out of the reference *text* cannot make a row
+  `exists: no` and cannot raise a `doi` mismatch, because a two-column PDF
+  breaks a DOI across a line constantly and the fragment that comes out of
+  that is indistinguishable from a DOI printed wrongly: such a row is `not
+  located` with a note saying the DOI as read is unregistered, the extraction
+  may be cut short, and the PDF is where to check. `doi_in` refuses a DOI whose
+  trimmed form does not end on a letter or a digit — the four ways a line break
+  lands, after a hyphen, a prefix slash, a dot or an underscore — while
+  accepting the two shapes it used to throw away with them: a DOI at the end of
+  a sentence (`10.1016/j.cell.2020.01.001.`) and the bracketed suffix every
+  Lancet DOI has (`10.1016/S0140-6736(20)30183-5`). `no` on the resolver leg
+  now also requires the 404 the handle API answers for a handle it does not
+  hold, so a proxy returning 429 or 503 with `responseCode` 100 in the body is
+  `could not check`. And `citations.md` says that an `exists: no` row is a lead
+  the specialist confirms against the PDF text before it becomes a finding.
+- **A printed acronym is not a different venue.** *PNAS*, *NEJM*, *JAMA*,
+  *BMJ*, *JACS* and *NeurIPS* against the words they stand for each raised
+  "printed venue differs from the indexed record", which is the citation style
+  most journals ask for reported as an error. When either side is a single
+  token it is read as an initialism of the other side's significant words; a
+  parenthetical edition is dropped before the comparison, so `Science (80-. )`
+  is *Science* and `Bioinformatics (Oxford, England)` is *Bioinformatics*; and
+  a one-token name that is neither an initialism nor an abbreviation is **not
+  compared** rather than called a mismatch. *Nature* is still not *Nature
+  Methods*.
+- Known and accepted in 0.9.0, documented rather than fixed: nothing in the
+  workflow returns after the 300-second retry wait, so rows the hosts
+  rate-limited stay `could not check` and are reported as such; a surname
+  spelt two ways (*Müller* / *Mueller*) or hyphenated falls to `candidate`
+  rather than agreeing; any Crossref `update-to` marks a record as a notice,
+  including one that points at a dataset version; and a `<title> (Reply)`
+  suffix in parentheses is not caught by the notice matching.
 
 ### Changed
 

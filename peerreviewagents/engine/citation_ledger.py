@@ -164,7 +164,13 @@ HANDLE_NOT_FOUND = 100
 EUROPEPMC_SEARCH = 'https://www.ebi.ac.uk/europepmc/webservices/rest/search?'
 EUROPEPMC_FULL_TEXT = 'https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTextXML'
 
-_DOI = re.compile(r'\b(10\.\d{4,9}/[^\s"<>,;)\]]+)', re.IGNORECASE)
+#: A DOI in running text. Brackets are *inside* the match because a DOI suffix
+#: may hold them — every Lancet DOI does, ``10.1016/S0140-6736(20)30183-5`` —
+#: and stopping at the first one left ``10.1016/S0140-6736(20``, a truncation
+#: the resolver then truthfully called unregistered. What a closing bracket
+#: nothing opened means is decided in :func:`doi_in`, where the balance can be
+#: counted.
+_DOI = re.compile(r'\b(10\.\d{4,9}/[^\s"<>,;]+)', re.IGNORECASE)
 #: What a DOI looks like, for anything that goes into a URL path.
 _DOI_SHAPE = re.compile(r'^10\.\d{4,9}/\S{3,}$')
 #: What a Europe PMC full-text identifier looks like, for the same reason.
@@ -292,38 +298,61 @@ def doi_in(text):
     """The first DOI in a string, when one can be read off it cleanly.
 
     A DOI that cannot be read off cleanly is not a DOI the paper printed, and
-    this answers ``None`` rather than a truncation. Three ways a reference list
+    this answers ``None`` rather than a truncation. Four ways a reference list
     breaks one:
 
     * a space inside it — ``10.1016/j.cell. 2020.01.001`` yields
       ``10.1016/j.cell``, a different and usually unregistered identifier;
-    * a SICI DOI, whose brackets this pattern stops at, leaving
-      ``10.1002/(SICI``;
-    * a suffix of one or two characters, which is a line break, not a DOI.
+    * a SICI DOI, which carries angle brackets this pattern stops at;
+    * a suffix of one or two characters, which is a line break, not a DOI;
+    * **a break at a separator**: a two-column PDF breaks a line wherever it
+      likes, and a DOI broken at its own hyphen, slash or underscore leaves
+      ``10.1007/s00134-020-``, ``10.1093/bioinformatics/`` or
+      ``10.1038/s41586_020_``. Those are well-shaped enough for any URL and
+      the DOI resolver answers, correctly, that no such handle exists. A DOI
+      does not end in a separator, so a trimmed DOI whose last character is
+      not alphanumeric is a cut one.
 
     Each of those used to be stored as the printed DOI, looked up, and reported
     as a DOI that is not registered — a fabrication finding manufactured out of
     the typesetting. "The paper printed no DOI" costs nothing by comparison.
 
-    The fourth way is a DOI cut off at a dot: ``10.1016/j.cell.2020.01.``,
-    which trims to ``10.1016/j.cell.2020.01`` — a well-shaped identifier that
-    belongs to nobody, and which the DOI resolver duly answers "handle not
-    found" for. A trailing dot after a one-to-three-digit component is that
-    cut, not a sentence's full stop: an Elsevier or APS suffix ends in a longer
-    article number (``…2020.01.001``, ``…PhysRevLett.100.120801``), so the
-    short numeric tail is the tell.
+    Two things are *not* breaks, and used to be refused as if they were. A
+    single trailing dot is the sentence's, not the DOI's
+    (``doi:10.1016/j.cell.2020.01.001.``), and it is stripped — unless the
+    component before it is one or two digits, which is the cut-at-a-dot case
+    (``10.1016/j.cell.2020.01.``), since a real Elsevier or APS suffix ends in
+    a longer article number (``…2020.01.001``, ``…PhysRevLett.100.120801``).
+    And balanced brackets belong to the identifier: ``10.1016/S0140-6736(20)
+    30183-5`` and every other Lancet DOI carries a pair, so only a closing
+    bracket nothing in the DOI opened is the reference list's punctuation.
     """
     body = str(text or '')
     match = _DOI.search(body)
     if not match:
         return None
     found = match.group(1)
-    trimmed = found.rstrip('.,;)]')
-    if found.endswith('.') and re.match(r'\s*\d', body[match.end():]):
+    if body[match.end():match.end() + 1] == '<':
+        # A SICI DOI, cut at its first angle bracket. What is left of it is
+        # well shaped and belongs to nobody.
         return None
-    if found.endswith('.') and re.match(r'^\d{1,3}$', trimmed.rsplit('.', 1)[-1]):
-        return None
+    trimmed = found
+    while trimmed[-1:] in (')', ']'):
+        opener = '(' if trimmed[-1] == ')' else '['
+        if trimmed.count(opener) >= trimmed.count(trimmed[-1]):
+            break
+        trimmed = trimmed[:-1]
+    if trimmed.endswith('.'):
+        if re.match(r'\s*\d', body[match.end():]):
+            return None
+        if re.match(r'^\d{1,2}$', trimmed[:-1].rsplit('.', 1)[-1]):
+            return None
+        trimmed = trimmed[:-1]
     if trimmed.count('(') != trimmed.count(')') or trimmed.count('<') != trimmed.count('>'):
+        return None
+    if trimmed.count('[') != trimmed.count(']'):
+        return None
+    if not trimmed[-1:].isalnum():
         return None
     if not _DOI_SHAPE.match(trimmed):
         return None
@@ -508,6 +537,8 @@ def reference_rows(paper):
         # one no agency has registered. Where the ingest read it is not
         # evidence about whether it is readable.
         printed_doi = (reference.get('doi') or '').strip()
+        field_doi = doi_in(printed_doi)
+        raw_doi = None if field_doi else doi_in(reference.get('raw'))
         rows.append({
             'kind': 'reference',
             'row_id': 'ref:' + str(identifier),
@@ -520,7 +551,7 @@ def reference_rows(paper):
                 'year_suffix': suffix,
                 'first_author': given_author or author,
                 'venue': given_venue or venue,
-                'doi': doi_in(printed_doi) or doi_in(reference.get('raw')),
+                'doi': field_doi or raw_doi,
                 # Where each compared field came from. A value the ingest
                 # carried is the paper's own; a value this module read off the
                 # raw string with a regex is a guess about a reference-list
@@ -533,6 +564,14 @@ def reference_rows(paper):
                     'first_author': ('reference' if given_author
                                      else ('raw' if author else None)),
                     'venue': ('reference' if given_venue else ('raw' if venue else None)),
+                    # Where the DOI came from decides what its absence from the
+                    # DOI system may be read as. A DOI scraped out of a
+                    # reference string can be a DOI the paper printed wrongly
+                    # *or* an extraction a line break cut short, and nothing
+                    # here can tell those apart — so "no such DOI" about one of
+                    # them is never an existence claim. See
+                    # :func:`resolve_reference`.
+                    'doi': 'reference' if field_doi else ('raw' if raw_doi else None),
                 },
             },
             'stage': 'fill',
@@ -1250,6 +1289,69 @@ def _venue_tokens(text):
     return [token for token in normal(text).split() if token not in _VENUE_STOPWORDS]
 
 
+def _without_parenthetical(text):
+    """A venue name with its bracketed part removed, if that leaves anything.
+
+    Indexes carry the bracket as part of the name — Europe PMC's
+    ``Bioinformatics (Oxford, England)``, Crossref's ``Science (80-. )`` — and
+    a reference list prints the name without it. The parenthetical is a
+    disambiguator added by the index, never the journal, so it is dropped from
+    both sides before they are compared. An unclosed bracket is dropped to the
+    end of the string, because that is what a truncated extraction leaves.
+    """
+    body = re.sub(r'\([^)]*\)?', ' ', str(text or ''))
+    return body if _venue_tokens(body) else str(text or '')
+
+
+def _spans(token, words):
+    """Whether ``token`` splits into non-empty prefixes of every word, in order.
+
+    ``pnas`` over ``proceedings national academy sciences``, one letter each;
+    ``neurips`` over ``neural information processing systems``, four letters
+    then three. Every word must take at least one letter and the token must be
+    used up exactly, which is what keeps this from matching anything that
+    merely starts the same way.
+    """
+    if not words:
+        return not token
+    word, rest = words[0], words[1:]
+    for take in range(1, min(len(token) - len(rest), len(word)) + 1):
+        if word.startswith(token[:take]) and _spans(token[take:], rest):
+            return True
+    return False
+
+
+def _initialism(token, words):
+    """Whether one printed word is how a style initialises those words.
+
+    *PNAS*, *NEJM*, *JAMA*, *BMJ*, *JACS* and *NeurIPS* are what reference
+    lists print, and the indexes hold the name in full: similarity scores them
+    near zero and the token-by-token comparison sees one word against four, so
+    every one of them raised a venue mismatch against its own correct record.
+
+    The run of words the token covers has to *end* at the last word the name
+    has — bar a country or edition the full name drops, as
+    :func:`_abbreviates` allows — because that trailing word is what tells one
+    journal in a family from another: *Nature* is not *Nature Methods*, and no
+    rule here may make it one. Leading words may be skipped, since a
+    proceedings title starts with words the acronym leaves out (*Advances in*
+    Neural Information Processing Systems), but only for a token that spans at
+    least two of the remaining words: otherwise *Methods* would initialise
+    *Nature Methods*.
+    """
+    if len(token) < 3 or len(words) < 2:
+        return False
+    for start in range(len(words)):
+        for end in range(start + 1, len(words) + 1):
+            if start and end - start < 2:
+                continue
+            if not all(word in _VENUE_EDITIONS for word in words[end:]):
+                continue
+            if _spans(token, words[start:end]):
+                return True
+    return False
+
+
 def _venue_same(printed, record):
     """Whether two venue strings name one venue, abbreviations included.
 
@@ -1266,8 +1368,18 @@ def _venue_same(printed, record):
     family, so the mismatch that matters most in a reference list was the one
     comparison that could not raise it. A venue with a word the other does not
     have is a different venue.
+
+    An acronym is the other half of that: *PNAS* against the full name is one
+    word against four, which no token-by-token rule can match, so
+    :func:`_initialism` is asked before anything answers "differs". And where a
+    single printed word is neither the initials of the name nor an
+    abbreviation of its first word, this answers ``None``: the venue was not
+    compared. A reference list that prints an acronym this module does not know
+    how to expand is not evidence about the paper, and "not compared" is the
+    honest answer where "differs" would be a finding about a correct citation.
     """
-    mine, theirs = _venue_tokens(printed), _venue_tokens(record)
+    mine, theirs = (_venue_tokens(_without_parenthetical(printed)),
+                    _venue_tokens(_without_parenthetical(record)))
     if not mine or not theirs:
         return None
     if mine == theirs:
@@ -1277,7 +1389,19 @@ def _venue_same(printed, record):
     # edition or a country the full name drops.
     if len(mine) == len(theirs) and similar(' '.join(mine), ' '.join(theirs)) >= VENUE_MATCH:
         return True
-    return _abbreviates(mine, theirs) or _abbreviates(theirs, mine)
+    if _abbreviates(mine, theirs) or _abbreviates(theirs, mine):
+        return True
+    if len(mine) == 1 or len(theirs) == 1:
+        short, long = (mine, theirs) if len(mine) == 1 else (theirs, mine)
+        if _initialism(short[0], long):
+            return True
+        # One exception to "not compared": a single word that abbreviates the
+        # family name is the *Nature* / *Nature Methods* case, and that is a
+        # mismatch worth raising rather than a style this module cannot read.
+        if _shortens(short[0], long[0]) or _shortens(long[0], short[0]):
+            return False
+        return None
+    return False
 
 
 def _shortens(token, word):
@@ -1493,6 +1617,24 @@ def _abstract_and_text(lookups, record, resolution):
     return abstract, source, full_text, full_text_url
 
 
+def _unregistered_note(source):
+    """What a DOI with no handle means, when the DOI was read off the reference text.
+
+    One sentence, written once, because it is the whole of this module's answer
+    to a question it cannot settle: a DOI the resolver does not know is either
+    one the paper printed wrongly or one the extraction cut short, and a
+    two-column PDF produces the second constantly. The sentence says to look at
+    the PDF. For a DOI the reference list handed over as its own field there is
+    nothing to caveat, so this is empty and the caller's own wording stands.
+    """
+    if source == 'raw':
+        return (' The DOI as read from the reference text is not registered with any agency, '
+                'and an extraction cut short — a line break inside the DOI, or the DOI run into '
+                'the next word — looks exactly like that, so check the DOI in the PDF rather '
+                'than reporting it.')
+    return ''
+
+
 def _handle_leg(doi, lookups, resolution):
     """What the DOI resolver says about the printed DOI: ``True``, ``False``, ``None``.
 
@@ -1501,6 +1643,11 @@ def _handle_leg(doi, lookups, resolution):
     and the live checks behind them. ``None`` is "could not check": a transport
     failure, an HTTP status with no body, a body that is not JSON, or a
     ``responseCode`` that is neither the not-found code nor a found one.
+
+    "Handle not found" is an HTTP 404 *and* ``responseCode`` 100. The code
+    alone is not enough: a proxy or a rate limiter in front of the resolver
+    answers 429 or 503 with whatever body it likes, and this module will not
+    read one of those as the DOI system's answer about a DOI.
     """
     try:
         url = doi_handle_url(doi)
@@ -1511,9 +1658,9 @@ def _handle_leg(doi, lookups, resolution):
     data = answer.get('data')
     code = data.get('responseCode') if isinstance(data, dict) else None
     if code == HANDLE_NOT_FOUND:
-        return False
+        return False if answer.get('status') == 'not_found' else None
     if code in HANDLE_FOUND:
-        return True
+        return True if answer.get('status') == 'ok' else None
     return None
 
 
@@ -1557,8 +1704,9 @@ def _doi_leg(doi, lookups, resolution):
         resolves = _handle_leg(doi, lookups, resolution)
         if resolves is False:
             resolution['printed_doi_registered'] = False
-            resolution['note'] = ('No registration agency has the DOI the paper printed, and '
-                                  'the DOI resolver has no handle for it.')
+            resolution['note'] = (
+                'No registration agency has this DOI and the DOI resolver has no handle for it.'
+                + _unregistered_note(resolution.get('printed_doi_source')))
             return None, 0
         if resolves is True:
             resolution['printed_doi_registered'] = True
@@ -1672,10 +1820,20 @@ def resolve_reference(row, lookups):
     ``yes``
         An index or a registration agency holds this work.
     ``no``
-        The paper printed a DOI and the **DOI resolver** has no handle for it
-        (:func:`doi_handle_url`). This is the only claim of non-existence the
-        table ever makes, it is about the identifier, and no index's 404 is
-        enough for it on its own.
+        The reference list **gave** a DOI as its own field and the **DOI
+        resolver** has no handle for it (:func:`doi_handle_url`). This is the
+        only claim of non-existence the table ever makes, it is about the
+        identifier, and no index's 404 is enough for it on its own.
+
+        A DOI this module read out of the raw reference string cannot produce
+        it, however clean the DOI looks. A PDF breaks a line wherever the
+        column ends and runs the DOI into the next word, and a cut-short
+        extraction is indistinguishable from a wrongly printed DOI: the
+        resolver answers "no such handle" to both, truthfully, and only one of
+        them is about the paper. Such a row is ``not located`` with a note
+        saying to check the DOI in the PDF. Where an extractor fills the
+        structured field, ``no`` stays available; where none does, ``no`` is
+        simply rare, which is the correct outcome.
     ``not located``
         Both indexes answered and neither lists this title. Weak evidence: most
         of the literature is not in either index.
@@ -1683,9 +1841,11 @@ def resolve_reference(row, lookups):
         Nothing answered, or what answered was not readable.
     """
     printed = row.get('printed') or {}
+    doi_source = (printed.get('extracted') or {}).get('doi')
     resolution = {'exists': COULD_NOT_CHECK, 'method': None, 'checked_at': now(),
                   'requests': [], 'retracted': None, 'retraction_notice': None,
                   'printed_doi': printed.get('doi'), 'printed_doi_registered': None,
+                  'printed_doi_source': doi_source,
                   'registered_with': None, 'candidate': None, 'note': None}
     record, searched, failed = None, 0, 0
     if printed.get('doi'):
@@ -1701,11 +1861,12 @@ def resolve_reference(row, lookups):
                                   'search for this reference, so there was nothing to look up.')
         elif resolution['exists'] == 'yes':
             pass  # An agency holds the DOI; only its metadata was unreadable.
-        elif resolution['printed_doi_registered'] is False and not candidate and not failed:
+        elif (resolution['printed_doi_registered'] is False and doi_source == 'reference'
+                and not candidate and not failed):
             resolution['exists'] = 'no'
             resolution['method'] = 'doi-unregistered'
-            resolution['note'] = ('The DOI resolver has no handle for the DOI the paper printed '
-                                  'and no registration agency holds it'
+            resolution['note'] = ('The DOI resolver has no handle for the DOI the reference list '
+                                  'gives and no registration agency holds it'
                                   + (', and no work with this title is indexed at Crossref or '
                                      'Europe PMC.' if searched >= 2 else '.'))
         elif searched >= 2 and not failed:
@@ -1714,7 +1875,8 @@ def resolve_reference(row, lookups):
             resolution['note'] = (
                 'Neither Crossref nor Europe PMC lists a work with this title. Much of the '
                 'literature is in neither index, so this is not evidence that the work does '
-                'not exist.' + (' The printed DOI is not registered either.'
+                'not exist.' + ((_unregistered_note(doi_source)
+                                 or ' The DOI the reference list gives is not registered either.')
                                 if resolution['printed_doi_registered'] is False else ''))
         else:
             resolution['note'] = resolution['note'] or (
@@ -1750,7 +1912,17 @@ def resolve_reference(row, lookups):
     printed_doi, resolved_doi = clean_doi(resolution['printed_doi']), clean_doi(
         resolution.get('resolved_doi'))
     if printed_doi and resolved_doi and printed_doi != resolved_doi:
-        resolution['mismatched'] = sorted(set(resolution['mismatched']) | {'doi'})
+        if doi_source == 'reference':
+            resolution['mismatched'] = sorted(set(resolution['mismatched']) | {'doi'})
+        else:
+            # The record is the cited work and the DOI read off the reference
+            # text is not its DOI. That is a wrongly printed DOI or a cut-short
+            # extraction, and this module cannot tell which, so it is said in
+            # the note and not raised as a mismatch about the paper.
+            resolution['note'] = ((resolution.get('note') or '')
+                                  + ' The DOI read off the reference text is not the resolved '
+                                    'record\'s DOI; a line break inside a DOI looks the same, '
+                                    'so check the PDF.').strip()
     return resolution
 
 
@@ -2156,7 +2328,9 @@ def reference_problem(row):
     resolution = row['resolution']
     reasons = []
     if resolution.get('exists') == 'no':
-        reasons.append('no registration agency has the DOI the paper printed')
+        reasons.append('the DOI resolver has no handle for the DOI the reference list gives, and '
+                       'no agency has registered it (confirm it against the PDF text before '
+                       'reporting it)')
     elif resolution.get('exists') == NOT_LOCATED:
         reasons.append('neither Crossref nor Europe PMC lists this title (weak evidence: much '
                        'of the literature is in neither)')
@@ -2168,7 +2342,12 @@ def reference_problem(row):
         reasons.append('printed ' + ', '.join(resolution['mismatched'])
                        + ' differs from the indexed record')
     if resolution.get('printed_doi_registered') is False and resolution.get('exists') != 'no':
-        reasons.append('the printed DOI is not registered with any agency')
+        if resolution.get('printed_doi_source') == 'raw':
+            reasons.append('the DOI as read off the reference text is not registered with any '
+                           'agency, which a DOI broken across a line looks exactly like — check '
+                           'the PDF')
+        else:
+            reasons.append('the DOI the reference list gives is not registered with any agency')
     if resolution.get('candidate'):
         reasons.append('a near-title work was found but nothing corroborates it as this one')
     if resolution.get('error'):

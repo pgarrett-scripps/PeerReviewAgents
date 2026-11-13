@@ -380,10 +380,14 @@ if cites["enabled"]:
   fill, resolve and judge each did, with the per-stage lookup and verdict
   counts) and `complete`.
 - A reference lands in exactly one of four buckets, and only one of them is an
-  existence claim. `not_found` counts the rows whose printed DOI the DOI
-  resolver has no handle for — doi.org's handle API answering `responseCode`
-  100, the one service whose whole job is to say whether a DOI was ever
-  registered. That, and only that, is the table saying a work does not exist; a
+  existence claim. `not_found` counts the rows where the reference list gave a
+  DOI as its own field and the DOI resolver has no handle for it — doi.org's
+  handle API answering `responseCode` 100 with a 404, the one service whose
+  whole job is to say whether a DOI was ever registered. A DOI read out of the
+  reference *text* instead never lands here, whatever the resolver says, since
+  a DOI broken across a line in a two-column PDF is indistinguishable from one
+  printed wrongly; those rows are `not_located` and carry the caveat in their
+  note. That, and only that, is the table saying a work does not exist; a
   metadata index that merely does not hold the record leaves the row in
   `could_not_check`. `not_located` counts the rows where Crossref and Europe PMC
   both answered and neither listed the title: weak evidence, because books,
