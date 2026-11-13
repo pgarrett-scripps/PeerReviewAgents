@@ -52,8 +52,15 @@ from . import models as model_plan
 # where they are defined and where an integration reads them from. Importing
 # them from here instead is not supported and nothing in the repository does.
 WORKFLOW_VERSION = 'plugin-two-track-v1'
+#: One lane each, and the lanes are meant not to overlap: `numbers` owns every
+#: printed quantity and the arithmetic between them, `stats` the inference
+#: drawn from them, `figures-tables` what a panel shows, `methods-reporting`
+#: what is absent from the methods, `citations` the reference list and every
+#: in-text use of it, `field` what this kind of study is required to do. The
+#: boundaries are written into the agent briefs, and the server backs the one
+#: that can be enforced: `numbers` gets no page image tool.
 SPECIALIST_TRACKS = ('stats', 'figures-tables', 'methods-reporting', 'citations',
-                     'consistency', 'field')
+                     'numbers', 'field')
 MAX_REVIEWERS = 8
 BODY_LIMIT = 8
 SEVERITIES = ('major', 'moderate', 'minor')
@@ -86,7 +93,13 @@ TRACK_TOOLS = {
     'figures-tables': (*OFFLINE_TOOLS, *IMAGE_TOOLS),
     'methods-reporting': (*OFFLINE_TOOLS, 'view_page', 'resolve_identifier', 'lookup_source'),
     'citations': (*OFFLINE_TOOLS, *NETWORK_TOOLS),
-    'consistency': (*OFFLINE_TOOLS, 'view_page'),
+    # The numbers lane is text only. A quantity you can read is comparable
+    # against another quantity you can read; a quantity you had to get by
+    # looking at a plot is the figures-and-tables lane's, and taking the page
+    # image tool away is the one place the lane boundary can be enforced
+    # instead of asked for. `inspect_results` still gives it captions and
+    # table values as text, which is where the cross-location comparisons are.
+    'numbers': OFFLINE_TOOLS,
     'field': (*OFFLINE_TOOLS, *IMAGE_TOOLS, *NETWORK_TOOLS),
     'editor': ('read_blocks', 'search', 'calculate', 'inspect_results'),
     'recorder': (),

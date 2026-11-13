@@ -1,6 +1,6 @@
 ---
 name: check-draft
-description: Run chosen specialists over a draft of your own - statistics, internal consistency and methods reporting by default - with no reviewer track and no editor. Use when asked to check, audit or sanity-check a draft or manuscript before submission, rather than to peer review it.
+description: Run chosen specialists over a draft of your own - statistics, the paper's own numbers and methods reporting by default - with no reviewer track and no editor. Use when asked to check, audit or sanity-check a draft or manuscript before submission, rather than to peer review it.
 ---
 
 # Check a draft
@@ -10,15 +10,20 @@ dimension and nothing pools their findings into a verdict, because a draft of
 your own does not need one — it needs the list.
 
 1. Take the PDF path, the run folder and, if the request names them, the
-   tracks. The default is `stats`, `consistency`, `methods-reporting`.
+   tracks. The default is `stats`, `numbers`, `methods-reporting`.
    The six available are `stats`, `figures-tables`, `methods-reporting`,
-   `citations`, `consistency`, `field`.
+   `citations`, `numbers`, `field`. Each audits one dimension and nothing
+   another one owns, so naming a track decides what goes unchecked: `numbers`
+   is every printed quantity and the arithmetic between them, `stats` the
+   inference drawn from them, `figures-tables` what a panel shows,
+   `methods-reporting` what is absent from the methods, `citations` the
+   references, `field` what this kind of study is required to do.
 2. Call the `Workflow` tool with `name` set to `pra:review` (if that name is
    not found, try `review`) and `args` set to:
 
    ```json
    {"pdf": "<the PDF path>", "out": "<the run folder>", "arm": "draft-check",
-    "tracks": ["stats", "consistency", "methods-reporting"]}
+    "tracks": ["stats", "numbers", "methods-reporting"]}
    ```
 
    Add `"specialist_model": "<a model>"` only when the request names one; left
@@ -27,7 +32,10 @@ your own does not need one — it needs the list.
    and do not retry with another model.
 
 3. Wait for it, then report what it returns, and point at the per-track audits
-   the run wrote: `<run folder>/review/audit_<track>.md`, one per track.
+   the run wrote: `<run folder>/review/audit_<track>.md`, one per track. An
+   audit may carry a **Seen, not mine** line: something that specialist noticed
+   in another lane and did not file. Pass those on as they are written — with
+   the track that owns them unrun, nothing else looked.
 
 With `citations` among the tracks, the run also keeps a citation ledger —
 `<run folder>/review/citations/ledger.jsonl`, one row per reference and one per

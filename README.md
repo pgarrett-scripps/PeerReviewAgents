@@ -188,7 +188,16 @@ leaves the run `blocked`: that is an outcome recorded in `runtime.json` and
   told the specialists exist. The editor sees the pool in an order seeded by
   the run salt, so slot order carries no weight.
 - **Tools per track.** Every slot has an allow list. A citations specialist
-  asking for figure pages is refused.
+  asking for figure pages is refused, and the numbers specialist has no page
+  image tool at all, because a quantity you had to read off a plot belongs to
+  the figures-and-tables lane.
+- **One lane each.** The six specialists audit disjoint dimensions —
+  `numbers` every printed quantity and the arithmetic between them, `stats` the
+  inference drawn from them, `figures-tables` what a panel shows,
+  `methods-reporting` what is absent from the methods, `citations` the
+  reference list and every use of it, `field` what this kind of study is
+  required to do. Each brief names the other five lanes as not its own, so a
+  defect is filed once rather than by whoever noticed it first.
 - **One decision per finding.** The editor rules on each, merges duplicates by
   `finding_uid`, puts at most eight in the body, and must rule by name on every
   specialist escalation. Leaving a `computed` finding out of the body needs an

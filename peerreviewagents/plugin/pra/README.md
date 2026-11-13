@@ -53,6 +53,29 @@ that slot may reach the network — `full-two-track`, and `draft-check` when
 folder and `read_run()['citations']['enabled']` is `False` for them, so an
 ablation is never compared against counts the comparison arm cannot have.
 
+## The six lanes
+
+One dimension each, and the lanes are meant not to overlap. Every brief in
+`agents/` carries a **Not yours** table naming the other five, so a defect is
+filed by the specialist that owns it rather than by whichever one noticed it
+first — a duplicate costs two allowances and lands on the editor to merge.
+
+| Track | Audits | Stops at |
+| --- | --- | --- |
+| `numbers` | every printed quantity: the same value in two places, one n followed through, parts against the whole, arithmetic between printed values | anything you must look at a panel to see, and any disagreement that is not between quantities |
+| `stats` | the inference: test against design, what n really is, multiplicity, precision, and what the result licenses | re-adding the paper's own columns |
+| `figures-tables` | what a panel or table shows against its caption and the sentences citing it, how the table is built, what a reader cannot see, the panel inventory | whether a value here equals a value there |
+| `methods-reporting` | absence: the parameter, rule, declaration or working link a reader needs to repeat the work | a stated choice that is wrong rather than missing |
+| `citations` | the ledger: every reference and every in-text use, re-checked before anything becomes a finding | anything inside the paper's own numbers |
+| `field` | what this kind of study is required to do that a generalist would not know to ask for | a defect that would read the same way in any field |
+
+A specialist that sees something outside its lane puts one line under **Seen,
+not mine** in its audit and files no finding; it is never told which other
+tracks are running, so that line is the right answer in every arm. The core
+reviewers are told what a review is *not* — a list of surface defects — without
+being told the specialists exist, which is the isolation `reviewers-only`
+measures against.
+
 ## Models
 
 The core reviewers are deliberately different models. Stage A ran three of them
@@ -101,8 +124,9 @@ the settings files Claude Code reads, managed settings first.
   the codes, a reviewer that guessed `recorder` read every other reviewer's
   findings.
 - **Tools per track.** Each slot has an allow list. A citations specialist
-  asking for figure pages is refused, and `manuscript-only` has the page and
-  lookup tools removed outright. The three ledger tools are split the same way:
+  asking for figure pages is refused, `manuscript-only` has the page and
+  lookup tools removed outright, and `spec-numbers` has no page image tool so
+  that the lane split below is a server rule and not a request. The three ledger tools are split the same way:
   a `cite-N` worker may call only `claim_citation_batch` and
   `submit_citation_verdict`, `citation_rows` belongs to the citations
   specialist alone, and `resolve_citations` to the recorder alone.

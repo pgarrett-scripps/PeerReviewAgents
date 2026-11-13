@@ -15,7 +15,7 @@ one skill, `/paper:draft-check`, which runs
 
 ```
 peerreview review paper.pdf reviews/engine/<YYYY-MM-DD> \
-  --arm draft-check --track stats --track consistency --track methods-reporting
+  --arm draft-check --track stats --track numbers --track methods-reporting
 ```
 
 and writes `reviews/<YYYY-MM-DD>-draft-check.md` in the shape
