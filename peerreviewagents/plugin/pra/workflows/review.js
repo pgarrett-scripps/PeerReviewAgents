@@ -150,13 +150,16 @@ const RECORDED = {
   required: ['status'],
 }
 
+// One line per lane, and the lines are written to be disjoint: the brief a
+// specialist is spawned with has to say what its lane is without describing
+// another's. The agent files carry the boundaries in full.
 const SPECIALIST_BRIEF = {
-  'stats': 'the statistics: tests against the design, n, multiplicity, effect sizes and the arithmetic of the reported numbers',
-  'figures-tables': 'the figures and tables against their captions, the text that cites them and the numbers they should match',
-  'methods-reporting': 'whether the work could be repeated from what is written, and whether the required declarations are there',
+  'stats': 'the inference: whether the test matches the design, what n really is, multiplicity, effect size and precision, and what the result licenses the paper to say',
+  'figures-tables': 'what each panel and table actually shows, against its caption and the sentences that cite it, and whether a reader can read it',
+  'methods-reporting': 'what is absent: the parameter, rule, declaration or working link a reader would need to repeat this work',
   'citations': 'the citation ledger the server filled: every reference it looked up and every verdict a worker left, re-checking each problem row yourself before any of it becomes a finding',
-  'consistency': 'whether the paper agrees with itself across abstract, results, figures and supplements',
-  'field': 'the paper against the standards of its own field, working from the domain pack the server routes to you',
+  'numbers': 'every quantity the paper prints: whether the same value agrees wherever it appears, whether the n survives the paper, and whether the arithmetic between printed values holds',
+  'field': 'what this kind of study is required to do that a generalist would not know to ask for, working from the domain pack the server routes to you',
 }
 
 function label(slot, attempt) {

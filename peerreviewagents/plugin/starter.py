@@ -70,7 +70,7 @@ MISSING_CLAUDE = ('claude is not installed or not on this PATH, so no session ca
 #: What `check-draft` runs when no track is named. The three a draft of your
 #: own is usually wrong about, and the default the prompt and the recorded plan
 #: must agree on.
-DRAFT_CHECK_TRACKS = ('stats', 'consistency', 'methods-reporting')
+DRAFT_CHECK_TRACKS = ('stats', 'numbers', 'methods-reporting')
 VERSIONS = {}
 
 

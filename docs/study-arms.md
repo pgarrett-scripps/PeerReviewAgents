@@ -78,9 +78,18 @@ peerreview review manuscript.pdf arms/reference --literature-cutoff "$CUTOFF"
 Three core reviewers and all six specialist tracks over the same paper, then
 the editor. The core reviewers never see each other's findings and are not told
 the specialists exist; the specialists audit one dimension each (`stats`,
-`figures-tables`, `methods-reporting`, `citations`, `consistency`, `field`) and
+`figures-tables`, `methods-reporting`, `citations`, `numbers`, `field`) and
 may escalate, and the editor must rule by name on every escalation. This is the
 default on every surface, so it needs no `--arm`.
+
+The six audit disjoint dimensions, one each, and every brief names the other
+five as not its own: `numbers` owns every printed quantity and the arithmetic
+between them, `stats` the inference drawn from them, `figures-tables` what a
+panel shows, `methods-reporting` what is absent from the methods, `citations`
+the reference list and every use of it, `field` what this kind of study is
+required to do. The split is why a per-track finding count means something: a
+defect is filed by the lane that owns it rather than by however many
+specialists happened to see it.
 
 Because the `citations` track is in it, this arm also keeps a citation ledger:
 the server writes one row per reference and one per in-text use, resolves every
@@ -183,12 +192,12 @@ manuscript — but nothing in this arm can be checked against the literature.
 
 ```bash
 peerreview review draft.pdf arms/draft-check --arm draft-check \
-  --track stats --track consistency --track methods-reporting
+  --track stats --track numbers --track methods-reporting
 ```
 
 The specialists you name, no core reviewers and no editor, which is what the
 plugin's `check-draft` skill runs on a draft of your own. `--track` is
-repeatable and defaults to `stats`, `consistency` and `methods-reporting`. It
+repeatable and defaults to `stats`, `numbers` and `methods-reporting`. It
 is listed here because it is an arm the command accepts, not because it belongs
 in a comparison.
 

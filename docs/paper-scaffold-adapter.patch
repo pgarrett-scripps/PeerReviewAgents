@@ -54,14 +54,14 @@ index 0000000..a4c6a47
 +
 +```
 +peerreview review paper.pdf reviews/engine/<YYYY-MM-DD> \
-+  --arm draft-check --track stats --track consistency --track methods-reporting
++  --arm draft-check --track stats --track numbers --track methods-reporting
 +```
 +
 +* `--arm draft-check` runs the specialist tracks with no core reviewer and no
 +  editor. That is the arm an author wants: nothing pools the findings into an
 +  accept-or-reject verdict, and every finding stands on its own.
 +* The six tracks are `stats`, `figures-tables`, `methods-reporting`,
-+  `citations`, `consistency`, `field`. The three above are the default. Add
++  `citations`, `numbers`, `field`. The three above are the default. Add
 +  `--track citations` when the request asks about the references; it reaches
 +  the network and takes longer. Pass the tracks the user named, and no others.
 +* It takes roughly two to six minutes and a few hundred thousand tokens, more

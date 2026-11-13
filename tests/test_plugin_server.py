@@ -115,8 +115,8 @@ def test_single_arm_fixes_the_reviewer_count_it_names(tmp_path):
 
 
 def test_draft_check_runs_chosen_specialists_and_no_core_track(tmp_path):
-    opened = open_run(tmp_path, arm='draft-check', tracks=['stats', 'consistency'])
-    assert opened['slots'] == ['spec-stats', 'spec-consistency', 'recorder']
+    opened = open_run(tmp_path, arm='draft-check', tracks=['stats', 'numbers'])
+    assert opened['slots'] == ['spec-stats', 'spec-numbers', 'recorder']
 
 
 def test_an_unknown_arm_is_refused(tmp_path):
