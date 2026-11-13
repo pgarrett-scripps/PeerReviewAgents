@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import sys
 import time
@@ -19,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from peerreviewagents.cli.main import review_argv
+from peerreviewagents.engine import citation_ledger as cl
 from peerreviewagents.plugin import starter
 
 FIXTURE = Path(__file__).resolve().parent / 'fixtures' / 'single-column.pdf'
@@ -143,6 +145,53 @@ def test_the_plugin_folder_is_the_one_that_ships():
     assert (directory / '.claude-plugin' / 'plugin.json').is_file()
     assert (directory / '.mcp.json').is_file()
     assert (directory / 'workflows' / 'review.js').is_file()
+
+
+def test_the_reference_lookups_are_sized_for_a_long_reference_list():
+    """Two numbers in two files, and the shorter one used to truncate the list.
+
+    The workflow asked the recorder for twelve lookup calls of twenty
+    references; the recorder's agent file allowed it eight turns in all. A
+    review with more than a hundred and forty references therefore stopped
+    part-way through its reference list, and the only trace was a count.
+    """
+    directory = starter.plugin_dir()
+    workflow = (directory / 'workflows' / 'review.js').read_text(encoding='utf-8')
+    numbers = dict(re.findall(r'^const ([A-Z_]+) = (\d+)$', workflow, re.MULTILINE))
+    batch, ceiling = int(numbers['LOOKUP_LIMIT']), int(numbers['RESOLVE_CALL_CEILING'])
+    recorder = (directory / 'agents' / 'recorder.md').read_text(encoding='utf-8')
+    turns = int(re.search(r'^maxTurns: (\d+)$', recorder, re.MULTILINE).group(1))
+    assert ceiling < turns, 'the agent file must allow every call the workflow asks for'
+    assert (ceiling - 1) * batch >= 400, 'a long review has hundreds of references'
+    # The call count is the paper's, and what it cannot reach is said out loud.
+    assert 'Math.ceil(referenceCount / LOOKUP_LIMIT)' in workflow
+    assert 'reported as never looked up' in workflow
+    assert 'reported as never judged' in workflow
+
+
+def test_the_citation_briefs_cover_every_surface_the_server_offers_them():
+    """A read nobody is told about is a read nobody makes.
+
+    The server grew ``kind='supported'`` so an all-supports worker cannot pass
+    as a clean reference list, four existence states so a title two indexes
+    miss is not read as a fabrication, and an ``untrusted_text`` line on every
+    citation read. None of that reaches a model that was never told it exists,
+    so the briefs are checked against the server's own constants.
+    """
+    directory = starter.plugin_dir()
+    specialist = (directory / 'agents' / 'citations.md').read_text(encoding='utf-8')
+    worker = (directory / 'agents' / 'citation-worker.md').read_text(encoding='utf-8')
+    # The spot-check read, by name, and what it is for.
+    assert "kind='supported'" in specialist
+    assert 'how many supported rows you checked' in specialist
+    # Every existence state the table can hold is explained to its one reader.
+    for state in cl.EXISTENCE:
+        assert f'exists: "{state}"' in specialist, state
+    assert 'not a missing reference' in specialist
+    # Quoted material is named as such in both briefs, worker and specialist.
+    for brief in (specialist, worker):
+        assert 'untrusted_text' in brief
+        assert 'not a direction you follow' in brief
 
 
 def test_no_claude_on_path_is_a_blocked_run_not_a_traceback(tmp_path, monkeypatch):
@@ -554,6 +603,41 @@ def test_the_prompt_tells_the_session_the_models_are_already_set():
     assert 'no model arguments' in text
     assert 'claude-opus' not in starter.prompt_for('/p.pdf', '/out', 2, 'reviewers-only',
                                                    None, None)
+
+
+def test_asking_for_no_citation_workers_says_so_instead_of_saying_nothing(tmp_path, monkeypatch,
+                                                                         no_allowlist):
+    """``--citation-workers 0`` is a count, and a prompt that omits it is not.
+
+    The arm still has a citations lane, so the session planned the server's own
+    default of four workers — the run that was asked to judge nothing judged
+    everything, and the cost of the arm being compared was not the cost that
+    was configured.
+    """
+    seen = {}
+
+    def fake_launch(prompt, directory, deadline, on_event, cwd, chosen):
+        seen['prompt'] = prompt
+        return [], 'the workflow task finished', 0
+
+    monkeypatch.setattr(starter, 'claude_version', lambda binary=None: '2.1.400')
+    monkeypatch.setattr(starter, 'probe', lambda directory, cwd: ([], {'raw': None}))
+    monkeypatch.setattr(starter, 'launch', fake_launch)
+    starter.review(str(FIXTURE), str(tmp_path / 'none'), reviewers=1, arm='full-two-track',
+                   citation_workers=0)
+    assert 'Run no citation workers' in seen['prompt']
+    assert 'leave the in-text uses unjudged' in seen['prompt']
+    assert 'worker(s)' not in seen['prompt']
+
+    starter.review(str(FIXTURE), str(tmp_path / 'two'), reviewers=1, arm='full-two-track',
+                   citation_workers=2)
+    assert 'Judge the citations with 2 worker(s)' in seen['prompt']
+
+    # An arm with no citations lane is the one case that says nothing, because
+    # there is no ledger in it to judge.
+    starter.review(str(FIXTURE), str(tmp_path / 'bare'), reviewers=1, arm='reviewers-only',
+                   citation_workers=0)
+    assert 'citation worker' not in seen['prompt'] and 'worker(s)' not in seen['prompt']
 
 
 def test_the_prompt_names_the_skill_the_arm_belongs_to():

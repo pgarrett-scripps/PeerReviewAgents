@@ -568,8 +568,12 @@ def prompt_for(pdf, out, reviewers, arm, cutoff, tracks, models=None, citation_w
     if citation_workers is not None:
         # The count is planned out here, so the session has to be told it: the
         # server's own default would otherwise plan a different number of
-        # workers than the models were settled for.
-        text += f' Judge the citations with {citation_workers} worker(s).'
+        # workers than the models were settled for. Zero is a count, not a
+        # missing one — the references are still resolved, and the in-text uses
+        # are left for the specialist to read as unjudged.
+        text += (' Run no citation workers: resolve the references, and leave the in-text '
+                 'uses unjudged.' if citation_workers == 0
+                 else f' Judge the citations with {citation_workers} worker(s).')
     if models:
         # The models are already in the session's environment, where the server
         # reads them. Saying so stops the session from passing model arguments
@@ -647,6 +651,12 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     # as every other slot. They are not part of `plan_slots`: a worker closes
     # no stage of the review.
     workers = citation_slots(arm, citation_workers, tracks)
+    # Whether this arm has a citation lane at all, which is not the same
+    # question as whether this run asked for workers in it. ``--citation-workers
+    # 0`` is an arm that has the lane and wants nothing judged in it, and
+    # reading the empty list as "no lane" is what sent the session off to plan
+    # the server's default four.
+    citation_lane = bool(citation_slots(arm, 1, tracks))
     wanted = model_plan.assign((*plan_slots(arm, reviewers, tracks), *workers, 'recorder'),
                                **settled)
     model_plan.refuse(wanted)
@@ -676,7 +686,7 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     accounting = Accounting(per_agent_tokens, per_run_tokens)
     started = time.monotonic()
     prompt = prompt_for(source, root, reviewers, arm, literature_cutoff, tracks, wanted,
-                        citation_workers=len(workers) if workers else None)
+                        citation_workers=len(workers) if citation_lane else None)
     seen, stop, code = launch(prompt, directory, started + wall_timeout,
                               accounting.on_event, cwd, chosen)
     wall = time.monotonic() - started

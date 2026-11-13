@@ -63,6 +63,22 @@ const OPENED = {
       type: 'array', items: { type: 'string' },
       description: 'the citation_workers list ingest returned, verbatim; [] where the arm has none',
     },
+    // How long the reference list is, which is what the lookup stage below is
+    // sized from. Without it the stage would run on a constant and stop
+    // part-way through a long list.
+    citations: {
+      type: 'object',
+      properties: {
+        references: { type: 'integer', description: "ingest's citations.references" },
+        uses: { type: 'integer', description: "ingest's citations.uses" },
+      },
+      description: 'the reference and in-text-use counts from citations; omit it where the arm '
+                   + 'returned citations: null',
+    },
+    citation_worker_allowance: {
+      type: 'integer',
+      description: 'the citation_worker_allowance ingest returned; omit it where it was null',
+    },
   },
   // `models` is required because the plan has to arrive for the run to be the
   // run the server recorded. This script has no tool access and no filesystem
@@ -247,7 +263,9 @@ const opened = await agent(
     ? ', citation_workers=' + run.citation_workers : '')
   + (run.citation_worker_model ? ', citation_worker_model="' + run.citation_worker_model + '"' : '')
   + '. Report the paper id, the title, the block count, the slot list and the citation_workers'
-  + ' list it returned, and copy'
+  + ' list it returned, and — where the response holds them rather than null —'
+  + ' citations.references, citations.uses and citation_worker_allowance, which are what the'
+  + ' citation stages are sized from. Copy'
   + ' the recorder_key, every claim_code and every models entry out of the response verbatim:'
   + ' they are the only copies, and each stage is handed its own code and its own model'
   + ' from here.',
@@ -317,15 +335,42 @@ if (coreSlots.length > 0) {
 //
 // This lane starts before the review fan-out and only the citations specialist
 // waits for it, so the lookups run while the core reviewers read the paper.
+// How many references one call resolves. It is a batch size, not a sample: the
+// call returns `remaining`, and the loop below runs until that is zero.
 const LOOKUP_LIMIT = 20
-const RESOLVE_CALLS = 12
+// The most calls one recorder agent is asked for. `maxTurns` in
+// agents/recorder.md is set above it, or the agent stops before the loop does.
+const RESOLVE_CALL_CEILING = 26
+// The reference count is the paper's, so the call count is too. A fixed twelve
+// calls covered 220 references and stopped: a 300-reference review left 80
+// unresolved, and the one number that said so was buried in the counts.
+const referenceCount = (opened.citations && opened.citations.references) || 0
+// A count the relay dropped asks for the whole allowance rather than the
+// floor: a call too many answers `remaining: 0` and costs one turn, and a call
+// too few leaves part of the reference list unchecked.
+const resolveCalls = referenceCount > 0
+  ? Math.min(RESOLVE_CALL_CEILING,
+    Math.max(2, Math.ceil(referenceCount / LOOKUP_LIMIT) + 1))
+  : RESOLVE_CALL_CEILING
+// What those calls can reach. One call is kept back to see `remaining` go to
+// zero, so the reach is one batch short of the allowance.
+const resolveReach = (resolveCalls - 1) * LOOKUP_LIMIT
+// How many rows a worker claims at once, and what the server will serve one
+// worker in all. The allowance is the server's own number, carried by ingest,
+// so the two cannot drift apart.
+const JUDGE_BATCH = 10
+const workerAllowance = opened.citation_worker_allowance || 0
 
 async function resolveReferences() {
   return agent(
     'This run keeps a citation ledger: ingest already filled one row per reference and one per'
-    + ' in-text use. Resolve the references now. Call resolve_citations with recorder_key="'
+    + ' in-text use. The reference list holds ' + referenceCount + ' reference(s). Resolve them'
+    + ' now. Call resolve_citations with recorder_key="'
     + recorderKey + '" and limit=' + LOOKUP_LIMIT + ', and call it again while it answers'
-    + ' remaining above zero — at most ' + RESOLVE_CALLS + ' times. Call no other tool. Report'
+    + ' remaining above zero — at most ' + resolveCalls + ' times, which covers ' + resolveReach
+    + ' reference(s). If remaining is still above zero when you have used them all, stop and'
+    + ' report that remaining as it is: the references nobody reached are reported as unchecked,'
+    + ' and guessing at them would be worse. Call no other tool. Report'
     + ' the last answer\'s remaining, its counts.references, its counts.resolved and its'
     + ' lookups_total, and how many times you called it. If it refuses, report the refusal'
     + ' verbatim and stop.',
@@ -337,7 +382,8 @@ async function resolveReferences() {
 
 const judgePrompt = slot => 'You judge in-text citations against the sources this run has already'
   + ' resolved. Call claim_agent with slot="' + slot + '" and claim_code="' + codes[slot] + '"'
-  + ' first; the code is yours alone and works once. Then call claim_citation_batch with size=10'
+  + ' first; the code is yours alone and works once. Then call claim_citation_batch with size='
+  + JUDGE_BATCH
   + ' and model set to the model you are running as. Each row gives you one citing sentence and'
   + ' the stored source text for the work it cites. For every row, call'
   + ' submit_citation_verdict once: the verdict, and the exact passage of the source text you'
@@ -356,7 +402,35 @@ async function judgeUses(workers) {
   return answers.filter(Boolean)
 }
 
+// What this run can cover, said before it runs rather than inferred from the
+// counts afterwards. A truncated pass is reported either way — the ledger's own
+// problem lines name the references nobody looked up and the uses nobody judged
+// — but a reader watching the lane should not have to work out that a
+// 300-reference review was never going to reach the end of the list.
+function sayWhatIsReachable(workers) {
+  if (referenceCount > resolveReach) {
+    log('this reference list is longer than one pass of the lookups: ' + referenceCount
+      + ' references, ' + resolveReach + ' reachable in ' + resolveCalls + ' call(s), so about '
+      + (referenceCount - resolveReach) + ' will be reported as never looked up')
+  }
+  const uses = (opened.citations && opened.citations.uses) || 0
+  // One claim plus one verdict per row of a batch, out of one worker's whole
+  // tool allowance. It is what the server will serve, not an estimate of the
+  // model's behaviour.
+  const perWorker = Math.floor(workerAllowance / (JUDGE_BATCH + 1)) * JUDGE_BATCH
+  const reach = perWorker * workers.length
+  // Both numbers come through the same relay as the rest of the plan, and a
+  // reach of nothing means one of them did not arrive — not that nothing can
+  // be judged. The ledger's own counts report what was judged either way.
+  if (workers.length > 0 && reach > 0 && uses > reach) {
+    log('this paper cites more often than ' + workers.length + ' worker(s) can judge: ' + uses
+      + ' in-text uses, about ' + reach + ' reachable (' + perWorker + ' each), so the rest are'
+      + ' reported as never judged — run more citation workers to cover them')
+  }
+}
+
 async function citationLane(workers) {
+  sayWhatIsReachable(workers)
   const resolved = await resolveReferences()
   if (resolved && resolved.refusal) {
     log('the citation ledger was refused: ' + resolved.refusal)

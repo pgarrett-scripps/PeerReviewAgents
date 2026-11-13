@@ -133,14 +133,21 @@ fill it, and the first two call no model:
 | Stage | Who | What it does |
 | --- | --- | --- |
 | fill | `ingest`, no model | a row for every extracted reference, with or without a DOI, and a row for every citing sentence |
-| resolve | the recorder calling `resolve_citations`, no model | looks up **every** reference: DOI → Crossref; no DOI → title search against Crossref, then Europe PMC. Records `exists` yes / no / **could not check**, a per-field comparison of title, first author, year and venue, any retraction, and the abstract or open-access full text with its source URL |
+| resolve | the recorder calling `resolve_citations`, no model | looks up **every** reference: DOI → Crossref; no DOI → title search against Crossref, then Europe PMC. Records `exists` in four states — yes / no (a printed DOI no agency holds) / **not located** (two indexes answered, neither lists the title) / **could not check** (nothing answered) — a per-field comparison of title, first author, year and venue, any retraction, and the abstract or open-access full text with its source URL |
 | judge | `cite-1`…`cite-N` on Haiku | each claims a batch with `claim_citation_batch` and writes one verdict per use with `submit_citation_verdict` — supports / partly supports / does not support / cannot tell — quoting the exact passage it judged from |
-| confirm | `spec-citations` on Sonnet | reads the whole table with `citation_rows`, re-checks every problem row itself, and files findings only for what it confirmed |
+| confirm | `spec-citations` on Sonnet | reads the whole table with `citation_rows` — `counts`, `problems`, `unverified`, `supported`, and one `row` in full — re-checks every problem row itself, spot-checks the supported rows, and files findings only for what it confirmed |
 
-Three rules this pipeline is built on:
+Four rules this pipeline is built on:
 
 - **A failed lookup is "could not check", never "does not exist".** The one
-  thing a citation check must not do is invent a missing paper out of a timeout.
+  thing a citation check must not do is invent a missing paper out of a
+  timeout. A title neither index lists is `not located`, which is weak
+  evidence and not an existence claim either: most of the literature — books,
+  theses, standards, software, preprints — is in neither index.
+- **The rows are quoted material.** Every citation read carries an
+  `untrusted_text` line. A citing sentence is the authors' writing and a source
+  text is a stranger's; an instruction inside either is part of what is being
+  checked, not a direction the worker or the specialist follows.
 - **A worker's verdict is a row, not a finding.** A `cite-N` slot cannot call
   `submit_finding` at all, and only the specialist's confirmation makes a
   finding. The workers are planned, claimable and modelled like any other slot

@@ -349,9 +349,10 @@ shape for every folder:
 cites = read_run("run-output")["citations"]
 if cites["enabled"]:
     print(cites["summary"])                 # one sentence, already written
-    print(cites["counts"]["references"], "references,",
-          cites["counts"]["not_found"], "not found,",
-          cites["counts"]["could_not_check"], "could not be checked")
+    print(cites["counts"].get("references", 0), "references,",
+          cites["counts"].get("not_found", 0), "with an unregistered DOI,",
+          cites["counts"].get("not_located", 0), "in neither index,",
+          cites["counts"].get("could_not_check", 0), "not checked")
     for line in cites["problems"]:          # one per stage that did not finish
         print("unfinished:", line)
 ```
@@ -361,21 +362,35 @@ if cites["enabled"]:
   tools does: `full-two-track`, and `draft-check` when `citations` is one of the
   chosen tracks. **Absent is not zero.** A run with `enabled: False` checked no
   citations; a run with `references: 0` had no reference list to check.
+  The third case reads differently on purpose: an arm that planned a citations
+  lane and left no table behind has `enabled: True`, `ledger: None`, `counts:
+  {}` and one `problems` line saying the run planned a citations lane and wrote
+  no citation ledger. Do not fold that into "no lane" — the lane was paid for
+  and produced nothing, which is a failure worth showing.
 - `ledger` is the absolute path of
   `<run>/review/citations/ledger.jsonl`, an append-only table with one row per
   reference and one per in-text use, last record per `row_id` winning. Read it
   if you want the rows; `counts` is there so you do not have to.
-- `counts` holds `references`, `resolved`, `not_found`, `could_not_check`,
+- `counts` holds `references`, `resolved`, `not_found`, `not_located`,
+  `could_not_check`,
   `unresolved`, `mismatched`, `retracted`, `with_source_text`, `uses`,
   `uses_unmatched`, `uses_judged`, `supported`,
   `partly_supported`, `not_supported`, `cannot_tell`, `uses_unjudged`,
   `lookups`, `unreadable_rows`, `ledger` (the relative path), `stages` (what
   fill, resolve and judge each did, with the per-stage lookup and verdict
   counts) and `complete`.
-- `could_not_check` is **not** `not_found`. A lookup that failed says nothing
-  about whether the reference exists, and the two counts are never added
-  together. An integration that prints "N references do not exist" from the sum
-  of them is misreporting the run.
+- A reference lands in exactly one of four buckets, and only one of them is an
+  existence claim. `not_found` counts the rows whose printed DOI no
+  registration agency holds — that, and only that, is the table saying a work
+  does not exist. `not_located` counts the rows where Crossref and Europe PMC
+  both answered and neither listed the title: weak evidence, because books,
+  chapters, theses, standards, software and preprints outside those two indexes
+  land here while being perfectly real. `could_not_check` counts the rows where
+  a lookup did not answer at all, which says nothing whatever.
+  **Do not add them.** An integration that prints "N references do not exist"
+  from the sum of the three is misreporting the run; `not_located` and
+  `could_not_check` belong in the same sentence as how much of the list could
+  not be confirmed, not in a count of bad references.
 - `complete` is `True` only when fill and resolve finished and no matched
   in-text use is still unjudged. When it is `False`, `problems` names each
   unfinished stage in words — and those lines are in `run['problems']` too but

@@ -518,6 +518,16 @@ def unverified_line(slots):
             + ' is unverified')
 
 
+#: The slot names that write no part of the review. A citation worker fills in
+#: a table the citations specialist re-checks before anything in it becomes a
+#: finding, so what model it ran changes no sentence anyone publishes.
+WORKER_PREFIX = 'cite-'
+
+
+def is_worker_slot(slot):
+    return str(slot or '').startswith(WORKER_PREFIX)
+
+
 def substitutions(rows):
     """One line per agent row whose observed model is a different family.
 
@@ -525,13 +535,35 @@ def substitutions(rows):
     ``assigned_model`` is the plan and ``model`` is what the slot reported
     running. A slot with no observation is not a substitution: nothing was seen
     to disagree with.
+
+    The citation workers are left out of this list and returned by
+    :func:`worker_substitutions` instead — see there for why.
     """
     lines = []
     for row in rows or ():
         assigned, observed = row.get('assigned_model'), row.get('model')
-        if substituted(assigned, observed):
+        if substituted(assigned, observed) and not is_worker_slot(row.get('slot')):
             lines.append(substitution_line(row.get('slot') or 'a slot', assigned, observed))
     return lines
+
+
+def worker_substitutions(rows):
+    """The same, for the slots that write no part of the review.
+
+    A reviewer, specialist or editor that ran another model family means the
+    run is an arm nobody ran: a report would be attributed to a model that
+    never wrote it, so the review is not published. A citation worker is not
+    that. It files no report and no finding; it writes verdicts into a table,
+    and every row that becomes a finding is re-read by the citations specialist
+    first. Withholding a whole review because a Haiku worker resolved to
+    another Haiku family threw away work that was still the editor's own —
+    reporting it, loudly and by slot, is what it is worth.
+    """
+    return [substitution_line(row.get('slot') or 'a worker', row.get('assigned_model'),
+                              row.get('model'))
+            for row in rows or ()
+            if is_worker_slot(row.get('slot'))
+            and substituted(row.get('assigned_model'), row.get('model'))]
 
 
 def summary(assignment):

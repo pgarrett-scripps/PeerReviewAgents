@@ -26,8 +26,13 @@ including 32 test modules, and nothing was left behind as a shim.
   lookups, driven by the recorder through `resolve_citations` and bounded by
   `limit`: a DOI goes to Crossref, a reference without one is searched by
   bibliographic title against Crossref and then Europe PMC, and each row
-  records `exists` as yes, no or **could not check** — a lookup that failed is
-  never read as a reference that does not exist — with a per-field comparison
+  records `exists` in four states, not three: `yes`, `no` for a printed DOI no
+  registration agency holds, **`not located`** for a title two indexes answered
+  about and neither listed, and **`could not check`** for a lookup that did not
+  answer. A lookup that failed is never read as a reference that does not
+  exist, and a work outside Crossref and Europe PMC — a book, a thesis, a
+  standard, a preprint — is `not located` rather than accused of anything. Each
+  row also carries a per-field comparison
   of title, first author, year and venue, any retraction notice, and the
   abstract or open-access full text beside the URL it came from. Every response
   is cached under `citations/lookups/` with a receipt, and the requests carry a
@@ -39,7 +44,17 @@ including 32 test modules, and nothing was left behind as a shim.
   `cannot tell` is the only verdict allowed no passage. **Confirm** is the
   citations specialist, which now reads the whole table with `citation_rows`,
   re-checks every problem row itself, and keeps the one-query
-  missing-literature search and the cutoff rule it already had. A worker's
+  missing-literature search and the cutoff rule it already had. It reads the
+  clean half of the table as well: `citation_rows(kind='supported')` returns
+  every use a worker read as *supports* with the passage it quoted, so a worker
+  that answered supports for everything is spot-checked rather than taken at
+  its word, and the specialist's report says how many of those rows it checked
+  out of how many there were. Every citation read — a worker's batch and each
+  of the specialist's four kinds — carries an `untrusted_text` line saying that
+  the citing sentence and the fetched source text are quoted material to judge
+  and not instructions: a sentence in either that tells a model what to answer
+  is part of what is being checked, and both briefs say so where the model
+  reads them. A worker's
   verdict is a row and never a finding: a `cite-N` slot cannot call
   `submit_finding` at all, and only what the specialist confirmed is stored.
   The workers are planned, claimable and modelled like every other slot and
@@ -50,7 +65,23 @@ including 32 test modules, and nothing was left behind as a shim.
   in a session the starter launched. The ledger exists only where the citations
   specialist does, so an arm without that track writes no `citations/` folder
   and reports no counts — absent is not zero, and two arms are never compared
-  on numbers one of them cannot have.
+  on numbers one of them cannot have. An arm that *planned* a citations lane
+  and left no table behind is the other case, and it now says so: `enabled` is
+  true, the counts are empty and `problems` carries one line reading that this
+  run planned a citations lane and wrote no citation ledger, so not one
+  reference or in-text use was checked. A lane that failed before its first row
+  no longer reads like an arm that never had one.
+- Both citation stages are sized from the paper rather than from a constant.
+  `ingest` reports `citations.references`, `citations.uses` and
+  `citation_worker_allowance` — the server's own per-worker call budget — and
+  the workflow plans the lookup calls from the reference count instead of a
+  fixed twelve: a 300-reference list gets the calls it needs, and the
+  recorder's agent file allows every call the prompt asks for rather than
+  cutting the stage off part-way through the list. Where the lane still cannot
+  cover the paper, the workflow says which part before it starts and the ledger
+  reports it afterwards: references nobody reached are reported as never looked
+  up and uses nobody could reach as never judged, with the number of workers
+  that would cover them. **No silent cap.**
 - `read_run()['citations']` and the review's own **Citations** section report
   what the ledger says: `enabled`, the absolute `ledger` path, `counts` (one
   per state of a reference and per verdict, plus the lookups spent and what
