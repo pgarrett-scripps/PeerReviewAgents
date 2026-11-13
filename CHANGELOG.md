@@ -26,15 +26,30 @@ including 32 test modules, and nothing was left behind as a shim.
   lookups, driven by the recorder through `resolve_citations` and bounded by
   `limit`: a DOI goes to Crossref, a reference without one is searched by
   bibliographic title against Crossref and then Europe PMC, and each row
-  records `exists` in four states, not three: `yes`, `no` for a printed DOI no
-  registration agency holds, **`not located`** for a title two indexes answered
-  about and neither listed, and **`could not check`** for a lookup that did not
-  answer. A lookup that failed is never read as a reference that does not
-  exist, and a work outside Crossref and Europe PMC — a book, a thesis, a
-  standard, a preprint — is `not located` rather than accused of anything. Each
-  row also carries a per-field comparison
-  of title, first author, year and venue, any retraction notice, and the
-  abstract or open-access full text beside the URL it came from. Every response
+  records `exists` in four states, not three: `yes`, `no` only when the DOI
+  resolver itself has no handle for the printed DOI — doi.org's handle API
+  answering `responseCode` 100, the one service whose whole job is to say
+  whether a DOI was ever registered — **`not located`** for a title two indexes
+  answered about and neither listed, and **`could not check`** for a lookup that
+  did not answer. A metadata index that does not hold the record is not that
+  claim: Crossref and the registration-agency route both answering 404 leaves
+  the row `could not check`, because a DataCite or JaLC DOI is absent from
+  Crossref while being perfectly real. A lookup that failed is never read as a
+  reference that does not exist, and a work outside Crossref and Europe PMC — a
+  book, a thesis, a standard, a preprint — is `not located` rather than accused
+  of anything. A reference whose lookups did not answer is owed its retries
+  rather than written off: it stays counted in `resolve_citations`'s
+  `remaining`, and `retry_after` says how many seconds until the earliest owed
+  row is due, because the attempts are five minutes apart and a host that just
+  rate-limited the run has not recovered in the same turn. Each row also
+  carries a per-field comparison of title, first author, year and venue,
+  any retraction or correction notice — matched on the record's own type and
+  update-pointing fields as well as on a leading "Retraction of", "Correction
+  to" or "Comment on" label, so a notice is never mistaken for the work it is
+  about — and the abstract or open-access full text beside the URL it came from.
+  A title search is only read as the cited work when the first author's surname
+  agrees, because the query is already filtered to the printed year ±1 and a
+  matching year corroborates nothing. Every response
   is cached under `citations/lookups/` with a receipt, and the requests carry a
   generic `User-Agent` with no address and nothing identifying whoever ran the
   review. **Judge** is `--citation-workers` Haiku workers, `cite-1`, `cite-2`,
@@ -81,7 +96,14 @@ including 32 test modules, and nothing was left behind as a shim.
   cover the paper, the workflow says which part before it starts and the ledger
   reports it afterwards: references nobody reached are reported as never looked
   up and uses nobody could reach as never judged, with the number of workers
-  that would cover them. **No silent cap.**
+  that would cover them. **No silent cap.** Judging is the stage that does not
+  scale: a worker's call budget and the batch size put the default four workers
+  at about 144 in-text uses and the maximum twelve at about 430, so a paper
+  citing more than that leaves uses unjudged however the run is configured.
+  That shortfall is reported rather than hidden — the counts say how many uses
+  nobody judged and how many workers would have covered them — and resolve, the
+  stage that decides whether a reference exists at all, covers the whole list
+  regardless.
 - `read_run()['citations']` and the review's own **Citations** section report
   what the ledger says: `enabled`, the absolute `ledger` path, `counts` (one
   per state of a reference and per verdict, plus the lookups spent and what
@@ -91,7 +113,11 @@ including 32 test modules, and nothing was left behind as a shim.
   `not_publishable_reasons`: **an unfinished ledger is reported, not published
   over.** A finding the specialist confirmed stands whether or not the rest of
   the table was finished, and the counts say in numbers how much of the
-  reference list this run actually checked.
+  reference list this run actually checked. `complete` is about what was
+  checked and not about which stages ran: a table whose every reference came
+  back `could not check` is not complete, however tidily the stages finished,
+  and a ledger file that cannot be read at all is reported as unreadable rather
+  than read as a clean reference list.
 - A different model per core reviewer. Stage A ran three core reviewers on one
   model and they caught no more than one of them did — three readings of the
   same manuscript by the same reader — so the reviewers are now drawn in order

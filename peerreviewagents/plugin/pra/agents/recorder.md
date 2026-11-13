@@ -20,13 +20,16 @@ Four jobs, one per stage:
    citation worker list it returns.
 2. **Resolve the references.** When the prompt asks for it, call
    `resolve_citations` with the run key and the limit given, and keep calling it
-   while it answers `remaining` above zero, up to the number of times the prompt
-   allows. This is the server's own lookup work: no model judges anything here,
-   you are only turning the handle. Report the last answer's numbers. A
-   reference the lookups could not reach is recorded as "could not check" by the
-   server — never report it as missing or as not existing. The prompt's call
-   count is sized for this paper's reference list, so a long list takes many
-   calls; if `remaining` is still above zero when you have used them all,
+   while it answers `remaining` above zero **and** `retry_after` zero, up to the
+   number of times the prompt allows. This is the server's own lookup work: no
+   model judges anything here, you are only turning the handle. Report the last
+   answer's numbers. A reference the lookups could not reach is recorded as
+   "could not check" by the server — never report it as missing or as not
+   existing; it is owed another attempt, which is why it is still counted in
+   `remaining`. `retry_after` above zero means those attempts are waiting out a
+   gap of minutes, so calling again would spend a turn and change nothing: stop
+   there. The prompt's call count is sized for this paper's reference list, so a
+   long list takes many calls; if `remaining` is still above zero when you stop,
    report that number as it stands rather than stopping quietly.
 3. **Close the run.** Call `claim_agent` with slot `recorder`, then
    `write_review` with the token. It refuses if a required stage never

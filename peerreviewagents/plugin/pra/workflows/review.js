@@ -126,12 +126,14 @@ const EDITED = {
 }
 
 // Stage 2 of the citation ledger: the server's own lookups, no model involved.
-// The recorder calls the tool until nothing is left to look up, so what comes
-// back is how far it got, not what it intended.
+// The recorder calls the tool until nothing is owed a lookup, or until what is
+// owed is waiting out the retry wait, so what comes back is how far it got, not
+// what it intended.
 const RESOLVED = {
   type: 'object',
   properties: {
-    remaining: { type: 'integer', description: 'references still not looked up, from the last call' },
+    remaining: { type: 'integer', description: 'references still owed a lookup, from the last call' },
+    retry_after: { type: 'integer', description: 'seconds until the earliest owed row is due again, from the last call' },
     references: { type: 'integer' },
     resolved: { type: 'integer' },
     lookups: { type: 'integer', description: 'lookups_total from the last call' },
@@ -367,13 +369,15 @@ async function resolveReferences() {
     + ' in-text use. The reference list holds ' + referenceCount + ' reference(s). Resolve them'
     + ' now. Call resolve_citations with recorder_key="'
     + recorderKey + '" and limit=' + LOOKUP_LIMIT + ', and call it again while it answers'
-    + ' remaining above zero — at most ' + resolveCalls + ' times, which covers ' + resolveReach
-    + ' reference(s). If remaining is still above zero when you have used them all, stop and'
-    + ' report that remaining as it is: the references nobody reached are reported as unchecked,'
-    + ' and guessing at them would be worse. Call no other tool. Report'
-    + ' the last answer\'s remaining, its counts.references, its counts.resolved and its'
-    + ' lookups_total, and how many times you called it. If it refuses, report the refusal'
-    + ' verbatim and stop.',
+    + ' remaining above zero and retry_after zero — at most ' + resolveCalls + ' times, which'
+    + ' covers ' + resolveReach + ' reference(s). An answer with retry_after above zero means the'
+    + ' rows left are waiting out the retry wait between attempts, which is minutes long: calling'
+    + ' again would do nothing, so stop there. If remaining is still above zero when you stop,'
+    + ' whether you ran out of calls or the rows are waiting, report that remaining as it is: the'
+    + ' references nobody reached are reported as unchecked, and guessing at them would be worse.'
+    + ' Call no other tool. Report the last answer\'s remaining, its retry_after, its'
+    + ' counts.references, its counts.resolved and its lookups_total, and how many times you'
+    + ' called it. If it refuses, report the refusal verbatim and stop.',
     options('recorder', {
       label: 'resolve references', phase: 'Citations', agentType: 'pra:recorder', schema: RESOLVED,
     }),
@@ -440,7 +444,7 @@ async function citationLane(workers) {
     log('the reference lookups reported nothing back, so the ledger holds whatever they managed')
   } else {
     log('references: ' + (resolved.resolved || 0) + ' of ' + (resolved.references || 0)
-      + ' resolved, ' + resolved.remaining + ' never looked up, ' + (resolved.lookups || 0)
+      + ' resolved, ' + resolved.remaining + ' still owed a lookup, ' + (resolved.lookups || 0)
       + ' lookups')
   }
   // Resolving and judging are separate stages, and a run asked for zero

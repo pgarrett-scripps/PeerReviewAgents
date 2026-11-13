@@ -13,6 +13,10 @@ from .storage import digest, read, write
 HOSTS = {'api.crossref.org', 'api.datacite.org', 'www.ebi.ac.uk', 'rest.uniprot.org',
          'data.rcsb.org', 'pubchem.ncbi.nlm.nih.gov', 'clinicaltrials.gov', 'api.osf.io',
          'api.gbif.org', 'string-db.org'}
+# doi.org is the DOI system's own resolver, and its handle API is the only
+# route the citation ledger reads as "there is no such DOI". See
+# `citation_ledger.doi_handle_url`.
+HOSTS.add('doi.org')
 HOSTS.update({'rest.ensembl.org', 'reactome.org', 'cmr.earthdata.nasa.gov', 'api.worldbank.org'})
 
 #: How this software names itself to a public API. Generic on purpose: a request
@@ -40,7 +44,8 @@ def check_url(url):
     return url
 
 
-def retrieve(url, opener=None, headers=None, timeout=20, limit=RESPONSE_LIMIT):
+def retrieve(url, opener=None, headers=None, timeout=20, limit=RESPONSE_LIMIT,
+             error_body=False):
     """One allowlisted HTTPS GET as a status and, when it worked, raw bytes.
 
     The transport only: no cache, no budget, no parsing. Shared by the agents'
@@ -48,6 +53,13 @@ def retrieve(url, opener=None, headers=None, timeout=20, limit=RESPONSE_LIMIT):
     every reference with its own allowance — so the allowlist, the redirect
     policy and the client name stay in one place, and bytes that are not JSON
     (an open-access full text, say) can be read by a caller that wants them.
+
+    ``error_body`` also returns the body of an error response. Off by default,
+    because a 404's body is usually an error page and reading it invites a
+    caller to treat it as an answer. One API needs it: the DOI handle resolver
+    says *why* in the body — ``responseCode: 100``, handle not found — and
+    answers HTTP 404 while doing so, and that distinction is the difference
+    between a DOI that does not exist and a route that is not there.
     """
     check_url(url)
     call = opener or urllib.request.build_opener(NoRedirect()).open
@@ -56,8 +68,16 @@ def retrieve(url, opener=None, headers=None, timeout=20, limit=RESPONSE_LIMIT):
         with call(req, timeout=timeout) as response:
             raw = response.read(limit + 1)
     except urllib.error.HTTPError as exc:
-        return {'status': HTTP_STATUS.get(exc.code, 'http_error'), 'source_url': url,
-                'http_status': exc.code}
+        answer = {'status': HTTP_STATUS.get(exc.code, 'http_error'), 'source_url': url,
+                  'http_status': exc.code}
+        if error_body:
+            try:
+                body = exc.read(limit + 1)
+            except (OSError, ValueError, AttributeError):
+                body = None
+            if body is not None and len(body) <= limit:
+                answer['raw'] = body
+        return answer
     except (OSError, ValueError) as exc:
         return {'status': 'unavailable', 'source_url': url, 'error_type': type(exc).__name__}
     if len(raw) > limit:

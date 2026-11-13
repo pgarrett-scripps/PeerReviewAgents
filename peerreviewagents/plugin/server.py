@@ -1428,9 +1428,13 @@ def resolve_citations(recorder_key: str, limit: int = 15) -> dict:
     with the abstract or open-access full text the workers will judge against.
 
     One call does ``limit`` references, or all of them at ``0``. Call it again
-    while it answers ``remaining`` above zero. A lookup that does not answer is
-    recorded as 'could not check': nothing here concludes that a cited work does
-    not exist unless both searches answered and neither found it.
+    while it answers ``remaining`` above zero **and** ``retry_after`` zero: a
+    row whose lookups did not answer is owed another attempt, and the attempts
+    are minutes apart, so ``remaining`` above zero with ``retry_after`` above
+    zero means stop and report what the table holds. A lookup that does not
+    answer is recorded as 'could not check': nothing here concludes that a
+    cited work does not exist unless the DOI resolver has no handle for the
+    printed DOI.
     """
     run = current()
     if not secrets.compare_digest(str(recorder_key or ''), run.recorder_key):
@@ -1446,11 +1450,17 @@ def resolve_citations(recorder_key: str, limit: int = 15) -> dict:
     except (OSError, ValueError) as exc:
         return rejection('The citation ledger could not be resolved: ' + str(exc))
     run.write_progress()
-    remaining = progress['remaining']
-    return {**progress, 'ledger': citation_ledger.LEDGER_PATH,
-            'next': ('Call resolve_citations again: ' + str(remaining) + ' references have not '
-                     'been looked up yet.') if remaining else
-                    'Every reference is looked up. The citation workers may claim their batches.'}
+    remaining, wait = progress['remaining'], progress.get('retry_after') or 0
+    if remaining and wait:
+        nxt = (str(remaining) + ' reference(s) are owed another lookup and are waiting out the '
+               'retry wait; the earliest is due in ' + str(wait) + ' seconds. Calling again now '
+               'would do nothing: stop, and report that remaining as it is.')
+    elif remaining:
+        nxt = ('Call resolve_citations again: ' + str(remaining) + ' references have not been '
+               'looked up yet.')
+    else:
+        nxt = 'Every reference is looked up. The citation workers may claim their batches.'
+    return {**progress, 'ledger': citation_ledger.LEDGER_PATH, 'next': nxt}
 
 
 def citation_rows(agent_token: str, kind: str = 'problems', row_id: str = '',
@@ -1480,7 +1490,17 @@ def citation_rows(agent_token: str, kind: str = 'problems', row_id: str = '',
         return refused
     run = current()
     left = {'calls_left': agent.call_budget - agent.calls}
-    totals = citation_ledger.counts(run.citations)
+    try:
+        totals = citation_ledger.counts(run.citations)
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        # Every kind of this read goes through `counts` first, so a ledger file
+        # that cannot be read at all used to raise out of the tool and leave
+        # the specialist with a traceback instead of an answer. Reading the
+        # table is the whole of this agent's job: it has to be told the table
+        # is unreadable, in words it can put in its report.
+        return rejection('The citation ledger is present and could not be read (' + str(exc)
+                         + '). Report that the table could not be read rather than reporting '
+                           'that the citations are clean.', **left)
     if kind == 'counts':
         return {'kind': kind, 'counts': totals,
                 'summary': citation_ledger.summary_line(totals),

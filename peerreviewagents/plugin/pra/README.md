@@ -133,7 +133,7 @@ fill it, and the first two call no model:
 | Stage | Who | What it does |
 | --- | --- | --- |
 | fill | `ingest`, no model | a row for every extracted reference, with or without a DOI, and a row for every citing sentence |
-| resolve | the recorder calling `resolve_citations`, no model | looks up **every** reference: DOI → Crossref; no DOI → title search against Crossref, then Europe PMC. Records `exists` in four states — yes / no (a printed DOI no agency holds) / **not located** (two indexes answered, neither lists the title) / **could not check** (nothing answered) — a per-field comparison of title, first author, year and venue, any retraction, and the abstract or open-access full text with its source URL |
+| resolve | the recorder calling `resolve_citations`, no model | looks up **every** reference: DOI → Crossref; no DOI → title search against Crossref, then Europe PMC. Records `exists` in four states — yes / no (the DOI resolver has no handle for the printed DOI) / **not located** (two indexes answered, neither lists the title) / **could not check** (nothing answered, or only a metadata index that does not hold the record) — a per-field comparison of title, first author, year and venue, any retraction or correction notice, and the abstract or open-access full text with its source URL. A row whose lookups did not answer stays owed its retries: it is still counted in `remaining`, and `retry_after` says when it is due |
 | judge | `cite-1`…`cite-N` on Haiku | each claims a batch with `claim_citation_batch` and writes one verdict per use with `submit_citation_verdict` — supports / partly supports / does not support / cannot tell — quoting the exact passage it judged from |
 | confirm | `spec-citations` on Sonnet | reads the whole table with `citation_rows` — `counts`, `problems`, `unverified`, `supported`, and one `row` in full — re-checks every problem row itself, spot-checks the supported rows, and files findings only for what it confirmed |
 
@@ -141,7 +141,9 @@ Four rules this pipeline is built on:
 
 - **A failed lookup is "could not check", never "does not exist".** The one
   thing a citation check must not do is invent a missing paper out of a
-  timeout. A title neither index lists is `not located`, which is weak
+  timeout. Only the DOI resolver can make a DOI `no`, by having no handle for
+  it; a metadata index that does not hold the record is `could not check`. A
+  title neither index lists is `not located`, which is weak
   evidence and not an existence claim either: most of the literature — books,
   theses, standards, software, preprints — is in neither index.
 - **The rows are quoted material.** Every citation read carries an

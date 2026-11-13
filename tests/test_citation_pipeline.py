@@ -347,6 +347,50 @@ def test_a_lookup_that_never_answers_is_could_not_check(tmp_path):
                for line in cl.problems(counts))
 
 
+def test_the_recorder_is_told_to_stop_while_the_owed_retries_are_waiting(tmp_path):
+    """Three rows rate-limited is three rows owed a lookup, and the loop sees it.
+
+    ``remaining`` used to count what one call did not reach, so a pass in which
+    every row failed answered ``remaining: 0`` and the recorder stopped: the
+    loop in the workflow is the only thing that calls this tool, so the two
+    further attempts the ledger promises never happened in a real run. Now the
+    rows are still owed, and the tool says to wait rather than spend a turn.
+    """
+    open_run(tmp_path)
+    srv.STATE['opener'] = Index(fail=('crossref.org', 'ebi.ac.uk'))
+    answer = srv.resolve_citations(CODES['recorder_key'], limit=0)
+    assert answer['remaining'] == 3
+    assert 0 < answer['retry_after'] <= answer['retry_wait']
+    assert answer['retry_wait'] == cl.RETRY_WAIT_SECONDS >= 60
+    assert 'waiting out the retry wait' in answer['next']
+    assert 'stop' in answer['next']
+    assert answer['counts']['stages']['resolve']['done'] is False
+    # And a second call now does nothing, which is what the recorder is told.
+    again = srv.resolve_citations(CODES['recorder_key'], limit=0)
+    assert again['resolved_now'] == 0 and again['remaining'] == 3
+
+
+def test_a_ledger_that_cannot_be_read_is_reported_and_never_read_as_clean(tmp_path, monkeypatch):
+    """The specialist's whole job is the table, so an unreadable one is an answer.
+
+    Every kind of this read goes through ``counts`` first, and a ledger file
+    that cannot be read at all raised out of the tool: the specialist was left
+    with a traceback where its instrument should have been, and the one thing it
+    must not do then is report a clean reference list.
+    """
+    resolved_run(tmp_path)
+    token = token_for('spec-citations')
+
+    def unreadable(_ledger):
+        raise OSError('Input/output error')
+
+    monkeypatch.setattr(cl, 'counts', unreadable)
+    refused = srv.citation_rows(token, kind='counts')
+    assert 'could not be read' in refused['request_rejected']
+    assert 'rather than reporting that the citations are clean' in refused['request_rejected']
+    assert 'calls_left' in refused
+
+
 # -- stage 3: the workers fill the table in, and file nothing ---------------
 
 

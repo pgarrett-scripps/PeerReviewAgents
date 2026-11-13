@@ -102,6 +102,15 @@ COMPARED = ('title', 'first_author', 'year', 'venue')
 #: timeout pass; it is not retried for ever, because a host that is down stays
 #: down and the lookup allowance is the whole ledger's.
 RESOLVE_ATTEMPTS = 3
+#: How long a reference that could not be checked waits before it is looked up
+#: again. Five minutes, not seconds: the two answers this retry exists for are
+#: a 429 and a host that is briefly down, and both are minutes-long states. A
+#: retry a second later asks the same overloaded host the same question, and
+#: three attempts inside one tool call is one attempt with extra receipts.
+#: :func:`resolve` reports the wait rather than sleeping through it — the stage
+#: is driven by repeated tool calls, and a server that blocks for five minutes
+#: inside one of them is a server that looks hung.
+RETRY_WAIT_SECONDS = 300
 #: The shortest passage a worker may quote as the source's own words. Shorter
 #: than one clause is not evidence that a source says anything: ``ABSTRACT``,
 #: ``the`` and a single number all appear in almost any source text, and all
@@ -142,6 +151,16 @@ HEADERS = {'Accept': 'application/json'}
 CROSSREF_WORK = 'https://api.crossref.org/works/'
 CROSSREF_SEARCH = 'https://api.crossref.org/works?'
 DATACITE_WORK = 'https://api.datacite.org/dois/'
+#: The DOI system's own resolver. See :func:`doi_handle_url`: this is the only
+#: route whose answer this table reads as "that DOI does not exist".
+DOI_HANDLE = 'https://doi.org/api/handles/'
+#: What the handle API answers in ``responseCode``: 1 success, 2 an error while
+#: resolving, 100 handle not found, 200 handle found with no values. Only 100
+#: is a DOI that is not registered; 2 and anything unlisted are "could not
+#: check". Documented on
+#: https://www.doi.org/the-identifier/resources/factsheets/doi-resolution-documentation
+HANDLE_FOUND = (1, 200)
+HANDLE_NOT_FOUND = 100
 EUROPEPMC_SEARCH = 'https://www.ebi.ac.uk/europepmc/webservices/rest/search?'
 EUROPEPMC_FULL_TEXT = 'https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTextXML'
 
@@ -152,11 +171,31 @@ _DOI_SHAPE = re.compile(r'^10\.\d{4,9}/\S{3,}$')
 _PMCID = re.compile(r'^PMC\d{1,12}$', re.IGNORECASE)
 #: Initials, printed either side of a family name: ``JA``, ``J.A.``, ``J. A.``
 _INITIALS = re.compile(r'^(?:[A-Z]\.?){1,3}$')
-#: A title that belongs to a notice *about* a work rather than to the work.
+#: A title that opens with the name of a notice *about* a work.
 _NOT_THE_WORK = re.compile(
-    r'^\s*(?:correction|corrigend|erratum|errata|retraction|withdrawal|withdrawn|reply|'
-    r'response to|comment on|commentary on|editorial expression|expression of concern)\b',
+    r'^\s*(?:correction|corrigend|erratum|errata|retraction|retracted|withdrawal|withdrawn|'
+    r'addend(?:um|a)|reply|response to|comment on|commentary on|editorial expression|'
+    r'expression of concern|notice of)\b',
     re.IGNORECASE)
+#: The same words anywhere in a title's leading label — the text before the
+#: first colon. Publishers put the kind of notice there and the retracted
+#: work's own title after it: "Author Correction: …", "Publisher Correction: …",
+#: "Notice of retraction: …", "RETRACTED ARTICLE: …". Anchoring at the start of
+#: the string missed every one of those, so the notice scored as a title match
+#: against the work it is about and was recorded as the cited work.
+_NOTICE_WORDS = re.compile(
+    r'(?:correction|corrigend|erratum|errata|retract|withdraw|addend(?:um|a)|'
+    r'expression of concern|notice)', re.IGNORECASE)
+#: The suffix forms: "<title>: a comment", "<title> — reply", "<title>: response".
+_NOTICE_SUFFIX = re.compile(
+    r'[:;,—–-]\s*(?:an?\s+|the\s+)?'
+    r'(?:comment|comments|commentary|reply|replies|response|rejoinder|'
+    r'letter to the editor)\s*$', re.IGNORECASE)
+#: The longest leading label that is a label rather than a sentence. A notice
+#: label is two or three words ("Author Correction", "Notice of retraction");
+#: a title like "A study of retraction rates in cardiology: evidence from
+#: PubMed" has a notice word in a nine-word clause and is a real paper.
+NOTICE_LABEL_WORDS = 5
 _YEAR_SUFFIX = re.compile(r'\b((?:1[89]|20)\d{2})([a-z])\b')
 #: Letters no Unicode decomposition takes apart, folded the way an index does.
 _FOLDED = {'ø': 'o', 'ß': 'ss', 'đ': 'd', 'ł': 'l', 'æ': 'ae', 'œ': 'oe', 'ð': 'd', 'þ': 'th',
@@ -164,6 +203,10 @@ _FOLDED = {'ø': 'o', 'ß': 'ss', 'đ': 'd', 'ł': 'l', 'æ': 'ae', 'œ': 'oe', 
 #: Words a venue name carries in full and an abbreviation drops.
 _VENUE_STOPWORDS = frozenset(('of', 'the', 'and', 'for', 'in', 'on', 'a', 'an', 'der', 'die',
                               'das', 'und', 'de', 'des', 'la', 'le', 'el', 'der'))
+#: Words an abbreviated venue carries and the full name drops: the country on
+#: ``Proc. Natl. Acad. Sci. U.S.A.``. Nothing that names a different journal in
+#: the same family belongs here — see :func:`_abbreviates`.
+_VENUE_EDITIONS = frozenset(('usa', 'us', 'u', 's', 'a', 'uk'))
 _LABEL = re.compile(r'^\s*[\[(]?\s*(\d{1,3})\s*[\]).]\s*')
 _NUMERIC_MARKER = re.compile(
     r'\[((?:\d{1,3}(?:\s*[‐-―-]\s*\d{1,3})?)'
@@ -261,6 +304,14 @@ def doi_in(text):
     Each of those used to be stored as the printed DOI, looked up, and reported
     as a DOI that is not registered — a fabrication finding manufactured out of
     the typesetting. "The paper printed no DOI" costs nothing by comparison.
+
+    The fourth way is a DOI cut off at a dot: ``10.1016/j.cell.2020.01.``,
+    which trims to ``10.1016/j.cell.2020.01`` — a well-shaped identifier that
+    belongs to nobody, and which the DOI resolver duly answers "handle not
+    found" for. A trailing dot after a one-to-three-digit component is that
+    cut, not a sentence's full stop: an Elsevier or APS suffix ends in a longer
+    article number (``…2020.01.001``, ``…PhysRevLett.100.120801``), so the
+    short numeric tail is the tell.
     """
     body = str(text or '')
     match = _DOI.search(body)
@@ -270,11 +321,13 @@ def doi_in(text):
     trimmed = found.rstrip('.,;)]')
     if found.endswith('.') and re.match(r'\s*\d', body[match.end():]):
         return None
+    if found.endswith('.') and re.match(r'^\d{1,3}$', trimmed.rsplit('.', 1)[-1]):
+        return None
     if trimmed.count('(') != trimmed.count(')') or trimmed.count('<') != trimmed.count('>'):
         return None
     if not _DOI_SHAPE.match(trimmed):
         return None
-    return trimmed.casefold()
+    return clean_doi(trimmed)
 
 
 def surname(name):
@@ -448,7 +501,13 @@ def reference_rows(paper):
         year, suffix = _printed_year(reference)
         given_author = surname(reference.get('first_author'))
         given_venue = squeeze(reference.get('venue') or reference.get('journal')) or None
-        printed_doi = (reference.get('doi') or '').strip().casefold()
+        # Every DOI goes through :func:`doi_in`, whatever carried it. The
+        # ingest's own `doi` field used to be trusted on shape alone, so a
+        # reference list that printed `10.1016/j.cell.2020.01.` — a DOI cut off
+        # at a dot — was looked up as a different identifier and reported as
+        # one no agency has registered. Where the ingest read it is not
+        # evidence about whether it is readable.
+        printed_doi = (reference.get('doi') or '').strip()
         rows.append({
             'kind': 'reference',
             'row_id': 'ref:' + str(identifier),
@@ -461,8 +520,7 @@ def reference_rows(paper):
                 'year_suffix': suffix,
                 'first_author': given_author or author,
                 'venue': given_venue or venue,
-                'doi': (printed_doi if _DOI_SHAPE.match(printed_doi)
-                        else doi_in(printed_doi) or doi_in(reference.get('raw'))),
+                'doi': doi_in(printed_doi) or doi_in(reference.get('raw')),
                 # Where each compared field came from. A value the ingest
                 # carried is the paper's own; a value this module read off the
                 # raw string with a regex is a guess about a reference-list
@@ -630,13 +688,27 @@ class Ledger:
         return row
 
     def load(self):
-        """``{row_id: row}``, replayed in order, plus the unreadable line count."""
+        """``{row_id: row}``, replayed in order, plus the unreadable line count.
+
+        Read as bytes and decoded a line at a time, inside the same guard that
+        catches unreadable JSON. A run killed mid-write can tear a line inside
+        a multi-byte character — one byte into the ``ö`` of ``Über die Größe``
+        — and a text stream decodes while it iterates, so the whole file raised
+        ``UnicodeDecodeError`` and every row in it was lost. The newline repair
+        in :meth:`append` then wrote a newline after the broken bytes and made
+        that permanent. One torn line is one skipped and counted row, which is
+        what the rest of this class already promised.
+        """
         rows, broken = {}, 0
         if not self.path.is_file():
             return rows, broken
-        with self.path.open('r', encoding='utf-8') as stream:
-            for line in stream:
-                line = line.strip()
+        with self.path.open('rb') as stream:
+            for raw in stream:
+                try:
+                    line = raw.decode('utf-8').strip()
+                except UnicodeDecodeError:
+                    broken += 1
+                    continue
                 if not line:
                     continue
                 try:
@@ -754,12 +826,19 @@ class Lookups:
         stored['requests'].append({'source_url': url, 'status': status, 'at': now()})
         write(self.receipts_path, stored)
 
-    def fetch(self, url, json_body=True):
+    def fetch(self, url, json_body=True, error_body=False):
         """One allowlisted GET, cached in the run folder by URL.
 
         The answer is always a status: ``ok``, or one of the reasons it is not,
         which the caller turns into "could not check" rather than into a claim
         about the paper.
+
+        ``error_body`` decodes the body of a non-``ok`` answer into ``data``
+        and leaves the status alone. One caller wants it — the DOI handle
+        resolver, whose "no such handle" arrives as JSON on a 404 — and the
+        status still says the request failed, so no other caller can read the
+        body by accident. Nothing that failed is cached: the next attempt is
+        meant to be a real one.
         """
         key = digest(url)
         meta = self.directory / (key + '.json')
@@ -774,11 +853,17 @@ class Lookups:
                 return self._decode(record | {'cache_hit': True}, raw, json_body)
         if self.count() >= self.limit:
             return {'status': 'budget_exhausted', 'source_url': url}
-        answer = retrieve(url, opener=self.opener, headers=HEADERS)
+        answer = retrieve(url, opener=self.opener, headers=HEADERS, error_body=error_body)
         self._record(url, answer['status'])
         if answer['status'] != 'ok':
-            return {key: value for key, value in answer.items() if key != 'raw'} | {
+            failed = {key: value for key, value in answer.items() if key != 'raw'} | {
                 'source_url': url}
+            if error_body and answer.get('raw') is not None:
+                try:
+                    failed['data'] = json.loads(answer['raw'])
+                except ValueError:
+                    pass
+            return failed
         raw = answer['raw']
         record = {'status': 'ok', 'source_url': url, 'retrieved_at': now(),
                   'raw_sha256': digest(raw)}
@@ -821,6 +906,14 @@ def clean_doi(doi):
     # belonging to someone else's paper — so a broken DOI is one this version
     # will not look up rather than one it guesses at.
     if not body or ' ' in body or not _DOI_SHAPE.match(body):
+        return None
+    # A DOI suffix may hold slashes, so what goes in the path is a path — and
+    # `quote(…, safe='/')` keeps `.` and `/` exactly as they came. A dot
+    # segment is therefore a traversal: `10.1234/../../members/98` reached
+    # `api.crossref.org/members/98`, a 200 about a publisher, read as the
+    # record for a reference. Nothing with a `.` or `..` segment in it is a
+    # DOI, so nothing with one is looked up.
+    if any(segment in ('.', '..') for segment in body.split('/')):
         return None
     return body.casefold()
 
@@ -866,6 +959,39 @@ def datacite_url(doi):
     if not cleaned:
         raise ValueError('That is not a DOI this version will put in a URL: ' + squeeze(doi, 80))
     return DATACITE_WORK + quote(cleaned, safe='')
+
+
+def doi_handle_url(doi):
+    """The DOI system's own answer to "is there such a DOI".
+
+    This is the authority the table was missing. Crossref answering 404 means
+    Crossref has no record; the Crossref *agency* route answering 404 means
+    Crossref's agency index does not carry it — and that index is not the DOI
+    system. Checked live on 2026-11-12: ``10.48550/arxiv.1706.03762``, a real
+    arXiv DOI, answers the agency route **200 with ``agency.id = "datacite"``**,
+    so the route is right about that one; but a DOI it does not carry answers
+    404 (``https://api.crossref.org/works/10.99999/definitely-not-a-real-doi-pra-check/agency``
+    → 404 ``Resource not found.``), and reading that as non-existence is the
+    same mistake one index deeper.
+
+    ``/api/handles/{doi}`` is the handle resolver behind every DOI. Documented
+    at https://www.doi.org/the-identifier/resources/factsheets/doi-resolution-documentation
+    — a plain GET answering JSON with a ``responseCode``: 1 success (HTTP 200),
+    2 an error during resolution (HTTP 500), 100 handle not found (HTTP 404),
+    200 handle found with no values (HTTP 200). Checked live on 2026-11-13: the
+    arXiv DOI answers ``responseCode: 1``; a fabricated DOI answers HTTP 404
+    with ``responseCode: 100`` and "HANDLE NOT FOUND"; and the truncated
+    ``10.1016/j.cell.2020.01.`` answers 100 as well.
+
+    So ``exists: 'no'`` now needs **this** route to say 100. Any transport
+    error, any other code and any body that is not the documented shape is
+    "could not check", because the question the table must never get wrong is
+    this one.
+    """
+    cleaned = clean_doi(doi)
+    if not cleaned:
+        raise ValueError('That is not a DOI this version will put in a URL: ' + squeeze(doi, 80))
+    return DOI_HANDLE + quote(cleaned, safe='/')
 
 
 def search_query(title):
@@ -1008,9 +1134,17 @@ def _crossref_record(message):
     if retracted:
         notice = squeeze('; '.join(notices + [str(one.get('type')) + ' ' + str(one.get('DOI'))
                                               for one in updates]), 200) or 'retraction notice'
-    is_notice = bool([one for one in (message.get('update-to') or [])
-                      if isinstance(one, dict) and _retracting(one.get('type'))])
+    pointers = [one for one in (message.get('update-to') or []) if isinstance(one, dict)]
+    is_notice = bool([one for one in pointers if _retracting(one.get('type'))])
     return {
+        # Whether this record is a notice *about* a work rather than a work:
+        # it points at the record it corrects, retracts or comments on. Any
+        # `update-to` entry says so, whatever its type — a correction and an
+        # addendum are no more the cited work than a retraction is — and so
+        # does a record whose own type carries the word. A title-search hit
+        # that is a notice is skipped in `_best`, because its title is the
+        # cited work's title and it scores as a match against it.
+        'is_notice': bool(pointers) or bool(_NOTICE_WORDS.search(str(message.get('type') or ''))),
         'doi': (message.get('DOI') or '').casefold() or None,
         'title': squeeze(titles[0]) if titles else None,
         'first_author': surname(' '.join(
@@ -1067,6 +1201,7 @@ def _datacite_record(data):
         'abstract': strip_markup(abstracts[0], FULL_TEXT_LIMIT) if abstracts else None,
         'retracted': False,
         'retraction_notice': None,
+        'is_notice': False,
         'registered_with': 'datacite',
     }
 
@@ -1089,6 +1224,9 @@ def _europepmc_record(hit):
         'retracted': retracted,
         'retraction_notice': 'Europe PMC publication type: ' + ', '.join(
             types) if retracted else None,
+        # Europe PMC says it in the publication type: "Published Erratum",
+        # "Retraction of Publication", "Comment", "Expression of Concern".
+        'is_notice': any(_NOTICE_WORDS.search(one) or 'comment' in one for one in types),
     }
 
 
@@ -1119,14 +1257,25 @@ def _venue_same(printed, record):
     and a reference list prints whichever its style asks for. Similarity cannot
     see that — the two score about 0.4 against each other — so every reference
     in an abbreviating style raised a venue mismatch against its own correct
-    record. The comparison is token by token instead: every word of the long
-    form has to be abbreviated, in order, by a word of the short form.
+    record. The comparison is token by token instead, one token against the
+    token in the same place.
+
+    Containment used to stand in for that, and it read *Nature* and *Nature
+    Methods*, *Science* and *Science Advances*, *Cell* and *Cell Reports* as
+    the same venue — the family name is a prefix of every journal in the
+    family, so the mismatch that matters most in a reference list was the one
+    comparison that could not raise it. A venue with a word the other does not
+    have is a different venue.
     """
     mine, theirs = _venue_tokens(printed), _venue_tokens(record)
     if not mine or not theirs:
         return None
-    left, right = ' '.join(mine), ' '.join(theirs)
-    if similar(left, right) >= VENUE_MATCH or left in right or right in left:
+    if mine == theirs:
+        return True
+    # A different number of words is a different venue, with one exception
+    # :func:`_abbreviates` covers below: an abbreviation that carries an
+    # edition or a country the full name drops.
+    if len(mine) == len(theirs) and similar(' '.join(mine), ' '.join(theirs)) >= VENUE_MATCH:
         return True
     return _abbreviates(mine, theirs) or _abbreviates(theirs, mine)
 
@@ -1152,22 +1301,27 @@ def _shortens(token, word):
 
 
 def _abbreviates(short, long):
-    """Whether every word of ``long`` is abbreviated, in order, by ``short``.
+    """Whether each word of ``long`` is abbreviated by ``short``'s word in that place.
 
-    Words of ``short`` left over at the end are allowed: ``Proc. Natl. Acad.
-    Sci. U.S.A.`` carries a country the full name does not. Words of ``long``
-    left unmatched are not — that is the difference between *Nature
-    Neuroscience* and *Nature Methods*, and it is the comparison that has to
-    keep saying no.
+    Word for word, in place. Skipping along ``short`` to find a word that fits
+    — which is what this did — let any longer name abbreviate any shorter one
+    as long as the first words lined up, so *Nature Methods* abbreviated
+    *Nature* and the whole family of journals named after a journal compared
+    equal to it.
+
+    Words of ``short`` left over at the end are allowed only where they are a
+    country or edition the full name drops: ``Proc. Natl. Acad. Sci. U.S.A.``
+    is the *Proceedings of the National Academy of Sciences*, while *Nature
+    Methods* is not *Nature*. Words of ``long`` left unmatched are never
+    allowed — that is the difference between *Nature Neuroscience* and *Nature
+    Methods*, and it is the comparison that has to keep saying no.
     """
     position = 0
     for word in long:
-        while position < len(short) and not _shortens(short[position], word):
-            position += 1
-        if position >= len(short):
+        if position >= len(short) or not _shortens(short[position], word):
             return False
         position += 1
-    return True
+    return all(token in _VENUE_EDITIONS for token in short[position:])
 
 
 def _compare(printed, record, confident=True):
@@ -1205,18 +1359,56 @@ def _compare(printed, record, confident=True):
     return out
 
 
+def notice_title(title):
+    """Whether this title belongs to a notice about a work, not to the work.
+
+    Three forms, because publishers use three:
+
+    * the notice word opens the title — ``Retraction of …``, ``Corrigendum
+      to …``;
+    * it is in the leading label, the text before the first colon — ``Author
+      Correction: …``, ``Publisher Correction: …``, ``Addendum: …``, ``Notice
+      of retraction: …``, ``RETRACTED ARTICLE: …``. The label is checked only
+      while it is short enough to be a label: *A study of retraction rates in
+      cardiology: evidence from PubMed* is a paper, not a notice;
+    * it is the suffix — ``<title>: a comment``, ``<title> — reply``.
+
+    A notice's title is the cited work's title with a few words round it, so it
+    scores at the top of a title search for the work it is about. Only the
+    opening form was matched, which is why ``Author Correction: …`` was
+    accepted as the work and its abstract handed to the workers as the source.
+    """
+    text = squeeze(title)
+    if not text:
+        return False
+    if _NOT_THE_WORK.match(text):
+        return True
+    label = text.split(':', 1)[0] if ':' in text else ''
+    words = label.split()
+    if words and len(words) <= NOTICE_LABEL_WORDS and _NOTICE_WORDS.search(label):
+        return True
+    return bool(_NOTICE_SUFFIX.search(text))
+
+
 def _corroborated(printed, candidate):
-    """Whether something other than the title says this is the cited work.
+    """Whether the authors agree that this hit is the cited work.
 
     A title search is a similarity query, so a title that matches is one piece
-    of evidence and never two. The first author's surname or the year has to
-    agree as well before a hit is treated as the work the paper cited: without
-    that, a near neighbour by other authors in another decade was recorded as
-    the reference resolving, its abstract was handed to the workers as the
-    source, and every verdict about it was about a different paper.
+    of evidence and never two. The first author's surname has to agree as well
+    before a hit is treated as the work the paper cited: without that, a near
+    neighbour by other authors was recorded as the reference resolving, its
+    abstract was handed to the workers as the source, and every verdict about
+    it was about a different paper.
+
+    The year cannot do this job, and standing in for the author is what it used
+    to do. :func:`crossref_search_url` already filters the query to the printed
+    year plus or minus one, so every hit agrees on the year by construction:
+    *C-reactive protein and parental history improve global cardiovascular risk
+    prediction: the Reynolds Risk Score for women* (Ridker, 2005) printed, and
+    *…for men* (Hennekens, 2006) returned, corroborated on the year, resolved
+    as the reference, and the citing paper was then reported for printing the
+    wrong first author.
     """
-    if _year_same(printed.get('year'), candidate.get('year')) is True:
-        return 'year'
     mine, theirs = surname(printed.get('first_author')), surname(candidate.get('first_author'))
     if mine and theirs and mine == theirs:
         return 'first author'
@@ -1228,22 +1420,33 @@ def _best(printed, candidates):
 
     Strict on purpose, and in two steps. A bibliographic index answers every
     query with its nearest neighbours, so "the first hit" is not evidence that
-    a work exists: the title has to match *and* the first author or the year
-    has to corroborate it. A hit that clears the title bar with nothing to
-    corroborate it is returned as a **candidate** — stored, named to the
-    specialist, never treated as the reference resolving, and never compared
-    against the printed fields, because a mismatch raised against a paper that
-    is not the cited work is a finding about nothing.
+    a work exists: the title has to match *and* the first author's surname has
+    to agree. A hit without that agreement is returned as a **candidate** —
+    stored, named to the specialist, never treated as the reference resolving,
+    and never compared against the printed fields, because a mismatch raised
+    against a paper that is not the cited work is a finding about nothing.
 
-    A notice is never the work either: a hit whose title opens with Correction,
-    Erratum, Retraction or Reply is about the cited work at best, so it is
-    skipped unless the paper printed such a title itself.
+    Author agreement is required at every similarity, including an exact title
+    match, and whether or not the printed author was extracted confidently. No
+    author on either side is a candidate too. That is strict, and the
+    alternative is worse: the hit's abstract becomes the source text every
+    verdict about that reference is judged against, so a wrong hit is not one
+    bad row but a whole reference's worth of them, and the finding it produces
+    blames the citing paper for the other paper's details. The consequence
+    worth stating: on the title-search path a ``first_author`` mismatch can
+    never be raised, because a hit whose author disagrees is never the work.
+    Only the DOI path, where the paper itself named the record, can raise one.
+
+    A notice is never the work either: a hit whose title or record says it is a
+    correction, erratum, retraction, addendum, comment or reply is about the
+    cited work at best, so it is skipped unless the paper printed such a title
+    itself.
     """
-    wants_notice = bool(_NOT_THE_WORK.match(str(printed.get('title') or '')))
+    wants_notice = notice_title(printed.get('title'))
     best, score = None, 0.0
     for candidate in candidates:
         title = str(candidate.get('title') or '')
-        if _NOT_THE_WORK.match(title) and not wants_notice:
+        if not wants_notice and (notice_title(title) or candidate.get('is_notice')):
             continue
         ratio = similar(printed.get('title'), title)
         if ratio > score:
@@ -1252,11 +1455,6 @@ def _best(printed, candidates):
         return None, None
     corroboration = _corroborated(printed, best)
     if not corroboration:
-        return None, {**best, 'title_similarity': round(score, 3), 'corroborated_by': None}
-    if score < TITLE_MATCH and corroboration != 'first author' and printed.get(
-            'first_author') and best.get('first_author'):
-        # The title is close but not the same string, the year agrees and the
-        # authors do not: that is a different paper in the same year.
         return None, {**best, 'title_similarity': round(score, 3), 'corroborated_by': None}
     return {**best, 'title_similarity': round(score, 3),
             'corroborated_by': corroboration}, None
@@ -1295,13 +1493,39 @@ def _abstract_and_text(lookups, record, resolution):
     return abstract, source, full_text, full_text_url
 
 
+def _handle_leg(doi, lookups, resolution):
+    """What the DOI resolver says about the printed DOI: ``True``, ``False``, ``None``.
+
+    ``False`` is the only answer in this module that can make ``exists: 'no'``.
+    See :func:`doi_handle_url` for the endpoint, the documented response codes
+    and the live checks behind them. ``None`` is "could not check": a transport
+    failure, an HTTP status with no body, a body that is not JSON, or a
+    ``responseCode`` that is neither the not-found code nor a found one.
+    """
+    try:
+        url = doi_handle_url(doi)
+    except ValueError:
+        return None
+    answer = lookups.fetch(url, error_body=True)
+    resolution['requests'].append({'url': url, 'status': answer.get('status')})
+    data = answer.get('data')
+    code = data.get('responseCode') if isinstance(data, dict) else None
+    if code == HANDLE_NOT_FOUND:
+        return False
+    if code in HANDLE_FOUND:
+        return True
+    return None
+
+
 def _doi_leg(doi, lookups, resolution):
     """What the registration agencies say about the DOI the paper printed.
 
     Answers ``(record, failed)``: the metadata if an agency had any, and
     whether a lookup did not answer. Crossref first, because the metadata the
-    ledger compares is richest there; then, on a 404, *who registered the DOI*,
-    which is the only question that can answer "this DOI is not registered".
+    ledger compares is richest there; then, on a 404, *who registered the DOI*;
+    and if that index does not carry it either, the DOI system's own resolver,
+    which is the only route whose answer this table reads as "there is no such
+    DOI".
     """
     try:
         url = crossref_work_url(doi)
@@ -1327,9 +1551,25 @@ def _doi_leg(doi, lookups, resolution):
     answer = lookups.fetch(agency_url)
     resolution['requests'].append({'url': agency_url, 'status': answer.get('status')})
     if answer.get('status') == 'not_found':
-        resolution['printed_doi_registered'] = False
-        resolution['note'] = 'No registration agency has the DOI the paper printed.'
-        return None, 0
+        # Crossref's agency index does not carry it. That is not the DOI
+        # system: the agency route answers 404 for DOIs that resolve perfectly
+        # well, so the resolver is asked before anything here says "no".
+        resolves = _handle_leg(doi, lookups, resolution)
+        if resolves is False:
+            resolution['printed_doi_registered'] = False
+            resolution['note'] = ('No registration agency has the DOI the paper printed, and '
+                                  'the DOI resolver has no handle for it.')
+            return None, 0
+        if resolves is True:
+            resolution['printed_doi_registered'] = True
+            resolution['note'] = ('The DOI the paper printed resolves, and neither Crossref nor '
+                                  'its agency index holds a record for it, so no metadata was '
+                                  'compared against it.')
+            return None, 0
+        resolution['note'] = ('Crossref has no record of the DOI the paper printed and the DOI '
+                              'resolver did not answer, so whether that DOI exists could not be '
+                              'checked.')
+        return None, 1
     if answer.get('status') != 'ok':
         resolution['note'] = ('Whether the printed DOI is registered could not be checked ('
                               + str(answer.get('status')) + ').')
@@ -1432,8 +1672,10 @@ def resolve_reference(row, lookups):
     ``yes``
         An index or a registration agency holds this work.
     ``no``
-        The paper printed a DOI and *no* agency has it. This is the only claim
-        of non-existence the table ever makes, and it is about the identifier.
+        The paper printed a DOI and the **DOI resolver** has no handle for it
+        (:func:`doi_handle_url`). This is the only claim of non-existence the
+        table ever makes, it is about the identifier, and no index's 404 is
+        enough for it on its own.
     ``not located``
         Both indexes answered and neither lists this title. Weak evidence: most
         of the literature is not in either index.
@@ -1462,7 +1704,8 @@ def resolve_reference(row, lookups):
         elif resolution['printed_doi_registered'] is False and not candidate and not failed:
             resolution['exists'] = 'no'
             resolution['method'] = 'doi-unregistered'
-            resolution['note'] = ('No registration agency has the DOI the paper printed'
+            resolution['note'] = ('The DOI resolver has no handle for the DOI the paper printed '
+                                  'and no registration agency holds it'
                                   + (', and no work with this title is indexed at Crossref or '
                                      'Europe PMC.' if searched >= 2 else '.'))
         elif searched >= 2 and not failed:
@@ -1512,7 +1755,7 @@ def resolve_reference(row, lookups):
 
 
 def _needs_resolving(row):
-    """Whether this reference row is still worth a lookup.
+    """Whether this reference row is still owed a lookup.
 
     A row that resolved is done. A row that could not be checked is retried —
     a rate limit and a timeout pass — but not for ever: a host that is down
@@ -1528,7 +1771,37 @@ def _needs_resolving(row):
     return int(resolution.get('attempts') or 1) < RESOLVE_ATTEMPTS
 
 
-def resolve(ledger, lookups, limit=0, retry=True):
+def _waited(row, seconds=RETRY_WAIT_SECONDS):
+    """Whether a row's retry wait has passed, so it is due now.
+
+    A row with no readable timestamp is due: an unparseable ``checked_at`` must
+    not park a reference for ever.
+    """
+    checked_at = (row.get('resolution') or {}).get('checked_at')
+    if not checked_at:
+        return True
+    try:
+        when = datetime.datetime.fromisoformat(str(checked_at))
+    except ValueError:
+        return True
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=datetime.timezone.utc)
+    return (datetime.datetime.now(datetime.timezone.utc) - when).total_seconds() >= seconds
+
+
+def _due_in(row, seconds=RETRY_WAIT_SECONDS):
+    """Seconds until this row's retry is due, 0 if it is due now."""
+    if _waited(row, seconds):
+        return 0
+    checked_at = (row.get('resolution') or {}).get('checked_at')
+    when = datetime.datetime.fromisoformat(str(checked_at))
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=datetime.timezone.utc)
+    waited = (datetime.datetime.now(datetime.timezone.utc) - when).total_seconds()
+    return max(0, int(seconds - waited))
+
+
+def resolve(ledger, lookups, limit=0, retry=True, wait=RETRY_WAIT_SECONDS):
     """Stage 2: resolve every unresolved reference row. No model.
 
     ``limit`` resolves at most that many rows and reports how many are left, so
@@ -1537,15 +1810,29 @@ def resolve(ledger, lookups, limit=0, retry=True):
     not looked up again, and every answer is cached by URL in the run folder.
 
     ``retry`` also takes up the rows that could not be checked, up to
-    :data:`RESOLVE_ATTEMPTS` tries each. Without it a single rate-limited
-    minute left a row permanently unchecked while the stage reported itself
-    done, which is the table claiming to have checked what it had not.
+    :data:`RESOLVE_ATTEMPTS` tries each, with :data:`RETRY_WAIT_SECONDS`
+    between attempts on one row. Without it a single rate-limited minute left a
+    row permanently unchecked while the stage reported itself done, which is
+    the table claiming to have checked what it had not.
+
+    ``remaining`` counts the rows still **owed** a lookup, waiting ones
+    included, and the stage is ``done`` only when none are owed. Counting the
+    rows this call did not get to instead was the same bug one level up: three
+    references, both indexes rate-limiting, one call — every row attempted
+    once, nothing left in the queue, ``remaining: 0``, stage done, and the two
+    retries :data:`RESOLVE_ATTEMPTS` promises never happened in any real run.
+    ``retry_after`` is how many seconds until the earliest owed row is due, so
+    a caller can stop calling instead of spending its turns on rows that are
+    waiting. ``wait`` overrides that gap, and exists so a test can take a row
+    up again in the same second; a caller that shortens it is retrying a host
+    that has not had time to recover.
     """
     rows, _ = ledger.load()
     unresolved = [row for row in rows.values()
                   if row.get('kind') == 'reference' and not row.get('resolution')]
     retries = [row for row in rows.values()
-               if row.get('resolution') and _needs_resolving(row)] if retry else []
+               if row.get('resolution') and _needs_resolving(row)
+               and _waited(row, wait)] if retry else []
     pending = sorted(unresolved + retries, key=lambda row: row['row_id'])
     taken = pending[:limit] if limit and limit > 0 else pending
     before = lookups.count()
@@ -1569,16 +1856,27 @@ def resolve(ledger, lookups, limit=0, retry=True):
                                   'nothing about it was checked.'}
         resolution['attempts'] = attempts
         ledger.append({**row, 'stage': 'resolve', 'resolution': resolution})
-    remaining = len(pending) - len(taken)
+    # Read the table again and ask what is still owed, rather than subtracting
+    # what this call took from what it found. A row this call attempted and
+    # could not check is owed another attempt, and it is owed whether or not
+    # the queue this call built is empty.
+    rows, _ = ledger.load()
+    owed = [row for row in rows.values() if _needs_resolving(row)] if retry else [
+        row for row in rows.values()
+        if row.get('kind') == 'reference' and not row.get('resolution')]
+    remaining = len(owed)
+    retry_after = min((_due_in(row, wait) for row in owed), default=0)
     totals = counts(ledger)
     ledger.record_stage('resolve', done=not remaining, resolved=totals['resolved'],
                         references=totals['references'], remaining=remaining,
+                        retry_after=retry_after, retry_wait=wait,
                         lookups=lookups.count())
     # Read again, now that the stage is recorded: the lookup count in `counts`
     # comes from that record, so the first reading would hand this call's
     # caller a number that stops short of the lookups it just paid for.
     totals = counts(ledger)
     return {'resolved_now': len(taken), 'remaining': remaining,
+            'retry_after': retry_after, 'retry_wait': wait,
             'lookups_now': lookups.count() - before, 'lookups_total': lookups.count(),
             'counts': totals}
 
@@ -2015,16 +2313,24 @@ def counts(ledger):
         # reported itself complete. `stages_done` is whether every stage ran to
         # the end — which an empty ledger satisfies trivially, because there
         # was nothing left to do. `complete` is whether the table actually
-        # checked something: every reference looked up, every use judged, and
-        # at least one of each to begin with.
+        # checked something.
         'stages_done': bool((state.get('fill') or {}).get('done')
                             and (state.get('resolve') or {}).get('done')
                             and not sum(1 for row in uses if row.get('reference_id')
                                         and not row.get('verdict'))),
+        # Complete means answered, not attempted: every reference resolved to
+        # yes, no or not located, and every use carrying a verdict. A row whose
+        # lookups never answered is the one thing this run did *not* check, so
+        # a table of nothing but "could not check" rows used to report
+        # `complete: True` — every reference had a resolution, every use had a
+        # verdict of `cannot tell`, and the one number a reader uses to decide
+        # how much of the reference list was checked said all of it.
         'complete': bool((state.get('fill') or {}).get('done')
                          and (state.get('resolve') or {}).get('done')
                          and references and uses
                          and not sum(1 for row in references if not row.get('resolution'))
+                         and not sum(1 for one in resolutions
+                                     if one.get('exists') == COULD_NOT_CHECK)
                          and not sum(1 for row in uses if row.get('reference_id')
                                      and not row.get('verdict'))),
     }

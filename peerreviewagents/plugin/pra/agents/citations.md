@@ -77,9 +77,11 @@ and how many there were, so a reader can tell a spot-check from a wave-through.
 - `exists: "yes"` means an index or a registration agency holds the work. The
   reference itself is not in question; its printed details still may be, and
   the ledger lists any that disagree with the record.
-- `exists: "no"` means the paper printed a DOI and no registration agency has
-  registered it. That is the only claim of non-existence the table makes, it is
-  about the identifier, and it is worth a finding.
+- `exists: "no"` means the paper printed a DOI and the DOI resolver itself has
+  no handle for it: doi.org, the service that would redirect it, says it was
+  never registered. That is the only claim of non-existence the table makes, it
+  is about the identifier, and it is worth a finding. An index that simply does
+  not hold the record is not this — it is `could not check`.
 - `exists: "not located"` means two indexes answered and neither lists a work
   with this title. It is weak evidence, not a missing reference: books,
   chapters, theses, standards, software and preprints outside Crossref and

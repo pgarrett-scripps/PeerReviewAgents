@@ -380,9 +380,12 @@ if cites["enabled"]:
   fill, resolve and judge each did, with the per-stage lookup and verdict
   counts) and `complete`.
 - A reference lands in exactly one of four buckets, and only one of them is an
-  existence claim. `not_found` counts the rows whose printed DOI no
-  registration agency holds — that, and only that, is the table saying a work
-  does not exist. `not_located` counts the rows where Crossref and Europe PMC
+  existence claim. `not_found` counts the rows whose printed DOI the DOI
+  resolver has no handle for — doi.org's handle API answering `responseCode`
+  100, the one service whose whole job is to say whether a DOI was ever
+  registered. That, and only that, is the table saying a work does not exist; a
+  metadata index that merely does not hold the record leaves the row in
+  `could_not_check`. `not_located` counts the rows where Crossref and Europe PMC
   both answered and neither listed the title: weak evidence, because books,
   chapters, theses, standards, software and preprints outside those two indexes
   land here while being perfectly real. `could_not_check` counts the rows where
@@ -391,9 +394,11 @@ if cites["enabled"]:
   from the sum of the three is misreporting the run; `not_located` and
   `could_not_check` belong in the same sentence as how much of the list could
   not be confirmed, not in a count of bad references.
-- `complete` is `True` only when fill and resolve finished and no matched
-  in-text use is still unjudged. When it is `False`, `problems` names each
-  unfinished stage in words — and those lines are in `run['problems']` too but
+- `complete` is `True` only when fill and resolve finished, no matched in-text
+  use is still unjudged, and at least one reference was actually checked: a
+  table in which every row came back `could_not_check` is not complete, because
+  the stages running is not the same as the references being checked. When it
+  is `False`, `problems` names each unfinished stage in words — and those lines are in `run['problems']` too but
   never in `run['not_publishable_reasons']`. **An unfinished ledger does not
   make a run unpublishable.** Show the lines beside the findings; do not gate
   on them.

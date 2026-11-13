@@ -32,13 +32,30 @@ TITLE = 'Hippocampal replay during quiet rest'
 FAKE_TITLE = 'Synthetic scaffolds for retinal regeneration in zebrafish'
 
 
+def _body(payload):
+    """A fake response body: a string as itself, anything else as JSON."""
+    return (payload if isinstance(payload, str) else json.dumps(payload)).encode('utf-8')
+
+
+#: What ``https://doi.org/api/handles/{doi}`` answers for a DOI the resolver has
+#: no handle for: HTTP 404 with ``responseCode: 100`` in the body. This is the
+#: only answer the ledger reads as "that identifier does not exist", so every
+#: test that wants ``exists: no`` has to put it on the table.
+NO_HANDLE = ('doi.org/api/handles', (404, {'responseCode': 100, 'handle': 'x'}))
+#: And the same route for a DOI that does resolve: 1, success.
+HANDLE = ('doi.org/api/handles', {'responseCode': 1, 'values': []})
+
+
 class Net:
     """Every lookup answered from a table of URL fragments. No socket is opened.
 
     ``answers`` is checked in order, so a more specific fragment goes first.
-    A payload that is an int is raised as that HTTP status, and a fragment in
-    ``fail`` raises ``OSError`` — the transport failure the ledger has to read
-    as "could not check" rather than as a missing paper.
+    A payload that is an int is raised as that HTTP status with no body, a
+    ``(status, payload)`` pair is raised as that status *with* the payload as
+    its body — which is how the DOI handle API says "no such handle", a 404
+    whose body carries ``responseCode: 100`` — and a fragment in ``fail``
+    raises ``OSError``, the transport failure the ledger has to read as "could
+    not check" rather than as a missing paper.
     """
 
     def __init__(self, answers=(), fail=()):
@@ -57,8 +74,11 @@ class Net:
             if fragment in url:
                 if isinstance(payload, int):
                     raise urllib.error.HTTPError(url, payload, 'no', None, None)
-                body = payload if isinstance(payload, str) else json.dumps(payload)
-                return io.BytesIO(body.encode('utf-8'))
+                if isinstance(payload, tuple):
+                    status, payload = payload
+                    raise urllib.error.HTTPError(url, status, 'no', None,
+                                                 io.BytesIO(_body(payload)))
+                return io.BytesIO(_body(payload))
         raise urllib.error.HTTPError(url, 404, 'Not Found', None, None)
 
 
@@ -155,7 +175,8 @@ def test_a_fabricated_reference_is_recorded_as_not_existing(tmp_path):
                    'first_author': 'Soto, J.', 'doi': '10.9999/not-a-paper',
                    'raw': '1. Soto J. ' + FAKE_TITLE + '. Nature, 2021.'}]
     ledger = filled(tmp_path, references, 'Scaffolds restore vision in zebrafish [1].')
-    net = Net([('/works/10.9999', 404),
+    net = Net([NO_HANDLE,
+               ('/works/10.9999', 404),
                ('/works?', crossref_search([{'DOI': '10.1/other',
                                              'title': ['An unrelated paper about enzymes'],
                                              'issued': {'date-parts': [[2021]]}}])),
@@ -167,10 +188,12 @@ def test_a_fabricated_reference_is_recorded_as_not_existing(tmp_path):
     assert resolution['exists'] == 'no'
     assert resolution['method'] == 'doi-unregistered'
     assert resolution['printed_doi_registered'] is False
-    assert 'No registration agency has the DOI' in resolution['note']
-    # The agency route was asked, and it is the only thing that turned the
-    # Crossref 404 into a claim about the identifier.
+    assert 'The DOI resolver has no handle for the DOI the paper printed' in resolution['note']
+    # Two routes were asked, and only both together turn the Crossref 404 into
+    # a claim about the identifier: no agency claims it, and the DOI system's
+    # own resolver has no handle for it.
     assert any(url.endswith('/agency') for url in net.urls)
+    assert any('doi.org/api/handles' in url for url in net.urls)
 
     totals = cl.counts(ledger)
     assert (totals['not_found'], totals['resolved'], totals['could_not_check']) == (1, 0, 0)
@@ -198,7 +221,8 @@ def test_a_datacite_doi_is_a_reference_that_exists_and_a_made_up_one_is_not(tmp_
                    'first_author': 'Soto, J.', 'doi': '10.9999/not-a-paper',
                    'raw': '2. Soto J. ' + FAKE_TITLE + '. Nature, 2021.'}]
     ledger = filled(tmp_path, references, 'Earlier work differs [1], [2].')
-    net = Net([('/works/10.48550/arxiv.1706.03762/agency',
+    net = Net([NO_HANDLE,
+               ('/works/10.48550/arxiv.1706.03762/agency',
                 {'message': {'DOI': '10.48550/arxiv.1706.03762', 'agency': {'id': 'datacite'}}}),
                ('/works/10.48550', 404),
                ('api.datacite.org/dois/10.48550', {'data': {'attributes': {
@@ -319,8 +343,10 @@ def test_a_wrong_shaped_200_is_could_not_check_and_never_a_finding(tmp_path):
     assert resolution['attempts'] == 1
     # The row is still open, so the next pass takes it up again. (The bodies
     # themselves are cached for the run, as every 200 is; a pass that follows
-    # a recovered service is the one that gets a different answer.)
-    cl.resolve(ledger, lookups(tmp_path, net))
+    # a recovered service is the one that gets a different answer. `wait=0`
+    # because a real pass waits RETRY_WAIT_SECONDS between attempts on one row
+    # and a test cannot.)
+    cl.resolve(ledger, lookups(tmp_path, net), wait=0)
     again = {row['row_id']: row for row in ledger.rows()}['ref:r1']['resolution']
     assert again['attempts'] == 2 and again['exists'] == 'could not check'
 
@@ -341,7 +367,7 @@ def test_a_rate_limited_or_broken_lookup_is_retried_but_not_for_ever(tmp_path):
 
     net = Net([('/works/10.1234', crossref_work('10.1234/replay', TITLE, '2019')),
                ('DOI%3A', europepmc([]))])
-    answer = cl.resolve(ledger, lookups(tmp_path, net))
+    answer = cl.resolve(ledger, lookups(tmp_path, net), wait=0)
     assert answer['resolved_now'] == 1
     row = {row['row_id']: row for row in ledger.rows()}['ref:r1']
     assert row['resolution']['exists'] == 'yes'
@@ -353,11 +379,11 @@ def test_a_rate_limited_or_broken_lookup_is_retried_but_not_for_ever(tmp_path):
     for attempt in range(cl.RESOLVE_ATTEMPTS + 2):
         cl.resolve(third, cl.Lookups(tmp_path / 'third' / 'citations' / 'lookups',
                                      opener=Net([('/works/', 429), ('/works?', 503),
-                                                 ('/search?', 503)])))
+                                                 ('/search?', 503)])), wait=0)
     row = {row['row_id']: row for row in third.rows()}['ref:r1']
     assert row['resolution']['attempts'] == cl.RESOLVE_ATTEMPTS
     assert cl.resolve(third, cl.Lookups(tmp_path / 'third' / 'citations' / 'lookups',
-                                        opener=Net()))['resolved_now'] == 0
+                                        opener=Net()), wait=0)['resolved_now'] == 0
 
 
 def test_one_reference_that_raises_does_not_end_the_stage(tmp_path):
@@ -706,7 +732,7 @@ def test_a_body_that_is_not_json_at_all_is_could_not_check_and_is_not_cached(tmp
 
     working = Net([('/works/10.1234', crossref_work('10.1234/replay', TITLE, '2019')),
                    ('DOI%3A', europepmc([]))])
-    cl.resolve(ledger, lookups(tmp_path, working))
+    cl.resolve(ledger, lookups(tmp_path, working), wait=0)
     assert working.urls, 'the broken body was cached and the retry read it back'
     again = {row['row_id']: row for row in ledger.rows()}['ref:r1']['resolution']
     assert again['exists'] == 'yes'
@@ -791,3 +817,315 @@ def test_the_lookup_allowance_is_bounded_and_refuses_a_silly_limit(tmp_path):
         cl.Lookups(tmp_path / 'lookups', limit=10_000)
     with pytest.raises(ValueError):
         cl.Lookups(tmp_path / 'lookups', limit=-1)
+
+
+# -- what a second review of this table reproduced --------------------------
+#
+# Each test below is one bug an independent review reproduced offline against
+# the first fix set, and each fails without its fix.
+
+
+def test_only_the_doi_resolver_can_make_a_doi_not_exist(tmp_path):
+    """Crossref's agency route answering 404 is not the DOI system saying no.
+
+    The agency index does not carry every registered DOI: the arXiv DOI
+    ``10.48550/arxiv.1706.03762`` resolves perfectly well and that route can
+    still answer 404 for a DOI like it, after which nothing asked DataCite or
+    anything else — ``exists: no``, on one index's silence. ``no`` now needs
+    ``https://doi.org/api/handles/{doi}`` to say the handle does not exist.
+    """
+    references = [{'id': 'r1', 'label': '1', 'title': 'Attention is all you need',
+                   'year': '2017', 'first_author': 'Vaswani, A.',
+                   'doi': '10.48550/arxiv.1706.03762',
+                   'raw': '1. Vaswani A. Attention is all you need. arXiv, 2017.'}]
+    ledger = filled(tmp_path, references, 'Earlier work differs [1].')
+    net = Net([('/works/10.48550/arxiv.1706.03762/agency', 404),
+               ('/works/10.48550', 404),
+               HANDLE,
+               ('/works?', crossref_search([])),
+               ('/search?', europepmc([]))])
+    cl.resolve(ledger, lookups(tmp_path, net))
+    resolution = {row['row_id']: row for row in ledger.rows()}['ref:r1']['resolution']
+    assert any('doi.org/api/handles' in url for url in net.urls)
+    assert resolution['exists'] == 'not located'
+    assert resolution['exists'] != 'no'
+    assert resolution['printed_doi_registered'] is True
+
+    # And the resolver not answering is could not check, never no: a route that
+    # is down says nothing about an identifier.
+    quiet = cl.Ledger(tmp_path / 'quiet')
+    cl.build(quiet, paper(references, 'Earlier work differs [1].'))
+    broken = Net([('/works/10.48550/arxiv.1706.03762/agency', 404),
+                  ('/works/10.48550', 404),
+                  ('/works?', crossref_search([])),
+                  ('/search?', europepmc([]))],
+                 fail=['doi.org/api/handles'])
+    cl.resolve(quiet, cl.Lookups(tmp_path / 'quiet' / 'citations' / 'lookups', opener=broken))
+    resolution = {row['row_id']: row for row in quiet.rows()}['ref:r1']['resolution']
+    assert resolution['exists'] == 'could not check'
+    assert 'the DOI resolver did not answer' in resolution['note']
+
+    # A 200 whose body is not the documented shape is the same: no code, no
+    # claim. (The handle API answers its own status in the body, so a 404 there
+    # is read for its `responseCode` and nothing else is.)
+    odd = cl.Ledger(tmp_path / 'odd')
+    cl.build(odd, paper(references, 'Earlier work differs [1].'))
+    shapeless = Net([('/works/10.48550/arxiv.1706.03762/agency', 404),
+                     ('/works/10.48550', 404),
+                     ('doi.org/api/handles', {'values': []}),
+                     ('/works?', crossref_search([])),
+                     ('/search?', europepmc([]))])
+    cl.resolve(odd, cl.Lookups(tmp_path / 'odd' / 'citations' / 'lookups', opener=shapeless))
+    assert {row['row_id']: row for row in odd.rows()}['ref:r1'][
+        'resolution']['exists'] == 'could not check'
+
+
+def test_a_doi_is_checked_the_same_way_whatever_printed_it(tmp_path):
+    """A DOI the extractor handed over gets the checks a raw string gets.
+
+    ``doi_in`` refuses a DOI broken over a line or cut off mid-suffix, and
+    nothing applied those checks to the ``doi`` field ``ingest`` filled: the
+    truncated ``10.1016/j.cell.2020.01.`` went to Crossref as printed, 404, and
+    the reference read as a DOI nobody registered. And a DOI holding a dot
+    segment is a path traversal, not an identifier.
+    """
+    cut = {'id': 'r1', 'label': '1', 'title': TITLE, 'year': '2020',
+           'first_author': 'Lin, M.', 'doi': '10.1016/j.cell.2020.01.',
+           'raw': '1. Lin M. ' + TITLE + '. Cell, 2020.'}
+    rows = cl.reference_rows({'references': [cut], 'blocks': []})
+    assert rows[0]['printed']['doi'] is None, 'a truncated DOI is not a DOI to look up'
+
+    # Nothing with a dot segment reaches a URL, whichever URL it would have
+    # been: `10.1234/../../members/98` became `api.crossref.org/members/98`,
+    # a 200 about a publisher read as the record for a reference.
+    assert cl.clean_doi('10.1234/../../members/98') is None
+    assert cl.doi_in('see 10.1234/../../members/98 for this') is None
+    for url_of in (cl.crossref_work_url, cl.datacite_url, cl.doi_handle_url):
+        with pytest.raises(ValueError):
+            url_of('10.1234/../../members/98')
+
+    # End to end: the truncated DOI is never looked up, so the row is decided
+    # on the title search alone and is never `no`.
+    ledger = filled(tmp_path, [cut], 'Replay has been reported during quiet rest [1].')
+    net = Net([('/works?', crossref_search([])), ('/search?', europepmc([]))])
+    cl.resolve(ledger, lookups(tmp_path, net))
+    resolution = {row['row_id']: row for row in ledger.rows()}['ref:r1']['resolution']
+    assert not any('/works/10.1016' in url for url in net.urls)
+    assert resolution['exists'] == 'not located'
+    assert resolution['printed_doi'] is None
+
+
+def test_a_hit_by_other_authors_is_not_the_work_even_in_the_same_year(tmp_path):
+    """The year cannot corroborate a title hit, because the query is filtered to it.
+
+    Printed: *…the Reynolds Risk Score for women*, Ridker 2005. Returned: the
+    same score *for men*, Hennekens 2006 — a different paper by different
+    authors, which scored above the search bar and agreed on the year because
+    :func:`crossref_search_url` had already filtered the query to that year
+    plus or minus one. The row resolved to it, its abstract became the source
+    text every verdict about that reference was judged against, and the
+    mismatch that came out of it reported the citing paper for printing the
+    wrong first author.
+    """
+    women = ('C-reactive protein and parental history improve global cardiovascular risk '
+             'prediction: the Reynolds Risk Score for women')
+    men = ('C-reactive protein and parental history improve global cardiovascular risk '
+           'prediction: the Reynolds Risk Score for men')
+    references = [{'id': 'r1', 'label': '1', 'title': women, 'year': '2005',
+                   'first_author': 'Ridker, P. M.',
+                   'raw': '1. Ridker PM, et al. ' + women + '. Circulation, 2007.'}]
+    ledger = filled(tmp_path, references, 'Risk scores of this kind are established [1].')
+    net = Net([('/works?', crossref_search([
+                   {'DOI': '10.1001/jama.297.6.611', 'title': [men],
+                    'author': [{'given': 'Charles', 'family': 'Hennekens'}],
+                    'issued': {'date-parts': [[2006]]},
+                    'container-title': ['JAMA'], 'type': 'journal-article',
+                    'abstract': 'A risk score for men.'}])),
+               ('/search?', europepmc([]))])
+    cl.resolve(ledger, lookups(tmp_path, net))
+    resolution = {row['row_id']: row for row in ledger.rows()}['ref:r1']['resolution']
+    assert resolution['exists'] == 'not located'
+    assert resolution['mismatched'] == [], 'no field of another paper is a finding'
+    assert resolution.get('abstract') is None
+    # The hit is kept, named to the specialist, and never the reference.
+    assert cl.surname(resolution['candidate']['first_author']) == 'hennekens'
+    assert resolution['candidate']['corroborated_by'] is None
+    assert resolution['candidate']['title_similarity'] >= cl.SEARCH_MATCH
+
+
+def test_a_notice_about_a_work_is_never_the_work(tmp_path):
+    """A correction's title is the work's title with a few words round it.
+
+    So it scores at the top of a title search for the work it is about. Only a
+    notice word at the very start was matched, and ``Author Correction: …``,
+    ``Publisher Correction: …``, ``Addendum: …`` and ``<title>: a comment`` all
+    passed as the cited work — with the notice's abstract handed to the workers
+    as the source text for it.
+    """
+    for title in ('Author Correction: ' + TITLE,
+                  'Publisher Correction: ' + TITLE,
+                  'Addendum: ' + TITLE,
+                  'Notice of retraction: ' + TITLE,
+                  'RETRACTED ARTICLE: ' + TITLE,
+                  TITLE + ': a comment',
+                  TITLE + ' — reply',
+                  'Retraction of ' + TITLE):
+        assert cl.notice_title(title) is True, title
+    # A paper about corrections is a paper. The label is read only while it is
+    # short enough to be a label.
+    assert cl.notice_title('A study of retraction rates in cardiology: evidence from '
+                           'PubMed') is False
+    assert cl.notice_title(TITLE) is False
+
+    # End to end, both ways a hit can say it is a notice: the title, and the
+    # record's own update-pointing field.
+    net = Net([('/works?', crossref_search([
+                   {'DOI': '10.1234/correction', 'title': ['Author Correction: ' + TITLE],
+                    'author': [{'given': 'Mei', 'family': 'Lin'}],
+                    'issued': {'date-parts': [[2019]]}, 'type': 'journal-article',
+                    'abstract': 'The author list was wrong.'},
+                   {'DOI': '10.1234/typed', 'title': [TITLE],
+                    'author': [{'given': 'Mei', 'family': 'Lin'}],
+                    'issued': {'date-parts': [[2019]]}, 'type': 'journal-article',
+                    'update-to': [{'DOI': '10.1234/replay', 'type': 'correction'}],
+                    'abstract': 'A correction whose title is the original title.'}])),
+               ('/search?', europepmc([]))])
+    # No DOI printed, so the title search is the whole lookup.
+    bare = [{'id': 'r1', 'label': '1', 'title': TITLE, 'year': '2019',
+             'first_author': 'Lin, M.', 'raw': '1. Lin M. ' + TITLE + '. J Neurosci, 2019.'}]
+    ledger = filled(tmp_path, bare, 'Replay has been reported during quiet rest [1].')
+    cl.resolve(ledger, lookups(tmp_path, net))
+    resolution = {row['row_id']: row for row in ledger.rows()}['ref:r1']['resolution']
+    assert resolution['exists'] == 'not located'
+    assert resolution['candidate'] is None, 'a notice is not even the nearest thing to the work'
+    assert resolution.get('abstract') is None
+
+
+def test_every_rate_limited_row_is_still_owed_its_retries(tmp_path):
+    """``remaining`` counts rows owed a lookup, not rows this call did not reach.
+
+    Three references, both indexes rate-limiting, one call: every row was
+    attempted once, the queue this call built was empty, so ``remaining: 0``
+    and the stage reported itself done — and the two further attempts
+    :data:`cl.RESOLVE_ATTEMPTS` promises never happened in any real run. The
+    recorder's loop stops on ``remaining``, so the retry existed only in tests
+    that called ``resolve`` again by hand.
+    """
+    references = [{'id': 'r%d' % n, 'label': str(n), 'title': TITLE + ' part %d' % n,
+                   'year': '2019', 'first_author': 'Lin, M.', 'doi': '10.1234/replay-%d' % n,
+                   'raw': '%d. Lin M. %s part %d. J Neurosci, 2019.' % (n, TITLE, n)}
+                  for n in (1, 2, 3)]
+    ledger = filled(tmp_path, references, 'Three earlier reports [1], [2], [3].')
+    limited = Net([('/works/', 429), ('/works?', 503), ('/search?', 503)])
+    answer = cl.resolve(ledger, lookups(tmp_path, limited))
+    assert answer['resolved_now'] == 3
+    assert answer['remaining'] == 3, 'a row that could not be checked is owed another attempt'
+    assert ledger.state()['resolve']['done'] is False
+    # And the caller is told to wait rather than spend its turns on rows that
+    # are not due: the wait is minutes, because a 429 is a minutes-long state.
+    assert answer['retry_wait'] == cl.RETRY_WAIT_SECONDS >= 60
+    assert 0 < answer['retry_after'] <= cl.RETRY_WAIT_SECONDS
+    assert cl.resolve(ledger, lookups(tmp_path, limited))['resolved_now'] == 0
+
+    # Once the wait has passed, the attempts happen — and the stage is done
+    # only when no row is owed one.
+    for _ in range(cl.RESOLVE_ATTEMPTS):
+        answer = cl.resolve(ledger, lookups(tmp_path, limited), wait=0)
+    assert answer['remaining'] == 0 and answer['retry_after'] == 0
+    assert ledger.state()['resolve']['done'] is True
+    attempts = [row['resolution']['attempts'] for row in ledger.rows('reference')]
+    assert attempts == [cl.RESOLVE_ATTEMPTS] * 3
+
+
+def test_a_line_torn_inside_a_character_is_one_bad_row_not_a_dead_table(tmp_path):
+    """A run killed mid-write can cut a line inside a multi-byte character.
+
+    A text stream decodes while it iterates, so one torn ``ö`` raised
+    ``UnicodeDecodeError`` out of :meth:`cl.Ledger.load` and every row in the
+    file was lost — and the newline repair on the next append wrote a newline
+    after the broken bytes and made it permanent. One torn line is one skipped,
+    counted row, which is what the rest of the class already promised.
+    """
+    ledger = filled(tmp_path)
+    row = ledger.rows('reference')[0]
+    torn = json.dumps({**row, 'row_id': 'ref:r2',
+                       'printed': {**row['printed'], 'title': 'Über die Größe'}},
+                      ensure_ascii=False).encode('utf-8')
+    cut = torn.index('Größe'.encode('utf-8')) + 3  # one byte into the ö
+    with ledger.path.open('ab') as stream:
+        stream.write(torn[:cut])
+    # The append repairs the missing newline, which is what used to make the
+    # tear permanent, and the row written after it is readable.
+    ledger.append({**row, 'row_id': 'ref:r3'})
+
+    rows, broken = ledger.load()
+    assert broken == 1
+    assert 'ref:r1' in rows and 'ref:r3' in rows, 'one torn line lost the whole table'
+    assert 'ref:r2' not in rows
+    totals = cl.counts(ledger)
+    assert totals['unreadable_rows'] == 1
+    assert any('could not be read' in line for line in cl.problems(totals))
+
+
+def test_a_journal_is_not_its_own_family(tmp_path):
+    """Containment read *Nature* and *Nature Methods* as one venue.
+
+    The family name is a prefix of every journal in the family, so the venue
+    mismatch that matters most in a reference list was the one comparison that
+    could not raise it. Tokens in place instead, with abbreviation per token.
+    """
+    for printed, record in (('Nature', 'Nature Methods'),
+                            ('Science', 'Science Advances'),
+                            ('Cell', 'Cell Reports'),
+                            ('Nature Methods', 'Nature Neuroscience'),
+                            ('Journal of Neuroscience', 'Journal of Neurochemistry')):
+        assert cl._venue_same(printed, record) is False, (printed, record)
+    # And what the token comparison exists for keeps working: a style's
+    # abbreviation is the same venue, country and edition leftovers included.
+    for printed, record in (('J Biol Chem', 'Journal of Biological Chemistry'),
+                            ('Proc. Natl. Acad. Sci. U.S.A.',
+                             'Proceedings of the National Academy of Sciences'),
+                            ('Nat. Methods', 'Nature Methods'),
+                            ('J Neurosci', 'Journal of Neuroscience')):
+        assert cl._venue_same(printed, record) is True, (printed, record)
+
+    # End to end on the DOI path, where a venue mismatch can be raised: the
+    # paper printed the family, the record is one journal in it.
+    references = [{'id': 'r1', 'label': '1', 'title': TITLE, 'year': '2019',
+                   'first_author': 'Lin, M.', 'doi': '10.1234/replay',
+                   'venue': 'Nature',
+                   'raw': '1. Lin M. ' + TITLE + '. Nature, 2019.'}]
+    ledger = filled(tmp_path, references, 'Replay has been reported during quiet rest [1].')
+    net = Net([('/works/10.1234', crossref_work('10.1234/replay', TITLE, '2019',
+                                                venue='Nature Methods')),
+               ('DOI%3A', europepmc([]))])
+    cl.resolve(ledger, lookups(tmp_path, net))
+    resolution = {row['row_id']: row for row in ledger.rows()}['ref:r1']['resolution']
+    assert resolution['exists'] == 'yes'
+    assert resolution['mismatched'] == ['venue']
+
+
+def test_a_table_of_nothing_but_could_not_check_is_not_complete(tmp_path):
+    """``complete`` means answered, not attempted.
+
+    Every reference had a resolution and every use had a verdict, so a run
+    whose lookups never answered reported ``complete: True`` — and that one
+    number is what a reader uses to decide how much of the reference list was
+    checked.
+    """
+    ledger = filled(tmp_path)
+    down = Net(fail=['api.crossref.org', 'www.ebi.ac.uk', 'api.datacite.org', 'doi.org'])
+    for _ in range(cl.RESOLVE_ATTEMPTS):
+        cl.resolve(ledger, lookups(tmp_path, down), wait=0)
+    # Nothing is owed another attempt, so the stage is done: the stage finished
+    # and the table still checked nothing.
+    assert ledger.state()['resolve']['done'] is True
+    row = cl.batch(ledger, 'cite-1')[0]
+    stored, why = cl.verdict(ledger, 'cite-1', row['row_id'], 'cannot tell')
+    assert why is None and stored['verdict'] == 'cannot tell'
+
+    totals = cl.counts(ledger)
+    assert (totals['could_not_check'], totals['uses_unjudged']) == (1, 0)
+    assert totals['stages_done'] is True
+    assert totals['complete'] is False
+    assert any('could not be checked' in line for line in cl.problems(totals))
