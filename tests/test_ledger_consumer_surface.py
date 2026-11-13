@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -180,6 +181,127 @@ def test_the_public_reader_never_raises_on_a_ledger_it_may_not_open(tmp_path, mo
     line, = rows['problems']
     assert line.startswith('review/citations/ledger.jsonl is present')
     assert str(root) not in line and str(review) not in line
+
+
+# -- a reader writes nothing into the run it reads --------------------------
+
+
+def listing(root):
+    """Every path under a run folder, with what a write to it would change."""
+    return {str(path.relative_to(root)): (path.is_file() and path.stat().st_size,
+                                          path.stat().st_mtime_ns)
+            for path in sorted(Path(root).rglob('*'))}
+
+
+def test_reading_a_run_leaves_every_file_and_folder_in_it_as_it_was(tmp_path):
+    """A read creates nothing. The ledger's lock is a writer's business.
+
+    The ledger's writers serialise on sentinel files beside the rows, and for
+    one release the *reader* took the rows sentinel too — which created
+    ``review/citations/rows.lock``, and the folder's mtime with it, in every
+    run anybody read. A run folder is the record of a finished review: it gets
+    copied, archived and published, and a reader that writes to one is a reader
+    that cannot be pointed at any of those.
+    """
+    root, review = run_folder(tmp_path, [reference(), use()])
+    folder = review / cl.LEDGER_DIRECTORY
+    before = listing(root)
+
+    reading = read_run(root)
+    rows = read_citation_ledger(root)
+    # The engine's own read, under both public ones, so the promise is pinned
+    # where `load` is rather than only where the readers wrap it.
+    totals = cl.counts(cl.Ledger(review))
+    ledger = cl.Ledger(review)
+    state = ledger.state()
+    assert ledger.exists() is True
+
+    assert listing(root) == before
+    assert not (folder / cl.ROWS_LOCK_FILE).exists()
+    assert not (folder / cl.STATE_LOCK_FILE).exists()
+    # And all of that was a real reading, not an empty one that wrote nothing
+    # because it did nothing.
+    assert [row['row_id'] for row in rows['references']] == ['ref:r1']
+    assert [row['row_id'] for row in rows['uses']] == ['use:b1:1:r1']
+    assert reading['citations']['counts']['references'] == 1
+    assert totals['references'] == 1 and totals['uses_judged'] == 1
+    assert state['resolve']['done'] is True
+    assert not [line for line in rows['problems'] if 'could not be read' in line]
+
+
+def test_a_run_folder_with_no_write_bit_is_read_in_full(tmp_path):
+    """An archived run is the one a reader is most likely to be handed.
+
+    With the lock file taken on the way in, the open failed and both readers
+    reported the ledger as "could not be read (Permission denied)" with no rows
+    at all — on a file whose every byte was readable. Only where the mode bits
+    mean something: ``os.geteuid`` is POSIX-only, and on Windows ``chmod``
+    toggles the read-only attribute without stopping a file from being created
+    in a folder.
+    """
+    if not hasattr(os, 'geteuid'):
+        pytest.skip('chmod does not take the write bit off a folder on this platform')
+    if os.geteuid() == 0:
+        pytest.skip('root may write to a folder with no write bit, so there is nothing to enforce')
+    root, review = run_folder(tmp_path, [reference(), use()])
+    # Copied before anything reads the original, which is what an archive is:
+    # whatever the run folder held when the review finished, and nothing a
+    # reader added to it afterwards.
+    archive = Path(shutil.copytree(root, tmp_path / 'archive'))
+    writable = read_citation_ledger(root)
+    kept = archive / 'review'
+    folder = kept / cl.LEDGER_DIRECTORY
+
+    for path in (folder / cl.LEDGER_FILE, folder / cl.STATE_FILE):
+        path.chmod(0o444)
+    folder.chmod(0o555)
+    kept.chmod(0o555)
+    try:
+        reading = read_run(archive)
+        rows = read_citation_ledger(archive)
+        totals = cl.counts(cl.Ledger(kept))
+    finally:
+        kept.chmod(0o755)
+        folder.chmod(0o755)
+        for path in (folder / cl.LEDGER_FILE, folder / cl.STATE_FILE):
+            path.chmod(0o644)
+
+    # The same rows, the same counts, the same lines as the writable folder:
+    # a run that cannot be written to is not a run that cannot be read.
+    assert rows['references'] == writable['references']
+    assert rows['uses'] == writable['uses']
+    assert rows['counts'] == writable['counts'] == totals
+    assert rows['problems'] == writable['problems'] == []
+    assert reading['citations']['problems'] == []
+    assert reading['citations']['counts']['references'] == 1
+    assert reading['publishable'] is True, reading['not_publishable_reasons']
+    assert not (folder / cl.ROWS_LOCK_FILE).exists()
+
+
+def test_a_writer_still_makes_the_folder_and_the_sentinels_it_locks(tmp_path):
+    """The other half of it: a writer creates, because a writer has to.
+
+    Readers lock the rows file they already have open, writers lock a sentinel
+    beside it — ``stages.json`` is replaced whole, so there is no stable handle
+    in it to lock, and the rows file may not exist yet on the first append. So
+    the first write to a run still builds ``review/citations`` and both
+    sentinels, and the reader that comes after it reads the row.
+    """
+    _, review = run_folder(tmp_path)
+    folder = review / cl.LEDGER_DIRECTORY
+    assert not folder.exists()
+
+    ledger = cl.Ledger(review)
+    ledger.append(reference())
+    ledger.record_stage('fill', done=True, references=1, uses=0)
+
+    assert (folder / cl.LEDGER_FILE).is_file()
+    assert (folder / cl.ROWS_LOCK_FILE).is_file()
+    assert (folder / cl.STATE_LOCK_FILE).is_file()
+    rows, broken = cl.Ledger(review).load()
+    assert broken == 0
+    assert list(rows) == ['ref:r1']
+    assert cl.Ledger(review).state()['fill']['done'] is True
 
 
 # -- a run with no ledger says only what is known ---------------------------

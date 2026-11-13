@@ -66,7 +66,7 @@ from pathlib import Path
 from urllib.parse import quote, urlencode
 
 from .external_evidence import retrieve
-from .file_lock import exclusive_lock
+from .file_lock import exclusive_lock, shared_lock
 from .storage import digest, read, write
 from .targeted_sources import literature_request, parse_literature
 
@@ -768,13 +768,24 @@ class Ledger:
     the same way the run readers degrade: one corrupt line must not hide the
     other fifty.
 
-    The *read* is locked too, against the same sentinel. One process was once
-    enough on its own, because every tool call ran one at a time on the
-    server's event loop; the resolve stage now runs in a worker thread so that
-    a retry wait does not hold that loop, and a worker's claim landing while
-    the stage replays the table would otherwise be a torn line — which this
-    class counts as unreadable and drops. A dropped claim is two workers handed
-    the same citation, which is the bug :meth:`append` already exists to avoid.
+    The *read* is locked too, because a worker's claim landing while the stage
+    replays the table would otherwise be a torn line, which this class counts
+    as unreadable and drops — and a dropped claim is two workers handed the
+    same citation, the bug :meth:`append` exists to avoid. One process on one
+    event loop used to be enough on its own; the resolve stage runs in a worker
+    thread now, so that a retry wait does not hold that loop, and the reads are
+    no longer serialised by the loop.
+
+    **A read creates nothing, though.** Writers lock a sentinel file beside the
+    rows; a reader cannot, because a sentinel has to be created to be locked,
+    and the first thing anyone does with a finished run is copy or archive it.
+    A reader that created a lock file made the run unreadable exactly where it
+    had to work — ``Permission denied`` on a folder with no write bit, where
+    the rows themselves were perfectly readable. So :meth:`load` takes a shared
+    lock on the rows file it already has open, which is enough: :meth:`append`
+    locks that same file exclusively, inside its sentinel lock. Where the lock
+    cannot be granted at all, the rows are read without one rather than not
+    read.
     """
 
     def __init__(self, review):
@@ -792,10 +803,13 @@ class Ledger:
     def _locked(self, sentinel):
         """Hold the exclusive lock on one of this ledger's sentinel files.
 
+        **Writers only.** It creates the folder and the sentinel, which a
+        reader may not do; :meth:`load` locks the rows file itself instead.
+
         The lock is on a sentinel and not on the file it guards, because
-        neither file keeps its identity: the rows file is appended to and read
-        back through separate handles, and the stage record is replaced whole,
-        so a lock taken on it is a lock on an inode the next writer has already
+        neither file keeps its identity: the rows file does not exist until the
+        first row is appended, and the stage record is replaced whole, so a
+        lock taken on it is a lock on an inode the next writer has already
         swapped out.
 
         Never nested. The lock is advisory and per open file, so taking it
@@ -868,7 +882,18 @@ class Ledger:
         rows, broken = {}, 0
         if not self.path.is_file():
             return rows, broken
-        with self._locked(self.rows_lock), self.path.open('rb') as stream:
+        with self.path.open('rb') as stream:
+            # A shared lock on the rows file, which `append` also locks
+            # exclusively, so a row landing mid-replay is still not a torn line
+            # — and nothing is created to do it. A reader works on runs it has
+            # no right to write to: archived, copied, handed over read-only.
+            # Where the lock cannot be granted — a read-only handle on a
+            # platform that will not lock one — the rows are read unlocked,
+            # because the alternative is reporting a readable run as damaged.
+            try:
+                shared_lock(stream)
+            except OSError:  # pragma: no cover - platform-dependent refusal
+                pass
             for raw in stream:
                 try:
                     line = raw.decode('utf-8').strip()

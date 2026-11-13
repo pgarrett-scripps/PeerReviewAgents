@@ -477,6 +477,21 @@ including 32 test modules, and nothing was left behind as a shim.
 
 ### Fixed
 
+- **Reading a run created a file in it.** The ledger's writers serialise on
+  sentinel files beside the rows, and for part of this release's development
+  `Ledger.load` took the rows sentinel too — so `read_run` and
+  `read_citation_ledger` created `review/citations/rows.lock`, and changed the
+  folder's mtime, in every run anybody read. On a run folder nobody may write
+  to — an archive, a copy taken for a report, anything handed over read-only —
+  the sentinel could not be created, and both readers reported the ledger as
+  "could not be read (Permission denied)" with no rows at all, on a file whose
+  every byte was readable. A read now creates nothing: `load` takes a shared
+  lock on the rows file it already has open, which `append` locks exclusively
+  inside its own sentinel lock, so a row landing mid-replay is still never a
+  torn line and no reader needs a sentinel to get that. Where the lock cannot
+  be granted at all, the rows are read unlocked rather than not read. Writers
+  are unchanged and still create the folder and both sentinels on the first
+  append.
 - **A torn file beside the ledger raised out of `read_citation_ledger`.**
   Reaching the citation table means reading `protocol.json` for what the arm
   planned and `runtime.json` for which agents ran. `read_run` read both through
