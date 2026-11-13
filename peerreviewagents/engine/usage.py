@@ -192,10 +192,17 @@ def _attempt(row):
     and so out of both public readers, which read this file for a run whose
     stream was cut off. An attempt number that cannot be read is read as the
     first attempt, which is what a row without one already means.
+
+    The three are what ``int`` raises for a JSON value and all of what it
+    raises: a list or an object gives ``TypeError``, a word gives
+    ``ValueError``, and ``Infinity`` and ``-Infinity`` — which Python's own
+    ``json`` writes and reads — give ``OverflowError``. Catching two of the
+    three is how this was a raise twice; the set is closed here rather than
+    extended the next time a field turns up in a shape nobody writes.
     """
     try:
         return int(row.get('attempt') or 1)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 1
 
 

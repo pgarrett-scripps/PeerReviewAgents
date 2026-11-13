@@ -535,6 +535,16 @@ for row in cites["uses"]:
   run, so it is named in `read_run`'s own `problems` beside the lost tokens and
   wall time, and not in `citations['problems']`, which both readers return
   identically.
+- **And a last guard under the agents reading, for what is inside the file.**
+  `runtime.json` can be a sound JSON object and still carry a field in a shape
+  nothing writes: `attempt` as a list, or as `Infinity`, which Python's own
+  `json` writes and reads. Whatever the reading of that file raises, neither
+  reader raises it. `read_run` gives no agent rows and one `problems` line —
+  `runtime.json could not be read as this run's record of its agents (…)` — in
+  the same family as the line for a file that could not be read at all, and
+  with the same effect on `publishable` as that line, which is unchanged.
+  `read_citation_ledger` drops the line, for the reason above, and decides
+  whether the lane was planned from `protocol.json` alone.
 
 **Building a ledger fixture.** There is no fixture writer in the public
 surface, and the supported way to build one is to write the file: the ledger is

@@ -277,6 +277,34 @@ def _kept_rows(ledger, source_text):
     return kept
 
 
+def _agent_rows(review, protocol, runtime, problems):
+    """The run's agent rows, for a ``runtime.json`` holding anything at all.
+
+    The file is read through :func:`_mapping` before it gets here, so what
+    reaches :func:`agent_rows` is a JSON object; what it holds is another
+    matter. ``attempt`` as a list raised ``TypeError`` and ``attempt`` as
+    ``Infinity`` — which Python's ``json`` writes and reads — raised
+    ``OverflowError``, each out of both public readers, and each was one field
+    caught by type with the next one waiting. The fields are guarded where they
+    are read; this is the guard under them, so that no content of this file can
+    raise out of a reader whatever the next shape turns out to be.
+
+    ``Exception`` on purpose: the promise is about the file rather than about
+    the shapes a version of this library foresaw, and a reader holding a run
+    folder someone wants to look at has nothing to gain from the raise. Rows
+    that could not be read are no rows and a line saying so, in the same family
+    as ``runtime.json could not be read``: :func:`read_run` puts it in the run's
+    own ``problems``, and the citation reading drops it, because an unreadable
+    ``runtime.json`` is a fact about the run and not about the citation table.
+    """
+    try:
+        return agent_rows(review, protocol, runtime=runtime, on_problem=problems.append)
+    except Exception as exc:  # noqa: BLE001 - deliberate; see the docstring
+        problems.append("runtime.json could not be read as this run's record of its agents "
+                        f'({_why(exc)}), so no agent is listed')
+        return []
+
+
 def _citations_reading(review, root=None, protocol=None, agents=None):
     """:func:`_citations` with ``enabled`` decided once, for both readers.
 
@@ -310,9 +338,8 @@ def _citations_reading(review, root=None, protocol=None, agents=None):
     if protocol is None:
         protocol = _mapping(review / 'protocol.json', noted)
     if agents is None:
-        agents = agent_rows(review, protocol,
-                            runtime=_mapping(review / 'runtime.json', noted) or {},
-                            on_problem=noted.append)
+        agents = _agent_rows(review, protocol,
+                             _mapping(review / 'runtime.json', noted) or {}, noted)
     return _citations(review, enabled=_citations_planned(protocol, agents), root=root)
 
 
@@ -825,7 +852,7 @@ def read_run(path):
     # These two read the usage receipts and the starter's own accounting, which
     # a killed run leaves half-written as often as anything else, so they are
     # read before `publishable` is decided rather than inside the result.
-    agents = agent_rows(review, protocol, runtime=runtime, on_problem=problems.append)
+    agents = _agent_rows(review, protocol, runtime, problems)
     usage = observed_usage(review, on_problem=problems.append)
 
     # What each slot was assigned against what it reported running. It is

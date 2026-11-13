@@ -479,9 +479,16 @@ including 32 test modules, and nothing was left behind as a shim.
   whether the lane was planned. Damage to `runtime.json` or `progress.json`
   leaves the citation rows and counts whole and is named in `read_run`'s own
   `problems`, beside the lost tokens, rather than in `citations['problems']`,
-  which both readers return identically. An `attempt` that is a list or a word,
-  which the same file can carry while being sound JSON, is read as the first
-  attempt instead of raising `TypeError` out of the merge.
+  which both readers return identically. An `attempt` that is a list, a word,
+  `Infinity` or `NaN` — all of which the same file can carry while being sound
+  JSON, and the last two of which Python's own `json` writes — is read as the
+  first attempt instead of raising `TypeError`, `ValueError` or `OverflowError`
+  out of the merge. Under the fields is a guard under the whole of that
+  reading, so that no content of `runtime.json` can raise out of either reader:
+  `read_run` gives no agent rows and one line in its own `problems`, in the
+  family of the line for a file that could not be read at all and with the same
+  effect on `publishable`, and `read_citation_ledger` decides whether the lane
+  was planned from `protocol.json` alone.
 - **A ledger row of the wrong shape raised out of both readers.** A line
   carrying a list under `row_id` raised `TypeError` on an unhashable key out of
   `read_run` and `read_citation_ledger` alike; one carrying a number there

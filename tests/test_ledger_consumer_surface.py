@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from peerreviewagents import read_citation_ledger, read_run
+from peerreviewagents import read_citation_ledger, read_run, runs
 from peerreviewagents.engine import citation_ledger as cl
 from peerreviewagents.engine import run_report
 
@@ -708,23 +708,68 @@ def test_a_file_the_citation_lane_does_not_depend_on_leaves_the_table_whole(tmp_
         'a torn runtime.json is a problem with the run, not with the citation table'
 
 
-def test_an_attempt_number_that_cannot_be_counted_is_the_first_attempt(tmp_path):
+#: Shapes ``attempt`` arrives in that ``int`` will not take. ``Infinity`` is
+#: not hand-written exotica: Python's own ``json`` writes it for a float that
+#: overflowed and reads it back without complaint.
+UNCOUNTABLE = {'a list': ['2'], 'a word': 'second', 'an object': {'attempt': 2},
+               'infinity': float('inf'), 'not a number': float('nan'), 'true': True}
+
+
+@pytest.mark.parametrize('shape', sorted(UNCOUNTABLE))
+def test_an_attempt_number_that_cannot_be_counted_is_the_first_attempt(tmp_path, shape):
     """A field read with ``int`` is a raise waiting for the stream to be cut off.
 
     ``runtime.json`` can be a sound JSON object and still carry a field in a
     shape nothing writes on purpose: ``attempt`` as a list raised ``TypeError``
-    out of the merge, which both readers reach through ``agent_rows``. The
-    reader is holding a run folder someone wants to look at, so an attempt
-    number it cannot read is the first attempt, which is what a row with no
-    attempt at all already means.
+    out of the merge and ``attempt`` as ``Infinity`` raised ``OverflowError``
+    from the same line, each reached by both readers through ``agent_rows``.
+    Two of the three ``int`` raises were caught and the third was not, which is
+    how this was a raise twice; all three are caught now. The reader is holding
+    a run folder someone wants to look at, so an attempt number it cannot read
+    is the first attempt, which is what a row with no attempt already means.
     """
     root, review = run_folder(tmp_path, [reference(), use()])
     (review / 'runtime.json').write_text(json.dumps(
-        {'agents': [{'label': 'cite-1', 'attempt': ['2'], 'tokens': 10, 'state': 'done'}]}),
-        encoding='utf-8')
+        {'agents': [{'label': 'cite-1', 'attempt': UNCOUNTABLE[shape], 'tokens': 10,
+                     'state': 'done'}]}), encoding='utf-8')
     reading, run = read_citation_ledger(root), read_run(root)
     for key in ('counts', 'complete', 'summary', 'problems'):
         assert reading[key] == run['citations'][key], f'the two readers disagree on {key}'
     row, = run['agents']
     assert row['attempt'] == 1
     assert run['publishable'] is True, run['not_publishable_reasons']
+
+
+def test_a_surprise_in_the_agents_reading_is_a_line_and_no_rows(tmp_path, monkeypatch):
+    """And under the fields, the guard that does not depend on foreseeing them.
+
+    Each field in ``runtime.json`` is guarded where it is read, and twice now a
+    field was guarded by catching two of the three things its reading raises.
+    So there is a guard under the whole of that reading: whatever it raises,
+    the run comes back with no agent rows and one line in the run's own
+    ``problems``, in the same family as the line for a ``runtime.json`` that
+    could not be read at all.
+
+    The citation reading drops that line rather than repeating it, because an
+    unreadable ``runtime.json`` is a fact about the run and not about the
+    citation table, and the two readers must return one ``problems`` list.
+    """
+    def surprised(*_args, **_kwargs):
+        raise RecursionError('maximum recursion depth exceeded')
+
+    monkeypatch.setattr(runs, 'agent_rows', surprised)
+    root, _ = run_folder(tmp_path, [reference(), use()])
+    reading, run = read_citation_ledger(root), read_run(root)
+    for key in ('counts', 'complete', 'summary', 'problems'):
+        assert reading[key] == run['citations'][key], f'the two readers disagree on {key}'
+    assert run['agents'] == []
+    line, = [line for line in run['problems'] if line.startswith('runtime.json could not be read')]
+    assert 'RecursionError' in line and 'no agent is listed' in line
+    assert line not in run['citations']['problems']
+    assert reading['counts'] and reading['counts'] == run['citations']['counts'], \
+        'the citation table is the ledger and the plan, neither of which this touched'
+    # A file of the run's own that could not be read is counted where the run's
+    # other unreadable files are counted, which is the publishing rule left
+    # exactly as it was. What it is never counted as is a citation failure.
+    assert all('citation' not in reason and 'ledger' not in reason
+               for reason in run['not_publishable_reasons'])
