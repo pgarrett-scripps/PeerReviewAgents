@@ -369,6 +369,17 @@ def test_the_recorder_is_told_to_stop_while_the_owed_retries_are_waiting(tmp_pat
     again = srv.resolve_citations(CODES['recorder_key'], limit=0)
     assert again['resolved_now'] == 0 and again['remaining'] == 3
 
+    # A run can end inside that wait: the retry gap is five minutes and a short
+    # review has less than that left. The report has to say the rows were still
+    # owed an attempt, because "could not be checked" on its own reads as the
+    # indexes having been asked and failed.
+    lines = cl.problems(again['counts'])
+    owed = [line for line in lines if 'still owed an attempt' in line]
+    assert len(owed) == 1, lines
+    assert '3 row(s)' in owed[0] and 'second(s) that the run did not wait out' in owed[0]
+    assert 'counted as unchecked rather than answered' in owed[0]
+    assert all(';' not in line and 'do not exist' not in line for line in lines)
+
 
 def test_a_ledger_that_cannot_be_read_is_reported_and_never_read_as_clean(tmp_path, monkeypatch):
     """The specialist's whole job is the table, so an unreadable one is an answer.

@@ -69,25 +69,78 @@ print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False, 'nu
 '''
 
 
-def install_stub(tmp_path, monkeypatch, progress=None):
+RACE_STUB = '''import json, os, re, sys, time
+
+argv = sys.argv[1:]
+if argv == ['--version']:
+    print('2.1.999 (Claude Code stub)', flush=True)
+    sys.exit(0)
+log = os.environ['PEERREVIEW_STUB_LOG']
+with open(log, 'a', encoding='utf-8') as stream:
+    stream.write(json.dumps(argv) + '\\n')
+prompt = argv[argv.index('-p') + 1] if '-p' in argv else ''
+print(json.dumps({
+    'type': 'system', 'subtype': 'init',
+    'plugins': [{'name': 'pra', 'path': '/plugins/pra'}],
+    'mcp_servers': [{'name': 'plugin:pra:peerreview', 'status': 'connected'}],
+    'agents': ['pra:core-reviewer', 'pra:editor', 'pra:recorder'],
+    'tools': json.loads(os.environ['PEERREVIEW_STUB_TOOLS']),
+}), flush=True)
+if prompt.startswith('Reply with'):
+    print(json.dumps({'type': 'result', 'subtype': 'success', 'result': 'ready'}), flush=True)
+    sys.exit(0)
+# A few turns, the last of which says the review is running in the background.
+# Then the turn ends: no task notification ever arrives, and the event stream
+# closes with the workflow alive. This is the shape that killed a live review.
+print(json.dumps({'type': 'system', 'subtype': 'task_progress', 'workflow_progress': [
+    {'label': 'core-1', 'tokens': 120000, 'toolCalls': 18, 'state': 'completed',
+     'attempt': 1, 'agentType': 'pra:core-reviewer', 'model': 'claude-sonnet-5-5'}]}), flush=True)
+print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False, 'num_turns': 7,
+                  'session_id': 'stub',
+                  'result': 'The review workflow is running in the background, no result yet.'}),
+      flush=True)
+sys.stdout.flush()
+os.close(1)
+# The workflow carries on without the turn that launched it. With a progress
+# file to write it finishes; with none it never does.
+time.sleep(float(os.environ.get('PEERREVIEW_STUB_DELAY') or 1.5))
+wanted = os.environ.get('PEERREVIEW_STUB_PROGRESS') or ''
+found = re.search(r'run folder to (.+?)[,.](?:\\s|$)', prompt)
+if wanted and found:
+    review = os.path.join(found.group(1), 'review')
+    os.makedirs(review, exist_ok=True)
+    half = os.path.join(review, 'progress.json.part')
+    with open(half, 'w', encoding='utf-8') as stream:
+        stream.write(wanted)
+    os.replace(half, os.path.join(review, 'progress.json'))
+# This session does not exit on its own: the driver has to end it, and only
+# once the review is written or nothing is coming.
+time.sleep(600)
+'''
+
+
+def install_stub(tmp_path, monkeypatch, progress=None, script=None):
     """A fake ``claude`` on PATH, and nothing else: no codex, no real provider.
 
     ``progress`` is what the stub session writes to ``review/progress.json``,
     the way the server would: no test pre-writes that file, because then the
-    starter's reading of it is never exercised.
+    starter's reading of it is never exercised. ``script`` is which stub
+    session runs — :data:`STUB` by default, or :data:`RACE_STUB` for the
+    session that ends its turn with the workflow still going.
     """
     binaries = tmp_path / 'bin'
     binaries.mkdir()
+    body = script or STUB
     if os.name == 'nt':
         # A shebang means nothing on Windows. A real install puts `claude.cmd`
         # on PATH and the shell finds it through PATHEXT, so the stub does too.
-        script = binaries / 'stub.py'
-        script.write_text(STUB, encoding='utf-8')
+        script_file = binaries / 'stub.py'
+        script_file.write_text(body, encoding='utf-8')
         (binaries / 'claude.cmd').write_text(
-            f'@"{sys.executable}" "{script}" %*\n', encoding='utf-8')
+            f'@"{sys.executable}" "{script_file}" %*\n', encoding='utf-8')
     else:
         stub = binaries / 'claude'
-        stub.write_text(f'#!{sys.executable}\n{STUB}', encoding='utf-8')
+        stub.write_text(f'#!{sys.executable}\n{body}', encoding='utf-8')
         stub.chmod(stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
     log = tmp_path / 'argv.jsonl'
     monkeypatch.setenv('PATH', str(binaries))
@@ -281,7 +334,10 @@ def test_a_complete_run_is_not_claimed_when_the_server_wrote_no_progress(tmp_pat
     assert starter.exit_code(summary) == 1
     runtime = json.loads((out / 'review' / 'runtime.json').read_text(encoding='utf-8'))
     assert runtime['status'] == 'blocked'
-    assert runtime['blocked_reason'] == 'the server wrote no progress file'
+    assert runtime['blocked_reason'].startswith('the server wrote no progress file')
+    # And why the driver stopped waiting for one: the session is gone, so
+    # nothing can write that file now.
+    assert 'the session exited' in runtime['blocked_reason']
 
 
 def test_a_workflow_that_closed_nothing_leaves_the_run_blocked_not_running(tmp_path, monkeypatch):
@@ -300,6 +356,128 @@ def test_a_workflow_that_closed_nothing_leaves_the_run_blocked_not_running(tmp_p
     assert starter.exit_code(summary) == 1
     on_disk = json.loads((out / 'review' / 'progress.json').read_text(encoding='utf-8'))
     assert on_disk['status'] == 'blocked' and on_disk['error'] == summary['blocked_reason']
+
+
+def test_a_session_that_ends_its_turn_does_not_take_the_workflow_with_it(tmp_path, monkeypatch):
+    """The pilot's second run, reproduced: the race the driver used to lose.
+
+    The session launches the review as a background workflow, says in its last
+    turn that it is running, and stops. Its event stream closes with the
+    workflow alive, and the driver used to terminate the process there — which
+    killed the workflow, because the workflow runs inside that process. Nine
+    stages were reported and the editor was still going.
+
+    What must happen instead: the driver keeps waiting on the folder the server
+    writes, the editor package lands, and the run is complete.
+    """
+    install_stub(tmp_path, monkeypatch, script=RACE_STUB, progress={
+        'status': 'complete', 'findings_delivered': 63, 'quarantined_findings_count': 1,
+        'stages': {'required': ['editor'], 'reported': ['editor'], 'missing': [],
+                   'editor_accepted': True}})
+    out = tmp_path / 'run'
+
+    summary = starter.review(str(FIXTURE), str(out), arm='single', wall_timeout=120)
+
+    assert summary['status'] == 'complete', summary['blocked_reason']
+    assert summary['blocked_reason'] is None
+    assert starter.exit_code(summary) == 0
+    assert summary['stages']['missing'] == []
+    assert summary['stages']['editor_accepted'] is True, 'the editor package is the review'
+    assert summary['findings_delivered'] == 63 and summary['quarantined'] == 1
+    # Three events, no task notification, and the stream closed long before the
+    # review did. None of those is what the run waited for.
+    assert summary['stream_events'] == 3
+    assert summary['wall_seconds'] < 60, 'the run folder answered, not the wall clock'
+    runtime = json.loads((out / 'review' / 'runtime.json').read_text(encoding='utf-8'))
+    assert runtime['status'] == 'complete' and runtime['tokens_total'] == 120000
+
+
+def test_a_workflow_that_never_finishes_is_blocked_with_the_true_cause(tmp_path, monkeypatch):
+    """The other half of waiting: a review that is never coming.
+
+    The same session, with no review to write. Waiting on the folder must not
+    mean waiting forever, and the cause recorded must be the one that was hit —
+    the wall clock — not a guess about what the workflow was doing.
+    """
+    install_stub(tmp_path, monkeypatch, script=RACE_STUB)  # and so it writes nothing, ever
+    monkeypatch.setenv('PEERREVIEW_STUB_DELAY', '600')
+    out = tmp_path / 'run'
+
+    summary = starter.review(str(FIXTURE), str(out), arm='single', wall_timeout=3)
+
+    assert summary['status'] == 'blocked'
+    assert summary['blocked_reason'] == 'the session passed its wall-clock limit'
+    assert starter.exit_code(summary) == 1
+    assert 3 <= summary['wall_seconds'] < 60
+    runtime = json.loads((out / 'review' / 'runtime.json').read_text(encoding='utf-8'))
+    assert runtime['status'] == 'blocked'
+    assert runtime['blocked_reason'] == summary['blocked_reason']
+    assert summary.get('findings_delivered') is None, 'there is no review to report'
+
+
+def test_the_watch_ends_a_run_only_when_nothing_is_writing_the_folder(tmp_path):
+    """The states the driver may give up in, and the one it may not.
+
+    A review that is still writing its folder keeps its session, however long
+    that session has been silent — an agent can read for minutes between tool
+    calls. A folder that has stopped changing is a review that has stopped, and
+    how long the driver waits before accepting that depends on what it knows:
+    a moment once the session's process is gone, because nothing can write the
+    folder then; twenty seconds once the session itself reported the workflow
+    task finished; the long window on a closed stream alone.
+    """
+    accounting = starter.Accounting(10, 10)
+    progress = tmp_path / 'progress.json'
+    watch = starter.Completion(tmp_path, accounting, tick=0.0)
+
+    def quiet_for(seconds):
+        watch.still_since = time.monotonic() - seconds
+
+    assert watch(closed=False, alive=True) is None, 'a talking session is never cut short'
+    assert watch(closed=True, alive=True) is None, 'nor is one that has only stopped talking'
+
+    progress.write_text(json.dumps({'status': 'running', 'updated': 'one'}), encoding='utf-8')
+    assert watch(True, True) is None, 'a folder that just changed is a review at work'
+    quiet_for(60)
+    assert watch(True, True) is None, 'sixty seconds of silence is not a dead review'
+    assert watch(True, False) == starter.NOTHING_LEFT_WRITING
+    assert 'the session exited' in watch.note and '60s' in watch.note
+
+    accounting.finished = True
+    quiet_for(5)
+    assert watch(True, True) is None, 'the server may still be writing the last word'
+    quiet_for(60)
+    assert watch(True, True) == starter.NOTHING_LEFT_WRITING
+    assert 'reported finishing' in watch.note
+
+    # A folder that is still being written keeps the run, whatever the session
+    # is doing and whatever it said.
+    progress.write_text(json.dumps({'status': 'running', 'updated': 'two'}), encoding='utf-8')
+    assert watch(True, False) is None
+
+    progress.write_text(json.dumps({'status': 'complete'}), encoding='utf-8')
+    assert watch(True, True) == starter.REVIEW_WRITTEN
+    progress.write_text(json.dumps({'status': 'blocked', 'error': 'said so'}), encoding='utf-8')
+    assert watch(False, True) == starter.RUN_MARKED_BLOCKED
+    # Both are reasons the loop ended, and neither is a cause of failure.
+    assert starter.REVIEW_WRITTEN in starter.SETTLED
+    assert starter.RUN_MARKED_BLOCKED in starter.SETTLED
+
+
+def test_a_half_written_progress_file_is_not_an_answer_about_the_run(tmp_path):
+    """The server rewrites that file while the driver is reading it.
+
+    A truncated read is nothing the run can be judged on, so it reads as
+    nothing and the next look gets the whole of it.
+    """
+    progress = tmp_path / 'progress.json'
+    progress.write_text('{"status": "comp', encoding='utf-8')
+    assert starter.recorded_progress(tmp_path) == {}
+    progress.write_text('[]', encoding='utf-8')
+    assert starter.recorded_progress(tmp_path) == {}, 'nor is a file of the wrong shape'
+    assert starter.recorded_progress(tmp_path / 'nowhere') == {}
+    progress.write_text(json.dumps({'status': 'complete'}), encoding='utf-8')
+    assert starter.recorded_progress(tmp_path) == {'status': 'complete'}
 
 
 def test_a_missing_claude_says_so_rather_than_blaming_the_plugin(tmp_path, monkeypatch):
@@ -421,12 +599,37 @@ def test_progress_carried_under_the_task_key_is_still_read():
 
 
 def test_the_first_result_is_not_the_answer():
+    """No ``result`` event ends the run, and the second one only ends the wait.
+
+    The first arrives while the review is still running. The one after the task
+    notification is the session's own account of the workflow, so it is
+    recorded as ``finished`` — which shortens how long the driver waits on the
+    run folder — and still returns nothing, because what ends a run is the
+    folder the server writes.
+    """
     accounting = starter.Accounting(1_000_000, 1_000_000)
     assert accounting.on_event({'type': 'result', 'result': 'still running'}) is None
+    assert accounting.finished is False
     assert accounting.on_event({'type': 'system', 'subtype': 'task_notification'}) is None
-    assert accounting.on_event({'type': 'result', 'result': 'done'}) == \
-        'the workflow task finished'
+    assert accounting.on_event({'type': 'result', 'result': 'done'}) is None
+    assert accounting.finished is True
     assert accounting.last_result()['result'] == 'done'
+
+
+def test_a_run_with_no_review_names_the_agent_that_ended_in_error():
+    """The stream usually knows which stage ended the run. Say which.
+
+    "The workflow ended without writing the review" is true of every run that
+    falls through, and on the pilot's second paper the stream had already
+    reported the editor in state ``error`` with its tokens — the one fact that
+    says where to look.
+    """
+    accounting = starter.Accounting(1_000_000, 1_000_000)
+    assert accounting.failures() is None
+    accounting.on_event({'type': 'system', 'subtype': 'task_progress', 'workflow_progress': [
+        {'label': 'core-1', 'tokens': 120000, 'state': 'completed'},
+        {'label': 'editor', 'tokens': 136755, 'state': 'error'}]})
+    assert accounting.failures() == 'editor ended in state error after 136,755 tokens'
 
 
 # The event a real stream sends, captured from a 0.8 run of this repo's own
@@ -616,7 +819,7 @@ def test_asking_for_no_citation_workers_says_so_instead_of_saying_nothing(tmp_pa
     """
     seen = {}
 
-    def fake_launch(prompt, directory, deadline, on_event, cwd, chosen):
+    def fake_launch(prompt, directory, deadline, on_event, cwd, chosen, watch=None):
         seen['prompt'] = prompt
         return [], 'the workflow task finished', 0
 
