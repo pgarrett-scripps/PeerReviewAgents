@@ -504,11 +504,20 @@ for row in cites["uses"]:
   `ledger.jsonl` is refused by name — `ValueError`, naming the file with its
   folder — rather than followed, and damaged content never raises: an
   unreadable line is skipped, counted in `counts['unreadable_rows']` and named
-  in `problems`. A line that is readable JSON but whose `row_id` is missing, or
-  is not a non-empty string, is damage of the same kind and is counted the same
-  way: `row_id` is the table's key, and a line that cannot be the key of a row
-  is not a row. `NotARunFolder` for a folder that is not a run is the only
-  other raise.
+  in `problems`. A line that is readable JSON but that the table cannot hold is
+  damage of the same kind and is counted the same way. A row is readable when
+  `row_id` is a non-empty string, `kind` is `"reference"` or `"use"`, and
+  `resolution` and `printed` are each absent, null or an object — the fields
+  the reading dereferences, nothing else. Every other field may be any shape
+  and the row is still a row: a field that is only compared or printed cannot
+  crash a reader, and dropping a row over one would throw away a citation.
+  `NotARunFolder` for a folder that is not a run is the only other raise.
+- **Below both is a last guard.** If anything at all goes wrong while the
+  counts are taken or the rows are built — an exception neither this library
+  nor your file's author foresaw — both readers give the "present and could
+  not be read" answer above rather than raise, and `publishable` is unaffected.
+  A citation check never withholds a review, and it never takes down the page
+  printing it either.
 - **A ledger this process may not open is not a raise either.** It comes back
   as `references: []`, `uses: []`, `counts: {}`, `exists: True`, `ledger` set to
   the file, and the one `problems` line `read_run` gives it. It is the same

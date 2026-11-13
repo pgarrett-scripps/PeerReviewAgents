@@ -91,7 +91,13 @@ def _why(exc):
         return 'it is not valid UTF-8'
     if isinstance(exc, OSError):
         return exc.strerror or exc.__class__.__name__
-    return str(exc)
+    if isinstance(exc, ValueError):
+        return str(exc)
+    # Anything else reaching here is a shape the reader did not foresee, and
+    # its class is the half of the sentence that says what kind of damage it
+    # was. ``TypeError`` alone is more use to the person holding the folder
+    # than an empty parenthesis.
+    return f'{exc.__class__.__name__}: {exc}'.strip(': ')
 
 
 def _refusal(path, base=None):
@@ -238,6 +244,39 @@ def _citations_planned(protocol, agents):
                for row in agents or () if isinstance(row, dict))
 
 
+def _unreadable(review, root, exc):
+    """The citations reading for a ledger that is there and cannot be read.
+
+    One sentence, in one place, because both public readers give it and a
+    consumer prints whichever it got. It is the state where nothing in the
+    table can be counted, which is not the same as a table saying nothing was
+    checked: the counts come back empty and the line says the file is there
+    and could not be read, so no reader mistakes one for the other.
+    """
+    where = _relative(Path(review) / citation_ledger.LEDGER_PATH, root)
+    lines = [f'{where} is present and could not be read ({_why(exc)}), so this run has no '
+             'citation counts']
+    return ({'enabled': True, 'ledger': str(Path(review) / citation_ledger.LEDGER_PATH),
+             'counts': {}, 'complete': False,
+             'summary': citation_ledger.summary_line({}), 'problems': lines}, lines)
+
+
+def _kept_rows(ledger, source_text):
+    """``{'reference': [...], 'use': [...]}`` in the order a reader counts in.
+
+    Separate from :func:`read_citation_ledger` so that the whole of building
+    the rows — reading the file, sorting it, dropping the source text — sits
+    inside that function's one guard rather than its first line only.
+    """
+    rows, _ = ledger.load() if ledger.exists() else ({}, 0)
+    kept = {'reference': [], 'use': []}
+    for row_id in sorted(rows, key=_natural):
+        row = rows[row_id]
+        if row.get('kind') in kept:
+            kept[row['kind']].append(row if source_text else _without_source_text(row))
+    return kept
+
+
 def _citations_reading(review, root=None, protocol=None, agents=None):
     """:func:`_citations` with ``enabled`` decided once, for both readers.
 
@@ -285,7 +324,6 @@ def _citations(review, enabled=False, root=None):
     the paths in the lines are written from.
     """
     ledger = citation_ledger.Ledger(review)
-    where = _relative(Path(review) / citation_ledger.LEDGER_PATH, root)
     empty = {'enabled': False, 'ledger': None, 'counts': {}, 'complete': False,
              'summary': citation_ledger.summary_line({}), 'problems': []}
     if not ledger.exists():
@@ -300,11 +338,16 @@ def _citations(review, enabled=False, root=None):
         return {**empty, 'enabled': True, 'problems': lines}, lines
     try:
         totals = citation_ledger.counts(ledger)
-    except (OSError, UnicodeDecodeError, ValueError) as exc:
-        lines = [f'{where} is present and could not be read ({_why(exc)}), so this run has no '
-                 'citation counts']
-        return {**empty, 'enabled': True, 'problems': lines,
-                'ledger': str(Path(review) / citation_ledger.LEDGER_PATH)}, lines
+    except Exception as exc:  # noqa: BLE001 — see below. This is the last guard.
+        # Deliberately every exception, not the three a damaged file is
+        # expected to raise. This reading is printed on consumer pages beside
+        # a review that is already finished, and the promise those pages are
+        # built on is that a citation check never withholds a review and never
+        # crashes the page. A ledger shape nobody foresaw is a ledger that
+        # could not be read, which is a state this function already has a
+        # sentence for. ``citation_ledger._readable`` is where a known bad
+        # shape is handled, one row at a time; this is for the unknown ones.
+        return _unreadable(review, root, exc)
     lines = citation_ledger.problems(totals)
     return ({'enabled': True,
              'ledger': str(Path(review) / citation_ledger.LEDGER_PATH),
@@ -889,14 +932,18 @@ def read_citation_ledger(path, source_text=False):
     or ``ledger.jsonl`` is refused by name rather than followed, because the
     server writes them in place and a link in their place points at a file
     another process owns. Damaged content never raises: a line that is not
-    readable JSON, or whose ``row_id`` is not a non-empty string, is skipped
-    and counted in ``counts['unreadable_rows']``, with
-    a line in ``problems`` saying so, and a ledger this process may not open at
-    all comes back as no rows, ``exists`` true and the same ``problems`` line
-    :func:`read_run` gives it — the one citation state where nothing can be
-    counted is the one a consumer page is most likely to meet, and it must not
-    be the one that raises. :class:`NotARunFolder` for a folder that is not a
-    run and ``ValueError`` for a symlink are the only two raises.
+    readable JSON, or whose shape the ledger cannot hold — see
+    ``citation_ledger._readable`` — is skipped and counted in
+    ``counts['unreadable_rows']``, with a line in ``problems`` saying so, and a
+    ledger this process may not open at all comes back as no rows, ``exists``
+    true and the same ``problems`` line :func:`read_run` gives it — the one
+    citation state where nothing can be counted is the one a consumer page is
+    most likely to meet, and it must not be the one that raises. Below both
+    sits a last guard: whatever a file does to the counting or to the building
+    of the rows, including an exception neither this module nor that one
+    foresaw, both readers give that same sentence rather than raise.
+    :class:`NotARunFolder` for a folder that is not a run and ``ValueError``
+    for a symlink are the only two raises.
     """
     root, review = locate(path)
     _no_symlink(review, review)
@@ -905,19 +952,33 @@ def read_citation_ledger(path, source_text=False):
         refuse_symlinks(folder, review)
     ledger = citation_ledger.Ledger(review)
     citations, _ = _citations_reading(review, root=root)
+    empty = {'reference': [], 'use': []}
+    if citations['ledger'] and not citations['counts']:
+        # The file is there and the counting could not read it. The rows are
+        # empty for the same reason the counts are, and reading it a second
+        # time here to find that out again would only risk a different answer.
+        return _reading(root, review, ledger, empty, citations)
     try:
-        rows, _ = ledger.load() if ledger.exists() else ({}, 0)
-    except (OSError, UnicodeDecodeError, ValueError):
-        # A file that is there and cannot be opened or read. ``_citations``
-        # above met the same wall and has already written the line that says
-        # so, so there is nothing to add here and nothing to raise: the rows
-        # are empty for the same reason the counts are.
-        rows = {}
-    kept = {'reference': [], 'use': []}
-    for row_id in sorted(rows, key=_natural):
-        row = rows[row_id]
-        if row.get('kind') in kept:
-            kept[row['kind']].append(row if source_text else _without_source_text(row))
+        kept = _kept_rows(ledger, source_text)
+    except Exception as exc:  # noqa: BLE001 — the same last guard _citations has.
+        # A file that is there and cannot be read into rows, for any reason at
+        # all rather than the three a damaged file is expected to give. The
+        # counting met the same file and has its own guard, so the answer here
+        # is the answer it gives: no rows, no counts, and the one line saying
+        # the file is present and could not be read. A consumer printing this
+        # table must not be handed a raise by a run folder somebody tore.
+        kept = empty
+        citations, _ = _unreadable(review, root, exc)
+    return _reading(root, review, ledger, kept, citations)
+
+
+def _reading(root, review, ledger, kept, citations):
+    """:func:`read_citation_ledger`'s answer, assembled in one place.
+
+    The rows and the counts come back from two readings of one file, and this
+    is where they are put together, so a degraded answer cannot be assembled
+    one way and a whole one another.
+    """
     return {
         'run': str(root),
         'review': str(review),
@@ -944,9 +1005,19 @@ def _natural(row_id):
 
     Each part is tagged with its kind so that no comparison ever puts a number
     beside a string, whatever a row id holds.
+
+    A run of digits longer than Python will convert — 4,300 of them, the
+    interpreter's own limit — is compared as text instead. Nothing the server
+    writes is anything like that long, and a sort key is the last place a
+    reading of a damaged file should raise.
     """
-    return tuple((1, int(part)) if part.isdigit() else (0, part)
-                 for part in re.split(r'(\d+)', row_id))
+    parts = []
+    for part in re.split(r'(\d+)', row_id):
+        try:
+            parts.append((1, int(part)) if part.isdigit() else (0, part))
+        except ValueError:
+            parts.append((0, part))
+    return tuple(parts)
 
 
 def _without_source_text(row):

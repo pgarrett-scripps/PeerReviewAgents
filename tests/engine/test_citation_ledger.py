@@ -1099,6 +1099,67 @@ def test_a_row_id_that_cannot_key_the_table_is_an_unreadable_row(tmp_path):
     cl.problem_rows(ledger)
 
 
+def test_a_row_shaped_so_this_module_cannot_hold_it_is_an_unreadable_row(tmp_path):
+    """The shape check is the fields this module dereferences, and only those.
+
+    ``kind`` is what every reading filters on, and ``resolution`` and
+    ``printed`` are read with ``.get`` wherever a reference is counted or
+    printed, so a line carrying a list under ``kind`` or a string under
+    ``resolution`` raised out of the counting — which is the reading
+    :func:`peerreviewagents.read_run` does on every consumer page. A row the
+    table cannot hold is counted where a torn line is counted.
+    """
+    ledger = filled(tmp_path)
+    sound = set(ledger.load()[0])
+    reference, use = ledger.rows('reference')[0], ledger.rows('use')[0]
+    damaged = [{**use, 'row_id': 'use:b9:1:r1', 'kind': ['use']},
+               {**use, 'row_id': 'use:b9:2:r1', 'kind': {'kind': 'use'}},
+               {**use, 'row_id': 'use:b9:3:r1', 'kind': 3},
+               {**use, 'row_id': 'use:b9:4:r1', 'kind': 'verdict'},
+               {**reference, 'row_id': 'ref:r9', 'resolution': 'exists: yes'},
+               {**reference, 'row_id': 'ref:r8', 'resolution': ['yes']},
+               {**reference, 'row_id': 'ref:r7', 'printed': 'A title, 2020'}]
+    for row in damaged:
+        with ledger.path.open('a', encoding='utf-8') as stream:
+            stream.write(json.dumps(row) + '\n')
+
+    rows, broken = ledger.load()
+    assert broken == len(damaged) and sound == set(rows)
+    totals = cl.counts(ledger)
+    assert totals['unreadable_rows'] == len(damaged) and totals['references'] == 1
+    assert cl.summary_line(totals) and cl.problem_rows(ledger)
+
+    # A field the module only compares or prints cannot crash it, and a row is
+    # not thrown away over one: the specialist can still be shown that row.
+    for field, value in (('exists', ['yes']), ('verdict', {'v': 'supports'}),
+                         ('stage', ['verdict']), ('reference_id', ['r1'])):
+        with ledger.path.open('a', encoding='utf-8') as stream:
+            stream.write(json.dumps({**use, 'row_id': f'use:b8:1:{field}',
+                                     field: value}) + '\n')
+    rows, broken = ledger.load()
+    assert broken == len(damaged), 'only the shapes the code dereferences are rejected'
+    assert len(rows) == len(sound) + 4
+
+
+def test_every_row_the_server_writes_is_a_row_the_table_can_hold(tmp_path):
+    """The shape check must not reject anything the one writer produces.
+
+    The server is the only process that appends to this file, through
+    :func:`build`, the resolve pass and the verdict tool. A check that turned
+    one of their rows into an unreadable row would silently drop real
+    citations, which is worse than the crashes it was added to stop.
+    """
+    ledger = judging_ledger(tmp_path)
+    written = [json.loads(line) for line in
+               ledger.path.read_text(encoding='utf-8').splitlines() if line.strip()]
+    rows, broken = ledger.load()
+    assert written and broken == 0
+    assert {row['row_id'] for row in written} == set(rows)
+    for row in written:
+        assert cl._readable(row), row['row_id']
+        assert row['kind'] in cl.ROW_KINDS
+
+
 def test_a_batch_is_not_lost_to_a_row_whose_join_key_is_damaged(tmp_path):
     """``reference_id`` is the other field this file is indexed on.
 

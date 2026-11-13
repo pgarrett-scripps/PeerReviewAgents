@@ -680,6 +680,47 @@ def _uses_in(sentence, by_label, by_author, ambiguous, listed):
 # -- the table --------------------------------------------------------------
 
 
+#: The two kinds of row the table holds. Everything that reads it filters on
+#: this field, so a row carrying anything else under it is a row no reading
+#: reaches and a key no filter can compare.
+ROW_KINDS = ('reference', 'use')
+
+#: The fields this module dereferences with ``.get`` rather than comparing: a
+#: reference's looked-up record and its printed metadata. A row carrying a
+#: string or a list under either raises ``AttributeError`` inside the counting,
+#: which is the reading :func:`peerreviewagents.read_run` does on every page.
+MAPPING_FIELDS = ('resolution', 'printed')
+
+
+def _readable(row):
+    """Whether this line is a row the rest of this module can hold.
+
+    The shape the code depends on, and only that. ``row_id`` has to be a key —
+    a non-empty string — because every stage replays on it, every view sorts by
+    it and every consumer joins on it. ``kind`` has to be one of
+    :data:`ROW_KINDS` because every reading filters on it. ``resolution`` and
+    ``printed`` have to be absent, null or an object because they are read with
+    ``.get``. A line failing any of these is counted as unreadable where a torn
+    line is, rather than raising out of a reader three calls away with no idea
+    what it is holding.
+
+    This is deliberately not a schema. A field this module only compares or
+    prints cannot crash it, and rejecting a row over one would throw away a row
+    the specialist can still be shown. The server is the only writer and writes
+    none of these shapes; this is for a file that was torn, hand-edited or
+    written by something else.
+    """
+    if not isinstance(row, dict):
+        return False
+    row_id = row.get('row_id')
+    if not isinstance(row_id, str) or not row_id.strip():
+        return False
+    if row.get('kind') not in ROW_KINDS:
+        return False
+    return all(row.get(field) is None or isinstance(row.get(field), dict)
+               for field in MAPPING_FIELDS)
+
+
 class Ledger:
     """The rows on disk. Append-only; the last row for an id is the row.
 
@@ -738,15 +779,24 @@ class Ledger:
         that permanent. One torn line is one skipped and counted row, which is
         what the rest of this class already promised.
 
-        **A row_id that is not a non-empty string is an unreadable row too.**
-        It is the key every stage replays on, every view sorts by and every
-        consumer joins on, and a line whose ``row_id`` is a list or an object
-        raised ``TypeError`` out of this method — an unhashable key — where a
-        torn line a byte away is skipped and counted. A number raised nothing
-        here and then raised out of whatever sorted the rows next, which is
-        worse: the damage surfaced somewhere that had no idea what it was
-        holding. Readable JSON that cannot be the table's key is damage of the
-        same kind as a torn line, and it is counted the same way.
+        **A line whose shape the rest of this file cannot read is an unreadable
+        row too**, and :func:`_readable` is the one place that says so. It is
+        the fields this module dereferences rather than a schema: ``row_id``,
+        which is the key every stage replays on, every view sorts by and every
+        consumer joins on; ``kind``, which every reading of the table filters
+        on; and ``resolution`` and ``printed``, which are read with ``.get``
+        wherever a reference is counted or printed. A line whose ``row_id`` is
+        a list raised ``TypeError`` out of this method on an unhashable key,
+        one whose ``kind`` was raised the same way where a reader filtered on
+        it, and one whose ``resolution`` was a string raised ``AttributeError``
+        out of :func:`counts`, which is the reading :func:`read_run` itself
+        does — a crash on a consumer's page, a byte away from a torn line that
+        is skipped and counted. Readable JSON the table cannot hold is damage
+        of the same kind as a torn line, and it is counted the same way.
+
+        Nothing else is checked. A field this module only ever compares or
+        prints cannot crash it, and rejecting a row over one would throw away a
+        row the specialist can still be shown.
         """
         rows, broken = {}, 0
         if not self.path.is_file():
@@ -765,9 +815,8 @@ class Ledger:
                 except ValueError:
                     broken += 1
                     continue
-                row_id = row.get('row_id') if isinstance(row, dict) else None
-                if isinstance(row_id, str) and row_id.strip():
-                    rows[row_id] = row
+                if _readable(row):
+                    rows[row['row_id']] = row
                 else:
                     broken += 1
         return rows, broken
