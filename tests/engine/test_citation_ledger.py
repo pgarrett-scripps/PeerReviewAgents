@@ -1070,6 +1070,119 @@ def test_a_line_torn_inside_a_character_is_one_bad_row_not_a_dead_table(tmp_path
     assert any('could not be read' in line for line in cl.problems(totals))
 
 
+def test_a_row_id_that_cannot_key_the_table_is_an_unreadable_row(tmp_path):
+    """Readable JSON is not the same as a row this file can be indexed on.
+
+    ``row_id`` is the key every stage replays on and every view sorts by. A
+    line carrying a list or an object under it raised ``TypeError`` — an
+    unhashable key — out of :meth:`cl.Ledger.load`, where a torn line a byte
+    away is skipped and counted; a number raised nothing here and then raised
+    out of whatever sorted the rows afterwards, somewhere with no idea what it
+    was holding. Both are damage of the same kind as a torn line.
+    """
+    ledger = filled(tmp_path)
+    sound = set(ledger.load()[0])
+    good = ledger.rows('reference')[0]
+    for row_id in (['ref', 'r2'], {'id': 'ref:r2'}, 7, '', '   ', None):
+        with ledger.path.open('a', encoding='utf-8') as stream:
+            stream.write(json.dumps({**good, 'row_id': row_id}) + '\n')
+
+    rows, broken = ledger.load()
+    assert broken == 6
+    assert sound == set(rows), 'the rows with a usable key are still the table'
+    totals = cl.counts(ledger)
+    assert totals['unreadable_rows'] == 6
+    assert totals['references'] == 1 and totals['uses'] == 1
+    assert any('could not be read' in line for line in cl.problems(totals))
+    # The views every consumer and the specialist read sort these rows.
+    assert sorted(rows) == sorted(sound)
+    cl.problem_rows(ledger)
+
+
+def test_a_row_shaped_so_this_module_cannot_hold_it_is_an_unreadable_row(tmp_path):
+    """The shape check is the fields this module dereferences, and only those.
+
+    ``kind`` is what every reading filters on, and ``resolution`` and
+    ``printed`` are read with ``.get`` wherever a reference is counted or
+    printed, so a line carrying a list under ``kind`` or a string under
+    ``resolution`` raised out of the counting — which is the reading
+    :func:`peerreviewagents.read_run` does on every consumer page. A row the
+    table cannot hold is counted where a torn line is counted.
+    """
+    ledger = filled(tmp_path)
+    sound = set(ledger.load()[0])
+    reference, use = ledger.rows('reference')[0], ledger.rows('use')[0]
+    damaged = [{**use, 'row_id': 'use:b9:1:r1', 'kind': ['use']},
+               {**use, 'row_id': 'use:b9:2:r1', 'kind': {'kind': 'use'}},
+               {**use, 'row_id': 'use:b9:3:r1', 'kind': 3},
+               {**use, 'row_id': 'use:b9:4:r1', 'kind': 'verdict'},
+               {**reference, 'row_id': 'ref:r9', 'resolution': 'exists: yes'},
+               {**reference, 'row_id': 'ref:r8', 'resolution': ['yes']},
+               {**reference, 'row_id': 'ref:r7', 'printed': 'A title, 2020'}]
+    for row in damaged:
+        with ledger.path.open('a', encoding='utf-8') as stream:
+            stream.write(json.dumps(row) + '\n')
+
+    rows, broken = ledger.load()
+    assert broken == len(damaged) and sound == set(rows)
+    totals = cl.counts(ledger)
+    assert totals['unreadable_rows'] == len(damaged) and totals['references'] == 1
+    assert cl.summary_line(totals) and cl.problem_rows(ledger)
+
+    # A field the module only compares or prints cannot crash it, and a row is
+    # not thrown away over one: the specialist can still be shown that row.
+    for field, value in (('exists', ['yes']), ('verdict', {'v': 'supports'}),
+                         ('stage', ['verdict']), ('reference_id', ['r1'])):
+        with ledger.path.open('a', encoding='utf-8') as stream:
+            stream.write(json.dumps({**use, 'row_id': f'use:b8:1:{field}',
+                                     field: value}) + '\n')
+    rows, broken = ledger.load()
+    assert broken == len(damaged), 'only the shapes the code dereferences are rejected'
+    assert len(rows) == len(sound) + 4
+
+
+def test_every_row_the_server_writes_is_a_row_the_table_can_hold(tmp_path):
+    """The shape check must not reject anything the one writer produces.
+
+    The server is the only process that appends to this file, through
+    :func:`build`, the resolve pass and the verdict tool. A check that turned
+    one of their rows into an unreadable row would silently drop real
+    citations, which is worse than the crashes it was added to stop.
+    """
+    ledger = judging_ledger(tmp_path)
+    written = [json.loads(line) for line in
+               ledger.path.read_text(encoding='utf-8').splitlines() if line.strip()]
+    rows, broken = ledger.load()
+    assert written and broken == 0
+    assert {row['row_id'] for row in written} == set(rows)
+    for row in written:
+        assert cl._readable(row), row['row_id']
+        assert row['kind'] in cl.ROW_KINDS
+
+
+def test_a_batch_is_not_lost_to_a_row_whose_join_key_is_damaged(tmp_path):
+    """``reference_id`` is the other field this file is indexed on.
+
+    A row carrying a list under it raised ``TypeError`` on an unhashable key
+    where the batch is assembled, and a sentence index stored as text sorted
+    against one stored as a number raised there too. A row the table cannot
+    join or order is left out rather than allowed to take the batch with it.
+    """
+    ledger = judging_ledger(tmp_path)
+    use = next(row for row in ledger.rows('use'))
+    ledger.append({**use, 'row_id': 'use:b1:9:junk', 'reference_id': ['r1'],
+                   'verdict': None, 'claimed_by': None})
+    ledger.append({**use, 'row_id': 'use:b1:x:r1', 'sentence_index': '3',
+                   'verdict': None, 'claimed_by': None})
+    reference = ledger.rows('reference')[0]
+    ledger.append({**reference, 'row_id': 'ref:junk', 'reference_id': {'id': 'r1'}})
+
+    rows = cl.batch(ledger, 'cite-1', size=5)
+    # A sentence index that is not a number sorts as 0 rather than against one.
+    assert [row['row_id'] for row in rows] == ['use:b1:x:r1', use['row_id']]
+    assert all(row.get('reference') for row in rows), 'the sound rows still join'
+
+
 def test_a_journal_is_not_its_own_family(tmp_path):
     """Containment read *Nature* and *Nature Methods* as one venue.
 

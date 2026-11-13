@@ -343,9 +343,12 @@ including 32 test modules, and nothing was left behind as a shim.
   suffix in parentheses is not caught by the notice matching.
 - `peerreviewagents.read_citation_ledger(path, source_text=False)` reads the
   citation table's own rows from a run folder: `references` and `uses`, the
-  last record written for each `row_id`, ordered by `row_id`, plus the same
-  `counts`, `complete`, `summary` and `problems` `read_run(path)['citations']`
-  holds, from the same functions. `read_run` reports the ledger in numbers and
+  last record written for each `row_id`, in natural `row_id` order — a run of
+  digits compared as the number it is, so `ref:r2` comes before `ref:r10` and
+  `use:b2:2:r1` before `use:b2:10:r1`, which is the reference order and the
+  sentence order a reader counts in — plus the same `counts`, `complete`,
+  `summary` and `problems` `read_run(path)['citations']` holds, from the same
+  functions and the same reading of what the arm planned. `read_run` reports the ledger in numbers and
   there was no public way to read the rows, so every consumer that wanted them
   imported `peerreviewagents.engine.citation_ledger` — a private module — and
   re-implemented the one rule the format has. It takes `read_run`'s guards: a
@@ -463,6 +466,38 @@ including 32 test modules, and nothing was left behind as a shim.
 
 ### Fixed
 
+- **A ledger row of the wrong shape raised out of both readers.** A line
+  carrying a list under `row_id` raised `TypeError` on an unhashable key out of
+  `read_run` and `read_citation_ledger` alike; one carrying a number there
+  raised later, wherever the rows were sorted; one carrying a list under `kind`
+  raised where a reader filtered on it; and one carrying a string under
+  `resolution` raised `AttributeError` inside the counting, which is the
+  reading `read_run` does on every page. None is among the raises a consumer is
+  told to expect, and all are what a half-written line or a hand-edited file
+  produces. A line is now a row only when `row_id` is a non-empty string,
+  `kind` is `reference` or `use`, and `resolution` and `printed` are each
+  absent, null or an object — the fields the module dereferences, and no more
+  than those. Anything else is an unreadable row like a torn line: skipped,
+  counted in `counts['unreadable_rows']` and named in `problems`. Nothing the
+  server writes is affected. `reference_id` and `sentence_index` are guarded
+  the same way where the server assembles a worker's batch, so one damaged row
+  no longer takes the batch with it, and a run of digits in a `row_id` too long
+  for `int` — Python's own 4,300-digit limit — sorts as text instead of raising.
+- **A last guard under both readers.** Whatever a file does to the counting or
+  to the building of the rows, including an exception no version of this
+  library foresaw, `read_run` and `read_citation_ledger` now give the same
+  "`review/citations/ledger.jsonl` is present and could not be read (…)"
+  problem line with empty counts and no rows, rather than raising into the page
+  that called them. `publishable` is unaffected, as it is for every other
+  citation state: a citation check never withholds a review, and it must not
+  take down the page printing one either.
+- **The two readers disagreed about a run that planned the lane.**
+  `read_citation_ledger` decided whether the arm planned citations from the
+  protocol's `plan` alone, while `read_run` falls back to the citation slots
+  when there is no plan. A `protocol.json` recording `spec-citations` and
+  `cite-1` with no plan therefore got the planned-lane problem line from one
+  reader and an empty `problems` from the other, against the reader's own
+  promise that the two cannot disagree. Both now read it through one function.
 - **An unreadable citation ledger blocked publishing.** `read_run` put that one
   citation failure in `problems` before `publishable` was decided, so a run
   whose `ledger.jsonl` was present and could not be opened came back
