@@ -15,6 +15,110 @@ including 32 test modules, and nothing was left behind as a shim.
 
 ### Added
 
+- A citation ledger: the `citations` track no longer samples the reference
+  list, it checks all of it from a table the server owns.
+  `<run>/review/citations/ledger.jsonl` is append-only, one row per reference
+  and one per in-text use, last record per `row_id` winning, so a run that
+  stopped halfway resumes from it instead of being redone. Four stages fill it,
+  and the first two spend no model tokens at all. **Fill** happens inside
+  `ingest`: a row for every extracted reference, with or without a DOI, and a
+  row for every sentence that cites one. **Resolve** is the server's own
+  lookups, driven by the recorder through `resolve_citations` and bounded by
+  `limit`: a DOI goes to Crossref, a reference without one is searched by
+  bibliographic title against Crossref and then Europe PMC, and each row
+  records `exists` in four states, not three: `yes`, `no` only when the DOI
+  resolver itself has no handle for a DOI the reference list gives as its own
+  field — doi.org's handle API answering `responseCode` 100 with the 404 it
+  uses for a handle it does not hold, the one service whose whole job is to say
+  whether a DOI was ever registered — **`not located`** for a title two indexes
+  answered about and neither listed, and **`could not check`** for a lookup that
+  did not answer. A metadata index that does not hold the record is not that
+  claim: Crossref and the registration-agency route both answering 404 leaves
+  the row `could not check`, because a DataCite or JaLC DOI is absent from
+  Crossref while being perfectly real. A lookup that failed is never read as a
+  reference that does not exist, and a work outside Crossref and Europe PMC — a
+  book, a thesis, a standard, a preprint — is `not located` rather than accused
+  of anything. A reference whose lookups did not answer is owed its retries
+  rather than written off: it stays counted in `resolve_citations`'s
+  `remaining`, and `retry_after` says how many seconds until the earliest owed
+  row is due, because the attempts are five minutes apart and a host that just
+  rate-limited the run has not recovered in the same turn. Each row also
+  carries a per-field comparison of title, first author, year and venue,
+  any retraction or correction notice — matched on the record's own type and
+  update-pointing fields as well as on a leading "Retraction of", "Correction
+  to" or "Comment on" label, so a notice is never mistaken for the work it is
+  about — and the abstract or open-access full text beside the URL it came from.
+  A title search is only read as the cited work when the first author's surname
+  agrees, because the query is already filtered to the printed year ±1 and a
+  matching year corroborates nothing. Every response
+  is cached under `citations/lookups/` with a receipt, and the requests carry a
+  generic `User-Agent` with no address and nothing identifying whoever ran the
+  review. **Judge** is `--citation-workers` Haiku workers, `cite-1`, `cite-2`,
+  …, each claiming a batch with `claim_citation_batch` and writing one verdict
+  per use with `submit_citation_verdict` — supports, partly supports, does not
+  support, cannot tell — quoting the exact source passage it relied on, where
+  `cannot tell` is the only verdict allowed no passage. **Confirm** is the
+  citations specialist, which now reads the whole table with `citation_rows`,
+  re-checks every problem row itself, and keeps the one-query
+  missing-literature search and the cutoff rule it already had. It reads the
+  clean half of the table as well: `citation_rows(kind='supported')` returns
+  every use a worker read as *supports* with the passage it quoted, so a worker
+  that answered supports for everything is spot-checked rather than taken at
+  its word, and the specialist's report says how many of those rows it checked
+  out of how many there were. Every citation read — a worker's batch and each
+  of the specialist's four kinds — carries an `untrusted_text` line saying that
+  the citing sentence and the fetched source text are quoted material to judge
+  and not instructions: a sentence in either that tells a model what to answer
+  is part of what is being checked, and both briefs say so where the model
+  reads them. A worker's
+  verdict is a row and never a finding: a `cite-N` slot cannot call
+  `submit_finding` at all, and only what the specialist confirmed is stored.
+  The workers are planned, claimable and modelled like every other slot and
+  required like none of them, so one that never reports leaves rows unjudged
+  instead of holding `write_review` open. `--citation-workers N` is 0 to 12,
+  default 4, `--citation-worker-model` defaults to `claude-haiku-5-5`, both are
+  `ingest` arguments too, and `PEERREVIEW_CITATION_WORKER_MODEL` does the same
+  in a session the starter launched. The ledger exists only where the citations
+  specialist does, so an arm without that track writes no `citations/` folder
+  and reports no counts — absent is not zero, and two arms are never compared
+  on numbers one of them cannot have. An arm that *planned* a citations lane
+  and left no table behind is the other case, and it now says so: `enabled` is
+  true, the counts are empty and `problems` carries one line reading that this
+  run planned a citations lane and wrote no citation ledger, so not one
+  reference or in-text use was checked. A lane that failed before its first row
+  no longer reads like an arm that never had one.
+- Both citation stages are sized from the paper rather than from a constant.
+  `ingest` reports `citations.references`, `citations.uses` and
+  `citation_worker_allowance` — the server's own per-worker call budget — and
+  the workflow plans the lookup calls from the reference count instead of a
+  fixed twelve: a 300-reference list gets the calls it needs, and the
+  recorder's agent file allows every call the prompt asks for rather than
+  cutting the stage off part-way through the list. Where the lane still cannot
+  cover the paper, the workflow says which part before it starts and the ledger
+  reports it afterwards: references nobody reached are reported as never looked
+  up and uses nobody could reach as never judged, with the number of workers
+  that would cover them. **No silent cap.** Judging is the stage that does not
+  scale: a worker's call budget and the batch size put the default four workers
+  at about 144 in-text uses and the maximum twelve at about 430, so a paper
+  citing more than that leaves uses unjudged however the run is configured.
+  That shortfall is reported rather than hidden — the counts say how many uses
+  nobody judged and how many workers would have covered them — and resolve, the
+  stage that decides whether a reference exists at all, covers the whole list
+  regardless.
+- `read_run()['citations']` and the review's own **Citations** section report
+  what the ledger says: `enabled`, the absolute `ledger` path, `counts` (one
+  per state of a reference and per verdict, plus the lookups spent and what
+  each stage did), `complete`, a one-sentence `summary`, and one `problems`
+  line per stage that did not finish. `manifest.json` names the ledger among
+  the run's files. Those lines go in `problems` and never in
+  `not_publishable_reasons`: **an unfinished ledger is reported, not published
+  over.** A finding the specialist confirmed stands whether or not the rest of
+  the table was finished, and the counts say in numbers how much of the
+  reference list this run actually checked. `complete` is about what was
+  checked and not about which stages ran: a table whose every reference came
+  back `could not check` is not complete, however tidily the stages finished,
+  and a ledger file that cannot be read at all is reported as unreadable rather
+  than read as a clean reference list.
 - A different model per core reviewer. Stage A ran three core reviewers on one
   model and they caught no more than one of them did — three readings of the
   same manuscript by the same reader — so the reviewers are now drawn in order
@@ -203,9 +307,51 @@ including 32 test modules, and nothing was left behind as a shim.
   literals inside `plugin.server`, which an app had to import a launcher and an
   MCP SDK to read. The server now imports them from there, so there is one
   definition and nothing to drift.
+- **An unregistered DOI is never by itself proof of anything.** A DOI is a
+  claim about an identifier only when the reference list hands it over as its
+  own field. A DOI read out of the reference *text* cannot make a row
+  `exists: no` and cannot raise a `doi` mismatch, because a two-column PDF
+  breaks a DOI across a line constantly and the fragment that comes out of
+  that is indistinguishable from a DOI printed wrongly: such a row is `not
+  located` with a note saying the DOI as read is unregistered, the extraction
+  may be cut short, and the PDF is where to check. `doi_in` refuses a DOI whose
+  trimmed form does not end on a letter or a digit — the four ways a line break
+  lands, after a hyphen, a prefix slash, a dot or an underscore — while
+  accepting the two shapes it used to throw away with them: a DOI at the end of
+  a sentence (`10.1016/j.cell.2020.01.001.`) and the bracketed suffix every
+  Lancet DOI has (`10.1016/S0140-6736(20)30183-5`). `no` on the resolver leg
+  now also requires the 404 the handle API answers for a handle it does not
+  hold, so a proxy returning 429 or 503 with `responseCode` 100 in the body is
+  `could not check`. And `citations.md` says that an `exists: no` row is a lead
+  the specialist confirms against the PDF text before it becomes a finding.
+- **A printed acronym is not a different venue.** *PNAS*, *NEJM*, *JAMA*,
+  *BMJ*, *JACS* and *NeurIPS* against the words they stand for each raised
+  "printed venue differs from the indexed record", which is the citation style
+  most journals ask for reported as an error. When either side is a single
+  token it is read as an initialism of the other side's significant words; a
+  parenthetical edition is dropped before the comparison, so `Science (80-. )`
+  is *Science* and `Bioinformatics (Oxford, England)` is *Bioinformatics*; and
+  a one-token name that is neither an initialism nor an abbreviation is **not
+  compared** rather than called a mismatch. *Nature* is still not *Nature
+  Methods*.
+- Known and accepted in 0.9.0, documented rather than fixed: nothing in the
+  workflow returns after the 300-second retry wait, so rows the hosts
+  rate-limited stay `could not check` and are reported as such; a surname
+  spelt two ways (*Müller* / *Mueller*) or hyphenated falls to `candidate`
+  rather than agreeing; any Crossref `update-to` marks a record as a notice,
+  including one that points at a dataset version; and a `<title> (Reply)`
+  suffix in parentheses is not caught by the notice matching.
 
 ### Changed
 
+- The server has 27 tools rather than 23: `resolve_citations` for the recorder,
+  `citation_rows` for the citations specialist, and `claim_citation_batch` and
+  `submit_citation_verdict` for a citation worker, each on the allow list of
+  that slot alone. The per-run tool-call ceiling rises from 600 to 900 with
+  them, because a 60-reference paper has roughly 90 in-text uses and one
+  verdict is one call; a worker gets 40 calls and no external requests, since
+  everything it may see is already in the row it claimed. No reviewer's own
+  allowance changed.
 - Every reviewer brief now says to copy the `quote` out of the block text
   rather than retype it, and names the two ways it goes wrong: numbers or terms
   reordered, and a clause dropped from the middle. A quote written from memory

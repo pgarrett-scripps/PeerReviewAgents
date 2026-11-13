@@ -26,6 +26,7 @@ import json
 import os
 from pathlib import Path
 
+from .engine import citation_ledger
 from .engine.usage import agent_rows, observed_usage
 from .names import (
     BLOCKED,
@@ -156,6 +157,77 @@ def _rows(path, problems, label=None):
         problems.append(f'{skipped} unreadable line(s) in {label} were skipped; a run killed '
                         'mid-write leaves one')
     return rows
+
+
+def _citations_planned(protocol, agents):
+    """Whether this run's arm asked for a citations lane at all.
+
+    It matters because a missing ledger file means two opposite things. An arm
+    that runs without the citations lane — ``reviewers-only``, a
+    ``draft-check`` on other tracks — keeps no table on purpose, and saying so
+    would be noise. An arm that planned the lane and left no table behind did
+    not check a single citation, and a reader who is shown the same silence
+    for both cannot tell which run they are holding.
+
+    The plan is the first source because it is what the arm asked for, written
+    at ingest; the slots are the fallback for a folder whose ``protocol.json``
+    was lost or written by another version, since a ``spec-citations`` or
+    ``cite-N`` row only exists where the lane was planned.
+    """
+    plan = (protocol or {}).get('plan')
+    plan = plan if isinstance(plan, dict) else {}
+    specialists = plan.get('specialists')
+    if isinstance(specialists, (list, tuple)) and 'citations' in specialists:
+        return True
+    workers = plan.get('citation_workers')
+    if isinstance(workers, (list, tuple)) and workers:
+        return True
+    return any(row.get('track') == 'citations' or row.get('role') == 'citation-worker'
+               for row in agents or () if isinstance(row, dict))
+
+
+def _citations(review, problems, enabled=False):
+    """What the citation ledger says, and one line per stage that did not finish.
+
+    Two separate lists come out of this. The counts and the stage lines go to
+    the caller, which puts the lines in ``problems`` *after* ``publishable`` is
+    decided: an unfinished citation stage is something a reader has to be told,
+    and it is not a reason to withhold the review. The findings the specialist
+    confirmed are real whether or not the table behind them was finished, and
+    the counts say in numbers how much of the reference list was checked.
+
+    A ledger that cannot be read at all is a different matter and goes in
+    ``problems`` like any other damaged file, because then the counts are not
+    the run's own numbers.
+
+    ``enabled`` is what the arm planned, from :func:`_citations_planned`. With
+    no ledger file it is the whole of the answer: planned and missing is a
+    reported gap, not planned is nothing to report.
+    """
+    ledger = citation_ledger.Ledger(review)
+    empty = {'enabled': False, 'ledger': None, 'counts': {}, 'complete': False,
+             'summary': citation_ledger.summary_line({}), 'problems': []}
+    if not ledger.exists():
+        if not enabled:
+            return empty, []
+        lines = ['this run planned a citations lane and wrote no citation ledger, so not one '
+                 'reference or in-text use was checked']
+        return {**empty, 'enabled': True, 'problems': lines}, lines
+    try:
+        totals = citation_ledger.counts(ledger)
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        problems.append(f'{citation_ledger.LEDGER_PATH} is present but could not be read '
+                        f'({exc}); the citation counts are read as absent')
+        return {**empty, 'enabled': True,
+                'ledger': str(Path(review) / citation_ledger.LEDGER_PATH)}, []
+    lines = citation_ledger.problems(totals)
+    return ({'enabled': True,
+             'ledger': str(Path(review) / citation_ledger.LEDGER_PATH),
+             'counts': totals,
+             'complete': bool(totals.get('complete')),
+             'summary': citation_ledger.summary_line(totals),
+             'problems': lines},
+            lines)
 
 
 def _is_review_folder(path):
@@ -476,11 +548,28 @@ def read_run(path):
         limit that fired *after* the review was written, which ends the session
         without unwriting the review.
     ``problems``
-        Every file that could not be read in full, named, and every slot whose
-        observed model is a different family from the one it was assigned.
-        Empty for a whole folder. A reading with problems is still a reading —
-        that is the point — but a consumer should not publish it or quote a
-        number from it without saying so.
+        Every file that could not be read in full, named, every slot whose
+        observed model is a different family from the one it was assigned, and
+        one line per citation stage that did not finish. Empty for a whole
+        folder. A reading with problems is still a reading — that is the point —
+        but a consumer should not publish it or quote a number from it without
+        saying so. The citation lines are the exception and are not in
+        ``not_publishable_reasons``: see ``citations``.
+    ``citations``
+        The citation ledger. ``ledger`` is the absolute path to
+        ``citations/ledger.jsonl`` or ``None`` when this run kept none —
+        an arm without the citations specialist fills no table, and
+        ``enabled`` is false there. ``counts`` is the whole table in numbers:
+        references, how many resolved, were not found, could not be checked,
+        disagreed with the indexed record or are retracted; in-text uses, how
+        many were judged and how they were judged, and how many nobody could
+        judge. ``complete`` is true only when every stage finished.
+        ``summary`` is one sentence of the same, and ``problems`` is one line
+        per stage that did not finish. Those lines are in the top-level
+        ``problems`` as well, and they are deliberately *not* reasons against
+        publishing: a confirmed finding is a finding whether or not the table
+        behind it was finished, and the counts say how much of the reference
+        list this run actually checked.
     ``stage``
         ``startup`` when no session ever ran and no subscription usage was
         spent, ``session`` once one did.
@@ -594,8 +683,17 @@ def read_run(path):
     # full" count is the files, and appended to `problems` after, because a
     # substituted model is a problem with this run's record of itself.
     swapped = model_plan.substitutions(agents)
+    # A citation worker's substitution is reported and does not withhold the
+    # review: it writes no report and no finding, and every row of its table
+    # that becomes one is re-read by the citations specialist first.
+    worker_swapped = model_plan.worker_substitutions(agents)
+    # The citation stage lines are deliberately not in `problems` yet: an
+    # unfinished ledger is reported, not published over. A ledger that could
+    # not be read *is* in `problems` already, from `_citations` itself.
+    citations, citation_lines = _citations(review, problems,
+                                           enabled=_citations_planned(protocol, agents))
     reasons = publishable_reasons(status, source, guard, problems, len(quarantined), swapped)
-    problems += swapped
+    problems += swapped + worker_swapped + citation_lines
 
     probe = startup.get('probe')
     if probe is not None and not isinstance(probe, dict):
@@ -624,6 +722,7 @@ def read_run(path):
                    'findings_delivered': progress.get('findings_delivered'),
                    'findings_submitted': progress.get('findings_submitted')},
         'quarantined': quarantined,
+        'citations': citations,
         'guard_status': guard,
         'escalations': [f for f in findings if f.get('escalate')],
         'escalation_rulings': rulings,

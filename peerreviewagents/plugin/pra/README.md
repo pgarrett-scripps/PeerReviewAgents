@@ -13,10 +13,10 @@ can only ask it for text and hand it findings.
 
 | Part | Where | What it is |
 | --- | --- | --- |
-| `peerreview` server | `.mcp.json` → `peerreviewagents.plugin.server` | 23 tools, and every piece of state worth forging |
-| Agents | `agents/*.md` | `core-reviewer`, six specialists, `editor`, `recorder`; each pins `maxTurns:` and a fallback `model:`, and may call only server tools |
+| `peerreview` server | `.mcp.json` → `peerreviewagents.plugin.server` | 27 tools, and every piece of state worth forging |
+| Agents | `agents/*.md` | `core-reviewer`, six specialists, `citation-worker`, `editor`, `recorder`; each pins `maxTurns:` and a fallback `model:`, and may call only server tools |
 | Models | `peerreviewagents/plugin/models.py` | which model each slot runs, and the refusal when one is not available |
-| Workflow | `workflows/review.js` | ingest → reviewers ∥ specialists → (revision) → editor → record |
+| Workflow | `workflows/review.js` | ingest → reviewers ∥ specialists (the citation lane first resolves, then fans out workers) → (revision) → editor → record |
 | Skills | `skills/*/SKILL.md` | `peer-review-manuscript` (a full review), `check-draft` (your own draft), `follow-up` (what changed since the last run) |
 | Starter | `peerreviewagents/plugin/starter.py` | probes, launches the headless session, enforces token budgets, records models and wall time |
 
@@ -25,6 +25,7 @@ can only ask it for text and hand it findings.
 ```
 peerreview review <manuscript.pdf> <run folder> [--reviewers N] [--arm NAME]
                   [--reviewer-models A,B,C] [--specialist-model M] [--editor-model M]
+                  [--citation-workers N] [--citation-worker-model M]
 ```
 
 That is the only way to run a review in 0.9: the Python orchestration the 0.8
@@ -46,6 +47,12 @@ Claude Code subscription login only.
 | `manuscript-only` | 1, text tools only | none | no | what pages and lookups add |
 | `draft-check` | none | chosen | no | `check-draft` on a draft of your own |
 
+An arm keeps a citation ledger only where the `citations` specialist runs and
+that slot may reach the network — `full-two-track`, and `draft-check` when
+`citations` is one of the chosen tracks. The other arms write no `citations/`
+folder and `read_run()['citations']['enabled']` is `False` for them, so an
+ablation is never compared against counts the comparison arm cannot have.
+
 ## Models
 
 The core reviewers are deliberately different models. Stage A ran three of them
@@ -58,6 +65,7 @@ ordered list, wrapping round:
 | `core-1`, `core-2`, `core-3`, … | `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-haiku-5-5`, then round again | `--reviewer-models A,B,C` |
 | `revision-1` | `core-1`'s model: it is `core-1` revising its own findings | `--reviewer-models` |
 | `spec-*` | `claude-sonnet-5-5` | `--specialist-model` |
+| `cite-1`, `cite-2`, … | `claude-haiku-5-5` | `--citation-workers N`, `--citation-worker-model` |
 | `editor` | `claude-fable-5-2` | `--editor-model` |
 | `recorder` | `claude-haiku-5-5` | `PEERREVIEW_RECORDER_MODEL` |
 
@@ -94,7 +102,10 @@ the settings files Claude Code reads, managed settings first.
   findings.
 - **Tools per track.** Each slot has an allow list. A citations specialist
   asking for figure pages is refused, and `manuscript-only` has the page and
-  lookup tools removed outright.
+  lookup tools removed outright. The three ledger tools are split the same way:
+  a `cite-N` worker may call only `claim_citation_batch` and
+  `submit_citation_verdict`, `citation_rows` belongs to the citations
+  specialist alone, and `resolve_citations` to the recorder alone.
 - **Budgets.** Per-agent and per-run tool-call ceilings, plus a separate
   external-request ceiling, all enforced in the server. The starter enforces
   token ceilings from the stream on top.
@@ -109,6 +120,52 @@ the settings files Claude Code reads, managed settings first.
 - **The ledger.** Stages, provenance hashes of the plugin and engine files, and
   the run's own files; `write_review` refuses while a stage is missing or no
   editor package has been accepted.
+- **The citation table.** Every reference and every in-text use is a row the
+  server wrote, not a sample an agent chose; see below.
+
+## The citation ledger
+
+`<run>/review/citations/ledger.jsonl` is an append-only table — one row per
+reference, one row per in-text use, last record per `row_id` wins — so a run
+that stopped halfway can be resumed from it rather than redone. Four stages
+fill it, and the first two call no model:
+
+| Stage | Who | What it does |
+| --- | --- | --- |
+| fill | `ingest`, no model | a row for every extracted reference, with or without a DOI, and a row for every citing sentence |
+| resolve | the recorder calling `resolve_citations`, no model | looks up **every** reference: DOI → Crossref; no DOI → title search against Crossref, then Europe PMC. Records `exists` in four states — yes / no (the DOI resolver has no handle for a DOI the reference list gives as its own field; one read out of the reference text is never `no`, because a line break inside a DOI looks the same) / **not located** (two indexes answered, neither lists the title) / **could not check** (nothing answered, or only a metadata index that does not hold the record) — a per-field comparison of title, first author, year and venue, any retraction or correction notice, and the abstract or open-access full text with its source URL. A row whose lookups did not answer stays owed its retries: it is still counted in `remaining`, and `retry_after` says when it is due |
+| judge | `cite-1`…`cite-N` on Haiku | each claims a batch with `claim_citation_batch` and writes one verdict per use with `submit_citation_verdict` — supports / partly supports / does not support / cannot tell — quoting the exact passage it judged from |
+| confirm | `spec-citations` on Sonnet | reads the whole table with `citation_rows` — `counts`, `problems`, `unverified`, `supported`, and one `row` in full — re-checks every problem row itself, spot-checks the supported rows, and files findings only for what it confirmed |
+
+Four rules this pipeline is built on:
+
+- **A failed lookup is "could not check", never "does not exist".** The one
+  thing a citation check must not do is invent a missing paper out of a
+  timeout. Only the DOI resolver can make a DOI `no`, by having no handle for
+  it, and only for a DOI the reference list gives as its own field; a metadata
+  index that does not hold the record is `could not check`. A
+  title neither index lists is `not located`, which is weak
+  evidence and not an existence claim either: most of the literature — books,
+  theses, standards, software, preprints — is in neither index.
+- **The rows are quoted material.** Every citation read carries an
+  `untrusted_text` line. A citing sentence is the authors' writing and a source
+  text is a stranger's; an instruction inside either is part of what is being
+  checked, not a direction the worker or the specialist follows.
+- **A worker's verdict is a row, not a finding.** A `cite-N` slot cannot call
+  `submit_finding` at all, and only the specialist's confirmation makes a
+  finding. The workers are planned, claimable and modelled like any other slot
+  and required like none of them, so a worker that never reports cannot hold
+  `write_review` open.
+- **The lookups are anonymous and cached.** Requests carry a generic
+  `User-Agent` with no address and nothing identifying whoever ran the review,
+  every response is cached under `citations/lookups/` with a receipt, and a
+  resumed run re-reads the cache instead of the network.
+
+`read_run()['citations']` carries `enabled`, the absolute `ledger` path,
+`counts`, `complete`, a one-sentence `summary` and one `problems` line per
+stage that did not finish. Those lines are reported and never block
+publication: a finding the specialist confirmed stands whether or not the rest
+of the table was finished.
 
 ## Editor rules
 
@@ -129,6 +186,9 @@ quotation. The verdict is two axes in words, never a number.
 <run>/review/progress.json    stages and status
 <run>/review/runtime.json     tokens per agent, models, wall time, rate limits
 <run>/review/usage/<slot>/    the stream's own usage record
+<run>/review/citations/ledger.jsonl  one row per reference and per in-text use
+<run>/review/citations/stages.json   what fill, resolve and judge each did
+<run>/review/citations/lookups/      cached lookups and their receipts
 ```
 
 ## The first real run

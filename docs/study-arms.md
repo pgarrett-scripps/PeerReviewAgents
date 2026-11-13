@@ -49,8 +49,9 @@ peerreview review manuscript.pdf arms/reference --reviewers 3 --reviewer-models 
 peerreview review manuscript.pdf arms/mixed --reviewers 3
 ```
 
-`--reviewer-models`, `--specialist-model`, `--editor-model` and
-`--recorder-model` take one of the four models this version knows —
+`--reviewer-models`, `--specialist-model`, `--editor-model`,
+`--recorder-model` and `--citation-worker-model` take one of the four models
+this version knows —
 `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-haiku-5-5`,
 `claude-fable-5-2` — by alias or by id, each run records what it was given in
 `protocol.json`
@@ -58,6 +59,15 @@ peerreview review manuscript.pdf arms/mixed --reviewers 3
 already holds a run under other models is refused rather than reused. Every
 Stage A result recorded before 0.9.0 ran one model for every reviewer, so a run
 being compared against one pins `--reviewer-models` to that model.
+
+The citation workers are the one slot kind an arm can also change the *number*
+of: `--citation-workers N`, 0 to 12, default 4, each on
+`--citation-worker-model` (`claude-haiku-5-5` by default). More workers judge
+the same in-text citations in less wall time and cost the same tokens; `0`
+leaves the ledger resolved but unjudged, which is a legitimate arm — it asks
+what the judging stage is worth — and the run reports it as unfinished rather
+than clean. The workers exist only where the `citations` specialist runs, so
+`--citation-workers` is silently nothing in an arm without that track.
 
 ## The reference arm: the review a person should run
 
@@ -71,6 +81,15 @@ the specialists exist; the specialists audit one dimension each (`stats`,
 `figures-tables`, `methods-reporting`, `citations`, `consistency`, `field`) and
 may escalate, and the editor must rule by name on every escalation. This is the
 default on every surface, so it needs no `--arm`.
+
+Because the `citations` track is in it, this arm also keeps a citation ledger:
+the server writes one row per reference and one per in-text use, resolves every
+reference against Crossref and Europe PMC without a model call, and fans out
+`--citation-workers` Haiku workers (`cite-1`, `cite-2`, …) to judge each use
+against the resolved source before the citations specialist reads the table.
+Those workers are slots in `protocol.json` like any other, with their assigned
+and observed models, and they are required like none of them: a worker that
+never reports leaves rows unjudged instead of holding the review open.
 
 The PDF is imported into `<output>/manuscript`, the run lands in
 `<output>/review`, and `REVIEW.md` and `REVIEW.txt` are written there. Every
@@ -86,6 +105,13 @@ arm below takes the same two positional arguments and the same cutoff.
 | `single-revision` | 1, then revising itself | none | no | `single` | one revision pass over its own findings |
 | `manuscript-only` | 1, text tools only | none | no | `single` | the evidence: no page images, no supplements, no literature or identifier lookups |
 | `draft-check` | none | chosen | no | — | not a study arm: what `draft-check` runs on a draft of your own |
+
+Only the arms that run the `citations` specialist keep a citation ledger —
+`full-two-track`, and `draft-check` when `citations` is one of the chosen
+tracks. The rest write no `citations/` folder and report no citation counts, so
+an ablation is never measured against numbers its reference arm does not have.
+`read_run()['citations']['enabled']` is how an analysis tells the two apart:
+absent is not zero.
 
 `single` differs from `reviewers-only` in two things by construction — a
 one-reviewer run has no second reviewer to pool and nothing for an editor to
@@ -166,11 +192,18 @@ repeatable and defaults to `stats`, `consistency` and `methods-reporting`. It
 is listed here because it is an arm the command accepts, not because it belongs
 in a comparison.
 
+Adding `--track citations` to this arm turns the citation ledger on with it:
+every reference is looked up and every in-text use judged, which is the slowest
+and most network-bound track and the one an author usually wants before
+submission. Without that track, `draft-check` writes no `citations/` folder and
+`read_run()['citations']['enabled']` is `False`.
+
 ## What an arm cannot change
 
-- **The model.** Each slot's model is pinned in its agent file. To vary it you
-  edit `peerreviewagents/plugin/pra/agents/<agent>.md`, which changes the plugin's provenance
-  hash in `protocol.json` — a different plugin, honestly recorded, not a flag.
+- **The model.** The arm does not choose it: the model flags above do, the same
+  way for every arm, and `protocol.json` records the plan beside what each slot
+  was observed running. An arm comparison that also changes a model is two
+  differences, which is why [Models](#models) says to pin them.
 - **The transport.** Every arm runs in a headless Claude Code session on a
   subscription login. There is no provider flag and no API-key path: 0.9
   deleted the Codex provider outright.

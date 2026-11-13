@@ -777,7 +777,10 @@ def test_a_published_review_can_say_which_model_wrote_which_report(tmp_path):
     reading = read_run(run.review)
     assert reading['status'] == 'complete' and reading['publishable'] is False
     reasons = reading['not_publishable_reasons']
-    assert len(reasons) == 1 and reasons == reading['problems']
+    # The citation ledger of this run was filled and never resolved, which is a
+    # problem line and deliberately not a reason: see `citation_ledger.problems`.
+    assert len(reasons) == 1
+    assert reasons == [line for line in reading['problems'] if 'citation' not in line]
     assert 'core-2' in reasons[0] and 'claude-opus-5-5' in reasons[0]
     assert 'claude-sonnet-5-5' in reasons[0] and 'different model family' in reasons[0]
 
@@ -797,7 +800,9 @@ def test_a_slot_that_ran_another_version_of_its_own_family_is_not_a_problem(tmp_
     srv.write_review(claim('recorder')['agent_token'])
 
     reading = read_run(run.review)
-    assert reading['problems'] == []
+    # The unresolved citation ledger is the only problem line this run has, and
+    # it is not a reason to withhold the review.
+    assert [line for line in reading['problems'] if 'citation' not in line] == []
     assert reading['publishable'] is True, reading['not_publishable_reasons']
 
 
@@ -940,4 +945,5 @@ def test_the_tool_list_is_the_one_the_agents_are_allowed_to_call(tmp_path):
     assert {'ingest', 'claim_agent', 'reissue_claim_code', 'submit_finding', 'submit_report',
             'list_findings', 'submit_editor', 'write_review', 'mark_blocked',
             'run_status'} <= names
-    assert len(srv.TOOLS) == len(names) == 23
+    assert {'resolve_citations', *srv.LEDGER_TOOLS} <= names
+    assert len(srv.TOOLS) == len(names) == 27

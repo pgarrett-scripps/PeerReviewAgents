@@ -231,7 +231,7 @@ def test_the_agent_files_pin_the_same_models_this_module_defaults_to():
     A per-spawn override is what normally decides a slot's model; the agent
     file's ``model:`` is what runs when none arrives — a dropped relay, a
     version of Claude Code that ignores the override. Two answers in two places
-    is how a run comes to record a model it did not run, so the nine files and
+    is how a run comes to record a model it did not run, so the ten files and
     the defaults here are checked against each other rather than by hand.
     """
     agents = Path(model_plan.__file__).resolve().parent / 'pra' / 'agents'
@@ -241,12 +241,13 @@ def test_the_agent_files_pin_the_same_models_this_module_defaults_to():
         assert found, f'{path.name} pins no model, so its slot would inherit one'
         pinned[path.stem] = found.group(1)
 
-    assert len(pinned) == 9, pinned
+    assert len(pinned) == 10, pinned
     assert pinned['core-reviewer'] == model_plan.DEFAULT_REVIEWER_MODELS[0]
     assert pinned['editor'] == model_plan.DEFAULT_EDITOR_MODEL
     assert pinned['recorder'] == model_plan.DEFAULT_RECORDER_MODEL
+    assert pinned['citation-worker'] == model_plan.DEFAULT_CITATION_WORKER_MODEL
     specialists = {name: model for name, model in pinned.items()
-                   if name not in ('core-reviewer', 'editor', 'recorder')}
+                   if name not in ('core-reviewer', 'editor', 'recorder', 'citation-worker')}
     assert set(specialists) == set(srv.SPECIALIST_TRACKS), 'one file per specialist track'
     assert set(specialists.values()) == {model_plan.DEFAULT_SPECIALIST_MODEL}
     assert set(pinned.values()) <= set(model_plan.KNOWN)
@@ -266,6 +267,9 @@ def test_ingest_settles_the_models_and_hands_back_the_spawn_override(tmp_path):
     assert models_of(answer) == {
         'core-1': SONNET, 'core-2': OPUS, 'core-3': HAIKU,
         **{f'spec-{track}': SONNET for track in srv.SPECIALIST_TRACKS},
+        # The citation workers are planned with everything else and run Haiku:
+        # a batch of use rows against a stored passage is the cheap model's job.
+        **{f'cite-{index}': HAIKU for index in range(1, srv.CITATION_WORKERS + 1)},
         'editor': FABLE, 'recorder': HAIKU}
     spawns = {row['slot']: row['spawn'] for row in answer['models']}
     assert spawns['core-2'] == 'opus' and spawns['editor'] == 'fable'

@@ -77,14 +77,21 @@ a run that asked for Opus could otherwise be recorded as an arm it was not.
 Availability is the `availableModels` allowlist in the settings files Claude
 Code reads, managed settings first.
 
+The citation workers are the one slot kind with its own count as well as its
+own model: `--citation-workers N` (0 to 12, default 4) and
+`--citation-worker-model` (default `claude-haiku-5-5`). They exist only in an
+arm that runs the `citations` specialist, and a model that login cannot run is
+refused at start-up like any other.
+
 A session that drives the workflow itself passes `reviewer_models`,
 `specialist_model` and `editor_model` to the `ingest` tool instead; its answer
 gains `models`, one `{slot, model, spawn}` row per agent, where `spawn` is the
 family alias the workflow hands Claude Code and `model` is the version the run
-records. `PEERREVIEW_REVIEWER_MODELS`, `PEERREVIEW_SPECIALIST_MODEL`,
-`PEERREVIEW_EDITOR_MODEL` and `PEERREVIEW_RECORDER_MODEL` do the same for a
-session the starter launched, and an explicit `ingest` argument wins over the
-environment.
+records; `citation_workers` and `citation_worker_model` go the same way.
+`PEERREVIEW_REVIEWER_MODELS`, `PEERREVIEW_SPECIALIST_MODEL`,
+`PEERREVIEW_EDITOR_MODEL`, `PEERREVIEW_RECORDER_MODEL` and
+`PEERREVIEW_CITATION_WORKER_MODEL` do the same for a session the starter
+launched, and an explicit `ingest` argument wins over the environment.
 
 ## Inside a Claude Code session
 
@@ -110,7 +117,7 @@ Then ask for one of its three skills:
 | `follow-up` | what changed since a previous run of the same paper |
 
 The agents may call only the server's tools — the allow list the starter passes
-is `Workflow`, `Skill`, `TodoWrite` and the 23 `peerreview` tools, and nothing
+is `Workflow`, `Skill`, `TodoWrite` and the 27 `peerreview` tools, and nothing
 else. No `Read`, `Write`, `Edit`, `Bash`, `WebSearch` or `WebFetch` reaches a
 reviewer, which is why a quotation cannot come from anywhere but a source
 block.
@@ -241,11 +248,11 @@ It works on every kind of folder a review can leave behind, which is the point:
 
 Keys: `status`, `complete`, `publishable`, `not_publishable_reasons`, `blocked`,
 `cause`, `note`, `stage`, `findings`, `body`, `appendix`, `findings_source`,
-`counts`, `quarantined`, `guard_status`, `escalations`, `escalation_rulings`,
-`summary`, `verdict`, `limitations`, `identity`, `stages`, `runtime`, `agents`,
-`usage`, `reports`, `startup`, `startup_problems`, `problems`, `files`, `run`,
-`review`. The same 32 keys come back for every folder, in every state, so a
-consumer never has to test whether a key is there.
+`counts`, `quarantined`, `citations`, `guard_status`, `escalations`,
+`escalation_rulings`, `summary`, `verdict`, `limitations`, `identity`, `stages`,
+`runtime`, `agents`, `usage`, `reports`, `startup`, `startup_problems`,
+`problems`, `files`, `run`, `review`. The same 33 keys come back for every
+folder, in every state, so a consumer never has to test whether a key is there.
 
 Three of them hold what an integration used to read out of the run folder
 itself:
@@ -332,6 +339,85 @@ Four rules it enforces so you do not have to:
   all the same way, with a `ValueError` naming the path. A symlink in
   `editor-package.json`'s place is some other file's contents presented as this
   run's result.
+
+### The citation ledger
+
+`run['citations']` is what the run's own citation table says. It is the same
+shape for every folder:
+
+```python
+cites = read_run("run-output")["citations"]
+if cites["enabled"]:
+    print(cites["summary"])                 # one sentence, already written
+    print(cites["counts"].get("references", 0), "references,",
+          cites["counts"].get("not_found", 0), "with an unregistered DOI,",
+          cites["counts"].get("not_located", 0), "in neither index,",
+          cites["counts"].get("could_not_check", 0), "not checked")
+    for line in cites["problems"]:          # one per stage that did not finish
+        print("unfinished:", line)
+```
+
+- `enabled` is `False` — and `ledger` `None`, `counts` `{}` — for an arm that
+  keeps no ledger. Only an arm running the `citations` specialist with network
+  tools does: `full-two-track`, and `draft-check` when `citations` is one of the
+  chosen tracks. **Absent is not zero.** A run with `enabled: False` checked no
+  citations; a run with `references: 0` had no reference list to check.
+  The third case reads differently on purpose: an arm that planned a citations
+  lane and left no table behind has `enabled: True`, `ledger: None`, `counts:
+  {}` and one `problems` line saying the run planned a citations lane and wrote
+  no citation ledger. Do not fold that into "no lane" — the lane was paid for
+  and produced nothing, which is a failure worth showing.
+- `ledger` is the absolute path of
+  `<run>/review/citations/ledger.jsonl`, an append-only table with one row per
+  reference and one per in-text use, last record per `row_id` winning. Read it
+  if you want the rows; `counts` is there so you do not have to.
+- `counts` holds `references`, `resolved`, `not_found`, `not_located`,
+  `could_not_check`,
+  `unresolved`, `mismatched`, `retracted`, `with_source_text`, `uses`,
+  `uses_unmatched`, `uses_judged`, `supported`,
+  `partly_supported`, `not_supported`, `cannot_tell`, `uses_unjudged`,
+  `lookups`, `unreadable_rows`, `ledger` (the relative path), `stages` (what
+  fill, resolve and judge each did, with the per-stage lookup and verdict
+  counts) and `complete`.
+- A reference lands in exactly one of four buckets, and only one of them is an
+  existence claim. `not_found` counts the rows where the reference list gave a
+  DOI as its own field and the DOI resolver has no handle for it — doi.org's
+  handle API answering `responseCode` 100 with a 404, the one service whose
+  whole job is to say whether a DOI was ever registered. A DOI read out of the
+  reference *text* instead never lands here, whatever the resolver says, since
+  a DOI broken across a line in a two-column PDF is indistinguishable from one
+  printed wrongly; those rows are `not_located` and carry the caveat in their
+  note. That, and only that, is the table saying a work does not exist; a
+  metadata index that merely does not hold the record leaves the row in
+  `could_not_check`. `not_located` counts the rows where Crossref and Europe PMC
+  both answered and neither listed the title: weak evidence, because books,
+  chapters, theses, standards, software and preprints outside those two indexes
+  land here while being perfectly real. `could_not_check` counts the rows where
+  a lookup did not answer at all, which says nothing whatever.
+  **Do not add them.** An integration that prints "N references do not exist"
+  from the sum of the three is misreporting the run; `not_located` and
+  `could_not_check` belong in the same sentence as how much of the list could
+  not be confirmed, not in a count of bad references.
+- `complete` is `True` only when fill and resolve finished, no matched in-text
+  use is still unjudged, and at least one reference was actually checked: a
+  table in which every row came back `could_not_check` is not complete, because
+  the stages running is not the same as the references being checked. When it
+  is `False`, `problems` names each unfinished stage in words — and those lines are in `run['problems']` too but
+  never in `run['not_publishable_reasons']`. **An unfinished ledger does not
+  make a run unpublishable.** Show the lines beside the findings; do not gate
+  on them.
+- A verdict in the table is not a finding. Findings are in `run['findings']`
+  as always, written by the citations specialist after it re-checked the row
+  itself. Nothing a Haiku worker wrote reaches `findings` on its own.
+
+Two options on the run side feed this: `--citation-workers N` (0 to 12,
+default 4) and `--citation-worker-model` (default `claude-haiku-5-5`). Those
+worker slots are named `cite-1`, `cite-2`, … and appear in `run['agents']` and
+in `protocol.json` with `assigned_model` and the observed `model` like every
+other slot, with `role` `citation-worker`. They are deliberately not required
+slots: a worker that never reported does not block `write_review` and is not a
+reason a run is unpublishable. A session driving the workflow itself passes
+`citation_workers` and `citation_worker_model` to `ingest`.
 
 ### The status rule
 

@@ -14,6 +14,11 @@ place that decides which:
 * **Specialists** are one model, ``claude-sonnet-5-5``.
 * **The editor** is ``claude-fable-5-2``, and **the recorder**
   ``claude-haiku-5-5``.
+* **Citation workers** (``cite-1``, ``cite-2``, …) are ``claude-haiku-5-5``.
+  They answer one bounded question per in-text citation — does the stored
+  source passage support this sentence — and submit no findings, so the work
+  that scales with the length of the reference list runs on the cheapest model
+  that can read it.
 
 Every one of them is configurable, by flag on ``peerreview review``, by
 environment variable in a session the starter launched, and by argument to
@@ -67,6 +72,14 @@ DEFAULT_REVIEWER_MODELS = ('claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku
 DEFAULT_SPECIALIST_MODEL = 'claude-sonnet-5-5'
 DEFAULT_EDITOR_MODEL = 'claude-fable-5-2'
 DEFAULT_RECORDER_MODEL = 'claude-haiku-5-5'
+#: The citation workers that judge one in-text citation against its source.
+#: Haiku because the job is small, bounded and repeated once per in-text use:
+#: read a sentence and a stored passage, answer whether one supports the other,
+#: quote the passage relied on. Nothing is synthesized and no finding is made —
+#: the citations specialist re-checks every answer that says something is wrong
+#: — so the work that scales with the reference list runs on the cheapest model
+#: that can read, and the judgement that reaches the author does not.
+DEFAULT_CITATION_WORKER_MODEL = 'claude-haiku-5-5'
 
 #: The flag that changes each role's model, named in the refusal.
 FLAG = {
@@ -74,6 +87,7 @@ FLAG = {
     'specialist': '--specialist-model',
     'editor': '--editor-model',
     'recorder': '--recorder-model',
+    'citation-worker': '--citation-worker-model',
 }
 #: How the starter hands the choice to the session it launches.
 ENVIRONMENT = {
@@ -81,6 +95,7 @@ ENVIRONMENT = {
     'specialist': 'PEERREVIEW_SPECIALIST_MODEL',
     'editor': 'PEERREVIEW_EDITOR_MODEL',
     'recorder': 'PEERREVIEW_RECORDER_MODEL',
+    'citation-worker': 'PEERREVIEW_CITATION_WORKER_MODEL',
 }
 #: Where Claude Code reads ``availableModels`` from, highest precedence first.
 MANAGED_SETTINGS = (
@@ -164,14 +179,15 @@ def from_environment(environ=None):
     if reviewers:
         chosen['reviewers'] = list(reviewers)
     for key, role in (('specialist', 'specialist'), ('editor', 'editor'),
-                      ('recorder', 'recorder')):
+                      ('recorder', 'recorder'), ('citation_worker', 'citation-worker')):
         value = str(environ.get(ENVIRONMENT[role]) or '').strip()
         if value:
             chosen[key] = normalize(value)
     return chosen
 
 
-def settle(reviewers=None, specialist=None, editor=None, recorder=None, environ=None):
+def settle(reviewers=None, specialist=None, editor=None, recorder=None, citation_worker=None,
+           environ=None):
     """What a run asked for: the arguments it was given, over the environment.
 
     This is the only merge of the two, so the process that launches a session
@@ -189,14 +205,16 @@ def settle(reviewers=None, specialist=None, editor=None, recorder=None, environ=
     listed = parse_list(reviewers)
     if listed:
         chosen['reviewers'] = list(listed)
-    for value, key in ((specialist, 'specialist'), (editor, 'editor'), (recorder, 'recorder')):
+    for value, key in ((specialist, 'specialist'), (editor, 'editor'), (recorder, 'recorder'),
+                       (citation_worker, 'citation_worker')):
         text = str(value or '').strip()
         if text:
             chosen[key] = normalize(text)
     return chosen
 
 
-def to_environment(reviewers=None, specialist=None, editor=None, recorder=None):
+def to_environment(reviewers=None, specialist=None, editor=None, recorder=None,
+                   citation_worker=None):
     """The variables that carry a choice into a launched session, or ``{}``.
 
     Only what the caller actually chose is passed on: an unset variable leaves
@@ -207,7 +225,8 @@ def to_environment(reviewers=None, specialist=None, editor=None, recorder=None):
     listed = parse_list(reviewers)
     if listed:
         chosen[ENVIRONMENT['core']] = ','.join(listed)
-    for value, role in ((specialist, 'specialist'), (editor, 'editor'), (recorder, 'recorder')):
+    for value, role in ((specialist, 'specialist'), (editor, 'editor'), (recorder, 'recorder'),
+                        (citation_worker, 'citation-worker')):
         text = str(value or '').strip()
         if text:
             chosen[ENVIRONMENT[role]] = normalize(text)
@@ -222,6 +241,8 @@ def role_of(slot):
         return 'recorder'
     if str(slot).startswith('spec-'):
         return 'specialist'
+    if str(slot).startswith('cite-'):
+        return 'citation-worker'
     return 'core'
 
 
@@ -235,7 +256,8 @@ def _index(slot):
         return 1
 
 
-def assign(slots, reviewers=None, specialist=None, editor=None, recorder=None):
+def assign(slots, reviewers=None, specialist=None, editor=None, recorder=None,
+           citation_worker=None):
     """The model for every slot in ``slots``, as an ordered ``{slot: model}``.
 
     ``reviewers`` is the ordered list; the rest are one model each. Anything
@@ -247,6 +269,7 @@ def assign(slots, reviewers=None, specialist=None, editor=None, recorder=None):
     specialist = choice(specialist, DEFAULT_SPECIALIST_MODEL)
     editor = choice(editor, DEFAULT_EDITOR_MODEL)
     recorder = choice(recorder, DEFAULT_RECORDER_MODEL)
+    citation_worker = choice(citation_worker, DEFAULT_CITATION_WORKER_MODEL)
     out = {}
     for slot in slots:
         role = role_of(slot)
@@ -256,6 +279,8 @@ def assign(slots, reviewers=None, specialist=None, editor=None, recorder=None):
             out[slot] = specialist
         elif role == 'editor':
             out[slot] = editor
+        elif role == 'citation-worker':
+            out[slot] = citation_worker
         else:
             out[slot] = recorder
     return out
@@ -493,6 +518,16 @@ def unverified_line(slots):
             + ' is unverified')
 
 
+#: The slot names that write no part of the review. A citation worker fills in
+#: a table the citations specialist re-checks before anything in it becomes a
+#: finding, so what model it ran changes no sentence anyone publishes.
+WORKER_PREFIX = 'cite-'
+
+
+def is_worker_slot(slot):
+    return str(slot or '').startswith(WORKER_PREFIX)
+
+
 def substitutions(rows):
     """One line per agent row whose observed model is a different family.
 
@@ -500,13 +535,35 @@ def substitutions(rows):
     ``assigned_model`` is the plan and ``model`` is what the slot reported
     running. A slot with no observation is not a substitution: nothing was seen
     to disagree with.
+
+    The citation workers are left out of this list and returned by
+    :func:`worker_substitutions` instead — see there for why.
     """
     lines = []
     for row in rows or ():
         assigned, observed = row.get('assigned_model'), row.get('model')
-        if substituted(assigned, observed):
+        if substituted(assigned, observed) and not is_worker_slot(row.get('slot')):
             lines.append(substitution_line(row.get('slot') or 'a slot', assigned, observed))
     return lines
+
+
+def worker_substitutions(rows):
+    """The same, for the slots that write no part of the review.
+
+    A reviewer, specialist or editor that ran another model family means the
+    run is an arm nobody ran: a report would be attributed to a model that
+    never wrote it, so the review is not published. A citation worker is not
+    that. It files no report and no finding; it writes verdicts into a table,
+    and every row that becomes a finding is re-read by the citations specialist
+    first. Withholding a whole review because a Haiku worker resolved to
+    another Haiku family threw away work that was still the editor's own —
+    reporting it, loudly and by slot, is what it is worth.
+    """
+    return [substitution_line(row.get('slot') or 'a worker', row.get('assigned_model'),
+                              row.get('model'))
+            for row in rows or ()
+            if is_worker_slot(row.get('slot'))
+            and substituted(row.get('assigned_model'), row.get('model'))]
 
 
 def summary(assignment):

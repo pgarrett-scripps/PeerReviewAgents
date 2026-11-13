@@ -121,6 +121,8 @@ the review's options:
 | `--recorder-model` | `claude-haiku-5-5` | The recorder, which writes the run files |
 | `--arm` | `full-two-track` | Which workflow runs; see [`docs/study-arms.md`](docs/study-arms.md) |
 | `--track` | all six | Repeatable; limits the specialist tracks (used by `draft-check`) |
+| `--citation-workers` | `4` | Workers judging in-text citations against the resolved sources, 0 to 12; only where the `citations` track runs |
+| `--citation-worker-model` | `claude-haiku-5-5` | Every citation worker |
 | `--literature-cutoff` | today | Latest eligible publication date |
 | `--per-agent-tokens` | `500000` | Per-agent token ceiling, enforced from the session stream |
 | `--per-run-tokens` | `6000000` | Per-run token ceiling |
@@ -138,9 +140,10 @@ billing or usage.
 
 Set `PEERREVIEW_CLAUDE_VERSION` to have the run record which Claude Code
 version produced it; `PEERREVIEW_REVIEWER_MODELS`,
-`PEERREVIEW_SPECIALIST_MODEL`, `PEERREVIEW_EDITOR_MODEL` and
-`PEERREVIEW_RECORDER_MODEL` are the three flags above and the recorder's model
-for a session the starter launched. Nothing else in the run depends on them.
+`PEERREVIEW_SPECIALIST_MODEL`, `PEERREVIEW_EDITOR_MODEL`,
+`PEERREVIEW_RECORDER_MODEL` and `PEERREVIEW_CITATION_WORKER_MODEL` are those
+model flags for a session the starter launched. Nothing else in the run depends
+on them.
 
 ### What a run writes
 
@@ -157,6 +160,9 @@ for a session the starter launched. Nothing else in the run depends on them.
 <run>/review/progress.json    stages and status
 <run>/review/runtime.json     tokens and models per agent, wall time, limits
 <run>/review/usage/<slot>/    the session stream's own usage records
+<run>/review/citations/ledger.jsonl   one row per reference and per in-text use
+<run>/review/citations/stages.json    what each citation stage did
+<run>/review/citations/lookups/       the cached lookups and their receipts
 ```
 
 `protocol.json` and `manifest.json` are written when the manuscript is
@@ -188,8 +194,39 @@ leaves the run `blocked`: that is an outcome recorded in `runtime.json` and
   specialist escalation. Leaving a `computed` finding out of the body needs an
   anchored rebuttal quotation.
 
+### Citations, every one of them
+
+The `citations` track does not sample the reference list. The server keeps a
+table — `<run>/review/citations/ledger.jsonl`, one row per reference and one
+per in-text use — and fills it in four stages, the first two of which call no
+model at all:
+
+1. **Fill.** `ingest` writes a row for every reference in the extracted list,
+   whether or not it has a DOI, and a row for every sentence that cites one.
+2. **Resolve.** The server looks up *every* reference: a DOI against Crossref,
+   a reference without one by title against Crossref and then Europe PMC. Each
+   row records `exists` as yes, no or **could not check** — a lookup that
+   failed is never read as a reference that does not exist — plus a per-field
+   comparison of title, first author, year and venue, any retraction notice,
+   and the abstract or open-access full text with the URL it came from. Every
+   response is cached in the run folder, and the requests carry a generic
+   `User-Agent` with no address and nothing identifying the person running it.
+3. **Judge.** `--citation-workers` Haiku workers (`cite-1`, `cite-2`, …) claim
+   batches and write one verdict per in-text use — supports, partly supports,
+   does not support, cannot tell — each quoting the exact source passage it
+   judged from. `cannot tell` is the only verdict allowed no source text. A
+   worker files no findings and cannot hold `write_review` open.
+4. **Confirm.** The citations specialist reads the whole ledger instead of
+   sampling it, re-checks every problem row itself, and only what it confirms
+   becomes a finding. A worker's verdict is a row in a table, never a finding.
+
+`read_run()['citations']` and the review's own **Citations** section print the
+counts, the ledger path and one line per stage that did not finish. An
+unfinished ledger is reported, not published over — it is never a
+`not_publishable_reason`; see [Reading a run folder](#reading-a-run-folder).
+
 [`peerreviewagents/plugin/pra/README.md`](peerreviewagents/plugin/pra/README.md)
-documents the plugin itself: the agents, the workflow, the 23 server tools and
+documents the plugin itself: the agents, the workflow, the 27 server tools and
 the arms.
 
 ## Manuscript ingest
@@ -333,6 +370,7 @@ them:
 | `findings_source` | `editor-package`, `ledger` or `none` |
 | `counts` | `findings`, `body`, `appendix`, `quarantined`, and the server's own `findings_delivered`/`findings_submitted` |
 | `quarantined`, `guard_status` | what the guard threw out, and `clean` or `quarantined` |
+| `citations` | the citation ledger: `enabled`, the absolute `ledger` path, `counts` (references resolved, not found, could not be checked, mismatched, retracted; in-text uses judged and how), `complete`, a one-sentence `summary`, and `problems` — one line per stage that did not finish |
 | `escalations`, `escalation_rulings` | the specialist findings that asked for a ruling, and the rulings given |
 | `summary`, `verdict`, `limitations` | the editor's own three, or `None`/`[]` |
 | `identity` | paper id, source hash, PDF path, arm, reviewers, specialist tracks, versions, `provider`, `code_hashes` — the manifest's digest of each engine and plugin file that served the run — and `models`/`reviewer_models`, the model each slot was started with (both empty for a run from before 0.9.0), with `models_unverified` naming the slots that never reported running one |
@@ -343,7 +381,7 @@ them:
 | `reports` | absolute paths to what exists — `REVIEW.md`, `REVIEW.txt`, `editor-package.json`, and `audits` keyed by track |
 | `startup` | the harness's own start-up event as `probe` (`None` when no probe was written or it holds the wrong shape) and the probe's own `problems` |
 | `startup_problems` | what the start-up probe refused to launch over |
-| `problems` | every file that could not be read in full, named |
+| `problems` | every file that could not be read in full, named, every slot that ran a different model family than it was assigned, and one line per citation stage that did not finish |
 | `files` | the run files that exist, by name |
 
 Findings come from `editor-package.json` when the editor got that far and from
@@ -367,14 +405,22 @@ is what tells them apart.
 
 **`publishable`** is the one flag to gate publishing on. It is true when the
 status is `complete` or `complete-without-findings`, the findings came from a
-readable `editor-package.json`, the guard recorded a verdict, and `problems` is
-empty. When it is false, `not_publishable_reasons` names every reason in words,
-so the flag is never false with nothing said.
+readable `editor-package.json`, the guard recorded a verdict, and no file was
+unreadable. When it is false, `not_publishable_reasons` names every reason in
+words, so the flag is never false with nothing said.
 
 A quarantined finding is not one of those reasons. The guard exists to throw out
 a finding whose quote it could not match to the block it names; a guard that did
 that has done its job, and the review that is left is publishable. `quarantined`
 says what was thrown out, and whether that mattered is a judgement for a person.
+
+**An unfinished citation ledger is not one either.** A reference the lookups
+could not reach and an in-text use nobody judged are lines in `problems` and in
+`citations['problems']`, and they are deliberately not reasons: a finding the
+citations specialist confirmed is a finding whether or not the rest of the table
+was finished, and `citations['counts']` says in numbers how much of the
+reference list this run actually checked. `citations['complete']` is the flag
+for "the whole table was filled, resolved and judged".
 
 **A review with no findings in it.** `complete-without-findings` with nothing
 quarantined is publishable: the reviewers read the manuscript, raised nothing
