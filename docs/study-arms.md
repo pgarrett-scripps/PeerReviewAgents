@@ -91,6 +91,18 @@ required to do. The split is why a per-track finding count means something: a
 defect is filed by the lane that owns it rather than by however many
 specialists happened to see it.
 
+**One known deviation from the blinding, and it is in the run folder rather
+than in any prompt.** A specialist's audit is written to
+`<output>/review/audit_<track>.md`, so the set of file names in a finished run
+says which lanes ran: a run of this version holding `audit_numbers.md` ran the
+`numbers` lane, and one that does not, did not. Nothing an agent reads
+exposes that: a core reviewer is never told the specialists exist, each
+specialist is told the other five lanes by name but never which of them is
+running in this arm, and no slot can list the run folder. It matters only to
+whoever reads the arms afterwards, and it is written down here because a
+blinded comparison scored by a person who can see the file names is not
+blinded for that person.
+
 Because the `citations` track is in it, this arm also keeps a citation ledger:
 the server writes one row per reference and one per in-text use, resolves every
 reference against Crossref and Europe PMC without a model call, and fans out
