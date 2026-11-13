@@ -466,6 +466,29 @@ including 32 test modules, and nothing was left behind as a shim.
 
 ### Fixed
 
+- **A torn file beside the ledger raised out of `read_citation_ledger`.**
+  Reaching the citation table means reading `protocol.json` for what the arm
+  planned and `runtime.json` for which agents ran. `read_run` read both through
+  its guarded reader; the public ledger reader read `runtime.json` through
+  `agent_rows` with no guard and outside its own last guard, so a run killed
+  partway through writing that file raised `ValueError` out of a function
+  documented to raise two things, neither of them that. Both readers now open
+  every file on that path the same guarded way — torn, not a JSON object,
+  unopenable, or a directory in its place is read as absent — which also makes
+  the `agents` the two readers see identical, and with it the decision about
+  whether the lane was planned. Damage to `runtime.json` or `progress.json`
+  leaves the citation rows and counts whole and is named in `read_run`'s own
+  `problems`, beside the lost tokens, rather than in `citations['problems']`,
+  which both readers return identically. An `attempt` that is a list, a word,
+  `Infinity` or `NaN` — all of which the same file can carry while being sound
+  JSON, and the last two of which Python's own `json` writes — is read as the
+  first attempt instead of raising `TypeError`, `ValueError` or `OverflowError`
+  out of the merge. Under the fields is a guard under the whole of that
+  reading, so that no content of `runtime.json` can raise out of either reader:
+  `read_run` gives no agent rows and one line in its own `problems`, in the
+  family of the line for a file that could not be read at all and with the same
+  effect on `publishable`, and `read_citation_ledger` decides whether the lane
+  was planned from `protocol.json` alone.
 - **A ledger row of the wrong shape raised out of both readers.** A line
   carrying a list under `row_id` raised `TypeError` on an unhashable key out of
   `read_run` and `read_citation_ledger` alike; one carrying a number there
