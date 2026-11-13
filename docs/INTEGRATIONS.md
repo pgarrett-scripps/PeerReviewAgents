@@ -524,6 +524,17 @@ for row in cites["uses"]:
   answer from both readings, because the state where nothing in the table can
   be counted is the state a page that prints the table is most likely to meet,
   and it must not be the one that crashes it.
+- **The files beside the ledger are read the same guarded way.** Reaching the
+  table means opening `protocol.json` for what the arm planned and
+  `runtime.json` for which agents ran, and the stage record in
+  `citations/stages.json`. Each of the four — torn, not a JSON object,
+  unopenable, or a directory where the file should be — is read as absent,
+  never raised, by `read_citation_ledger` as well as `read_run`. Damage to a
+  file the citation table does not come from, `runtime.json` or
+  `progress.json`, leaves the rows and the counts whole: it is a fact about the
+  run, so it is named in `read_run`'s own `problems` beside the lost tokens and
+  wall time, and not in `citations['problems']`, which both readers return
+  identically.
 
 **Building a ledger fixture.** There is no fixture writer in the public
 surface, and the supported way to build one is to write the file: the ledger is

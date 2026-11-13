@@ -290,13 +290,29 @@ def _citations_reading(review, root=None, protocol=None, agents=None):
     lives here now, and neither caller makes it.
 
     ``protocol`` and ``agents`` are passed in by a caller that has already read
-    them, and read here for one that has not.
+    them, and read here for one that has not. **Read the same way**, through
+    :func:`_mapping`, which is how :func:`read_run` reads both of these files:
+    two readers that read one folder through two readers of the same file can
+    disagree about it, and one of those readings used to raise. ``agent_rows``
+    left to read ``runtime.json`` itself raises ``ValueError`` on the
+    half-written file a killed run leaves, which broke the public reader's
+    promise of two raises only; handed the file already read, it cannot.
+
+    The problems those reads record are dropped on purpose. A torn
+    ``runtime.json`` is a fact about the run — :func:`read_run` reports it in
+    ``problems``, beside the tokens and the wall time it costs — and it says
+    nothing about the citation table. Putting it in ``citations['problems']``
+    would make the one list both readers return disagree with ``read_run``'s,
+    which is the promise this function exists to keep.
     """
     review = Path(review)
+    noted = []
     if protocol is None:
-        protocol = _mapping(review / 'protocol.json', [])
+        protocol = _mapping(review / 'protocol.json', noted)
     if agents is None:
-        agents = agent_rows(review, protocol)
+        agents = agent_rows(review, protocol,
+                            runtime=_mapping(review / 'runtime.json', noted) or {},
+                            on_problem=noted.append)
     return _citations(review, enabled=_citations_planned(protocol, agents), root=root)
 
 

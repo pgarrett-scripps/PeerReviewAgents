@@ -150,9 +150,12 @@ def runtime_usage(run, on_problem=None):
         return None
     try:
         value = read(path)
-    except (ValueError, UnicodeDecodeError) as exc:
+    except (OSError, ValueError, UnicodeDecodeError) as exc:
         # The starter writes this file last, so a run killed while writing it
         # leaves exactly this, and it is the file naming the reason it stopped.
+        # ``OSError`` because the file can also be there and refuse to open —
+        # a mode nobody meant to set, a directory in its place — and a reader
+        # told it may read this file as absent means for either reason.
         if on_problem is None: raise
         on_problem(f'runtime.json could not be read ({exc.__class__.__name__}), so it is read as '
                    'absent and the tokens and the wall time of this run are lost')
@@ -181,6 +184,21 @@ def _role_of(row):
     return str(kind).split(':')[-1].strip() if kind else None
 
 
+def _attempt(row):
+    """Which attempt a stream row is, as a number, or the first one.
+
+    ``int`` of whatever the stream wrote: a row carrying a list or a word under
+    ``attempt`` raised ``TypeError`` or ``ValueError`` out of :func:`agent_rows`
+    and so out of both public readers, which read this file for a run whose
+    stream was cut off. An attempt number that cannot be read is read as the
+    first attempt, which is what a row without one already means.
+    """
+    try:
+        return int(row.get('attempt') or 1)
+    except (TypeError, ValueError):
+        return 1
+
+
 def _total(rows, field):
     """The sum over the rows that report ``field``, or ``None`` if none does."""
     values = [row[field] for row in rows if isinstance(row.get(field), (int, float))
@@ -199,7 +217,7 @@ def _merge(rows):
     state = [row.get('state') for row in rows if row.get('state')]
     return {
         'model': next((row['model'] for row in rows if row.get('model')), None),
-        'attempt': max((int(row.get('attempt') or 1) for row in rows), default=1),
+        'attempt': max((_attempt(row) for row in rows), default=1),
         'session_calls': _total(rows, 'toolCalls'),
         'tokens': _total(rows, 'tokens'),
         # Every task done is the slot done; anything else is the state that is

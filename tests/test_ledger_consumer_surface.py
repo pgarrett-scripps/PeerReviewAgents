@@ -608,3 +608,123 @@ def test_the_rows_come_back_in_the_order_a_reader_reads_them_in(tmp_path):
     assert [row['row_id'] for row in reading['references']] == ['ref:r1', 'ref:r2', 'ref:r10']
     assert [row['row_id'] for row in reading['uses']] == [
         'use:b2:1:r1', 'use:b2:2:r1', 'use:b2:10:r1']
+
+
+# -- the files the reader opens on its way to the table ---------------------
+
+#: Every file either reader opens on the way to the citation table. The ledger
+#: itself has its own tests above; these are the four beside it, and a run
+#: killed in the middle of writing any one of them is the ordinary case.
+SIDE_FILES = ('runtime.json', 'protocol.json', 'progress.json',
+              f'{cl.LEDGER_DIRECTORY}/{cl.STATE_FILE}')
+
+#: The four states a side file is found in when it is not a sound JSON object:
+#: a run killed mid-write, a hand edit that wrote the wrong shape, a mode
+#: nobody meant to set, and a directory where the file should be.
+DAMAGE = ('torn', 'not an object', 'unreadable', 'a directory')
+
+
+def damaged(review, name, how):
+    """Put one kind of damage in the place of one of the side files."""
+    path = review / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        path.unlink()
+    if how == 'torn':
+        path.write_text('{"status": "comp', encoding='utf-8')
+    elif how == 'not an object':
+        path.write_text('["complete"]', encoding='utf-8')
+    elif how == 'a directory':
+        path.mkdir()
+    else:
+        path.write_text('{}', encoding='utf-8')
+        path.chmod(0o000)
+    return path
+
+
+@pytest.mark.parametrize('how', DAMAGE)
+@pytest.mark.parametrize('name', SIDE_FILES)
+def test_no_damaged_side_file_raises_out_of_either_reader(tmp_path, name, how):
+    """The promise names the ledger, but the reader opens four files to reach it.
+
+    :func:`read_citation_ledger` read ``runtime.json`` through a path that
+    ``read_run`` had already guarded and it had not: a run killed partway
+    through writing that file raised ``ValueError`` out of the public reader,
+    which promises two raises and neither of them is that. The fix is
+    structural — both readers open every one of these files the same guarded
+    way — so the test is over all four files and all four kinds of damage,
+    not over the one line that was reported.
+    """
+    if how == 'unreadable':
+        if not hasattr(os, 'geteuid'):
+            pytest.skip('chmod does not make a file unreadable on this platform')
+        if os.geteuid() == 0:
+            pytest.skip('root may read a file with no permission bits, so there is nothing '
+                        'to refuse')
+    root, review = run_folder(tmp_path, [reference(), use()])
+    path = damaged(review, name, how)
+    try:
+        reading, run = read_citation_ledger(root), read_run(root)
+    finally:
+        if how == 'unreadable':
+            path.chmod(0o644)
+    for key in ('counts', 'complete', 'summary', 'problems'):
+        assert reading[key] == run['citations'][key], f'the two readers disagree on {key}'
+    # A file of the run's own that could not be read is the run's business, and
+    # it may well be why the run is not publishable. What it is never allowed to
+    # be is a citation failure, which is the rule the whole lane is built on.
+    assert all('citation' not in reason and 'ledger' not in reason
+               for reason in run['not_publishable_reasons'])
+
+
+@pytest.mark.parametrize('how', DAMAGE)
+@pytest.mark.parametrize('name', ('runtime.json', 'progress.json'))
+def test_a_file_the_citation_lane_does_not_depend_on_leaves_the_table_whole(tmp_path, name, how):
+    """And the table is still there, because neither file is part of it.
+
+    ``runtime.json`` says what the agents spent and ``progress.json`` says how
+    far the run got. The citation table is the ledger and the protocol's plan,
+    so damage to either of these two is a fact about the run that belongs in
+    ``read_run``'s own ``problems`` — where it already is, beside the lost
+    tokens — and not a reason for a page to lose the rows it came for.
+    """
+    if how == 'unreadable':
+        if not hasattr(os, 'geteuid'):
+            pytest.skip('chmod does not make a file unreadable on this platform')
+        if os.geteuid() == 0:
+            pytest.skip('root may read a file with no permission bits, so there is nothing '
+                        'to refuse')
+    root, review = run_folder(tmp_path, [reference(), use()])
+    sound = read_citation_ledger(root)
+    path = damaged(review, name, how)
+    try:
+        reading = read_citation_ledger(root)
+    finally:
+        if how == 'unreadable':
+            path.chmod(0o644)
+    assert reading['counts'] == sound['counts'] and sound['counts']
+    assert [row['row_id'] for row in reading['uses']] == [row['row_id'] for row in sound['uses']]
+    assert reading['problems'] == sound['problems'], \
+        'a torn runtime.json is a problem with the run, not with the citation table'
+
+
+def test_an_attempt_number_that_cannot_be_counted_is_the_first_attempt(tmp_path):
+    """A field read with ``int`` is a raise waiting for the stream to be cut off.
+
+    ``runtime.json`` can be a sound JSON object and still carry a field in a
+    shape nothing writes on purpose: ``attempt`` as a list raised ``TypeError``
+    out of the merge, which both readers reach through ``agent_rows``. The
+    reader is holding a run folder someone wants to look at, so an attempt
+    number it cannot read is the first attempt, which is what a row with no
+    attempt at all already means.
+    """
+    root, review = run_folder(tmp_path, [reference(), use()])
+    (review / 'runtime.json').write_text(json.dumps(
+        {'agents': [{'label': 'cite-1', 'attempt': ['2'], 'tokens': 10, 'state': 'done'}]}),
+        encoding='utf-8')
+    reading, run = read_citation_ledger(root), read_run(root)
+    for key in ('counts', 'complete', 'summary', 'problems'):
+        assert reading[key] == run['citations'][key], f'the two readers disagree on {key}'
+    row, = run['agents']
+    assert row['attempt'] == 1
+    assert run['publishable'] is True, run['not_publishable_reasons']
