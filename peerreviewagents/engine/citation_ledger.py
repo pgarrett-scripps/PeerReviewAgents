@@ -17,7 +17,9 @@ So the work is a table, not a reading, and it is filled in four stages:
    bibliographic title search, Crossref first and then Europe PMC. The row
    records whether the work exists, whether the title, first author, year and
    venue match what the paper printed, any retraction notice, and the abstract
-   and open-access full text with the URL they came from.
+   and open-access full text with the URL they came from. A lookup that did not
+   answer is retried minutes later, and whether the stage waits those minutes
+   out or reports them is the run's wall clock to decide — :class:`Patience`.
 3. **Judge** (:func:`batch` and :func:`verdict`, Haiku workers). A worker claims
    a batch of use rows and answers one question per row — does the source
    support this sentence — quoting the passage it relied on. A row with no
@@ -55,7 +57,9 @@ from __future__ import annotations
 import datetime
 import difflib
 import json
+import math
 import re
+import time
 import unicodedata
 from pathlib import Path
 from urllib.parse import quote, urlencode
@@ -107,10 +111,23 @@ RESOLVE_ATTEMPTS = 3
 #: a 429 and a host that is briefly down, and both are minutes-long states. A
 #: retry a second later asks the same overloaded host the same question, and
 #: three attempts inside one tool call is one attempt with extra receipts.
-#: :func:`resolve` reports the wait rather than sleeping through it — the stage
-#: is driven by repeated tool calls, and a server that blocks for five minutes
-#: inside one of them is a server that looks hung.
+#: :func:`resolve` waits this gap out only when the run has the time for it and
+#: a wait is the only thing between the stage and done — see :class:`Patience`.
+#: Otherwise it reports the wait rather than sleeping through it: the stage is
+#: driven by repeated tool calls, and a server that blocks for five minutes
+#: with the run about to be ended is a server that looks hung and achieves
+#: nothing by it.
 RETRY_WAIT_SECONDS = 300
+#: How much of the run's remaining wall clock :class:`Patience` will not spend
+#: on a retry wait. A gap that ends ten seconds before the driver ends the run
+#: buys one lookup and no time to resolve, record and report it, so the margin
+#: keeps the pass that follows the wait inside the run as well as the wait.
+RESOLVE_MARGIN_SECONDS = 45
+#: How long one slice of a retry wait is. The wait is slept in slices, not in
+#: one call, so that a run marked blocked underneath it, a deadline that is
+#: closer than it looked, or an interrupt ends it in about a second instead of
+#: in five minutes.
+RESOLVE_WAIT_SLICE = 1.0
 #: The shortest passage a worker may quote as the source's own words. Shorter
 #: than one clause is not evidence that a source says anything: ``ABSTRACT``,
 #: ``the`` and a single number all appear in almost any source text, and all
@@ -2003,11 +2020,23 @@ def _needs_resolving(row):
     return int(resolution.get('attempts') or 1) < RESOLVE_ATTEMPTS
 
 
-def _waited(row, seconds=RETRY_WAIT_SECONDS):
+def _moment(at=None):
+    """``at`` as a UTC moment, or now. ``at`` is a POSIX second."""
+    if at is None:
+        return datetime.datetime.now(datetime.timezone.utc)
+    return datetime.datetime.fromtimestamp(float(at), datetime.timezone.utc)
+
+
+def _waited(row, seconds=RETRY_WAIT_SECONDS, at=None):
     """Whether a row's retry wait has passed, so it is due now.
 
     A row with no readable timestamp is due: an unparseable ``checked_at`` must
     not park a reference for ever.
+
+    ``at`` is the POSIX second to measure from. The stage passes its own clock's
+    reading, so that "is this row due?" and "may I wait for it?" are answered
+    off one clock: a stage that sleeps on an injected clock and reads due times
+    off the system clock waits and then finds nothing due.
     """
     checked_at = (row.get('resolution') or {}).get('checked_at')
     if not checked_at:
@@ -2018,22 +2047,109 @@ def _waited(row, seconds=RETRY_WAIT_SECONDS):
         return True
     if when.tzinfo is None:
         when = when.replace(tzinfo=datetime.timezone.utc)
-    return (datetime.datetime.now(datetime.timezone.utc) - when).total_seconds() >= seconds
+    return (_moment(at) - when).total_seconds() >= seconds
 
 
-def _due_in(row, seconds=RETRY_WAIT_SECONDS):
+def _due_in(row, seconds=RETRY_WAIT_SECONDS, at=None):
     """Seconds until this row's retry is due, 0 if it is due now."""
-    if _waited(row, seconds):
+    if _waited(row, seconds, at):
         return 0
     checked_at = (row.get('resolution') or {}).get('checked_at')
     when = datetime.datetime.fromisoformat(str(checked_at))
     if when.tzinfo is None:
         when = when.replace(tzinfo=datetime.timezone.utc)
-    waited = (datetime.datetime.now(datetime.timezone.utc) - when).total_seconds()
-    return max(0, int(seconds - waited))
+    waited = (_moment(at) - when).total_seconds()
+    # Rounded up, not truncated. A caller that waits the number this returns is
+    # entitled to find the row due afterwards, and a truncated 299.6 left the
+    # stage sleeping 299 seconds and then being told to wait again.
+    return max(0, math.ceil(seconds - waited))
 
 
-def resolve(ledger, lookups, limit=0, retry=True, wait=RETRY_WAIT_SECONDS):
+class Patience:
+    """Whether the resolve stage may wait out a retry gap, and the waiting.
+
+    The gap between two attempts on one row is :data:`RETRY_WAIT_SECONDS`, and
+    the stage runs inside a review that has a wall clock. Both answers are the
+    right one somewhere: five minutes inside a ninety-minute run is a wait, and
+    the same five minutes inside a seven-minute run is a row that was never
+    going to be taken up again. The pilot ran the second case and reported the
+    rows as "could not be checked", which reads as the indexes having been
+    asked and having failed.
+
+    ``deadline`` is a POSIX timestamp, and it is the *run's* — the launcher's
+    wall clock, handed to the session in its environment — not this stage's
+    idea of one. Without it nothing here waits: a stage that cannot tell how
+    much run is left must not gamble the rest of it on a sleep.
+
+    ``clock`` and ``sleep`` are injected so a test can run a five-minute wait
+    in no time, and ``stop`` is asked between slices so that a wait ends when
+    the run does rather than when the gap does.
+    """
+
+    def __init__(self, deadline=None, margin=RESOLVE_MARGIN_SECONDS, clock=time.time,
+                 sleep=time.sleep, stop=None, slice_seconds=RESOLVE_WAIT_SLICE):
+        self.deadline = float(deadline) if deadline else None
+        self.margin = max(0.0, float(margin))
+        self.clock, self.sleep, self.stop = clock, sleep, stop
+        self.slice_seconds = max(0.01, float(slice_seconds))
+        #: Seconds actually slept, so the stage record can say it waited.
+        self.waited = 0.0
+        #: Whether a wait was abandoned rather than finished.
+        self.interrupted = False
+
+    def left(self):
+        """Seconds of run left to spend on waiting, or ``None`` when unknown."""
+        if self.deadline is None:
+            return None
+        return self.deadline - self.clock() - self.margin
+
+    def fits(self, due):
+        """Whether a gap of ``due`` seconds ends inside the run, margin included."""
+        left = self.left()
+        return left is not None and 0 < due <= left
+
+    def wait(self, due):
+        """Sleep ``due`` seconds out in slices. ``True`` only if the whole gap passed."""
+        if not self.fits(due):
+            return False
+        target = self.clock() + due
+        while True:
+            remaining = target - self.clock()
+            if remaining <= 0:
+                return True
+            if self.stop is not None and self.stop():
+                self.interrupted = True
+                return False
+            if not self.fits(remaining):
+                # The deadline is nearer than it was when the wait began: a run
+                # that is about to be ended should spend what is left of it
+                # recording what the table holds.
+                return False
+            nap = min(self.slice_seconds, remaining)
+            before = self.clock()
+            self.sleep(nap)
+            self.waited += nap
+            if self.clock() <= before:
+                # A sleep that does not move the clock is not a wait a tool call
+                # can be held open on, and it would spin here for ever.
+                return False
+
+    def why(self, due):
+        """Why rows owed a lookup are left unchecked, as one clause, or ``None``."""
+        if not due:
+            return None
+        if self.interrupted:
+            return (f'the run stopped while the stage was waiting out the {int(due)} second(s) '
+                    'until the next attempt was due')
+        left = self.left()
+        if left is None:
+            return (f'the next attempt was not due for another {int(due)} second(s) and the '
+                    'stage was not told how much of the run was left, so it did not wait')
+        return (f'the next attempt was not due for another {int(due)} second(s) and only '
+                f'{max(0, int(left))} second(s) of the run were left to wait in')
+
+
+def resolve(ledger, lookups, limit=0, retry=True, wait=RETRY_WAIT_SECONDS, patience=None):
     """Stage 2: resolve every unresolved reference row. No model.
 
     ``limit`` resolves at most that many rows and reports how many are left, so
@@ -2058,57 +2174,80 @@ def resolve(ledger, lookups, limit=0, retry=True, wait=RETRY_WAIT_SECONDS):
     waiting. ``wait`` overrides that gap, and exists so a test can take a row
     up again in the same second; a caller that shortens it is retrying a host
     that has not had time to recover.
+
+    ``patience`` decides what to do when every owed row is waiting and nothing
+    but that gap stands between the stage and done: wait it out and take the
+    rows up here if the gap ends inside the run, and otherwise stop and record
+    why those rows are left unchecked. See :class:`Patience`. Each pass still
+    takes at most ``limit`` rows; the gap is only ever waited out when no owed
+    row is due now, so a call that waits is a call that had nothing else it
+    could have been doing.
     """
-    rows, _ = ledger.load()
-    unresolved = [row for row in rows.values()
-                  if row.get('kind') == 'reference' and not row.get('resolution')]
-    retries = [row for row in rows.values()
-               if row.get('resolution') and _needs_resolving(row)
-               and _waited(row, wait)] if retry else []
-    pending = sorted(unresolved + retries, key=lambda row: row['row_id'])
-    taken = pending[:limit] if limit and limit > 0 else pending
-    before = lookups.count()
-    for row in taken:
-        attempts = int(((row.get('resolution') or {}).get('attempts') or 0)) + 1
-        try:
-            resolution = resolve_reference(row, lookups)
-        except Exception as problem:  # noqa: BLE001 - one bad row may not end the stage
-            # A row that raises is a row this version could not check, not a
-            # reference that does not exist, and not a dead stage: one
-            # unparseable record used to abort the whole resolve pass and leave
-            # every row after it unlooked-at with no record of why.
-            resolution = {'exists': COULD_NOT_CHECK, 'method': None, 'checked_at': now(),
-                          'requests': [], 'retracted': None, 'retraction_notice': None,
-                          'printed_doi': (row.get('printed') or {}).get('doi'),
-                          'printed_doi_registered': None, 'registered_with': None,
-                          'candidate': None, 'matches': {field: None for field in COMPARED},
-                          'mismatched': [],
-                          'error': type(problem).__name__ + ': ' + squeeze(str(problem), 200),
-                          'note': 'Looking this reference up failed inside the ledger, so '
-                                  'nothing about it was checked.'}
-        resolution['attempts'] = attempts
-        ledger.append({**row, 'stage': 'resolve', 'resolution': resolution})
-    # Read the table again and ask what is still owed, rather than subtracting
-    # what this call took from what it found. A row this call attempted and
-    # could not check is owed another attempt, and it is owed whether or not
-    # the queue this call built is empty.
-    rows, _ = ledger.load()
-    owed = [row for row in rows.values() if _needs_resolving(row)] if retry else [
-        row for row in rows.values()
-        if row.get('kind') == 'reference' and not row.get('resolution')]
-    remaining = len(owed)
-    retry_after = min((_due_in(row, wait) for row in owed), default=0)
+    patience = patience or Patience()
+    before, resolved_now = lookups.count(), 0
+    while True:
+        at = patience.clock()
+        rows, _ = ledger.load()
+        unresolved = [row for row in rows.values()
+                      if row.get('kind') == 'reference' and not row.get('resolution')]
+        retries = [row for row in rows.values()
+                   if row.get('resolution') and _needs_resolving(row)
+                   and _waited(row, wait, at)] if retry else []
+        pending = sorted(unresolved + retries, key=lambda row: row['row_id'])
+        taken = pending[:limit] if limit and limit > 0 else pending
+        for row in taken:
+            attempts = int(((row.get('resolution') or {}).get('attempts') or 0)) + 1
+            try:
+                resolution = resolve_reference(row, lookups)
+            except Exception as problem:  # noqa: BLE001 - one bad row may not end the stage
+                # A row that raises is a row this version could not check, not a
+                # reference that does not exist, and not a dead stage: one
+                # unparseable record used to abort the whole resolve pass and leave
+                # every row after it unlooked-at with no record of why.
+                resolution = {'exists': COULD_NOT_CHECK, 'method': None, 'checked_at': now(),
+                              'requests': [], 'retracted': None, 'retraction_notice': None,
+                              'printed_doi': (row.get('printed') or {}).get('doi'),
+                              'printed_doi_registered': None, 'registered_with': None,
+                              'candidate': None, 'matches': {field: None for field in COMPARED},
+                              'mismatched': [],
+                              'error': type(problem).__name__ + ': ' + squeeze(str(problem), 200),
+                              'note': 'Looking this reference up failed inside the ledger, so '
+                                      'nothing about it was checked.'}
+            resolution['attempts'] = attempts
+            ledger.append({**row, 'stage': 'resolve', 'resolution': resolution})
+        resolved_now += len(taken)
+        # Read the table again and ask what is still owed, rather than subtracting
+        # what this call took from what it found. A row this call attempted and
+        # could not check is owed another attempt, and it is owed whether or not
+        # the queue this call built is empty.
+        rows, _ = ledger.load()
+        owed = [row for row in rows.values() if _needs_resolving(row)] if retry else [
+            row for row in rows.values()
+            if row.get('kind') == 'reference' and not row.get('resolution')]
+        remaining = len(owed)
+        retry_after = min((_due_in(row, wait, patience.clock()) for row in owed), default=0)
+        # Only a run of owed rows that are *all* waiting is worth sleeping on. A
+        # row due now means this call still has work it could be doing, and a
+        # `limit` that cut the queue short is that case.
+        if not (retry and remaining and retry_after):
+            break
+        if not patience.wait(retry_after):
+            break
+    unchecked_reason = patience.why(retry_after) if remaining else None
     totals = counts(ledger)
     ledger.record_stage('resolve', done=not remaining, resolved=totals['resolved'],
                         references=totals['references'], remaining=remaining,
                         retry_after=retry_after, retry_wait=wait,
+                        waited=round(patience.waited, 1),
+                        unchecked_reason=unchecked_reason,
                         lookups=lookups.count())
     # Read again, now that the stage is recorded: the lookup count in `counts`
     # comes from that record, so the first reading would hand this call's
     # caller a number that stops short of the lookups it just paid for.
     totals = counts(ledger)
-    return {'resolved_now': len(taken), 'remaining': remaining,
+    return {'resolved_now': resolved_now, 'remaining': remaining,
             'retry_after': retry_after, 'retry_wait': wait,
+            'waited': round(patience.waited, 1), 'unchecked_reason': unchecked_reason,
             'lookups_now': lookups.count() - before, 'lookups_total': lookups.count(),
             'counts': totals}
 
@@ -2671,9 +2810,11 @@ def problems(totals):
         # be taken up again — and the report said only that they could not be
         # checked, which reads as the indexes having been asked and failed.
         due = resolve.get('retry_after') or 0
+        why = resolve.get('unchecked_reason')
         lines.append(f'the reference lookups stopped with {owed} row(s) still owed an attempt'
-                     + (f', the next of them not due for another {due} second(s) that the run '
-                        'did not wait out' if due else ' that the run never took up again')
+                     + (', ' + why if why else
+                        (f', the next of them not due for another {due} second(s) that the run '
+                         'did not wait out' if due else ' that the run never took up again'))
                      + ', so those rows are counted as unchecked rather than answered')
     if totals.get('not_located'):
         lines.append(f"{totals['not_located']} reference(s) are listed in neither Crossref nor "

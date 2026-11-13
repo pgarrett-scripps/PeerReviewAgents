@@ -819,8 +819,10 @@ def test_asking_for_no_citation_workers_says_so_instead_of_saying_nothing(tmp_pa
     """
     seen = {}
 
-    def fake_launch(prompt, directory, deadline, on_event, cwd, chosen, watch=None):
+    def fake_launch(prompt, directory, timeout_at, on_event, cwd, chosen, watch=None,
+                    deadline=None):
         seen['prompt'] = prompt
+        seen['deadline'] = deadline
         return [], 'the workflow task finished', 0
 
     monkeypatch.setattr(starter, 'claude_version', lambda binary=None: '2.1.400')
@@ -841,6 +843,42 @@ def test_asking_for_no_citation_workers_says_so_instead_of_saying_nothing(tmp_pa
     starter.review(str(FIXTURE), str(tmp_path / 'bare'), reviewers=1, arm='reviewers-only',
                    citation_workers=0)
     assert 'citation worker' not in seen['prompt'] and 'worker(s)' not in seen['prompt']
+
+
+def test_the_session_is_told_when_the_driver_will_end_the_run(tmp_path, monkeypatch,
+                                                              no_allowlist):
+    """The wall clock crosses the process boundary, because a waiting tool needs it.
+
+    A tool inside the session that is deciding whether to wait — the citation
+    resolve stage, whose retry gap is five minutes — cannot see the driver's
+    deadline, and the pilot's seven-minute run spent its last rows on a wait
+    that was never going to end inside it. It goes over as a POSIX timestamp:
+    the driver times itself on a monotonic clock, which means nothing on the
+    other side.
+    """
+    monkeypatch.setattr(starter, 'claude_version', lambda binary=None: '2.1.400')
+    environment = starter.child_environment('claude', {'PEERREVIEW_EDITOR_MODEL': 'opus'},
+                                            deadline=1_700_000_123.6)
+    assert environment['PEERREVIEW_RUN_DEADLINE'] == '1700000124'
+    assert environment['PEERREVIEW_EDITOR_MODEL'] == 'opus'
+    # A run with no deadline to promise says nothing, rather than saying zero,
+    # which a reader would have to parse as a deadline already past.
+    assert 'PEERREVIEW_RUN_DEADLINE' not in starter.child_environment('claude')
+
+    seen = {}
+
+    def fake_launch(prompt, directory, timeout_at, on_event, cwd, chosen, watch=None,
+                    deadline=None):
+        seen['deadline'] = deadline
+        return [], 'the workflow task finished', 0
+
+    monkeypatch.setattr(starter, 'probe', lambda directory, cwd: ([], {'raw': None}))
+    monkeypatch.setattr(starter, 'launch', fake_launch)
+    starter.review(str(FIXTURE), str(tmp_path / 'run'), reviewers=1, arm='reviewers-only',
+                   wall_timeout=600)
+    # The same wall clock the driver holds itself to, read off the clock the
+    # session can also read.
+    assert seen['deadline'] == pytest.approx(time.time() + 600, abs=30)
 
 
 def test_the_prompt_names_the_skill_the_arm_belongs_to():

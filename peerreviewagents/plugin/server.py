@@ -176,6 +176,23 @@ def rejection(message, **extra):
     return {'request_rejected': message, **extra}
 
 
+def run_deadline():
+    """The POSIX second the launcher will end this run at, or ``None``.
+
+    Set by the starter in this session's environment, because nothing inside
+    the session can see the driver's wall clock otherwise. A tool that is
+    thinking about waiting needs it: the citation resolve stage's retry gap is
+    five minutes, which is a wait inside a ninety-minute run and a pointless
+    sleep inside a seven-minute one. Absent, unreadable or in the past, the
+    answer is ``None`` and whoever asked does not wait.
+    """
+    try:
+        deadline = float(os.environ.get('PEERREVIEW_RUN_DEADLINE') or 0)
+    except ValueError:
+        return None
+    return deadline if deadline > 0 else None
+
+
 def as_number(text):
     """One token as a float, or ``None``. ``0.50`` and ``0.5`` are the same number."""
     try:
@@ -1455,6 +1472,14 @@ def resolve_citations(recorder_key: str, limit: int = 15) -> dict:
     answer is recorded as 'could not check': nothing here concludes that a
     cited work does not exist unless the DOI resolver has no handle for the
     printed DOI.
+
+    When every row left is waiting out that gap, this call waits with them —
+    but only if the gap ends inside the run's own wall clock, and it may
+    therefore take minutes to answer. If the gap does not fit, it comes back
+    at once with ``remaining`` above zero and ``unchecked_reason`` saying why
+    those rows were left unchecked rather than answered. Put that reason in
+    the citations summary: "could not be checked" on its own reads as the
+    indexes having been asked and having failed.
     """
     run = current()
     if not secrets.compare_digest(str(recorder_key or ''), run.recorder_key):
@@ -1465,16 +1490,25 @@ def resolve_citations(recorder_key: str, limit: int = 15) -> dict:
                          'citations specialist.')
     if type(limit) is not int or limit < 0:
         return rejection('Resolve a whole number of references, or 0 for every one left.')
+    # The run's own wall clock decides whether this call waits a retry gap out
+    # or reports it. `stop` is asked between slices of that wait, so a run that
+    # is marked blocked or written up underneath it stops waiting at once
+    # instead of holding this call open for the rest of the gap.
+    patience = citation_ledger.Patience(deadline=run_deadline(),
+                                        stop=lambda: run.status != 'running')
     try:
-        progress = citation_ledger.resolve(run.citations, run.citation_lookups(), limit=limit)
+        progress = citation_ledger.resolve(run.citations, run.citation_lookups(), limit=limit,
+                                           patience=patience)
     except (OSError, ValueError) as exc:
         return rejection('The citation ledger could not be resolved: ' + str(exc))
     run.write_progress()
     remaining, wait = progress['remaining'], progress.get('retry_after') or 0
     if remaining and wait:
         nxt = (str(remaining) + ' reference(s) are owed another lookup and are waiting out the '
-               'retry wait; the earliest is due in ' + str(wait) + ' seconds. Calling again now '
-               'would do nothing: stop, and report that remaining as it is.')
+               'retry wait: ' + (progress.get('unchecked_reason')
+                                 or 'the earliest is due in ' + str(wait) + ' seconds')
+               + '. Calling again now would do nothing: stop, report that remaining as it is, '
+                 'and say in the summary that those rows are unchecked rather than answered.')
     elif remaining:
         nxt = ('Call resolve_citations again: ' + str(remaining) + ' references have not been '
                'looked up yet.')

@@ -152,13 +152,20 @@ def claude_version(binary=None):
     return VERSIONS[binary]
 
 
-def child_environment(binary, chosen=None):
+def child_environment(binary, chosen=None, deadline=None):
     """The environment a session runs in: subscription login, own interpreter.
 
     ``chosen`` carries the models this run asked for into the session, because
     the session reaches the server through its own workflow and never sees this
     process's arguments. The server reads them at ingest, so a session that
     passes no model arguments of its own still runs the models the user chose.
+
+    ``deadline`` carries this run's wall clock in, as a POSIX timestamp, for
+    the same reason: a tool inside the session that is thinking about waiting —
+    the citation resolve stage and its five-minute retry gap — cannot otherwise
+    tell whether the wait ends before the driver ends the run. It is an
+    absolute timestamp because a monotonic clock means nothing on the other
+    side of a process boundary.
     """
     environment = {**os.environ, 'PEERREVIEW_PLUGIN_RUN': '1',
                    # The plugin's `.mcp.json` launches its MCP server through
@@ -167,6 +174,8 @@ def child_environment(binary, chosen=None):
                    'PEERREVIEW_MCP_COMMAND': sys.executable}
     for key, value in (chosen or {}).items():
         environment[key] = value
+    if deadline:
+        environment['PEERREVIEW_RUN_DEADLINE'] = f'{float(deadline):.0f}'
     for key in ('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'):
         environment.pop(key, None)  # subscription login only, never a key
     version = claude_version(binary)
@@ -293,7 +302,8 @@ class Completion:
         return NOTHING_LEFT_WRITING
 
 
-def launch(prompt, directory, timeout_at, on_event, cwd, chosen=None, watch=None):
+def launch(prompt, directory, timeout_at, on_event, cwd, chosen=None, watch=None,
+           deadline=None):
     """Run one headless session, handing every stream event to ``on_event``.
 
     ``on_event`` returns a reason to stop, or ``None`` to carry on; a reason
@@ -305,6 +315,10 @@ def launch(prompt, directory, timeout_at, on_event, cwd, chosen=None, watch=None
     so a closed stream ends the run only when it says so — see
     :class:`Completion`. Without one, a closed stream ends the loop, which is
     right for a session whose whole job is one answer, like the probe.
+
+    ``deadline`` is ``timeout_at`` as a POSIX timestamp, which is the form the
+    session can read — see :func:`child_environment`. The driver keeps timing
+    itself on the monotonic clock, which no system clock change can move.
 
     Both pipes are read by threads rather than polled: ``select`` cannot wait on
     a pipe on Windows, and stderr has to be drained for the whole run and not
@@ -325,7 +339,7 @@ def launch(prompt, directory, timeout_at, on_event, cwd, chosen=None, watch=None
     try:
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    text=True, bufsize=1, cwd=str(cwd),
-                                   env=child_environment(binary, chosen),
+                                   env=child_environment(binary, chosen, deadline),
                                    encoding='utf-8', errors='replace')
     except (OSError, ValueError) as exc:
         # A claude that will not start is a blocked run, not a traceback.
@@ -851,7 +865,8 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
                         citation_workers=len(workers) if citation_lane else None)
     watch = Completion(review_dir, accounting)
     seen, stop, code = launch(prompt, directory, started + wall_timeout,
-                              accounting.on_event, cwd, chosen, watch=watch)
+                              accounting.on_event, cwd, chosen, watch=watch,
+                              deadline=time.time() + wall_timeout)
     wall = time.monotonic() - started
     result = accounting.last_result()
     recorded = recorded_progress(review_dir)

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import io
 import json
+import time
 import urllib.error
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -109,6 +110,30 @@ class Index:
                 'type': 'journal-article',
                 'abstract': self.abstract}
         return {'message': {'items': [item]}}
+
+
+class FakeClock:
+    """A clock that only moves when something sleeps on it.
+
+    Every retry gap in these tests is five minutes long and none of them takes
+    any time. There is no real sleep anywhere in this suite on purpose: a test
+    that waits out a real retry gap is a five-minute test, which is a test
+    nobody runs.
+
+    It starts at the real present rather than at zero, because the rows it
+    decides the due times of carry real ``checked_at`` stamps.
+    """
+
+    def __init__(self, start=None):
+        self.now = float(start if start is not None else time.time())
+        self.slept: list[float] = []
+
+    def time(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.slept.append(seconds)
+        self.now += seconds
 
 
 def citing_workspace(tmp_path):
@@ -376,9 +401,162 @@ def test_the_recorder_is_told_to_stop_while_the_owed_retries_are_waiting(tmp_pat
     lines = cl.problems(again['counts'])
     owed = [line for line in lines if 'still owed an attempt' in line]
     assert len(owed) == 1, lines
-    assert '3 row(s)' in owed[0] and 'second(s) that the run did not wait out' in owed[0]
+    assert '3 row(s)' in owed[0]
+    # No PEERREVIEW_RUN_DEADLINE here, so the stage had no run clock to measure
+    # the gap against and says that, rather than implying it chose not to wait.
+    assert 'not told how much of the run was left' in owed[0]
     assert 'counted as unchecked rather than answered' in owed[0]
     assert all(';' not in line and 'do not exist' not in line for line in lines)
+
+
+def test_a_retry_gap_that_fits_inside_the_run_is_waited_out_and_the_rows_are_checked(tmp_path):
+    """The whole point of the retry: a rate limit passes, and the stage is still there.
+
+    Three rows rate-limited, a retry gap of five minutes, and an hour of run
+    left. The stage waits the gap out and takes the rows up itself, so the
+    reference list is checked instead of being reported as unchecked by a run
+    that had the time and spent it ending.
+    """
+    open_run(tmp_path)
+    index = Index(fail=('crossref.org', 'ebi.ac.uk'))
+    srv.STATE['opener'] = index
+    clock = FakeClock()
+
+    def wait_the_rate_limit_out(seconds):
+        clock.sleep(seconds)
+        index.fail = []  # which is the state the retry exists for
+
+    run = srv.current()
+    patience = cl.Patience(deadline=clock.time() + 3600, clock=clock.time,
+                           sleep=wait_the_rate_limit_out,
+                           slice_seconds=cl.RETRY_WAIT_SECONDS)
+    progress = cl.resolve(run.citations, run.citation_lookups(), limit=0, patience=patience)
+    assert progress['remaining'] == 0
+    assert progress['counts']['resolved'] == 3
+    assert progress['counts']['could_not_check'] == 0
+    assert progress['unchecked_reason'] is None
+    # About one gap waited, and no real time spent on it.
+    assert clock.slept
+    assert progress['waited'] == pytest.approx(sum(clock.slept))
+    assert cl.RETRY_WAIT_SECONDS <= progress['waited'] <= cl.RETRY_WAIT_SECONDS + 10
+    stage = progress['counts']['stages']['resolve']
+    assert stage['done'] is True and stage['waited'] == progress['waited']
+    assert stage['unchecked_reason'] is None
+    assert not [line for line in cl.problems(progress['counts'])
+                if 'still owed an attempt' in line]
+
+
+def test_a_retry_gap_longer_than_the_run_has_left_is_not_waited_out_and_says_so(tmp_path):
+    """Two minutes of run and a five-minute gap: report it, do not sleep through it.
+
+    This is the pilot's seven-minute run. Sleeping would hold the tool call
+    open until the driver ended the run, and the rows would be unchecked at the
+    end of it either way — so the stage comes straight back and the record says
+    which rows were left and why.
+    """
+    open_run(tmp_path)
+    srv.STATE['opener'] = Index(fail=('crossref.org', 'ebi.ac.uk'))
+    clock = FakeClock()
+    run = srv.current()
+    patience = cl.Patience(deadline=clock.time() + 120, clock=clock.time, sleep=clock.sleep)
+    progress = cl.resolve(run.citations, run.citation_lookups(), limit=0, patience=patience)
+    assert progress['remaining'] == 3
+    assert clock.slept == [] and progress['waited'] == 0.0
+    reason = progress['unchecked_reason']
+    # 120 seconds of run less the margin the stage keeps for the pass that
+    # would have followed the wait.
+    left = 120 - cl.RESOLVE_MARGIN_SECONDS
+    assert f'{left} second(s) of the run were left to wait in' in reason, reason
+    assert progress['counts']['stages']['resolve']['unchecked_reason'] == reason
+    lines = cl.problems(progress['counts'])
+    owed = [line for line in lines if 'still owed an attempt' in line]
+    assert len(owed) == 1 and reason in owed[0]
+    assert 'counted as unchecked rather than answered' in owed[0]
+    assert all(';' not in line and 'do not exist' not in line for line in lines)
+
+
+def test_the_recorder_is_handed_the_runs_clock_and_not_a_guess(tmp_path, monkeypatch, subtests):
+    """The tool reads the driver's deadline out of the environment, or waits for nothing.
+
+    This is the wiring the fake-clock tests above cannot see: that the server
+    asks the environment the launcher set, that an unusable answer is no
+    deadline rather than a wrong one, and that a run with less left than the
+    gap comes straight back with the reason instead of holding the call open.
+    """
+    with subtests.test('an unusable deadline is no deadline'):
+        for value in ('', 'soon', '0', '-1'):
+            monkeypatch.setenv('PEERREVIEW_RUN_DEADLINE', value)
+            assert srv.run_deadline() is None, value
+        monkeypatch.delenv('PEERREVIEW_RUN_DEADLINE')
+        assert srv.run_deadline() is None
+
+    with subtests.test('a deadline the launcher set is read'):
+        monkeypatch.setenv('PEERREVIEW_RUN_DEADLINE', '1700000124')
+        assert srv.run_deadline() == 1_700_000_124.0
+
+    with subtests.test('a run with less left than the gap does not wait'):
+        open_run(tmp_path)
+        srv.STATE['opener'] = Index(fail=('crossref.org', 'ebi.ac.uk'))
+        monkeypatch.setenv('PEERREVIEW_RUN_DEADLINE', str(int(time.time()) + 90))
+        started = time.monotonic()
+        answer = srv.resolve_citations(CODES['recorder_key'], limit=0)
+        # Held open for no time at all: the point is that it did not sleep.
+        assert time.monotonic() - started < 5
+        assert answer['remaining'] == 3 and answer['waited'] == 0.0
+        assert 'of the run were left to wait in' in answer['unchecked_reason']
+        assert answer['unchecked_reason'] in answer['next']
+        assert 'unchecked rather than answered' in answer['next']
+
+
+def test_the_stage_waits_only_when_it_knows_the_run_has_the_time(subtests):
+    """:class:`Patience` on its own: every state it may and may not wait in."""
+    with subtests.test('no deadline is no waiting'):
+        clock = FakeClock()
+        blind = cl.Patience(clock=clock.time, sleep=clock.sleep)
+        assert blind.left() is None
+        assert blind.fits(300) is False
+        assert blind.wait(300) is False
+        assert clock.slept == []
+        assert 'not told how much of the run was left' in blind.why(300)
+        assert blind.why(0) is None
+
+    with subtests.test('a gap inside the run is waited out'):
+        clock = FakeClock()
+        roomy = cl.Patience(deadline=clock.time() + 3600, clock=clock.time, sleep=clock.sleep)
+        assert roomy.fits(300) is True
+        assert roomy.wait(300) is True
+        assert roomy.waited == pytest.approx(300)
+        assert roomy.interrupted is False
+
+    with subtests.test('a gap the margin does not leave room for'):
+        clock = FakeClock()
+        tight = cl.Patience(deadline=clock.time() + 300, clock=clock.time, sleep=clock.sleep)
+        assert tight.fits(300) is False
+        assert tight.wait(300) is False
+        assert clock.slept == []
+
+    with subtests.test('a wait ends when the run does, not when the gap does'):
+        clock = FakeClock()
+        asked = []
+
+        def the_run_is_over():
+            asked.append(1)
+            return len(asked) > 3
+
+        stopping = cl.Patience(deadline=clock.time() + 3600, clock=clock.time,
+                               sleep=clock.sleep, stop=the_run_is_over)
+        assert stopping.wait(300) is False
+        assert stopping.interrupted is True
+        # Seconds, not minutes: the wait is slept in slices so that it can end.
+        assert stopping.waited <= 5
+        assert 'the run stopped while the stage was waiting' in stopping.why(300)
+
+    with subtests.test('a sleep that does not move the clock is not a wait'):
+        clock = FakeClock()
+        frozen = cl.Patience(deadline=clock.time() + 3600, clock=clock.time,
+                             sleep=lambda seconds: None)
+        assert frozen.wait(300) is False
+        assert frozen.interrupted is False
 
 
 def test_a_ledger_that_cannot_be_read_is_reported_and_never_read_as_clean(tmp_path, monkeypatch):
