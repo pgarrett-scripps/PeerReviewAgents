@@ -25,15 +25,27 @@ repository; each run folder is the evidence, and `review/protocol.json` records
 what that run was allowed to do. The cost numbers are the engine's own, from
 `review/runtime.json`; none was typed by hand.
 
-## Read these caveats first
+## The limits, before any of the results
 
 1. **n is five.** Five papers, one run each, one arm (`--arm full-two-track
-   --reviewers 3`). A one-paper difference moves the catch rate by 20 points.
-2. **One engine ran all seven runs**, the non-editable install of `main`
+   --reviewers 3`). A one-paper difference moves the catch rate by 20 points,
+   and no paper was reviewed twice, so nothing here measures how much a second
+   run of the same paper would differ.
+2. **An image-only error is out of this arm's reach.** This arm reads a text
+   layer. Two of the five annotated errors live inside a figure bitmap — a
+   reused micrograph and a misspelled axis label — and no reasoning over text
+   reaches them. The one miss and the one partial below are both that limit.
+3. **One of the two controls contains a real error.** It was chosen as a paper
+   with nothing wrong in it and it is not one: the engine's allegation against
+   it is confirmed by its own Table 2 (see
+   [the controls](#the-controls-and-why-one-of-them-is-not-a-control)). So this
+   pilot bounds no false-allegation rate. The other control holds up.
+4. **One engine ran all seven runs**, the non-editable install of `main`
    `6a7ed12`. `starter.py` was deliberately **not** fixed mid-pilot even after
    run 2 hit a driver race, so that the count of hits is a number about one
-   build.
-3. **The verdict is written by hand, the evidence is not.** Two of the five
+   build. That race has since been fixed, in PR #40, and no run here was redone
+   with the fix.
+5. **The verdict is written by hand, the evidence is not.** Two of the five
    errors name an exact value, and for those the scorer applies Stage A's own
    value rule. The other three — a duplicated micrograph, a misspelled axis
    label inside a figure bitmap, a recombinant fragment without a kinase
@@ -41,7 +53,7 @@ what that run was allowed to do. The cost numbers are the engine's own, from
    candidate findings (at the annotated location, or carrying the key's words)
    and the yes/partly/no below is a reading, with the finding quoted so it can
    be disagreed with.
-4. **"Other findings" are counted, not judged.** The engine wrote 34–64
+6. **"Other findings" are counted, not judged.** The engine wrote 34–64
    findings per paper. The last column of the main table is my own blunt count
    of how many *distinct* issues in each review an author would actually thank
    us for, after collapsing the three core reviewers and the six specialists
@@ -61,9 +73,11 @@ what that run was allowed to do. The cost numbers are the engine's own, from
 | 7 | `control-microbiology-pmc8208984` | control, nothing planted | n/a | 42 (9) | 4 | 632,835 | 8.3 | complete, guard clean |
 
 Seven runs, **5,210,737 tokens** and 61.2 minutes of wall clock in all, 368
-findings of which 119 are major. One run of seven was blocked, by the same
-driver race on every attempt it could have hit; six of seven finished clean.
-Catch rate on the five annotated papers: **3 found, 1 partly, 1 missed.**
+findings of which 119 are major. One run of seven was blocked by a race in the
+launcher rather than by anything in the paper, since fixed in PR #40; six of
+seven finished clean. Catch rate on the five annotated papers: **3 found,
+1 partly, 1 missed** — with the partial and the miss both on errors that live
+inside a figure bitmap, where this arm cannot look.
 
 ## What each verdict rests on
 
@@ -232,15 +246,21 @@ smaller of the two.
 
 ## What broke
 
-1. **The driver race, 1 hit in 7 runs** (run 2). `starter.py` treats the
-   headless session's `result` event as completion only after a
-   `task_notification`; when the session ends its turn first, the stream closes
-   and the `finally` block terminates the process — killing the background
-   review workflow with it (exit 143, 758k of 1.2M tokens, 10.3 min of 90, nine
-   of ten stages reported). Paper-independent, and unrelated to the ceilings.
-   Findings were recovered from the ledger, so run 2 is scored, not lost. Notes
-   and three fix options: `~/pra-spot/driver-race-notes.md`. First fix after
-   this pilot.
+1. **The driver race, 1 hit in 7 runs** (run 2). The review is a background
+   workflow running inside the headless session, and `starter.py` had no
+   completion signal of its own: it ended the run when the *session* stopped
+   talking. On run 2 the session had already sent its turn-ending `result`, and
+   the read loop ended when the session **closed its event stream** at ~617s
+   with the process still alive; the `finally` block then terminated it and the
+   workflow died with it (exit 143, 758k of 1.2M tokens, 10.3 min of 90, nine
+   of ten stages reported, last folder write at 601s). The editor agent had
+   already been reported in state `error` at 136,755 tokens before the stream
+   closed, so **whether this review would have completed had the driver waited
+   is unknown** — the run may have been failing on its own. Paper-independent,
+   and unrelated to the ceilings. Findings were recovered from the ledger, so
+   run 2 is scored, not lost. **Fixed in PR #40:** the driver now waits on the
+   run folder the server writes, and a session that ends its turn with the
+   workflow alive no longer takes the workflow with it.
 2. **A reference list the reader cannot see at all.** On dark-kinome the list
    arrived as one run-on block: 0 references extracted while 63 in-text uses
    were found, so every use was unmatched and no lookup ran. The lane reported
@@ -258,9 +278,14 @@ smaller of the two.
 5. **The resolve stage cannot finish inside a short run.** On the control,
    `citations.stages.resolve` ended `done: false` with `retry_after: 298` after
    2 lookups: the run finished in 6.9 minutes and the index had asked for a
-   300-second wait. The lane says `complete: false`, which is correct and
+   300-second wait. The lane said only `complete: false`, which is correct and
    useless — a 5-minute backoff inside a 7-minute run means the citation lane
-   is structurally unfinishable at this run length.
+   is structurally unfinishable at this run length, and the four affected rows
+   were reported as "could not be checked", which reads as the indexes having
+   been asked and failed. Half-fixed on `main` since: the ledger's problems
+   list now names rows still owed an attempt and the retry gap the run did not
+   wait out. Waiting out a gap that fits inside the run's own wall clock is
+   still to do.
 
 ## A finding about the benchmark, not the engine
 
