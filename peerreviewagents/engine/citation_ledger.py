@@ -262,6 +262,13 @@ _NUMERIC_MARKER = re.compile(
 #: superscript run and a bracketed one alike. The ``#ref-`` target is what
 #: keeps this off the other links a converted paper carries.
 _ANCHOR = re.compile(r'\[(\d{1,3})\]\(#ref-([^)\s]{1,40})\)')
+#: Two linked markers with nothing but a dash printed between them: the two
+#: ends of a citation range, which the reader links one end at a time.
+_RANGE_DASH = re.compile(r'\s*[‐-―-]\s*')
+#: How far a numbered citation range is expanded, in either reading of one. A
+#: range is the usual way to cite a run of entries and a long one is ordinary,
+#: but a misprint or a misread span should not mint rows nobody can check.
+_RANGE_SPAN = 60
 _AUTHOR_YEAR = re.compile(
     r'([A-Z][A-Za-zÀ-ɏ’\'-]{1,30})'
     r'(?:\s+(?:et\s+al\.?|and\s+[A-Z][A-Za-z’\'-]+|&\s+[A-Z][A-Za-z’\'-]+))?'
@@ -520,7 +527,7 @@ def _numbers(group):
         span = re.split(r'\s*[‐-―-]\s*', piece)
         if len(span) == 2 and span[0].isdigit() and span[1].isdigit():
             first, last = int(span[0]), int(span[1])
-            if 0 < last - first <= 60:
+            if 0 < last - first <= _RANGE_SPAN:
                 out.extend(str(number) for number in range(first, last + 1))
                 continue
         if piece.isdigit():
@@ -740,6 +747,51 @@ def _marker_at(printed, offset, digits):
     return '[' + digits + ']' if start and printed[start - 1] == '[' else digits
 
 
+def _spanned(printed, links, position):
+    """The labels a linked range covers between its ends, in printed order.
+
+    The reader links the ends of a printed range and not what they stand for:
+    ``fish³⁻⁵`` comes back as a link on ``3``, the dash the paper printed, and
+    a link on ``5``, so the sentence cites ``4`` and ``4`` is in no link. Two
+    links with nothing but a dash between them are such a range — the reader
+    has said both ends are citations, and what a citation range means is every
+    entry from one end to the other — so the labels between them are read off
+    the numbering and recorded as uses of their own.
+
+    Nothing is inferred past :data:`_RANGE_SPAN` entries, the same cap the
+    bracketed reading uses, and nothing is inferred from a range that counts
+    backwards: a misprint or a flattened subscript — ``3–300``, ``5–3`` — gives
+    the two ends the reader linked and no inference between them.
+    """
+    if position + 1 >= len(links):
+        return ()
+    offset, digits, _ = links[position]
+    beyond, next_digits, _ = links[position + 1]
+    if not _RANGE_DASH.fullmatch(printed[offset + len(digits):beyond]):
+        return ()
+    first, last = int(digits), int(next_digits)
+    if not 0 < last - first <= _RANGE_SPAN:
+        return ()
+    return [str(number) for number in range(first + 1, last)]
+
+
+def _linked(reference_id, derivation, marker, listed):
+    """One use the reader's markup accounts for, matched against this paper.
+
+    The three answers are the three a label can earn: the reference it names,
+    the same reference when the block's own citation list does not carry it,
+    and no reference at all. The reader reads its labels off this paper's own
+    bibliography, so a label in no reference row means the reader and the
+    reference list disagree about the list — a finding about the extraction,
+    recorded rather than dropped.
+    """
+    if reference_id and (not listed or reference_id in listed):
+        return (reference_id, derivation, marker)
+    if reference_id:
+        return (reference_id, derivation + '-outside-block', marker)
+    return (None, derivation + '-unmatched', marker)
+
+
 def _uses_in(sentence, by_label, by_author, ambiguous, listed):
     """Every (reference id, derivation, marker) one sentence cites.
 
@@ -748,7 +800,10 @@ def _uses_in(sentence, by_label, by_author, ambiguous, listed):
     ``3`` is a marker and not an exponent, and the bibliography it parsed the
     labels out of — so a link it made is better evidence than anything this
     module could work out from the text afterwards, and there is no second
-    opinion about one.
+    opinion about one. A range is the one place the links are not the whole
+    citation: the reader links the two ends it can see and the dash between
+    them is the paper's own, so the entries inside the range are read off the
+    numbering by :func:`_spanned` and marked as inferred.
 
     What the reader does not link, this reads for itself, and the two do not
     overlap: a bracketed run is linked only when every part of it is a known
@@ -769,20 +824,17 @@ def _uses_in(sentence, by_label, by_author, ambiguous, listed):
     ambiguous = ambiguous or set()
     printed, links = _links(sentence)
     scan = list(printed)
-    for offset, digits, label in links:
-        reference_id = by_label.get(label)
-        marker = _marker_at(printed, offset, digits)
-        if reference_id and (not listed or reference_id in listed):
-            out.append((reference_id, 'reader-link', marker))
-        elif reference_id:
-            out.append((reference_id, 'reader-link-outside-block', marker))
-        else:
-            # The reader links a label it read off this paper's own
-            # bibliography, so a link whose label is in no reference row means
-            # the two disagree about the reference list — which is a finding
-            # about the extraction, and is recorded rather than dropped.
-            out.append((None, 'reader-link-unmatched', marker))
+    for position, (offset, digits, label) in enumerate(links):
+        out.append(_linked(by_label.get(label), 'reader-link',
+                           _marker_at(printed, offset, digits), listed))
         scan[offset:offset + len(digits)] = ' ' * len(digits)
+        # The entries inside a range the reader linked the ends of. Their
+        # derivation says the row was inferred from the printed range rather
+        # than read off a link, because the reader saw the two ends and this
+        # read the span between them.
+        for number in _spanned(printed, links, position):
+            out.append(_linked(by_label.get(number), 'reader-link-range',
+                               _marker_at(printed, offset, number), listed))
     for match in _NUMERIC_MARKER.finditer(''.join(scan)):
         for number in _numbers(match.group(1)):
             reference_id = by_label.get(number)

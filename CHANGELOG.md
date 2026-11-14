@@ -387,11 +387,18 @@ including 32 test modules, and nothing was left behind as a shim.
   is everything a journal that prints `blocked the receptor³` does not give:
   with the superscript gone the digits are ordinary text, and the matching has
   to happen where the superscript still exists. On the seven pilot PDFs that
-  took the use rows from 143 to 416 and the matched ones from 38 to 374 —
+  took the use rows from 143 to 434 and the matched ones from 38 to 392 —
   Nature-style papers that had none at all now have them — with the reference
   rows going 210 to 299 as the same reader release splits bibliographies it
   used to leave whole. There is one way to find a use and no flag for the old
-  one. What the reader does not link is still read here: a bracketed run it
+  one. A citation range is the one place the links are not the whole citation:
+  the reader links the two ends of `respiration³⁻⁵` and the dash between them
+  is the paper's own, so the entries the range covers are read off the
+  numbering and recorded with a `reader-link-range` derivation saying the row
+  was inferred — capped at the same 60 entries the bracketed reading already
+  allowed, with a backwards or wider span (`5–3`, `3–300`) left as the two ends
+  the reader did link. On the pilots that is 36 more uses, all of them matched.
+  What the reader does not link is still read here: a bracketed run it
   left whole because one part of it is not a known label — `[1, 42]` — is read
   as one matched use and one unmatched, and author–year citations are matched
   against the reference list as before, because resolving `Devlin et al., 2019`

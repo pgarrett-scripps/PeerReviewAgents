@@ -272,6 +272,91 @@ def test_author_year_citations_are_matched_as_they_always_were(tmp_path):
     assert {row['marker'] for row in uses} == {'3', 'Lin et al., 2019'}
 
 
+#: ``NUMBERED`` plus the two entries a printed range needs to reach past it.
+SPANNED = NUMBERED + [
+    {'id': 'r4', 'label': '4', 'title': 'Vagal tone during slow-wave sleep',
+     'year': '2017', 'first_author': 'Abe, T.',
+     'raw': '4. Abe T. Vagal tone during slow-wave sleep. Sleep, 2017.'},
+    {'id': 'r5', 'label': '5', 'title': 'Respiratory coupling in the hippocampus',
+     'year': '2022', 'first_author': 'Neves, P.',
+     'raw': '5. Neves P. Respiratory coupling in the hippocampus. eLife, 2022.'}]
+
+
+def test_a_superscript_range_cites_the_entries_between_its_ends(tmp_path):
+    """The reader links the ends of a range; the entries inside it are cited too.
+
+    ``respiration³⁻⁵`` is one citation of three entries, and what the reader
+    hands over is a link on ``3``, the dash the paper printed, and a link on
+    ``5``: ``4`` is in no link because there is nothing on the page to link.
+    Two links with only a dash between them are a range, so the numbering
+    fills in what it covers — and the row says the span was read here, not
+    that the reader matched it.
+    """
+    ledger = filled(tmp_path, NUMBERED,
+                    'Respiration slows[1](#ref-1)–[3](#ref-3) in the model.')
+    uses = uses_of(ledger)
+    assert [(row['reference_id'], row['marker'], row['derivation']) for row in uses] == [
+        ('r1', '1', 'reader-link'),
+        ('r2', '2', 'reader-link-range'),
+        ('r3', '3', 'reader-link')]
+    assert uses[0]['sentence'] == 'Respiration slows1–3 in the model.'
+
+
+def test_a_bracketed_range_cites_the_entries_between_its_ends(tmp_path):
+    """A range printed inside brackets is the same citation, marked as printed.
+
+    The reader links the two ends inside the brackets the paper printed, so the
+    inferred entry keeps those brackets as well: the marker is what a reader of
+    the page would point at, whichever form the range came in.
+    """
+    ledger = filled(tmp_path, NUMBERED, 'Earlier work agrees [[1](#ref-1)–[3](#ref-3)].')
+    uses = uses_of(ledger)
+    assert [(row['reference_id'], row['marker'], row['derivation']) for row in uses] == [
+        ('r1', '[1]', 'reader-link'),
+        ('r2', '[2]', 'reader-link-range'),
+        ('r3', '[3]', 'reader-link')]
+    assert uses[0]['sentence'] == 'Earlier work agrees [1–3].'
+
+
+def test_a_citation_list_mixing_singles_and_a_range_reads_both(tmp_path):
+    """``[1, 3–5]`` is one single citation and one range, not four links.
+
+    The comma between ``1`` and ``3`` is the paper saying these are separate
+    citations, and only a dash says the labels run from one to the other — so
+    nothing is inferred across the comma and ``4`` is inferred across the dash.
+    """
+    ledger = filled(tmp_path, SPANNED,
+                    'Both lines of work [[1](#ref-1), [3](#ref-3)–[5](#ref-5)] converge.')
+    uses = uses_of(ledger)
+    assert [(row['reference_id'], row['marker'], row['derivation']) for row in uses] == [
+        ('r1', '[1]', 'reader-link'),
+        ('r3', '[3]', 'reader-link'),
+        ('r4', '[4]', 'reader-link-range'),
+        ('r5', '[5]', 'reader-link')]
+    assert uses[0]['sentence'] == 'Both lines of work [1, 3–5] converge.'
+
+
+def test_a_backwards_or_overlong_range_is_not_expanded(tmp_path):
+    """A range that cannot be read as one gives its ends and nothing between.
+
+    Two things can print as a range and not be one: a pair that counts
+    backwards, and a span too wide to have been a citation — a flattened
+    subscript or a misprint. Both are left as the two uses the reader did link,
+    because minting a few hundred rows nobody can check would be a worse answer
+    than the one the page supports.
+    """
+    backwards = filled(tmp_path / 'back', SPANNED,
+                       'A flattened subscript[5](#ref-5)–[3](#ref-3) proves nothing.')
+    assert [(row['reference_id'], row['marker'], row['derivation'])
+            for row in uses_of(backwards)] == [
+        ('r5', '5', 'reader-link'), ('r3', '3', 'reader-link')]
+    overlong = filled(tmp_path / 'wide', SPANNED,
+                      'A misread span[3](#ref-3)–[300](#ref-300) proves nothing.')
+    assert [(row['reference_id'], row['marker'], row['derivation'])
+            for row in uses_of(overlong)] == [
+        ('r3', '3', 'reader-link'), (None, '300', 'reader-link-unmatched')]
+
+
 # -- stage 2 ----------------------------------------------------------------
 
 
