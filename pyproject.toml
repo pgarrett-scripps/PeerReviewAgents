@@ -57,7 +57,7 @@ dependencies = [
     # Pinned exactly: peerreviewagents.engine records the converter version in
     # every run manifest and compares it when resuming, so a floating minor
     # would invalidate in-flight runs.
-    "rustypaper==0.2.2",
+    "rustypaper==0.2.3",
     # peerreviewagents.engine runtime: Pillow renders the page images the
     # importer attaches to a review.
     "Pillow>=10",
