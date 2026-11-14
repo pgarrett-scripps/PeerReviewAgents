@@ -95,12 +95,17 @@ jobs:
       # A wheel that builds is not a wheel that imports: setuptools' package
       # discovery is configured by hand in pyproject.toml, so a new top-level
       # directory can be left out of the distribution without any error here.
+      #
+      # `-I` is what makes it the wheel alone: every step here runs with the
+      # checkout as its working directory, and `python -c` puts that directory
+      # on `sys.path` ahead of the venv, so without it these steps import the
+      # source tree beside them and pass for a wheel that ships nothing.
       - name: Import what was built, from the wheel alone
         run: |
           python -m venv /tmp/fresh
           wheel=$(find dist -name '*.whl' -print -quit)
           /tmp/fresh/bin/pip install --quiet "${wheel}"
-          /tmp/fresh/bin/python -c "
+          /tmp/fresh/bin/python -I -c "
           import peerreviewagents, peerreviewagents.cli.main
           import peerreviewagents.plugin.server, peerreviewagents.plugin.starter
           print('import ok:', peerreviewagents.__name__)
@@ -111,25 +116,45 @@ jobs:
       # `pra` folder installs a package that cannot start one. `--help` never
       # touches the plugin and passed on exactly that wheel, so this asks the
       # starter where the plugin is and then looks.
+      #
+      # Every file is named. The wheel carries the plugin through globbed
+      # package data, so a file the glob misses is absent with nothing said
+      # about it, and the one thing a list of names cannot do is go stale
+      # against something that was added on purpose: the count this used to
+      # assert failed the 0.9.0 release over `citation-worker.md`, which was
+      # the new agent working as intended.
       - name: Prove the installed wheel can find its plugin
         run: |
-          /tmp/fresh/bin/python -c "
-          import json
+          /tmp/fresh/bin/python -I -c "
+          import json, sysconfig
           from peerreviewagents.plugin import starter
           plugin = starter.plugin_dir()
           assert plugin.is_dir(), f'the installed wheel ships no plugin at {plugin}'
-          missing = [name for name in (
+          # The plugin has to be the installed one. Without this the step can
+          # pass on the checkout sitting in the working directory and say
+          # nothing about what was built.
+          site = sysconfig.get_paths()['purelib']
+          assert str(plugin).startswith(site), f'{plugin} is not under {site}'
+          required = [
               '.claude-plugin/plugin.json', '.mcp.json', 'README.md',
-              'workflows/review.js', 'skills/peer-review-manuscript/SKILL.md',
-          ) if not (plugin / name).is_file()]
+              'workflows/review.js',
+              'skills/peer-review-manuscript/SKILL.md',
+              'skills/check-draft/SKILL.md',
+              'skills/follow-up/SKILL.md',
+          ]
+          required += ['agents/' + name + '.md' for name in (
+              'citation-worker', 'citations', 'core-reviewer', 'editor',
+              'field', 'figures-tables', 'methods-reporting', 'numbers',
+              'recorder', 'stats',
+          )]
+          missing = [name for name in required if not (plugin / name).is_file()]
           assert not missing, f'the installed plugin is incomplete: {missing}'
-          agents = sorted(path.name for path in (plugin / 'agents').glob('*.md'))
-          assert len(agents) == 9, agents
           config = json.loads((plugin / '.mcp.json').read_text(encoding='utf-8'))
           command = config['mcpServers']['peerreview']['command']
           assert 'CLAUDE_PROJECT_DIR' not in command, command
           assert '.venv' not in command, command
-          print('plugin ok:', plugin, len(agents), 'agents')
+          print('plugin ok:', plugin, len(required), 'files,',
+                sum(name.startswith('agents/') for name in required), 'agents')
           "
           # The default launcher for a session nobody set PEERREVIEW_MCP_COMMAND
           # for: without this console script an interactive plugin loads with
