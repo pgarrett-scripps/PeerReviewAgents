@@ -386,18 +386,25 @@ including 32 test modules, and nothing was left behind as a shim.
   names. It had been looking for bracketed markers in the flattened text, which
   is everything a journal that prints `blocked the receptor³` does not give:
   with the superscript gone the digits are ordinary text, and the matching has
-  to happen where the superscript still exists. On the seven pilot PDFs that
-  took the use rows from 143 to 434 and the matched ones from 38 to 392 —
-  Nature-style papers that had none at all now have them — with the reference
-  rows going 210 to 299 as the same reader release splits bibliographies it
-  used to leave whole. There is one way to find a use and no flag for the old
-  one. A citation range is the one place the links are not the whole citation:
+  to happen where the superscript still exists. On the seven pilot PDFs, read
+  by the `rustypaper` 0.2.3 this release pins, that took the use rows from 143
+  to 434 and the matched ones from 38 to 434 — Nature-style papers that had
+  none at all now have them, and every use those seven papers make now names
+  the entry it cites — with the reference rows going 210 to 325 as the same
+  reader release splits bibliographies it used to leave whole. The paper that
+  moves furthest is the one the earlier readers reached least:
+  `control-education-pmc7183109` yields 31 reference rows where it yielded 5,
+  so its 47 uses all match instead of 5 of them. Across nine papers — the seven
+  plus two the ranges below are thickest in — it is 467 reference rows, 566 uses
+  and 566 matched, with no unmatched use left in any of them. There is one way
+  to find a use and no flag for the old one. A citation range is the one place the links are not the whole citation:
   the reader links the two ends of `respiration³⁻⁵` and the dash between them
   is the paper's own, so the entries the range covers are read off the
   numbering and recorded with a `reader-link-range` derivation saying the row
   was inferred — capped at the same 60 entries the bracketed reading already
   allowed, with a backwards or wider span (`5–3`, `3–300`) left as the two ends
-  the reader did link. On the pilots that is 36 more uses, all of them matched.
+  the reader did link. On the seven pilots that is 18 more uses and on the nine
+  36, all of them matched.
   What the reader does not link is still read here: a bracketed run it
   left whole because one part of it is not a known label — `[1, 42]` — is read
   as one matched use and one unmatched, and author–year citations are matched
