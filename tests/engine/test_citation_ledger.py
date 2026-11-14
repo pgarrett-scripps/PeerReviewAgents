@@ -160,6 +160,203 @@ def test_filling_twice_keeps_what_later_stages_wrote(tmp_path):
     assert row['resolution']['exists'] == 'yes', 'the fill must not erase the lookup'
 
 
+# -- stage 1: the marker-to-reference links the reader hands over -----------
+#
+# ``rustypaper`` has the printed page in front of it — the superscript spans
+# that say a bare ``3`` is a citation and not an exponent, and the
+# bibliography it parsed the labels out of — so it matches each marker to the
+# entry it cites and rewrites the marker as a link to that entry's anchor. The
+# fill stage takes those links. The fixtures below are that markup as the
+# reader emits it; nothing here re-derives a match the reader already made.
+
+
+#: Three numbered references, as the reader's own labels reach ``paper.json``.
+NUMBERED = [{'id': 'r1', 'label': '1', 'title': TITLE, 'year': '2019',
+             'first_author': 'Lin, M.', 'doi': '10.1234/replay',
+             'raw': '1. Lin M. ' + TITLE + '. Journal of Neuroscience, 2019.'},
+            {'id': 'r2', 'label': '2', 'title': 'Sharp waves in the sleeping cortex',
+             'year': '2015', 'first_author': 'Oyama, K.',
+             'raw': '2. Oyama K. Sharp waves in the sleeping cortex. Neuron, 2015.'},
+            {'id': 'r3', 'label': '3', 'title': 'CGRP receptor blockade in migraine',
+             'year': '2021', 'first_author': 'Ruiz, A.',
+             'raw': '3. Ruiz A. CGRP receptor blockade in migraine. Brain, 2021.'}]
+
+
+def uses_of(ledger):
+    """Every use row, in the order the fill stage wrote it."""
+    return [row for row in ledger.rows() if row['kind'] == 'use']
+
+
+def test_a_superscript_citation_the_reader_linked_becomes_a_use(tmp_path):
+    """The Nature-style citation this release exists for.
+
+    A superscript ``3`` is a citation on the page and a digit beside a word
+    once the page is flattened, so the matching has to be done where the
+    superscript still exists. It is: the reader links the marker to the entry
+    and the fill stage reads the link, which is why a paper that cites this way
+    now has use rows at all. The marker is quoted back bare, the way the paper
+    prints it, and the sentence the row carries has no markup in it — a
+    specialist judging the claim reads what the page says.
+    """
+    ledger = filled(tmp_path, NUMBERED,
+                    'The receptor was blocked[3](#ref-3). The effect held for an hour.')
+    uses = uses_of(ledger)
+    assert len(uses) == 1, 'one citation, one row'
+    assert (uses[0]['reference_id'], uses[0]['marker']) == ('r3', '3')
+    assert uses[0]['derivation'] == 'reader-link'
+    assert uses[0]['sentence'] == 'The receptor was blocked3.'
+    assert cl.counts(ledger)['uses'] == 1
+
+
+def test_a_bracketed_run_the_reader_linked_keeps_its_brackets_and_counts_once(tmp_path):
+    """A linked bracketed run is read from the links, not twice.
+
+    The reader links a bracketed run only when every part of it is a label it
+    knows, and then the markup sits inside the brackets the paper printed. The
+    printed brackets are the only thing left that tells this run from a
+    superscript one, so they are what the marker keeps — and the digits the
+    links covered are blanked out of the text the bracket scan then reads, so
+    the run yields two rows and not four.
+    """
+    ledger = filled(tmp_path, NUMBERED,
+                    'Earlier work agrees [[1](#ref-1), [2](#ref-2)].')
+    uses = uses_of(ledger)
+    assert [(row['reference_id'], row['marker'], row['derivation']) for row in uses] == [
+        ('r1', '[1]', 'reader-link'), ('r2', '[2]', 'reader-link')]
+    assert uses[0]['sentence'] == 'Earlier work agrees [1, 2].'
+
+
+def test_a_run_the_reader_left_whole_is_still_read_here(tmp_path):
+    """What the reader does not link, the fill stage still finds itself.
+
+    ``[1, 42]`` arrives unlinked because ``42`` is not a label this paper's
+    bibliography has, and dropping the run for that reason would hide both the
+    citation that is fine and the one that is the problem. The bracket reading
+    this module always did is what covers it: one matched use, one unmatched.
+    """
+    ledger = filled(tmp_path, NUMBERED,
+                    'One of these is in the list and one is not [1, 42].')
+    uses = uses_of(ledger)
+    assert [(row['reference_id'], row['marker'], row['derivation']) for row in uses] == [
+        ('r1', '[1]', 'marker-numeric'), (None, '[42]', 'marker-unmatched')]
+
+
+def test_a_link_to_a_label_no_reference_row_carries_is_recorded(tmp_path):
+    """A link whose label is in no reference row is a finding, not a dropped row.
+
+    The reader reads its labels off this paper's own bibliography, so a link to
+    ``7`` in a ledger whose reference rows stop at ``3`` means the reader and
+    the reference list disagree about the list — something about the
+    extraction, worth a row saying so rather than silence.
+    """
+    ledger = filled(tmp_path, NUMBERED, 'A claim with a stale link[7](#ref-7).')
+    uses = uses_of(ledger)
+    assert [(row['reference_id'], row['marker'], row['derivation']) for row in uses] == [
+        (None, '7', 'reader-link-unmatched')]
+    assert uses[0]['sentence'] == 'A claim with a stale link7.'
+
+
+def test_author_year_citations_are_matched_as_they_always_were(tmp_path):
+    """Author–year is still this module's job, markup or no markup.
+
+    Resolving ``Lin et al., 2019`` to an entry means matching a surname and a
+    year against the reference rows, which is not something the reader does,
+    so the author–year reading is unchanged — and it reads the printed text,
+    so a sentence that carries both forms yields one row for each.
+    """
+    ledger = filled(tmp_path, NUMBERED,
+                    'This follows Lin et al., 2019, and the blockade[3](#ref-3).')
+    uses = uses_of(ledger)
+    assert {(row['reference_id'], row['derivation']) for row in uses} == {
+        ('r3', 'reader-link'), ('r1', 'marker-author-year')}
+    assert {row['marker'] for row in uses} == {'3', 'Lin et al., 2019'}
+
+
+#: ``NUMBERED`` plus the two entries a printed range needs to reach past it.
+SPANNED = NUMBERED + [
+    {'id': 'r4', 'label': '4', 'title': 'Vagal tone during slow-wave sleep',
+     'year': '2017', 'first_author': 'Abe, T.',
+     'raw': '4. Abe T. Vagal tone during slow-wave sleep. Sleep, 2017.'},
+    {'id': 'r5', 'label': '5', 'title': 'Respiratory coupling in the hippocampus',
+     'year': '2022', 'first_author': 'Neves, P.',
+     'raw': '5. Neves P. Respiratory coupling in the hippocampus. eLife, 2022.'}]
+
+
+def test_a_superscript_range_cites_the_entries_between_its_ends(tmp_path):
+    """The reader links the ends of a range; the entries inside it are cited too.
+
+    ``respiration³⁻⁵`` is one citation of three entries, and what the reader
+    hands over is a link on ``3``, the dash the paper printed, and a link on
+    ``5``: ``4`` is in no link because there is nothing on the page to link.
+    Two links with only a dash between them are a range, so the numbering
+    fills in what it covers — and the row says the span was read here, not
+    that the reader matched it.
+    """
+    ledger = filled(tmp_path, NUMBERED,
+                    'Respiration slows[1](#ref-1)–[3](#ref-3) in the model.')
+    uses = uses_of(ledger)
+    assert [(row['reference_id'], row['marker'], row['derivation']) for row in uses] == [
+        ('r1', '1', 'reader-link'),
+        ('r2', '2', 'reader-link-range'),
+        ('r3', '3', 'reader-link')]
+    assert uses[0]['sentence'] == 'Respiration slows1–3 in the model.'
+
+
+def test_a_bracketed_range_cites_the_entries_between_its_ends(tmp_path):
+    """A range printed inside brackets is the same citation, marked as printed.
+
+    The reader links the two ends inside the brackets the paper printed, so the
+    inferred entry keeps those brackets as well: the marker is what a reader of
+    the page would point at, whichever form the range came in.
+    """
+    ledger = filled(tmp_path, NUMBERED, 'Earlier work agrees [[1](#ref-1)–[3](#ref-3)].')
+    uses = uses_of(ledger)
+    assert [(row['reference_id'], row['marker'], row['derivation']) for row in uses] == [
+        ('r1', '[1]', 'reader-link'),
+        ('r2', '[2]', 'reader-link-range'),
+        ('r3', '[3]', 'reader-link')]
+    assert uses[0]['sentence'] == 'Earlier work agrees [1–3].'
+
+
+def test_a_citation_list_mixing_singles_and_a_range_reads_both(tmp_path):
+    """``[1, 3–5]`` is one single citation and one range, not four links.
+
+    The comma between ``1`` and ``3`` is the paper saying these are separate
+    citations, and only a dash says the labels run from one to the other — so
+    nothing is inferred across the comma and ``4`` is inferred across the dash.
+    """
+    ledger = filled(tmp_path, SPANNED,
+                    'Both lines of work [[1](#ref-1), [3](#ref-3)–[5](#ref-5)] converge.')
+    uses = uses_of(ledger)
+    assert [(row['reference_id'], row['marker'], row['derivation']) for row in uses] == [
+        ('r1', '[1]', 'reader-link'),
+        ('r3', '[3]', 'reader-link'),
+        ('r4', '[4]', 'reader-link-range'),
+        ('r5', '[5]', 'reader-link')]
+    assert uses[0]['sentence'] == 'Both lines of work [1, 3–5] converge.'
+
+
+def test_a_backwards_or_overlong_range_is_not_expanded(tmp_path):
+    """A range that cannot be read as one gives its ends and nothing between.
+
+    Two things can print as a range and not be one: a pair that counts
+    backwards, and a span too wide to have been a citation — a flattened
+    subscript or a misprint. Both are left as the two uses the reader did link,
+    because minting a few hundred rows nobody can check would be a worse answer
+    than the one the page supports.
+    """
+    backwards = filled(tmp_path / 'back', SPANNED,
+                       'A flattened subscript[5](#ref-5)–[3](#ref-3) proves nothing.')
+    assert [(row['reference_id'], row['marker'], row['derivation'])
+            for row in uses_of(backwards)] == [
+        ('r5', '5', 'reader-link'), ('r3', '3', 'reader-link')]
+    overlong = filled(tmp_path / 'wide', SPANNED,
+                      'A misread span[3](#ref-3)–[300](#ref-300) proves nothing.')
+    assert [(row['reference_id'], row['marker'], row['derivation'])
+            for row in uses_of(overlong)] == [
+        ('r3', '3', 'reader-link'), (None, '300', 'reader-link-unmatched')]
+
+
 # -- stage 2 ----------------------------------------------------------------
 
 
