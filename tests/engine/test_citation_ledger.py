@@ -1615,3 +1615,210 @@ def test_an_acronym_is_not_a_different_venue(tmp_path):
     assert row['resolution']['exists'] == 'yes'
     assert row['resolution']['mismatched'] == []
     assert not cl.reference_problem(row)
+
+
+# -- a DOI the reader broke, and what may never follow from one -------------
+#
+# The 0.9.0 corpus had eight references called non-existent. Every one of them
+# is the same accident: the PDF text layer prints the DOI with a space inside
+# it (``https://doi.org/10.4049/jimmunol. 1203102``), the reader handed over
+# the half before the break as the reference's own ``doi`` field, Crossref and
+# the handle API truthfully said they had never heard of that half, and —
+# because those references print no title to search for — the row concluded
+# that the work does not exist. None of the eight is fabricated; all eight are
+# real papers whose DOIs are on their pages. The tests below are those eight
+# shapes.
+
+
+#: One of the eight, as the reader handed it over: the printed DOI cut at the
+#: space, and no title, which is what let the old `no` fire on a handle 404.
+SPLIT = [{'id': 'r1', 'label': '1', 'first_author': 'Mikami, N.', 'year': '2013',
+          'doi': '10.4049/jimmunol',
+          'raw': '1. Mikami N, Watanabe K, Yoshikawa N, et al. Calcitonin gene-related '
+                 'peptide regulates type IV hypersensitivity. J Immunol 2013;190(8):4046-4055. '
+                 'https://doi.org/10.4049/jimmunol. 1203102'}]
+
+#: What the repaired DOI is: the identifier the page prints.
+WHOLE = '10.4049/jimmunol.1203102'
+
+
+def split_doi_row(tmp_path, net, references=None, name='review'):
+    """Resolve one broken-DOI reference and hand back its resolution row."""
+    ledger = cl.Ledger(tmp_path / name)
+    cl.build(ledger, paper(references if references is not None else SPLIT,
+                           'Neuropeptide signalling shapes the response [1].'))
+    cl.resolve(ledger, cl.Lookups(tmp_path / name / 'citations' / 'lookups', opener=net))
+    return {row['row_id']: row for row in ledger.rows()}['ref:r1']
+
+
+def test_a_doi_the_reader_split_across_a_space_is_rejoined_and_resolves(tmp_path):
+    """The half-DOI resolves nowhere; the DOI the page prints resolves fine.
+
+    This is the whole of the 0.9.0 ``exists: no`` list. The row is not evidence
+    about the paper at all: joining the printed DOI back across the space the
+    reader lost gives a real Crossref record whose first author is the one the
+    reference prints, so the reference exists, the DOI it prints is right, and
+    the only thing wrong is the text layer it was read out of. The repaired DOI
+    must never be raised as the paper printing a DOI that disagrees with the
+    record — that mismatch was the reader's space.
+    """
+    net = Net([('/works/' + WHOLE, crossref_work(
+                   WHOLE, 'Calcitonin gene-related peptide regulates type IV hypersensitivity',
+                   '2013', author='Mikami', venue='Journal of Immunology')),
+               ('/works/10.4049/jimmunol', 404), NO_HANDLE])
+    row = split_doi_row(tmp_path, net)
+    resolution = row['resolution']
+    assert resolution['exists'] == 'yes'
+    assert resolution['method'] == 'doi-repaired'
+    assert resolution['repaired_doi'] == WHOLE
+    assert resolution['printed_doi_damaged'] is True
+    assert resolution['repaired_dois'] == [WHOLE]
+    assert resolution['printed_doi_registered'] is False
+    assert 'doi' not in resolution['mismatched'], 'the reader lost the space, not the paper'
+    assert 'about the reader, not about the paper' in resolution['note']
+
+    # The row is still worth a human eye — the PDF is where the DOI can be
+    # confirmed — but the reason says which side the fault is on.
+    reason = cl.reference_problem(row)
+    assert 'cut short' in reason and 'the reader and not the paper' in reason
+    assert 'does not exist' not in reason
+
+
+def test_a_rejoined_doi_by_other_authors_is_refused_rather_than_resolved(tmp_path):
+    """Joining a DOI across a space can land on a real record of someone else's paper.
+
+    ``10.4049/jimmunol.1203102`` is a guess about the reader, so the record it
+    returns has to be corroborated before it is taken: a wrong record here is
+    worse than no record, because its abstract becomes the source text every
+    verdict about that reference is judged against. The row keeps the candidate
+    it refused, and it still may not be called non-existent.
+    """
+    net = Net([('/works/' + WHOLE, crossref_work(
+                   WHOLE, 'An unrelated study of mast cells', '2013', author='Okada')),
+               ('/works/10.4049/jimmunol', 404), NO_HANDLE])
+    resolution = split_doi_row(tmp_path, net)['resolution']
+    assert resolution['exists'] == 'not located'
+    assert resolution['method'] == 'doi-repair'
+    assert resolution['repairs_refused'] == [WHOLE]
+    assert resolution.get('repaired_doi') is None
+    assert resolution.get('record') is None, 'a refused candidate is not the work'
+    assert WHOLE in resolution['note'] and 'check the DOI in the PDF' in resolution['note']
+
+
+def test_a_doi_the_reader_broke_can_never_make_a_reference_not_exist(tmp_path):
+    """The eight rows, replayed: not one of them may reach ``no`` any more.
+
+    Nothing answers for either DOI and neither index lists the title. That is
+    exactly the evidence 0.9.0 had, and it printed "this reference does not
+    exist" about eight real papers. A row whose printed DOI is cut short is a
+    row about a reader, so the hardest verdict available to it is "not
+    located", and the sentence has to name the DOI the page prints so whoever
+    reads it looks there.
+    """
+    titled = [dict(SPLIT[0], title='Calcitonin gene-related peptide regulates '
+                                   'type IV hypersensitivity')]
+    net = Net([('/works/10.4049/jimmunol', 404), NO_HANDLE,
+               ('/works?', crossref_search([])), ('/search?', europepmc([]))])
+    row = split_doi_row(tmp_path, net, titled)
+    resolution = row['resolution']
+    assert resolution['exists'] == 'not located'
+    assert resolution['method'] == 'title-search'
+    assert resolution['repaired_dois'] == [WHOLE]
+    assert WHOLE in resolution['note']
+    assert 'check the DOI in the PDF' in resolution['note']
+    assert 'cut short' in cl.reference_problem(row)
+
+    # And with no title to search for — the shape seven of the eight have —
+    # the state is the same, by the repair leg alone.
+    bare = split_doi_row(tmp_path, Net([('/works/10.4049/jimmunol', 404), NO_HANDLE]),
+                         name='bare')['resolution']
+    assert bare['exists'] == 'not located'
+    assert bare['method'] == 'doi-repair'
+
+    # A lookup that did not answer about the repaired DOI is weaker still: the
+    # index was asked and said nothing, so the row knows less, not more.
+    quiet = split_doi_row(tmp_path, Net([('/works/10.4049/jimmunol', 404), NO_HANDLE],
+                                        fail=['/works/' + WHOLE]), name='quiet')['resolution']
+    assert quiet['exists'] == 'could not check'
+    assert 'that lookup did not answer' in quiet['note']
+
+    for state in (resolution, bare, quiet):
+        assert state['exists'] != 'no'
+
+
+def test_a_reference_nothing_could_be_asked_about_says_no_lookup_was_made(tmp_path):
+    """"The lookups did not answer" blamed two indexes for 55 rows nobody asked.
+
+    A reference this version read no DOI and no searchable title out of has no
+    question to put to an index. That is this module's own extraction falling
+    short, and the row has to say so: a reader of the report cannot tell a down
+    host from an empty row, and 0.9.0's wording said the hosts were asked.
+    """
+    nothing = [{'id': 'r1', 'label': '1', 'title': 'Ibid.', 'year': '2016',
+                'raw': '1. Ibid., p. 40.'}]
+    net = Net()
+    row = split_doi_row(tmp_path, net, nothing)
+    resolution = row['resolution']
+    assert resolution['exists'] == 'could not check'
+    assert resolution['looked_up'] is False
+    assert resolution['requests'] == [] and net.urls == [], 'nothing may be asked'
+    assert resolution['note'].startswith('No lookup was made for this reference')
+    assert 'no lookup was made' in cl.reference_problem(row)
+
+    ledger = cl.Ledger(tmp_path / 'review')
+    totals = cl.counts(ledger)
+    assert (totals['could_not_check'], totals['no_lookup']) == (1, 1)
+    problems = cl.problems(totals)
+    assert any('never looked up at all' in line for line in problems)
+    assert not any('the lookups did not answer' in line for line in problems)
+
+
+def test_the_doi_a_split_page_prints_is_recovered_and_prose_is_not_absorbed(tmp_path):
+    """Every one of the eight, as a string, plus the two shapes that must not grow.
+
+    The candidates come out of the raw reference text, not out of the DOI
+    field, because the field is the half that survived. A space is where the
+    DOI may continue, so what follows it decides: an identifier-shaped token
+    continues it, a word does not — otherwise the row would be looked up as
+    ``…jpain.2016.02.011Publisher's`` and the sentence after the reference
+    would become part of the identifier.
+    """
+    corpus = [
+        ('10.1016/j.jconrel.2016.01', '10.1016/j.jconrel.2016.01.026',
+         'Santiago G, Cha BH. Delivery strategies. J Controlled Release 2016;240:349-363. '
+         'https://doi.org/10.1016/j.jconrel.2016.01. 026'),
+        ('10.1097/ajp.0b013', '10.1097/ajp.0b013e31820e12f5',
+         'Goncalves DA. Temporomandibular disorders. Clin J Pain 2011;27(7):611-615. '
+         'https://doi.org/10.1097/AJP.0b013 e31820e12f5'),
+        ('10.3969/j.issn', '10.3969/j.issn.1672-7347.2010.02.002',
+         'Li Y. Effect of calcitonin. Zhong Nan Da Xue 2010;35(2):100-106. '
+         'https://doi.org/ 10.3969/j.issn. 1672-7347.2010.02.002'),
+        ('10.4049/jimmunol', '10.4049/jimmunol.1203102',
+         'Mikami N. CGRP and cAMP. J Immunol 2013;190(8):4046-4055. '
+         'https://doi.org/10.4049/jimmunol. 1203 102'),
+        ('10.1097/bor.00000', '10.1097/bor.0000000000000354',
+         'Miller RE. Nerve growth factor blockade. Curr Opin Rheumatol 2017;29(1):110-118. '
+         'https://doi.org/10.1097/bor.00000 00000000354'),
+        ('10.1016/j.celli', '10.1016/j.cellimm.2018.02.005',
+         "T'Jonck W. Niche signals. Cell Immunol 2018;330:43-53. "
+         'https://doi.org/10.1016/j.celli mm.2018.02.005'),
+        ('10.1016/j.jpain.2016.02.01', '10.1016/j.jpain.2016.02.011',
+         'Zhang H. Dorsal root ganglion infiltration. J Pain 2016;17(7):775-786. '
+         "https://doi. org/10.1016/j.jpain.2016.02.01 1 Publisher's Note Springer Nature "
+         'remains neutral with regard to jurisdictional claims'),
+        ('10.1007/978-3-6', '10.1007/978-3-662-54357-3_1',
+         '11. Bhushan, B. Introduction to nanotechnology. Springer handbook of '
+         'nanotechnology, 1-19. (2017). https://doi.org/10.1007/978-3-6 62-54357-3_1'),
+    ]
+    for printed, whole, raw in corpus:
+        assert whole in cl.doi_repairs(raw, printed), (printed, raw)
+
+    # The sentence after a reference is not part of its DOI, and a DOI that is
+    # whole already is not grown into the next token.
+    jpain = cl.doi_repairs(corpus[6][0], corpus[6][2])
+    assert all("publisher" not in candidate for candidate in jpain)
+    assert cl.doi_repairs('Lin M. ' + TITLE + '. 10.1234/replay. Replay was reported',
+                          '10.1234/replay') == []
+    # A DOI the raw text does not contain cannot be repaired from it: the
+    # hypothesis is about this page's own text layer and nothing else.
+    assert cl.doi_repairs('1. Lin M. ' + TITLE + '. Neuron 2019.', '10.1234/replay') == []

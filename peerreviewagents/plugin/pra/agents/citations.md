@@ -83,9 +83,10 @@ and how many there were, so a reader can tell a spot-check from a wave-through.
 - `exists: "yes"` means an index or a registration agency holds the work. The
   reference itself is not in question; its printed details still may be, and
   the ledger lists any that disagree with the record.
-- `exists: "no"` means the reference list gave a DOI as its own field and the
-  DOI resolver itself has no handle for it: doi.org, the service that would
-  redirect it, says it was never registered. That is the only claim of
+- `exists: "no"` means **checked and not found**, and every leg had to have
+  answered to say it: the reference list gave the DOI as its own field, the DOI
+  resolver itself has no handle for it, no registration agency holds it, and
+  both title searches answered and listed nothing. That is the only claim of
   non-existence the table makes and it is about the identifier, not the work.
   An index that simply does not hold the record is not this — it is `could not
   check`. **Treat the row as a lead, not a finding.** A DOI broken across a
@@ -95,15 +96,27 @@ and how many there were, so a reader can tell a spot-check from a wave-through.
   resolve. If the note says the DOI was read out of the reference text rather
   than given as a field, that caveat is already on the row and the check is
   not optional.
-- `exists: "not located"` means two indexes answered and neither lists a work
-  with this title. It is weak evidence, not a missing reference: books,
-  chapters, theses, standards, software and preprints outside Crossref and
-  Europe PMC land here while being perfectly real. Try `check_citation` or
-  `lookup_source` yourself; if it still does not resolve, report it as not
-  located rather than as fabricated.
-- `exists: "could not check"` means the lookups did not answer. It says
-  **nothing** about whether the work exists, and a finding that treats it as a
-  missing reference is wrong. Report it as unchecked.
+- `printed_doi_damaged: true` or a `repaired_doi` on the row means the DOI in
+  the reference field is cut short — the page prints it with a space inside it
+  and the reader kept only the half before the break. The resolver rejoined it
+  and looked the whole DOI up: with `repaired_doi` set, that whole DOI resolves
+  and the printed first author agrees with the record, so **the reference is
+  fine and the finding, if any, is about the extraction, not the authors**.
+  Without it, the rejoined DOI was tried and did not land. Either way the row
+  cannot be `no`, and the note names the DOI the page prints. Check it in the
+  PDF with `read_blocks` before you write anything about that reference.
+- `exists: "not located"` means an index answered and listed nothing. It is
+  weak evidence, not a missing reference: books, chapters, theses, standards,
+  software and preprints outside Crossref and Europe PMC land here while being
+  perfectly real. Try `check_citation` or `lookup_source` yourself; if it still
+  does not resolve, report it as not located rather than as fabricated.
+- `exists: "could not check"` means **no lookup was made, or none answered**.
+  `looked_up: false` is the first of those: this version read no DOI and no
+  searchable title out of the row, so nothing was ever asked — that is the
+  pipeline's reference parser falling short, not an index failing, and the
+  write-up should say so rather than blaming Crossref or Europe PMC. Either
+  way it says **nothing** about whether the work exists, and a finding that
+  treats it as a missing reference is wrong. Report it as unchecked.
 - `cannot tell` on a use row means the same thing one level down: no source
   text, so no judgement. Not a finding.
 
