@@ -213,13 +213,20 @@ model at all:
 1. **Fill.** `ingest` writes a row for every reference in the extracted list,
    whether or not it has a DOI, and a row for every sentence that cites one.
 2. **Resolve.** The server looks up *every* reference: a DOI against Crossref,
-   a reference without one by title against Crossref and then Europe PMC. Each
+   a reference without one by title against Crossref and then Europe PMC —
+   and where the reference list gives no title field, the title is read out of
+   the reference text itself, in the styles journals print, so the row is
+   asked about rather than filed as unchecked. Each
    row records `exists` in four states — yes, **no** (checked and not found),
    **not located** (an index answered and listed nothing) and **could not
    check** (no lookup was made, or none answered) — so a lookup that failed is
    never read as a reference that does not exist. A DOI the reader broke across
    a space is rejoined and looked up again before any of this is decided, and a
-   row whose printed DOI is cut short can never be `no`. Each row also carries
+   row whose printed DOI is cut short can never be `no`. A rejoined DOI no
+   index holds a record for is still asked of the DOI resolver and of its
+   registration agency, so a reference registered elsewhere is `yes`,
+   registered, with a note that its authors could not be corroborated because
+   no index this version reads holds its metadata. Each row also carries
    a per-field comparison of title, first author, year and venue, any retraction notice,
    and the abstract or open-access full text with the URL it came from. Every
    response is cached in the run folder, and the requests carry a generic

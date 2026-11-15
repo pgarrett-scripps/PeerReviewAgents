@@ -94,8 +94,37 @@ The five faults the SPOT re-run on 0.9.0 found, fixed. See
     counts split `no_lookup` out of `could_not_check`, and the report says
     which of the two it is — the reference parser falling short is not Crossref
     and Europe PMC failing.
+- **55 references were never looked up because the parser could not find their
+  titles.** The reference list gave no title field for them and this version
+  read titles out of the reference text in one style only, so a journal that
+  prints `Authors: Title. Venue year;vol(issue):pages` — 29 of control-
+  education's references — left the row with nothing to search for and an
+  honest but useless `could not check`. The parser now reads the title off the
+  reference text itself: the author block ends at the first run that stops
+  looking like names, the title is the sentence that follows, and the venue is
+  what follows that with the volume, issue, pages, month and the `In:` and
+  `Available from:` leads stripped. It keeps the title whole where the
+  reference's own punctuation would cut it — a colon inside a title, a question
+  mark mid-title, a word ending in an abbreviation — and refuses the parse
+  outright where the boundary lands inside the author list, because a wrong
+  title searched is worse than no title. Offline over the 325 reference rows of
+  the seven 0.9.0 runs, titles go from 252 to 322: 70 rows recover one, all 70
+  searchable, and 52 of the 55 rows that had neither title nor DOI can now be
+  asked about. The 3 that remain are institutional and legal references with no
+  title to read — an FAO report, an EU regulation, a chapter cited by book.
+  - A title read off the reference text is never reported as the paper printing
+    a different title from the record's. It is this version's guess at where
+    the title ends, and a finding about the authors cannot rest on a guess;
+    `printed['extracted']['title']` says which rows those are.
+  - A rejoined DOI that Crossref holds no record for is now asked of its
+    registration agency and of the DOI resolver's handle API before the row is
+    given up. A DOI registered with an agency neither index covers — 0.9.0's
+    `10.3969/j.issn.1672-7347.2010.02.002` is one — resolves as `yes`,
+    registered, with no record and a note that the printed authors could not be
+    corroborated because no index this version reads holds its metadata. The
+    corroboration rule for *taking* a record is unchanged.
 
-## [0.9.0] — unreleased
+## [0.9.0] — 2026-11-14
 
 The review is a Claude Code plugin. The Python orchestration that ran one
 through 0.8.x is deleted, not deprecated: 90 files and about 14,800 lines went,

@@ -232,6 +232,51 @@ REPAIR_TOKENS = 3
 _PMCID = re.compile(r'^PMC\d{1,12}$', re.IGNORECASE)
 #: Initials, printed either side of a family name: ``JA``, ``J.A.``, ``J. A.``
 _INITIALS = re.compile(r'^(?:[A-Z]\.?){1,3}$')
+#: One word in an author block: a family name, possibly hyphenated or
+#: apostrophed, or the particle in ``del Río``. Initials are matched by
+#: :data:`_INITIALS`; a word with a digit in it is not a name.
+_NAME_WORD = re.compile(r"^[^\W\d_][\w'’.-]*$", re.UNICODE)
+#: Words an author block carries that are not names: the Latin, the suffixes.
+_NAME_EXTRAS = frozenset(('et', 'al', 'al.', 'jr', 'jr.', 'sr', 'sr.', 'ii', 'iii', 'iv',
+                          'van', 'von', 'der', 'den', 'de', 'del', 'la', 'le', 'dos', 'da'))
+#: How much of a reference an author block may be. Past this the match is a
+#: sentence that happens to be capitalized, not a list of names.
+AUTHOR_BLOCK_LIMIT = 400
+#: A full stop inside an author block that opens a word rather than closing an
+#: initial. ``Alganem K, et al. Kaleidoscope: a new bioinformatics pipeline``
+#: puts one before the colon, so reading the colon as the end of the authors
+#: left the title's first word on the authors' side of it. A style whose
+#: boundary is a colon or a bracketed year is refused where its author side
+#: holds one of these; the style that *ends* its authors with a full stop is
+#: not, because there every internal stop closes an initial.
+_STOP_INSIDE = re.compile(r'\.\s+(?![A-Z]\.?(?:[\s,&]|$))')
+#: A full stop followed by a small-letter word that carries a capital of its
+#: own — ``bioRxiv``, ``eLife``, ``mBio``, ``arXiv``. See
+#: :func:`_small_letter_venue`.
+_SMALL_VENUE = re.compile(r'\.\s+(?=[a-z][\w’\'-]*[A-Z])', re.UNICODE)
+#: What a conference reference puts in front of its venue: ``In Proc. of …``.
+#: The indexed record's container title does not carry it.
+_VENUE_LEAD = re.compile(r'^(?:in|at)\s+', re.IGNORECASE)
+#: The month a proceedings reference prints after the venue, once the year has
+#: been cut off the end: ``…, Turin, Italy, September``.
+_VENUE_MONTH = re.compile(
+    r'[\s,]*(?:january|february|march|april|may|june|july|august|september|october|november|'
+    r'december|spring|summer|autumn|winter)\s*$', re.IGNORECASE)
+#: Where each reference style puts the boundary between the authors and the
+#: title. One of these is tried per reference, in order, and the first whose
+#: author side really is a list of names wins — see :func:`_author_block`.
+#:
+#: The colon style, which the 0.9.0 corpus's BMC paper prints 29 times:
+#: ``McLachlan JC, Patten D: Anatomy teaching: ghosts of the past. Medical
+#: education 2006, 40(3):243-253.`` The title's own colons are after the
+#: authors', so the match stops at the first one.
+_COLON_SHAPE = re.compile(r'^(?P<authors>[^:?!]{3,250}?):\s+(?P<rest>\S.*)$', re.DOTALL)
+#: The author-year style, which the corpus's Springer paper prints 33 times:
+#: ``Ren K (1999) An improved method for assessing mechanical allodynia in the
+#: rat. Physiol Behav 67(5):711–716.``
+_YEAR_SHAPE = re.compile(
+    r'^(?P<authors>[^()]{3,300}?)\(\s*(?:1[89]|20)\d{2}[a-z]?\s*\)[\s.:]*(?P<rest>\S.*)$',
+    re.DOTALL)
 #: A title that opens with the name of a notice *about* a work.
 _NOT_THE_WORK = re.compile(
     r'^\s*(?:correction|corrigend|erratum|errata|retraction|retracted|withdrawal|withdrawn|'
@@ -294,6 +339,9 @@ _SENTENCE_SPLIT = re.compile(r'(?<=[.!?”"])\s+(?=[(\[“"A-Z0-9])')
 _ABBREVIATIONS = ('et al.', 'e.g.', 'i.e.', 'cf.', 'vs.', 'viz.', 'approx.', 'ca.', 'ref.',
                   'refs.', 'fig.', 'figs.', 'eq.', 'eqs.', 'tab.', 'no.', 'vol.', 'pp.',
                   'dr.', 'prof.', 'st.', 'al.')
+#: Those abbreviations where a word starts, for :func:`sentences`.
+_ABBREVIATION_GUARD = re.compile(
+    r'\b(?:' + '|'.join(re.escape(one) for one in _ABBREVIATIONS) + r')', re.IGNORECASE)
 _TAGS = re.compile(r'<[^>]+>')
 _SPACE = re.compile(r'\s+')
 #: Block kinds whose text is prose a citation can sit in.
@@ -538,17 +586,217 @@ def _venue_like(text):
     return bool(re.search(r'[^\W\d_]{3,}', body, re.UNICODE))
 
 
+def _name_shaped(text):
+    """Whether one comma-separated piece of an author list is a name.
+
+    A name is at most four words — a family name, its initials or given names,
+    and the particle on ``de Lima`` — every one of them capitalized or an
+    initial, with no digit and no sentence punctuation anywhere in it.
+    """
+    body = squeeze(text).rstrip('.,;')
+    if not body or re.search(r'[\d:;?!/()\[\]]', body):
+        return False
+    words = [word for word in body.split() if word]
+    if not words or len(words) > 4:
+        return False
+    for word in words:
+        if _INITIALS.match(word) or word.lower().strip('.') in _NAME_EXTRAS:
+            continue
+        if not (_NAME_WORD.match(word) and word[:1].isupper()):
+            return False
+    return True
+
+
+def _author_block(text):
+    """Whether a string read off a reference list is a list of names and nothing else.
+
+    This is the guard on every reference style below: each one finds a
+    boundary — a colon, a bracketed year, a full stop — and the boundary only
+    means "the authors end here" if what comes before it really is an author
+    list. Without the guard, ``Anatomy teaching: ghosts of the past`` reads as
+    an author block called *Anatomy teaching*, and the title this module then
+    sends to a bibliographic index is half a title.
+
+    A name list has no digits, no sentence punctuation and no URL in it, and
+    each comma-separated piece is a family name with initials or given names
+    beside it — at most four words. At least one piece must carry initials or
+    the list must be punctuated as a list, because two capitalized words on
+    their own are as likely to be the opening of a title.
+    """
+    body = squeeze(text).rstrip('.,;')
+    if not body or len(body) > AUTHOR_BLOCK_LIMIT or re.search(r'[\d:;?!/()\[\]]', body):
+        return False
+    initialed = False
+    for piece in re.split(r',|&|\band\b', body):
+        if not piece.strip():
+            continue
+        if not _name_shaped(piece):
+            return False
+        initialed = initialed or any(_INITIALS.match(word) for word in piece.split())
+    return initialed or ',' in body or '&' in body
+
+
+def _names_run(text, pieces=2):
+    """Whether a string opens with two comma-separated names, and so is a name list.
+
+    This is what tells a title from the rest of an author list the style's own
+    boundary landed in the middle of. ``Andre Tavora de A. Silva, Claudio
+    Ferreira Dias, …`` has a full stop after an initial in the middle of it,
+    and the text after that stop opens with two names, so it is not a title and
+    the style is refused rather than half-read.
+    """
+    parts = [part.strip() for part in squeeze(text).split(',') if part.strip()]
+    if len(parts) < pieces:
+        return False
+    return all(_name_shaped(part) for part in parts[:pieces])
+
+
+def _title_like(text):
+    """Whether a string read off a reference list can be the title of a work.
+
+    A volume and page range, a bare year and a URL all sit where a title sits
+    in one style or another, and each of them searched as a title returns an
+    index's nearest neighbours to nothing. A title is words.
+    """
+    body = squeeze(text)
+    if len(normal(body)) < MIN_SEARCH_TITLE or body.lower().startswith(('http', 'doi:')):
+        return False
+    words = re.findall(r"[^\W\d_][\w'’-]*", body, re.UNICODE)
+    letters = re.findall(r'[^\W\d_]', body, re.UNICODE)
+    return len(words) >= 3 and len(letters) > len(re.findall(r'\d', body))
+
+
+def _venue_after(text):
+    """The venue in the sentence a reference prints after its title, or ``None``.
+
+    Everything from the volume on is cut: the sentence is ``Medical education
+    2006, 40(3):243-253`` or ``J Controlled Release 240:349–363. https://doi…``,
+    and a venue that carried the volume into it disagreed with every indexed
+    journal name.
+
+    What is left is read as one string rather than sentence by sentence,
+    because an abbreviated journal is several sentences to :func:`sentences`:
+    ``J. Antimicrob. Chemother. 72, 3288–3297`` is four, and only the whole of
+    it is the journal's name.
+    """
+    body = squeeze(re.split(r'\s(?=\d+\b)|https?://', squeeze(text), maxsplit=1)[0], 200)
+    body = _VENUE_MONTH.sub('', _VENUE_LEAD.sub('', body)).strip(' ,;:.')
+    return body if _venue_like(body) else None
+
+
+def _small_letter_venue(title):
+    """A title that ran on into a venue spelled with a small first letter, split in two.
+
+    :func:`sentences` ends a sentence only where a capital follows, because a
+    small letter after a full stop is an abbreviation in prose far more often
+    than it is a new sentence. A reference list prints ``… omics signatures.
+    bioRxiv, 2020:2020.05.01.070805``, and ``bioRxiv``, ``eLife``, ``mBio`` and
+    ``arXiv`` all begin with a small letter, so the venue stayed inside the
+    title and the row was left with no venue at all. Only a tail whose first
+    word carries a capital of its own — the mark of exactly those names — is
+    cut, and only here, where the sentence is already known to be a title.
+    """
+    for found in _SMALL_VENUE.finditer(title):
+        head = squeeze(title[:found.start()])
+        venue = _venue_after(title[found.end():])
+        if venue is not None and _title_like(head):
+            return head, venue
+    return None
+
+
+def _split_title(authors, rest):
+    """One recognized reference style as ``(author, title, venue)``, or ``None``.
+
+    The title is the first sentence after the authors, read by
+    :func:`sentences` so that an abbreviation or an initial inside it does not
+    end it early. Where that sentence is not title-shaped the whole style is
+    refused: a style half-read is worse than a style not read, because the
+    half is what gets searched and compared.
+    """
+    parts = sentences(rest)
+    title = squeeze(parts[0]) if parts else ''
+    if not _title_like(title) or _names_run(title):
+        return None
+    tail = parts[1:]
+    if (title.endswith(('?', '!')) and len(tail) > 1 and not re.search(r'\d', tail[0])
+            and not _names_run(tail[0])):
+        # A question mark inside a title ends a sentence without ending the
+        # title: ``Can virtual reality improve anatomy education? A randomised
+        # controlled study … ear model. Medical education 2006, 40(3):1081``.
+        # Without this the second half of the title became the venue, and a
+        # venue no journal matches is a mismatch finding about a correctly
+        # cited paper. A sentence carrying a volume or a year is the venue's,
+        # so the title only grows into one that carries neither.
+        title = squeeze(title + ' ' + tail[0])
+        tail = tail[1:]
+    venue = _venue_after(' '.join(tail)) if tail else None
+    if venue is None:
+        split = _small_letter_venue(title)
+        if split is not None:
+            title, venue = split
+    return surname(authors), title, venue
+
+
+def _sentence_shape(text):
+    """The style that ends its author list with a full stop, as ``_split_title``.
+
+    ``Trinder, P. Determination of glucose in blood using glucose oxidase with
+    an alternative oxygen acceptor. Ann. Clin. Biochem. 6 (1), 24–27 (1969).``
+    and the IEEE style the corpus's engineering paper prints are both this.
+
+    Every full stop is tried and the **last** one whose left side is still an
+    author list wins, because an author list is full of full stops: splitting
+    at the first would read ``Roberts, R.`` as the authors and ``J., Smail, D.
+    A. & Munro, E. S. Fish Pathology`` as the title.
+    """
+    found = None
+    for match in re.finditer(r'\.\s+(?=[(\[“"A-Z0-9])', text):
+        authors = text[:match.start() + 1]
+        if len(authors) > AUTHOR_BLOCK_LIMIT:
+            break
+        if _author_block(authors):
+            found = (authors, text[match.end():])
+    return _split_title(*found) if found else None
+
+
+def _reference_shape(text):
+    """One reference as ``(author, title, venue)`` where its style is known.
+
+    The reference styles this module can read, tried in order, each guarded by
+    :func:`_author_block`. ``None`` where the reference is in none of them —
+    and then the fields it would have filled stay unread rather than guessed.
+    """
+    for pattern in (_COLON_SHAPE, _YEAR_SHAPE):
+        match = pattern.match(text)
+        if match and not _STOP_INSIDE.search(match.group('authors')) and _author_block(
+                match.group('authors')):
+            shape = _split_title(match.group('authors'), match.group('rest'))
+            if shape is not None:
+                return shape
+    return _sentence_shape(text)
+
+
 def _printed_from_raw(raw):
-    """First author and venue read off a reference's raw string, or ``None``.
+    """First author, title and venue read off a reference's raw string.
 
     A reference list is prose and this is a heuristic over it, so a part it
     cannot find stays ``None`` and the comparison for that part answers "could
     not compare" rather than "does not match". Guessing here would turn a
     reference-list style this code does not know into a finding about the paper.
+
+    Where the reference is in a style :func:`_reference_shape` reads, all three
+    parts come from that style's own boundaries. That is the only way a title
+    is ever read off the raw string: a reference whose title the ingest did not
+    carry used to have nothing to search for, so nothing was asked about it and
+    it could not be checked at all — 55 of the 325 references in the 0.9.0
+    corpus, every one of them a real, findable paper.
     """
     text = _LABEL.sub('', squeeze(raw))
     if not text:
-        return None, None
+        return None, None, None
+    shape = _reference_shape(text)
+    if shape is not None:
+        return shape
     parts = [part.strip() for part in text.split('.') if part.strip()]
     author = surname(parts[0]) if parts else None
     venue = None
@@ -557,7 +805,7 @@ def _printed_from_raw(raw):
             candidate = squeeze(re.split(r',\s*(?:1[89]|20)\d{2}', part)[0], 200)
             venue = candidate if _venue_like(candidate) else None
             break
-    return author, venue
+    return author, None, venue
 
 
 def _printed_year(reference):
@@ -585,14 +833,18 @@ def _printed_year(reference):
 
 
 def sentences(text):
-    """One block's text as sentences, keeping abbreviations whole."""
+    """One block's text as sentences, keeping abbreviations whole.
+
+    The abbreviation guard matches at a word boundary. Replacing the plain
+    string put the guard inside every word that happens to end in one of them:
+    ``a randomized trial.`` ends in ``al.``, so its full stop was hidden and
+    the sentence ran on into the next one. Every citing sentence ending in
+    *trial*, *total* or *clinical* was read joined to its neighbour.
+    """
     body = squeeze(text)
     if not body:
         return []
-    guarded = body
-    for abbreviation in _ABBREVIATIONS:
-        for form in (abbreviation, abbreviation.capitalize(), abbreviation.upper()):
-            guarded = guarded.replace(form, form.replace('.', '\x00'))
+    guarded = _ABBREVIATION_GUARD.sub(lambda found: found.group(0).replace('.', '\x00'), body)
     return [part.replace('\x00', '.').strip()
             for part in _SENTENCE_SPLIT.split(guarded) if part.strip()]
 
@@ -658,9 +910,10 @@ def reference_rows(paper):
         identifier = reference.get('id')
         if not identifier:
             continue
-        author, venue = _printed_from_raw(reference.get('raw'))
+        author, title, venue = _printed_from_raw(reference.get('raw'))
         year, suffix = _printed_year(reference)
         given_author = surname(reference.get('first_author'))
+        given_title = squeeze(reference.get('title')) or None
         given_venue = squeeze(reference.get('venue') or reference.get('journal')) or None
         # Every DOI goes through :func:`doi_in`, whatever carried it. The
         # ingest's own `doi` field used to be trusted on shape alone, so a
@@ -678,7 +931,7 @@ def reference_rows(paper):
             'label': squeeze(reference.get('label')) or None,
             'raw': squeeze(reference.get('raw'), RAW_LIMIT) or None,
             'printed': {
-                'title': squeeze(reference.get('title')) or None,
+                'title': given_title or title,
                 'year': year,
                 'year_suffix': suffix,
                 'first_author': given_author or author,
@@ -691,7 +944,7 @@ def reference_rows(paper):
                 # guess unless the record it is comparing against is certainly
                 # the cited work. An unsure extraction is "not compared".
                 'extracted': {
-                    'title': 'reference' if squeeze(reference.get('title')) else None,
+                    'title': 'reference' if given_title else ('raw' if title else None),
                     'year': 'reference' if year else None,
                     'first_author': ('reference' if given_author
                                      else ('raw' if author else None)),
@@ -1856,6 +2109,15 @@ def _compare(printed, record, confident=True):
     raw reference string — see ``printed['extracted']`` — answers ``None``
     instead of ``False``. Two unsure readings disagreeing is not evidence about
     the paper, and a mismatch raised on one is a finding about a regex.
+
+    A **title** this module read off the raw string answers ``None`` whatever
+    the record is, confident or not. Where a reference list prints no title
+    field, the title is this module's reading of a sentence boundary in a text
+    layer — the whole of :func:`_reference_shape` is about which sentence that
+    is — and "the paper printed a title that disagrees with its own DOI" is one
+    of the loudest things this table can say. It may not be said on a guess.
+    The guessed title is still what gets searched, and still what corroborates
+    a search hit; it is only never the evidence in a mismatch.
     """
     out = {}
     extracted = (printed.get('extracted') or {}) if isinstance(printed, dict) else {}
@@ -1871,7 +2133,8 @@ def _compare(printed, record, confident=True):
             out[field] = surname(mine) == surname(theirs)
         else:
             out[field] = _venue_same(mine, theirs)
-        if out[field] is False and extracted.get(field) == 'raw' and not confident:
+        if out[field] is False and extracted.get(field) == 'raw' and (
+                not confident or field == 'title'):
             out[field] = None
     return out
 
@@ -2167,6 +2430,60 @@ def _damaged_note(repairs, answered=True):
             'from here, so check the DOI in the PDF rather than reporting it.')
 
 
+def _repaired_registered_note(candidate, where):
+    """What a repaired DOI that exists without a metadata record means, as a sentence.
+
+    Two routes can say a repaired DOI is registered and neither hands over
+    metadata, so both print this: the identifier in the row is not the
+    identifier on the page, the whole DOI is live, and — the part a reader must
+    not have to infer — the printed authors were never corroborated against it,
+    because no index this version reads holds anything to corroborate them
+    against.
+    """
+    return ('The DOI the reference list gives is cut short — the page prints it with a space '
+            'inside it, which the reader lost. Joining it back up gives ' + candidate
+            + ', which Crossref holds no record of, but ' + where + ', so that whole DOI '
+              'exists. The printed authors could not be corroborated against it, because no '
+              'index this version reads holds its metadata. This is about the reader, not '
+              'about the paper.')
+
+
+def _repaired_registration(candidate, lookups, resolution):
+    """Whether a repaired DOI that Crossref does not hold is registered at all.
+
+    Answers ``(registered, failed)``. Crossref holding no record of a DOI is
+    not the DOI system's answer about it, so the two routes the printed-DOI leg
+    already uses are asked here as well: who registered it, and then the
+    resolver's own handle. ``10.3969/j.issn.1672-7347.2010.02.002`` is one of
+    the eight DOIs the 0.9.0 reader broke; rejoined it is 404 at Crossref and
+    has a handle at the resolver, because another agency registered it. Without
+    these routes the repair leg left that correctly repaired, live DOI sitting
+    at "not located".
+
+    A registered candidate ends the leg with ``exists: 'yes'`` and **no
+    record**: there is nothing to compare the printed details against, and
+    nothing to judge a passage from either.
+    """
+    agency_url = crossref_agency_url(candidate)
+    answer = lookups.fetch(agency_url)
+    resolution['requests'].append({'url': agency_url, 'status': answer.get('status')})
+    agency = _agency_in(answer) if answer.get('status') == 'ok' else None
+    if agency:
+        resolution.update(exists='yes', method='doi-repaired-agency', registered_with=agency,
+                          source_url=agency_url, repaired_doi=candidate)
+        resolution['note'] = _repaired_registered_note(candidate, agency + ' registered it')
+        return True, 0
+    resolves = _handle_leg(candidate, lookups, resolution)
+    if resolves is True:
+        resolution.update(exists='yes', method='doi-repaired-handle', repaired_doi=candidate)
+        resolution['note'] = _repaired_registered_note(
+            candidate, 'the DOI resolver has a handle for it, so some agency registered it')
+        return True, 0
+    if resolves is False:
+        return False, 0
+    return False, 1
+
+
 def _repair_leg(printed, repairs, lookups, resolution):
     """Crossref for each DOI the reference may be printing, once the printed one failed.
 
@@ -2183,6 +2500,12 @@ def _repair_leg(printed, repairs, lookups, resolution):
     than no record — its abstract becomes the source text every verdict about
     that reference is judged against.
 
+    A candidate Crossref holds no record of is not finished with: the agency
+    route and the DOI resolver are asked about it too
+    (:func:`_repaired_registration`), because "Crossref does not have it" and
+    "there is no such DOI" are different answers and only the resolver gives
+    the second one.
+
     Whatever the answer, the row keeps the candidates it tried, and a row with
     any candidate at all can no longer be called non-existent: a DOI the reader
     broke and a DOI the paper printed wrongly are indistinguishable from the
@@ -2197,6 +2520,10 @@ def _repair_leg(printed, repairs, lookups, resolution):
         answer = lookups.fetch(url)
         resolution['requests'].append({'url': url, 'status': answer.get('status')})
         if answer.get('status') == 'not_found':
+            registered, quiet = _repaired_registration(candidate, lookups, resolution)
+            if registered:
+                return None, failed
+            failed += quiet
             continue
         if answer.get('status') != 'ok':
             failed += 1
@@ -2283,7 +2610,8 @@ def resolve_reference(row, lookups):
 
     Order: the DOI the paper printed — at Crossref, then at whichever agency
     registered it — then, if the raw reference text shows that DOI broken
-    across a space, the repaired DOI at Crossref (:func:`doi_repairs`), then a
+    across a space, the repaired DOI at Crossref and then at the agencies and
+    the DOI resolver (:func:`doi_repairs`), then a
     bibliographic title search at Crossref and the same at Europe PMC. A DOI
     Crossref does not hold does not end the question: a typo in a real paper's
     DOI is common, a reader that loses spaces breaks DOIs as readily as words,
@@ -2311,9 +2639,10 @@ def resolve_reference(row, lookups):
         resolver answers "no such handle" to both, truthfully, and only one of
         them is about the paper. Nor can a DOI the *reader* broke:
         :func:`doi_repairs` reads the raw string for a space inside the
-        identifier, the candidates are looked up at Crossref
-        (:func:`_repair_leg`), and a row with any candidate at all is never
-        ``no``. Every reference the 0.9.0 corpus called non-existent was one of
+        identifier, the candidates are looked up at Crossref and, where
+        Crossref has no record, at the registration agencies and the DOI
+        resolver (:func:`_repair_leg`), and a row with any candidate at all is
+        never ``no``. Every reference the 0.9.0 corpus called non-existent was one of
         those.
     ``not located``
         A lookup ran and came back empty. Both indexes answered and neither
