@@ -7,11 +7,33 @@ that made the plugin the only way to run a review.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.9.1] — 2026-11-14
 
 The five faults the SPOT re-run on 0.9.0 found, fixed, plus one the fixes
-uncovered. See [`docs/SPOT_0.9.0.md`](docs/SPOT_0.9.0.md) for the run they come
-from.
+uncovered — pull requests #47 through #52. See
+[`docs/SPOT_0.9.0.md`](docs/SPOT_0.9.0.md) for the run they come from; that
+document is the record of the 0.9.0 run and is left as it was.
+
+**Every number in this release is an offline replay, not a new review.** Each
+one was measured by running the fixed code over the saved manuscripts and
+citation ledgers of the seven SPOT 0.9.0 runs — the same 325 reference rows and
+434 in-text uses — with each lookup answered live once and then from that cache.
+**No model was run, no paper was re-reviewed and no verdict was re-judged.** The
+numbers say what this release's reference stage gets from those PDFs, which is
+not the same claim as what a 0.9.1 review will report.
+
+### Changed
+
+- **The pinned reader is `rustypaper==0.2.4`**, up from 0.2.3. Two of the faults
+  below are the reader's and are now fixed at the source as well as guarded
+  here: across the fourteen-paper pilot 0.2.4 takes reference entries whose
+  `year` field disagrees with the year printed in the entry from 35 to 0, broken
+  DOIs from 4 to 1, and running-header text inside entries from 2 to 0. The
+  guards in the citation ledger stay — they are about what the table may assert
+  against a paper on a reading it is not sure of, whatever reader produced it —
+  but with this pin they should seldom have anything to do. The pin is exact
+  because every run manifest records the converter version and compares it when
+  resuming.
 
 ### Fixed
 
