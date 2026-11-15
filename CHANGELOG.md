@@ -61,6 +61,39 @@ The five faults the SPOT re-run on 0.9.0 found, fixed. See
   Every `submit_report` call, taken or refused, is now a row in
   `<run>/review/closures.jsonl` with the slot, the attempt and the refusal
   text.
+- **Eight real papers were reported as references that do not exist.** All
+  eight of the 0.9.0 corpus's `exists: no` rows are one accident, and it is the
+  reader's: the PDF text layer prints the DOI with a space inside it
+  (`https://doi.org/10.4049/jimmunol. 1203102`), the reference's own `doi`
+  field kept only the half before the break, and because those references print
+  no title to fall back on, a 404 from the DOI handle API was the only evidence
+  the row had. The papers are real and their DOIs are on their pages.
+  - `no` now means *checked and not found* and requires every leg to have
+    answered: a DOI the reference list gives as its own field, no handle at
+    doi.org, no registration agency, and both title searches answered and
+    empty. A handle 404 on its own, with nothing to search for, is no longer
+    enough.
+  - The resolver repairs the obvious damage before deciding anything. Using the
+    row's own raw reference text it rejoins the printed DOI across the space
+    the reader lost (up to three following tokens, stopping at the first word
+    that is prose rather than identifier, so `Publisher's Note` is never
+    absorbed) and looks each candidate up at Crossref. A record is taken only
+    where the printed first author agrees with it: joining across a space can
+    land on somebody else's real paper, and a wrong record here becomes the
+    source text every verdict about that reference is judged from. A taken
+    record resolves the row as `doi-repaired` and raises no DOI mismatch
+    against the paper; a refused one is kept on the row as `repairs_refused`.
+    A row with any candidate at all can never be `no`, and its note names the
+    DOI the page prints so a human can check the PDF. Offline against the
+    0.9.0 runs, this recovers the printed DOI for 8 of the 8 rows, and under a
+    replay where every lookup answers 404 none of the eight can reach `no`.
+  - `could not check` was one sentence for two different facts, and 55 rows of
+    the corpus got the wrong one: "the lookups did not answer" was printed
+    about rows where no lookup had been made, because this version read no DOI
+    and no searchable title out of them. The row now carries `looked_up`, the
+    counts split `no_lookup` out of `could_not_check`, and the report says
+    which of the two it is — the reference parser falling short is not Crossref
+    and Europe PMC failing.
 
 ## [0.9.0] — unreleased
 

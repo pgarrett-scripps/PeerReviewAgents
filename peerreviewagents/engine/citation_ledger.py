@@ -93,17 +93,25 @@ NO_SOURCE_VERDICT = 'cannot tell'
 #:
 #: ``yes``
 #:     a record for it was retrieved.
-#: ``no``
-#:     the paper printed a DOI and no registration agency has registered it.
-#:     The strongest thing this table says, and the only existence claim in it.
+#: ``no`` — checked and not found
+#:     the paper printed a DOI, it is shaped like a DOI, the reader did not
+#:     break it, no registration agency has registered it, the DOI resolver has
+#:     no handle for it, and a title search at both indexes came back empty.
+#:     The strongest thing this table says, the only existence claim in it, and
+#:     it needs every one of those legs — see :func:`resolve_reference`.
 #: ``not located``
-#:     two bibliographic indexes answered and neither listed a work with this
-#:     title. Weak evidence: books, chapters, theses, software, standards and
-#:     preprints outside Crossref and Europe PMC land here while being perfectly
-#:     real. It is not a claim that the work does not exist.
-#: ``could not check``
-#:     a lookup did not answer, or answered with a body in a shape this version
-#:     cannot read. It says nothing at all.
+#:     a lookup ran and came back empty: two bibliographic indexes answered and
+#:     neither listed a work with this title, or a repaired DOI was looked up
+#:     and nothing the printed authors agree with came back. Weak evidence:
+#:     books, chapters, theses, software, standards and preprints outside
+#:     Crossref and Europe PMC land here while being perfectly real. It is not
+#:     a claim that the work does not exist.
+#: ``could not check`` — no lookup was made, or none answered
+#:     either nothing was asked, because the row holds no DOI this version can
+#:     put in a URL and no title long enough to search for, or something was
+#:     asked and did not answer, or answered with a body in a shape this version
+#:     cannot read. It says nothing at all about the work, and the resolution's
+#:     ``looked_up`` says which of the two it was.
 EXISTENCE = ('yes', 'no', 'not located', 'could not check')
 NOT_LOCATED = 'not located'
 COULD_NOT_CHECK = 'could not check'
@@ -211,6 +219,15 @@ EUROPEPMC_FULL_TEXT = 'https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/
 _DOI = re.compile(r'\b(10\.\d{4,9}/[^\s"<>,;]+)', re.IGNORECASE)
 #: What a DOI looks like, for anything that goes into a URL path.
 _DOI_SHAPE = re.compile(r'^10\.\d{4,9}/\S{3,}$')
+#: The rest of a DOI a reader broke in two: an optional separator the DOI's own
+#: last character would have been, the space the reader put in, and the token
+#: after it. ``10.1016/j.jconrel.2016.01. 026`` and ``10.1097/AJP.0b013
+#: e31820e12f5`` are both this shape, with and without the separator.
+_DOI_TAIL = re.compile(r'^([./\-_]?)[ \t]+([0-9A-Za-z][0-9A-Za-z./_()-]*)')
+#: How many tokens past the break :func:`doi_repairs` will absorb. A reader
+#: that broke a DOI once usually broke it once; ``jimmunol. 1203 102`` is the
+#: shape that needs two, and nothing in the 0.9.0 corpus needs three.
+REPAIR_TOKENS = 3
 #: What a Europe PMC full-text identifier looks like, for the same reason.
 _PMCID = re.compile(r'^PMC\d{1,12}$', re.IGNORECASE)
 #: Initials, printed either side of a family name: ``JA``, ``J.A.``, ``J. A.``
@@ -409,6 +426,69 @@ def doi_in(text):
     if not _DOI_SHAPE.match(trimmed):
         return None
     return clean_doi(trimmed)
+
+
+def _continues_doi(token):
+    """Whether one whitespace-separated token can be the rest of a broken DOI.
+
+    The question is only ever asked about the token immediately after a DOI
+    that did not resolve, and the answer decides whether one more lookup is
+    spent. Two things disqualify a token: length, because a DOI suffix is not a
+    sentence, and being a word — a run of four or more letters with no digit in
+    it is prose, which is how ``…2016.02.01 1 Publisher's Note Springer…``
+    stops after the ``1`` instead of swallowing the publisher's boilerplate.
+    Short all-letter tokens stay eligible: ``10.1016/j.celli mm.2018.02.005``
+    needs the ``mm``.
+    """
+    body = str(token or '')
+    if not body or len(body) > 40:
+        return False
+    return not (body.isalpha() and len(body) > 3)
+
+
+def doi_repairs(raw, doi, limit=REPAIR_TOKENS):
+    """The DOIs a reference may be printing, when a space broke the one it printed.
+
+    A PDF reader that loses a space inside a word loses it inside a DOI too,
+    and the half before the break is a well-shaped identifier belonging to
+    nobody: ``10.1016/j.jconrel.2016.01`` for a page that prints
+    ``10.1016/j.jconrel.2016.01. 026``. Every reference in the 0.9.0 corpus
+    that the ledger called non-existent is that shape, and seven of the eight
+    are in one paper whose text layer breaks ordinary words the same way
+    (``block-ade``, ``tran-scription``).
+
+    This answers the candidates, in the order the break would have to be
+    repaired — one token absorbed, then two — never the printed DOI itself, and
+    never a guess about whether any of them is real. :func:`resolve_reference`
+    looks each one up and takes a record only where the printed authors
+    corroborate it, because joining a DOI across a space can land on somebody
+    else's paper. Where the raw string does not show the printed DOI continuing
+    after a space, this is empty and nothing extra is looked up.
+
+    It is deliberately not :func:`clean_doi`'s job. That function refuses a DOI
+    with a space in it, and must keep refusing: a string with a space is not an
+    identifier, and stripping the space there would have every caller silently
+    inventing one. Repairing a break is a hypothesis about a reader, made once,
+    recorded in the row, and checked against an index.
+    """
+    base = clean_doi(doi)
+    body = squeeze(raw)
+    if not base or not body:
+        return []
+    where = body.casefold().find(base)
+    if where < 0:
+        return []
+    tail, grown, repairs = body[where + len(base):], base, []
+    while len(repairs) < max(0, int(limit)):
+        match = _DOI_TAIL.match(tail)
+        if not match or not _continues_doi(match.group(2)):
+            break
+        grown = grown + match.group(1) + match.group(2)
+        tail = tail[match.end():]
+        candidate = clean_doi(grown)
+        if candidate and candidate != base and candidate not in repairs:
+            repairs.append(candidate)
+    return repairs
 
 
 def surname(name):
@@ -2061,6 +2141,86 @@ def _doi_leg(doi, lookups, resolution):
     return None, 0 if answer.get('status') == 'not_found' else 1
 
 
+def _damaged_note(repairs, answered=True):
+    """What a DOI the reader broke means, as a sentence, once a repair was tried.
+
+    Written once, because every state that can follow a broken DOI prints it:
+    the note has to say that the identifier in the row is not the identifier on
+    the page, name what the page prints, and keep the blame off the paper.
+
+    ``answered`` is False when the repaired DOI was looked up and the index did
+    not answer. Then the sentence may not say that no record agrees with the
+    printed authors, because nothing was learned either way — the difference
+    between "asked and told no" and "asked and got nothing" is the whole point
+    of keeping ``not located`` and ``could not check`` apart.
+    """
+    if not repairs:
+        return ''
+    opening = (' The DOI the reference list gives is cut short — the page prints it with a space '
+               'inside it, which the reader lost — so it was also looked up as '
+               + ', '.join(repairs))
+    if not answered:
+        return (opening + ', and that lookup did not answer, so nothing is known about the '
+                'repaired DOI either. Check the DOI in the PDF rather than reporting it.')
+    return (opening + ', and no index holds a record that the printed authors agree with. '
+            'A reader that broke the DOI and a paper that printed it wrongly look the same '
+            'from here, so check the DOI in the PDF rather than reporting it.')
+
+
+def _repair_leg(printed, repairs, lookups, resolution):
+    """Crossref for each DOI the reference may be printing, once the printed one failed.
+
+    Answers ``(record, failed)``: the metadata where an index held a record the
+    printed authors agree with, and how many candidates did not get an answer —
+    a candidate nobody answered about is one more thing this row did not check,
+    and the caller must not read it as the work not being there. The candidates
+    come from
+    :func:`doi_repairs` and are hypotheses about the *reader*, not about the
+    paper, so this leg is strict in a way the printed-DOI leg is not: a record
+    is taken only where the printed first author corroborates it
+    (:func:`_corroborated`). Joining a DOI across a space can land on a real
+    record belonging to someone else's paper, and a wrong record here is worse
+    than no record — its abstract becomes the source text every verdict about
+    that reference is judged against.
+
+    Whatever the answer, the row keeps the candidates it tried, and a row with
+    any candidate at all can no longer be called non-existent: a DOI the reader
+    broke and a DOI the paper printed wrongly are indistinguishable from the
+    resolver's answer, and only one of them is about the paper.
+    """
+    failed = 0
+    for candidate in repairs:
+        try:
+            url = crossref_work_url(candidate)
+        except ValueError:
+            continue
+        answer = lookups.fetch(url)
+        resolution['requests'].append({'url': url, 'status': answer.get('status')})
+        if answer.get('status') == 'not_found':
+            continue
+        if answer.get('status') != 'ok':
+            failed += 1
+            continue
+        message = _crossref_message(answer)
+        record = None if message is None else _safe_record(_crossref_record, message)
+        if record is None:
+            failed += 1
+            continue
+        if not _corroborated(printed, record):
+            resolution['repairs_refused'] = sorted(
+                set(resolution.get('repairs_refused') or []) | {candidate})
+            continue
+        resolution.update(exists='yes', method='doi-repaired', registered_with='crossref',
+                          source_url=url, repaired_doi=candidate)
+        resolution['note'] = (
+            'The DOI the reference list gives is cut short — the page prints it with a space '
+            'inside it, which the reader lost. Joining it back up gives ' + candidate
+            + ', which Crossref holds, and the printed first author agrees with that record. '
+              'This is about the reader, not about the paper.')
+        return record, failed
+    return None, failed
+
+
 def _title_legs(printed, lookups, resolution):
     """The title searches: Crossref, then Europe PMC.
 
@@ -2122,36 +2282,51 @@ def resolve_reference(row, lookups):
     """Look one reference up and answer what the ledger stores about it.
 
     Order: the DOI the paper printed — at Crossref, then at whichever agency
-    registered it — then a bibliographic title search at Crossref and the same
-    at Europe PMC. A DOI Crossref does not hold does not end the question: a
-    typo in a real paper's DOI is common, and most preprints, datasets and
-    theses are registered elsewhere entirely, so the title search runs anyway
-    and the row records every answer.
+    registered it — then, if the raw reference text shows that DOI broken
+    across a space, the repaired DOI at Crossref (:func:`doi_repairs`), then a
+    bibliographic title search at Crossref and the same at Europe PMC. A DOI
+    Crossref does not hold does not end the question: a typo in a real paper's
+    DOI is common, a reader that loses spaces breaks DOIs as readily as words,
+    and most preprints, datasets and theses are registered elsewhere entirely,
+    so the later legs run anyway and the row records every answer.
 
     The four existence states are the point of this function:
 
     ``yes``
         An index or a registration agency holds this work.
-    ``no``
-        The reference list **gave** a DOI as its own field and the **DOI
-        resolver** has no handle for it (:func:`doi_handle_url`). This is the
-        only claim of non-existence the table ever makes, it is about the
-        identifier, and no index's 404 is enough for it on its own.
+    ``no`` — checked and not found
+        Every one of these holds: the reference list **gave** a DOI as its own
+        field, that DOI is shaped like a DOI, the raw reference text does not
+        show it continuing after a space (so no repair is possible), the **DOI
+        resolver** has no handle for it (:func:`doi_handle_url`), no agency has
+        registered it, *and* a title search at both indexes answered and
+        listed nothing. This is the only claim of non-existence the table ever
+        makes, it is about the identifier, and **no single leg is enough for
+        it** — a handle 404 on its own never is.
 
         A DOI this module read out of the raw reference string cannot produce
         it, however clean the DOI looks. A PDF breaks a line wherever the
         column ends and runs the DOI into the next word, and a cut-short
         extraction is indistinguishable from a wrongly printed DOI: the
         resolver answers "no such handle" to both, truthfully, and only one of
-        them is about the paper. Such a row is ``not located`` with a note
-        saying to check the DOI in the PDF. Where an extractor fills the
-        structured field, ``no`` stays available; where none does, ``no`` is
-        simply rare, which is the correct outcome.
+        them is about the paper. Nor can a DOI the *reader* broke:
+        :func:`doi_repairs` reads the raw string for a space inside the
+        identifier, the candidates are looked up at Crossref
+        (:func:`_repair_leg`), and a row with any candidate at all is never
+        ``no``. Every reference the 0.9.0 corpus called non-existent was one of
+        those.
     ``not located``
-        Both indexes answered and neither lists this title. Weak evidence: most
+        A lookup ran and came back empty. Both indexes answered and neither
+        lists this title, or the repaired DOI was looked up and no index holds
+        a record the printed authors agree with. Weak evidence either way: most
         of the literature is not in either index.
-    ``could not check``
-        Nothing answered, or what answered was not readable.
+    ``could not check`` — no lookup was made, or none answered
+        Two shapes, and the note says which. Either nothing was asked — the
+        paper printed no DOI this version can put in a URL and no title long
+        enough to search for, which is the row's own fault and not an index's —
+        or something was asked and did not answer, or answered unreadably.
+        ``looked_up`` on the resolution tells the two apart without reading the
+        sentence.
     """
     printed = row.get('printed') or {}
     doi_source = (printed.get('extracted') or {}).get('doi')
@@ -2159,42 +2334,62 @@ def resolve_reference(row, lookups):
                   'requests': [], 'retracted': None, 'retraction_notice': None,
                   'printed_doi': printed.get('doi'), 'printed_doi_registered': None,
                   'printed_doi_source': doi_source,
-                  'registered_with': None, 'candidate': None, 'note': None}
+                  'registered_with': None, 'candidate': None, 'note': None,
+                  'printed_doi_damaged': False, 'repaired_dois': []}
     record, searched, failed = None, 0, 0
+    repairs, repair_failed = [], 0
     if printed.get('doi'):
         record, failed = _doi_leg(printed['doi'], lookups, resolution)
+        if record is None and resolution['exists'] != 'yes':
+            repairs = doi_repairs(row.get('raw'), printed['doi'])
+            resolution['printed_doi_damaged'] = bool(repairs)
+            resolution['repaired_dois'] = repairs
+            if repairs:
+                record, repair_failed = _repair_leg(printed, repairs, lookups, resolution)
+                failed += repair_failed
     candidate = None
-    if record is None and searchable(printed.get('title')):
+    if record is None and resolution['exists'] != 'yes' and searchable(printed.get('title')):
         record, candidate, searched, more = _title_legs(printed, lookups, resolution)
         failed += more
     resolution['candidate'] = candidate
+    resolution['looked_up'] = bool(resolution['requests'])
     if record is None:
-        if not printed.get('doi') and not searchable(printed.get('title')):
-            resolution['note'] = ('The paper printed neither a DOI nor a title long enough to '
-                                  'search for this reference, so there was nothing to look up.')
+        if not resolution['requests']:
+            resolution['note'] = (
+                'No lookup was made for this reference: the paper printed no DOI this version '
+                'can put in a URL and no title long enough to search for, so there was nothing '
+                'to ask an index about. Nothing here is evidence about the work.')
         elif resolution['exists'] == 'yes':
             pass  # An agency holds the DOI; only its metadata was unreadable.
         elif (resolution['printed_doi_registered'] is False and doi_source == 'reference'
-                and not candidate and not failed):
+                and clean_doi(printed.get('doi')) and not repairs
+                and searched >= 2 and not candidate and not failed):
             resolution['exists'] = 'no'
             resolution['method'] = 'doi-unregistered'
             resolution['note'] = ('The DOI resolver has no handle for the DOI the reference list '
-                                  'gives and no registration agency holds it'
-                                  + (', and no work with this title is indexed at Crossref or '
-                                     'Europe PMC.' if searched >= 2 else '.'))
+                                  'gives, no registration agency holds it, and no work with this '
+                                  'title is indexed at Crossref or Europe PMC.')
         elif searched >= 2 and not failed:
             resolution['exists'] = NOT_LOCATED
             resolution['method'] = 'title-search'
             resolution['note'] = (
                 'Neither Crossref nor Europe PMC lists a work with this title. Much of the '
                 'literature is in neither index, so this is not evidence that the work does '
-                'not exist.' + ((_unregistered_note(doi_source)
-                                 or ' The DOI the reference list gives is not registered either.')
-                                if resolution['printed_doi_registered'] is False else ''))
+                'not exist.' + (_damaged_note(repairs) if repairs
+                                else ((_unregistered_note(doi_source)
+                                       or ' The DOI the reference list gives is not registered '
+                                          'either.')
+                                      if resolution['printed_doi_registered'] is False else '')))
+        elif repairs and not failed:
+            resolution['exists'] = NOT_LOCATED
+            resolution['method'] = 'doi-repair'
+            resolution['note'] = (
+                'This reference was not located.' + _damaged_note(repairs)
+                + ' Nothing here is evidence that the work does not exist.')
         else:
-            resolution['note'] = resolution['note'] or (
+            resolution['note'] = (resolution['note'] or (
                 'The lookups did not answer, so whether this reference exists could not be '
-                'checked.')
+                'checked.')) + _damaged_note(repairs, answered=not repair_failed)
         resolution['matches'] = {field: None for field in COMPARED}
         resolution['mismatched'] = []
         return resolution
@@ -2225,7 +2420,13 @@ def resolve_reference(row, lookups):
     printed_doi, resolved_doi = clean_doi(resolution['printed_doi']), clean_doi(
         resolution.get('resolved_doi'))
     if printed_doi and resolved_doi and printed_doi != resolved_doi:
-        if doi_source == 'reference':
+        if resolution.get('repaired_doi'):
+            # The record was found *by* repairing the printed DOI, so of course
+            # the two differ. Raising a mismatch here would report the paper
+            # for the reader's lost space — which is the finding this whole leg
+            # exists to not make.
+            pass
+        elif doi_source == 'reference':
             resolution['mismatched'] = sorted(set(resolution['mismatched']) | {'doi'})
         else:
             # The record is the cited work and the DOI read off the reference
@@ -2885,21 +3086,38 @@ def reference_problem(row):
     resolution = row['resolution']
     reasons = []
     if resolution.get('exists') == 'no':
-        reasons.append('the DOI resolver has no handle for the DOI the reference list gives, and '
-                       'no agency has registered it (confirm it against the PDF text before '
-                       'reporting it)')
+        reasons.append('the DOI resolver has no handle for the DOI the reference list gives, no '
+                       'agency has registered it, and neither index lists this title (confirm it '
+                       'against the PDF text before reporting it)')
     elif resolution.get('exists') == NOT_LOCATED:
-        reasons.append('neither Crossref nor Europe PMC lists this title (weak evidence: much '
-                       'of the literature is in neither)')
+        if resolution.get('method') == 'doi-repair':
+            reasons.append('the DOI the reference list gives is cut short, and neither it nor '
+                           'the DOI the page prints is held by an index under these authors '
+                           '(check the DOI in the PDF)')
+        else:
+            reasons.append('neither Crossref nor Europe PMC lists this title (weak evidence: '
+                           'much of the literature is in neither)')
     elif resolution.get('exists') != 'yes':
-        reasons.append('could not be checked')
+        # "Could not be checked" over a row nothing was asked about blamed the
+        # indexes for the extractor: the 0.9.0 corpus had 55 rows reported as
+        # unanswered lookups where no lookup had been made at all.
+        reasons.append('no lookup was made: this row holds no DOI and no title to search for'
+                       if resolution.get('looked_up') is False else 'could not be checked')
     if resolution.get('retracted'):
         reasons.append('the resolved work is retracted')
     if resolution.get('mismatched'):
         reasons.append('printed ' + ', '.join(resolution['mismatched'])
                        + ' differs from the indexed record')
     if resolution.get('printed_doi_registered') is False and resolution.get('exists') != 'no':
-        if resolution.get('printed_doi_source') == 'raw':
+        if resolution.get('repaired_doi'):
+            reasons.append('the DOI in the reference row is cut short — the page prints '
+                           + str(resolution['repaired_doi']) + ', which resolves, so this is '
+                           'the reader and not the paper')
+        elif resolution.get('printed_doi_damaged'):
+            reasons.append('the DOI in the reference row is cut short: the page prints it with '
+                           'a space inside it, so the unregistered half is not what the paper '
+                           'printed — check the PDF')
+        elif resolution.get('printed_doi_source') == 'raw':
             reasons.append('the DOI as read off the reference text is not registered with any '
                            'agency, which a DOI broken across a line looks exactly like — check '
                            'the PDF')
@@ -3028,6 +3246,16 @@ def counts(ledger):
         'not_located': sum(1 for one in resolutions if one.get('exists') == NOT_LOCATED),
         'could_not_check': sum(1 for one in resolutions
                                if one.get('exists') == COULD_NOT_CHECK),
+        # The two shapes of "could not check", because they have different
+        # owners. `no_lookup` is this version's extractor failing to give the
+        # row anything to ask about; the remainder is an index not answering.
+        # Reporting all of them as unanswered lookups blamed Crossref and
+        # Europe PMC for 55 rows they were never asked about.
+        'no_lookup': sum(1 for one in resolutions
+                         if one.get('exists') == COULD_NOT_CHECK
+                         and one.get('looked_up') is False),
+        'damaged_dois': sum(1 for one in resolutions if one.get('printed_doi_damaged')),
+        'repaired_dois': sum(1 for one in resolutions if one.get('repaired_doi')),
         'candidates': sum(1 for one in resolutions if one.get('candidate')),
         'errors': sum(1 for one in resolutions if one.get('error')),
         'unresolved': sum(1 for row in references if not row.get('resolution')),
@@ -3118,9 +3346,19 @@ def problems(totals):
     if totals.get('unresolved'):
         lines.append(f"{totals['unresolved']} of {totals['references']} references were never "
                      'looked up, so the citations were not fully checked')
-    if totals.get('could_not_check'):
-        lines.append(f"{totals['could_not_check']} reference(s) could not be checked because the "
-                     'lookups did not answer, which says nothing about whether they exist')
+    unanswered = (totals.get('could_not_check') or 0) - (totals.get('no_lookup') or 0)
+    if totals.get('no_lookup'):
+        # Not "the lookups did not answer". No lookup was made: these rows hold
+        # no DOI this version can put in a URL and no title long enough to
+        # search for, which is this version's reference parser and not an
+        # index. Saying it the other way blamed Crossref and Europe PMC for 55
+        # rows in the 0.9.0 corpus that were never asked about.
+        lines.append(f"{totals['no_lookup']} of {totals['references']} reference(s) were never "
+                     'looked up at all because this version read no DOI and no title for them, '
+                     'so no index was asked and nothing here is evidence about those works')
+    if unanswered > 0:
+        lines.append(f'{unanswered} reference(s) could not be checked because the lookups did '
+                     'not answer, which says nothing about whether they exist')
     resolve = stages.get('resolve') or {}
     owed = resolve.get('remaining') or 0
     if owed and not resolve.get('done'):

@@ -382,8 +382,9 @@ if cites["enabled"]:
   reference and one per in-text use, last record per `row_id` winning. Use
   `read_citation_ledger` for the rows (below); `counts` is there so you do not
   have to read them at all.
-- `counts` holds twenty-one integers: `references`, `resolved`, `not_found`,
-  `not_located`, `could_not_check`, `candidates`, `errors`,
+- `counts` holds twenty-four integers: `references`, `resolved`, `not_found`,
+  `not_located`, `could_not_check`, `no_lookup`, `damaged_dois`,
+  `repaired_dois`, `candidates`, `errors`,
   `unresolved`, `mismatched`, `retracted`, `with_source_text`, `uses`,
   `uses_unmatched`, `uses_judged`, `supported`,
   `partly_supported`, `not_supported`, `cannot_tell`, `uses_unjudged`,
@@ -404,20 +405,29 @@ if cites["enabled"]:
   up …") so the printed states add up to `references`. A reference nobody
   looked up is not one that was checked and came back empty, and an integration
   that subtracts the four from the total and calls the remainder resolved is
-  reporting the opposite of what happened. `not_found` counts the rows where the reference list gave a
-  DOI as its own field and the DOI resolver has no handle for it — doi.org's
+  reporting the opposite of what happened. `not_found` counts the rows where
+  every leg answered and all of them came back empty: the reference list gave
+  the DOI as its own field, the DOI resolver has no handle for it — doi.org's
   handle API answering `responseCode` 100 with a 404, the one service whose
-  whole job is to say whether a DOI was ever registered. A DOI read out of the
-  reference *text* instead never lands here, whatever the resolver says, since
-  a DOI broken across a line in a two-column PDF is indistinguishable from one
-  printed wrongly; those rows are `not_located` and carry the caveat in their
-  note. That, and only that, is the table saying a work does not exist; a
-  metadata index that merely does not hold the record leaves the row in
-  `could_not_check`. `not_located` counts the rows where Crossref and Europe PMC
-  both answered and neither listed the title: weak evidence, because books,
-  chapters, theses, standards, software and preprints outside those two indexes
-  land here while being perfectly real. `could_not_check` counts the rows where
-  a lookup did not answer at all, which says nothing whatever.
+  whole job is to say whether a DOI was ever registered — no registration
+  agency holds it, and both title searches answered and listed nothing. A DOI
+  read out of the reference *text* instead never lands here, whatever the
+  resolver says, since a DOI broken across a line in a two-column PDF is
+  indistinguishable from one printed wrongly; neither does a DOI the reader cut
+  short at a space inside it, which `damaged_dois` counts and which the
+  resolver rejoins and looks up again (`repaired_dois` counts the rows where
+  the rejoined DOI resolved, and those rows are `resolved` — the reference was
+  fine and the text layer was not). Those rows are `not_located` and carry the
+  caveat in their note. `not_found`, and only it, is the table saying a work
+  does not exist; a metadata index that merely does not hold the record leaves
+  the row in `could_not_check`. `not_located` counts the rows where an index
+  answered and listed nothing: weak evidence, because books, chapters, theses,
+  standards, software and preprints outside Crossref and Europe PMC land here
+  while being perfectly real. `could_not_check` counts the rows where no lookup
+  answered — or where no lookup was made at all, which is `no_lookup`, a subset
+  of it: this version read no DOI and no searchable title out of those rows, so
+  no index was ever asked, and `looked_up` on the row says which of the two it
+  is. Either way it says nothing whatever about the work.
   **Do not add them.** An integration that prints "N references do not exist"
   from the sum of the three is misreporting the run; `not_located` and
   `could_not_check` belong in the same sentence as how much of the list could
@@ -447,7 +457,7 @@ references: … M not located …. K in-text uses, J judged (… N not supported
 …)" — and that sentence, printed under the title of a paper with named authors,
 reads as an accusation about those authors rather than as a report on how far
 an automated lookup got. The states behind it mean much less than they sound
-like: `not_located` is two indexes not listing a title, which is ordinary for
+like: `not_located` is an index not listing a title, which is ordinary for
 books, theses and standards, and `not_supported` is one worker's reading of one
 abstract.
 

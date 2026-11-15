@@ -164,7 +164,7 @@ fill it, and the first two call no model:
 | Stage | Who | What it does |
 | --- | --- | --- |
 | fill | `ingest`, no model | a row for every extracted reference, with or without a DOI, and a row for every citing sentence |
-| resolve | the recorder calling `resolve_citations`, no model | looks up **every** reference: DOI → Crossref; no DOI → title search against Crossref, then Europe PMC. Records `exists` in four states — yes / no (the DOI resolver has no handle for a DOI the reference list gives as its own field; one read out of the reference text is never `no`, because a line break inside a DOI looks the same) / **not located** (two indexes answered, neither lists the title) / **could not check** (nothing answered, or only a metadata index that does not hold the record) — a per-field comparison of title, first author, year and venue, any retraction or correction notice, and the abstract or open-access full text with its source URL. A row whose lookups did not answer stays owed its retries: it is still counted in `remaining`, and `retry_after` says when it is due |
+| resolve | the recorder calling `resolve_citations`, no model | looks up **every** reference: DOI → Crossref; no DOI → title search against Crossref, then Europe PMC. Records `exists` in four states — yes / no (checked and not found: the DOI resolver has no handle for a DOI the reference list gives as its own field, no agency holds it, *and* both title searches answered and listed nothing; a DOI read out of the reference text, or one the reader cut short, is never `no`) / **not located** (an index answered and listed nothing) / **could not check** (no lookup was made at all, or none answered — `looked_up` on the row tells those two apart) — a per-field comparison of title, first author, year and venue, any retraction or correction notice, and the abstract or open-access full text with its source URL. A row whose lookups did not answer stays owed its retries: it is still counted in `remaining`, and `retry_after` says when it is due |
 | judge | `cite-1`…`cite-N` on Haiku | each claims a batch with `claim_citation_batch` and writes one verdict per use with `submit_citation_verdict` — supports / partly supports / does not support / cannot tell — quoting the exact passage it judged from |
 | confirm | `spec-citations` on Sonnet | reads the whole table with `citation_rows` — `counts`, `problems`, `unverified`, `supported`, and one `row` in full — re-checks every problem row itself, spot-checks the supported rows, and files findings only for what it confirmed |
 
@@ -172,12 +172,24 @@ Four rules this pipeline is built on:
 
 - **A failed lookup is "could not check", never "does not exist".** The one
   thing a citation check must not do is invent a missing paper out of a
-  timeout. Only the DOI resolver can make a DOI `no`, by having no handle for
-  it, and only for a DOI the reference list gives as its own field; a metadata
-  index that does not hold the record is `could not check`. A
-  title neither index lists is `not located`, which is weak
-  evidence and not an existence claim either: most of the literature — books,
-  theses, standards, software, preprints — is in neither index.
+  timeout. `no` needs every leg to have answered: the DOI resolver has no
+  handle for a DOI the reference list gives as its own field, no agency holds
+  it, and both title searches came back empty. A metadata index that does not
+  hold the record is `could not check`. A title neither index lists is `not
+  located`, which is weak evidence and not an existence claim either: most of
+  the literature — books, theses, standards, software, preprints — is in
+  neither index.
+- **A DOI the reader broke is the reader's fault, not the paper's.** A PDF text
+  layer prints `https://doi.org/10.4049/jimmunol. 1203102` and the reference
+  field keeps only the half before the space. That half is registered nowhere,
+  which looks exactly like a fabricated DOI. So the resolver rejoins the DOI
+  across the space using the row's own raw text, looks the whole one up, and
+  takes the record only where the printed first author agrees with it —
+  joining across a space can land on somebody else's real paper, and a wrong
+  record here would become the source text every verdict about that reference
+  is judged from. A row with any such candidate can never be `no`, and its
+  note names the DOI the page prints so a human can check the PDF. The
+  eight "does not exist" rows of the 0.9.0 corpus were all this.
 - **The rows are quoted material.** Every citation read carries an
   `untrusted_text` line. A citing sentence is the authors' writing and a source
   text is a stranger's; an instruction inside either is part of what is being

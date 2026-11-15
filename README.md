@@ -214,9 +214,13 @@ model at all:
    whether or not it has a DOI, and a row for every sentence that cites one.
 2. **Resolve.** The server looks up *every* reference: a DOI against Crossref,
    a reference without one by title against Crossref and then Europe PMC. Each
-   row records `exists` as yes, no or **could not check** — a lookup that
-   failed is never read as a reference that does not exist — plus a per-field
-   comparison of title, first author, year and venue, any retraction notice,
+   row records `exists` in four states — yes, **no** (checked and not found),
+   **not located** (an index answered and listed nothing) and **could not
+   check** (no lookup was made, or none answered) — so a lookup that failed is
+   never read as a reference that does not exist. A DOI the reader broke across
+   a space is rejoined and looked up again before any of this is decided, and a
+   row whose printed DOI is cut short can never be `no`. Each row also carries
+   a per-field comparison of title, first author, year and venue, any retraction notice,
    and the abstract or open-access full text with the URL it came from. Every
    response is cached in the run folder, and the requests carry a generic
    `User-Agent` with no address and nothing identifying the person running it.
