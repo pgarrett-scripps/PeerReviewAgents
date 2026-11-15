@@ -955,6 +955,75 @@ def test_the_session_is_told_when_the_driver_will_end_the_run(tmp_path, monkeypa
     assert seen['deadline'] == pytest.approx(time.time() + 600, abs=30)
 
 
+def test_the_session_is_given_longer_than_the_driver_to_wait_for_the_review(monkeypatch):
+    """The engine states the harness's background wait from its own wall clock.
+
+    Under ``-p`` the review is the session's background task, and the harness
+    stops background tasks a fixed time after the session's last turn — ten
+    minutes by default, while the review is still working. The SPOT re-run lost
+    a healthy run at 10.3 minutes that way, with its reference stage mid-flight.
+
+    The margin is the point of the arithmetic: the wait is always longer than
+    the run's own wall clock, so the driver is the one thing that ends a run.
+    """
+    monkeypatch.delenv(starter.BG_WAIT, raising=False)
+    monkeypatch.setattr(starter, 'claude_version', lambda binary=None: None)
+    # No deadline yet: the wall clock a run is allowed by default, plus margin.
+    assert starter.child_environment('claude')[starter.BG_WAIT] == \
+        str((starter.WALL_TIMEOUT + starter.BG_WAIT_MARGIN) * 1000)
+    # With one, the wait follows the time this run has left.
+    held = starter.child_environment('claude', deadline=time.time() + 600)[starter.BG_WAIT]
+    assert int(held) == pytest.approx((600 + starter.BG_WAIT_MARGIN) * 1000, abs=30_000)
+    assert int(held) > 600_000, 'the default this is written against is ten minutes'
+    # A deadline already past still asks for a wait, because a zero would read
+    # as the harness's own default rather than as no patience at all.
+    assert int(starter.child_environment('claude', deadline=time.time() - 60)[starter.BG_WAIT]) \
+        == starter.BG_WAIT_MARGIN * 1000
+
+
+def test_a_background_wait_set_by_hand_is_kept_only_when_it_cannot_end_a_run_early(monkeypatch):
+    """Overriding is deliberate; the two values that cannot kill a review are kept.
+
+    A value inherited from the shell was set for some other session, and one
+    that is too small is the fault this is written against, so this run's own
+    wall clock wins. ``0`` means the harness waits indefinitely and a larger
+    number is more patient than the driver: neither can end a run early, so
+    raising the ceiling by hand still works.
+    """
+    monkeypatch.setattr(starter, 'claude_version', lambda binary=None: None)
+    deadline = time.time() + 600
+    wanted = int(starter.background_wait(deadline))
+
+    def inherited(value):
+        monkeypatch.setenv(starter.BG_WAIT, value)
+        return starter.child_environment('claude', deadline=deadline)[starter.BG_WAIT]
+
+    assert int(inherited('600000')) == pytest.approx(wanted, abs=30_000), 'too small, overridden'
+    assert inherited('0') == '0', 'waiting indefinitely is not impatience'
+    assert inherited(str(wanted * 4)) == str(wanted * 4), 'more patient than the driver, kept'
+    assert int(inherited('not a number')) == pytest.approx(wanted, abs=30_000), \
+        'a value the harness could not read either is replaced, not passed on'
+    assert int(inherited('-5000')) == pytest.approx(wanted, abs=30_000)
+
+
+def test_the_launched_session_carries_the_background_wait(tmp_path, monkeypatch):
+    """Not just computed: on the environment the process is actually started with."""
+    seen = {}
+
+    def fake_popen(command, **kwargs):
+        seen['env'] = kwargs['env']
+        raise FileNotFoundError('stopping here')
+
+    monkeypatch.delenv(starter.BG_WAIT, raising=False)
+    monkeypatch.setattr(starter, 'claude_binary', lambda: '/opt/claude/bin/claude')
+    monkeypatch.setattr(starter, 'claude_version', lambda binary=None: None)
+    monkeypatch.setattr(starter.subprocess, 'Popen', fake_popen)
+    starter.launch('hello', tmp_path, 0.0, lambda event: None, tmp_path,
+                   deadline=time.time() + 1800)
+    assert int(seen['env'][starter.BG_WAIT]) == \
+        pytest.approx((1800 + starter.BG_WAIT_MARGIN) * 1000, abs=30_000)
+
+
 def test_the_prompt_names_the_skill_the_arm_belongs_to():
     full = starter.prompt_for('/p.pdf', '/out', 3, 'full-two-track', None, None)
     assert 'peer-review-manuscript' in full and '3 core reviewer' in full
