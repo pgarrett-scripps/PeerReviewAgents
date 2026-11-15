@@ -101,6 +101,23 @@ const REISSUED = {
   required: ['claim_code'],
 }
 
+// The server's own word on which slots closed, read by the one agent that
+// holds the recorder key. `closed` below is the stage's word on itself.
+const LEDGER = {
+  type: 'object',
+  properties: {
+    reported: {
+      type: 'array', items: { type: 'string' },
+      description: 'ledger.reported from the run_status response, verbatim',
+    },
+    missing: {
+      type: 'array', items: { type: 'string' },
+      description: 'ledger.missing from the run_status response, verbatim; [] where it is empty',
+    },
+  },
+  required: ['reported', 'missing'],
+}
+
 const STAGE = {
   type: 'object',
   properties: {
@@ -242,6 +259,21 @@ async function stage(slot, agentType, phaseName, promptFor, schema) {
     log(slot + ': ' + what + (attempt === 1 ? '; retrying once' : '; the run is blocked'))
   }
   return null
+}
+
+// Which slots the server has a report for, as against which slots said they
+// filed one. Returns the `missing` list, or null when the ledger could not be
+// read at all — a run whose ledger is unreadable is not a run whose stages all
+// closed, so the two cases are never collapsed into one empty list.
+async function ledgerMissing(phaseName) {
+  const seen = await agent(
+    'Read the stage ledger of this run. Call run_status with recorder_key="' + recorderKey
+    + '" and report ledger.reported and ledger.missing, verbatim, and nothing else.',
+    options('recorder', {
+      label: 'read the ledger', phase: phaseName, agentType: 'pra:recorder', schema: LEDGER,
+    }),
+  )
+  return seen && seen.missing ? seen.missing : null
 }
 
 async function block(reason) {
@@ -528,6 +560,53 @@ reviewStages.concat(specialistStages).forEach((_, index) => {
 if (failed.length > 0) {
   await block('These stages returned nothing twice: ' + failed.join(', '))
 }
+
+// `closed: true` is the stage's word about its own work; the ledger is the
+// server's. dark-kinome (SPOT 0.9.0) is what reading only the first one costs:
+// core-1 returned closed with five findings stored, no report ever reached the
+// ledger, nothing retried it — attempt 1 was its only attempt — and the run
+// was blocked at the very end over a stage whose findings the editor had
+// already ruled on. So the claims are checked against the ledger here, and a
+// slot the ledger does not hold is reopened and closed properly. Once for the
+// whole run rather than once per stage: the check costs a recorder agent and
+// one tool call, every stage has returned by here, and this is the last moment
+// at which a retry is still worth anything.
+const stageSlots = coreSlots.concat(specSlots)
+const agentTypeFor = slot => (slot.indexOf('spec-') === 0
+  ? 'pra:' + slot.slice('spec-'.length) : 'pra:core-reviewer')
+const reclosePrompt = slot => code =>
+  'Your stage of this run is open. Findings were stored under slot="' + slot + '" and no report'
+  + ' was ever filed, so the run holds your findings and no account of them. Call claim_agent'
+  + ' with slot="' + slot + '" and claim_code="' + code + '" first, then read what the slot'
+  + ' already holds with list_findings. Store nothing new. Close the stage with submit_report:'
+  + ' a summary of the findings that are there and the limitations you would state beside them.'
+  + ' Do not pass none_found — the slot has findings in it. If submit_report refuses, report the'
+  + ' refusal text verbatim in the summary rather than closing.'
+const unreported = await ledgerMissing('Review')
+if (unreported === null) {
+  log('the stage ledger could not be read, so the stages are taken at their own word')
+} else {
+  const open = stageSlots.filter(slot => unreported.indexOf(slot) >= 0)
+  if (open.length > 0) {
+    log(open.join(', ') + ': closed in their own words and absent from the ledger, so the run has'
+      + ' their findings and no report from them; reopening')
+  }
+  for (let index = 0; index < open.length; index += 1) {
+    const slot = open[index]
+    const again = await stage(slot, agentTypeFor(slot), 'Review', reclosePrompt(slot), STAGE)
+    const entry = reported[stageSlots.indexOf(slot)]
+    if (entry) entry.reclose_attempts = again ? again.attempts : null
+  }
+  if (open.length > 0) {
+    const still = await ledgerMissing('Review')
+    const left = (still || []).filter(slot => stageSlots.indexOf(slot) >= 0)
+    log(left.length === 0
+      ? 'every stage is now in the ledger'
+      : left.join(', ') + ': still no report after reopening, so the review will be written with'
+        + ' the gap named in it rather than held back')
+  }
+}
+
 const findingsStored = reported.reduce((total, r) => total + (r.findings_stored || 0), 0)
 log(reported.length + ' stages closed, ' + findingsStored + ' findings stored')
 
@@ -587,7 +666,8 @@ return {
   refusal: recorded.refusal || null,
   models: assigned,
   stages: reported.map(r => ({
-    slot: r.slot, attempts: r.attempts, model: r.model || null,
+    slot: r.slot, attempts: r.attempts, reclosed: r.reclose_attempts || null,
+    model: r.model || null,
     assigned_model: assigned[r.slot] || null,
     findings: r.findings_stored || 0, none_found: !!r.none_found,
   })),

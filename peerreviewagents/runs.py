@@ -571,6 +571,24 @@ def _known(value, label, problems):
     return text
 
 
+def stage_gap_line(slots):
+    """What is missing from a finished review whose stage never filed a report.
+
+    One sentence, in one place, so that ``REVIEW.md``, ``read_run`` and the
+    status note cannot describe the same gap three different ways. The findings
+    are not the missing part: they were stored, pooled and ruled on. What is
+    missing is the stage's own account of its work.
+    """
+    slots = list(slots)
+    if not slots:
+        return ''
+    which = ', '.join(slots)
+    whose = 'its' if len(slots) == 1 else 'their'
+    verb = 'never filed a report' if len(slots) == 1 else 'never filed reports'
+    return (f'{which} delivered findings but {verb}, so {whose} summary and limitations '
+            'are not in this review')
+
+
 def run_status(progress=None, runtime=None, startup=None, problems=None):
     """The one status rule, used by :func:`read_run` and by the report writer.
 
@@ -589,7 +607,10 @@ def run_status(progress=None, runtime=None, startup=None, problems=None):
     ``unknown``.
 
     Returns ``{'status', 'cause', 'note'}``. ``cause`` is ``None`` for a
-    complete run and the sentence from :func:`cause_of` otherwise.
+    complete run and the sentence from :func:`cause_of` otherwise. ``note``
+    carries the caveats of a finished run: a block recorded after the review
+    was written, and a stage that delivered findings without ever filing a
+    report — the review is there, and so is the hole in it.
     """
     progress, runtime, startup = progress or {}, runtime or {}, startup or {}
     problems = problems if problems is not None else []
@@ -599,8 +620,14 @@ def run_status(progress=None, runtime=None, startup=None, problems=None):
     note = None
     if written in COMPLETE_STATUSES:
         status = written
+        notes = []
         if ended == BLOCKED and cause:
-            note = ('the review was written and the run was marked blocked afterwards: ' + cause)
+            notes.append('the review was written and the run was marked blocked afterwards: '
+                         + cause)
+        gap = (progress.get('stages') or {}).get('missing_with_findings') or []
+        if gap:
+            notes.append(stage_gap_line(gap))
+        note = '; '.join(notes) or None
         cause = None
     elif ended and ended != UNKNOWN:
         status = ended
@@ -1080,4 +1107,4 @@ def _without_source_text(row):
 
 
 __all__ = ['read_run', 'read_citation_ledger', 'locate', 'dedupe', 'run_status', 'cause_of',
-           'refuse_symlinks', 'NotARunFolder', 'RUN_MARKERS', 'UNKNOWN']
+           'stage_gap_line', 'refuse_symlinks', 'NotARunFolder', 'RUN_MARKERS', 'UNKNOWN']

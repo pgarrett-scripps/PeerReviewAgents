@@ -383,7 +383,7 @@ them:
 | `escalations`, `escalation_rulings` | the specialist findings that asked for a ruling, and the rulings given |
 | `summary`, `verdict`, `limitations` | the editor's own three, or `None`/`[]` |
 | `identity` | paper id, source hash, PDF path, arm, reviewers, specialist tracks, versions, `provider`, `code_hashes` — the manifest's digest of each engine and plugin file that served the run — and `models`/`reviewer_models`, the model each slot was started with (both empty for a run from before 0.9.0), with `models_unverified` naming the slots that never reported running one |
-| `stages` | the stages the run recorded, or `None` |
+| `stages` | the stage ledger the run recorded, or `None`: `required`, `reported`, `missing`, and `missing` split in two — `silent` (stored nothing, filed nothing, so the run is blocked) and `missing_with_findings` (findings delivered and ruled on, no report filed, so the review is written and `note` names the gap) |
 | `runtime` | wall time, total tokens, rate limits, both token ceilings, the Claude Code version |
 | `agents` | one row per agent slot: role, track, `assigned_model` and the `model` it reported running as, tool calls, tokens, state |
 | `usage` | observed subscription tokens from the usage receipts, with `unknown` set if any receipt was unreadable |

@@ -144,8 +144,13 @@ the settings files Claude Code reads, managed settings first.
   told specialists exist. The editor sees the pool in an order seeded by the
   run salt, so slot order carries no weight.
 - **The ledger.** Stages, provenance hashes of the plugin and engine files, and
-  the run's own files; `write_review` refuses while a stage is missing or no
-  editor package has been accepted.
+  the run's own files; `write_review` refuses while no editor package has been
+  accepted, or while a required stage stored nothing and filed nothing. A stage
+  that stored findings the editor ruled on and never filed a report is a gap in
+  the record rather than a run that did not happen: the review is written and
+  `stages.missing_with_findings` names the stage whose summary and limitations
+  are not in it. Every `submit_report` call, taken or refused, is a row in
+  `closures.jsonl`, so a slot with no report says which of the two it was.
 - **The citation table.** Every reference and every in-text use is a row the
   server wrote, not a sample an agent chose; see below.
 
@@ -210,6 +215,7 @@ quotation. The verdict is two axes in words, never a number.
 <run>/review/audit_<track>.md six specialist audits
 <run>/review/protocol.json    arm, slots, versions, provenance
 <run>/review/progress.json    stages and status
+<run>/review/closures.jsonl  one row per submit_report call, taken or refused
 <run>/review/runtime.json     tokens per agent, models, wall time, rate limits
 <run>/review/usage/<slot>/    the stream's own usage record
 <run>/review/citations/ledger.jsonl  one row per reference and per in-text use
@@ -235,6 +241,7 @@ blocks a finding cites, which earns that run one `computed` finding: the stats
 specialist's confidence-interval asymmetry check, whose one unquoted input (the
 estimate, 0.1044) sits in the same block `b0048` the finding is anchored to.
 
-A rate limit, a breached budget or a missing stage leaves the run `blocked`.
+A rate limit, a breached budget or a stage that reviewed nothing leaves the run
+`blocked`.
 That is an outcome recorded in `runtime.json` and `progress.json`, not an error
 to paper over.

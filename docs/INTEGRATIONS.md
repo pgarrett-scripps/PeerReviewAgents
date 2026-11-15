@@ -610,6 +610,18 @@ it, and it happens two ways: the reviewers raised nothing, or the guard
 quarantined everything they raised. `counts['quarantined']` is what tells them
 apart, and `publishable` follows it — see below.
 
+#### A stage missing from the ledger
+
+`stages` holds the stage ledger, and a required slot absent from
+`stages['reported']` is absent in one of two ways. `stages['silent']` is the
+slots that stored nothing and filed nothing: nobody reviewed that share of the
+manuscript, so `write_review` refuses and the run is `blocked` with those slots
+named. `stages['missing_with_findings']` is the slots that stored findings and
+never filed a report. Those findings were pooled and ruled on like any other,
+so the review is written and the status is `complete`; what is missing is that
+stage's own summary and limitations, and `note` says so in both `read_run` and
+`REVIEW.md`. `stages['missing']` is still the union of the two, unchanged.
+
 ### Gating on `publishable`
 
 `complete` answers whether the run finished. `publishable` answers whether the
