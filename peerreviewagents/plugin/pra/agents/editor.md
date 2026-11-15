@@ -143,7 +143,7 @@ omission.** There are two ways to rule, and each prior issue takes exactly one:
 Do not raise an issue just to say something was fixed; rule on it instead.
 
 `resolved` where the server can still find a prior member's quote verbatim in the
-new manuscript also needs `text_unchanged_reason`, two sentences at least: the
+new manuscript also needs `text_unchanged_reason`, 40 characters at least: the
 passage the issue was raised on still reads the same, so the reason it is fixed
 has to be something other than the text. The refusal quotes the passages it
 found. If you cannot give that reason, the status is `unverified`.

@@ -312,14 +312,20 @@ def category_for(finding) -> str:
     return TRACK_CATEGORY.get(str(finding.get('track')), 'claims-and-conclusions')
 
 
-def synthesize(findings) -> list:
-    """One issue per finding, for an arm that runs no editor.
+def synthesize(findings, reason=None) -> list:
+    """One issue per finding, for a run no editor grouped.
 
     Every arm writes an ``issues.json``, because every consumer reads one — the
     paper-scaffold ledger, ``read_run``, ``REVIEW.md``. Where no editor pooled
     the findings, nothing is pooled: each finding is its own issue, ranked major
     first, and the document says ``issues_source: 'server'`` so a reader can
     tell a synthesised file from an edited one.
+
+    ``reason`` is why this run was not grouped, in the run's own words, and it
+    goes in every row's ``status_reason``. An arm with no editor is only one of
+    the ways here — a ledger past the editor's stated limit and an editor that
+    never closed are the others — so the caller says which rather than this
+    function assuming the first.
     """
     order = {name: index for index, name in enumerate(ISSUE_SEVERITIES)}
     rows = sorted(findings or [], key=lambda f: order.get(str(f.get('severity')), len(order)))
@@ -340,7 +346,9 @@ def synthesize(findings) -> list:
             'prior_id': None,
             'prior_rank': None,
             'status': 'new',
-            'status_reason': 'No editor pooled this run, so each finding is its own issue.',
+            'status_reason': ('No editor pooled this run, so each finding is its own issue: '
+                              + str(reason).rstrip('.') + '.') if reason else
+                             'No editor pooled this run, so each finding is its own issue.',
             'text_unchanged_reason': None,
             'surviving_quotes': [],
             'audits': [],

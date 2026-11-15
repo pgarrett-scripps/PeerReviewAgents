@@ -350,9 +350,14 @@ starts — there would be nobody to rule on the prior round.
 
 `status_reason` is the editor's one line for any status but `new`: why it still
 stands, or what changed. The last two are the closed statuses
-(`issues.CLOSED_STATUSES`), reported once — in the round they closed — and then
-dropped: a later round's `--prior-issues` carries only the live rows forward, so
-nothing is recounted round after round.
+(`issues.CLOSED_STATUSES`) and they are not carried forward alike. `resolved` is
+reported once — in the round that resolved it — and then dropped, so nothing is
+recounted round after round (`issues.carried_forward`). `unverified` is carried,
+because that status exists precisely because it is *not* a fix: a later round
+rules on it again like any other open issue. Its row holds no `members` — those
+findings were the earlier round's — so what it carries instead is
+`surviving_quotes`, and the round that does rule it `resolved` tests the ruling
+against those. An id that was `resolved` stays in `issue_ids_used` for good.
 
 `resolved` is the stronger claim and the server checks it. Where a prior
 member's quote still appears **verbatim** in the new manuscript, `resolved`
@@ -364,9 +369,30 @@ every other row.
 
 #### The rest of the document
 
-`issues_source` says where the issues came from: `editor` for an arm that runs
-the editor, `server` for one that does not — `draft-check` and `single` write
+`issues_source` says where the issues came from: `editor` where an editor closed
+a pooled review, `server` where nothing did — `draft-check` and `single` write
 one issue per finding, so every arm reads in the same shape.
+
+`issues_source_reason` is why, in one line, and `None` wherever
+`issues_source` is `editor`. Four different runs end with `server` and they are
+not the same run: an arm that runs no editor; a ledger past the 200 findings the
+editor path supports, which is refused the editor slot by name; an arm with an
+editor nobody claimed; and an editor that claimed the slot and never got a
+review accepted, which carries the number of submission calls it made. The
+reason is printed in `REVIEW.md` under the issues, repeated in each
+server-written issue's `status_reason`, and carried in `not_publishable_reasons`
+— so an application never has to guess which of the four it is holding. Before
+0.10.0 all four printed the first.
+
+`issue_ids_used` is every issue id this run and every round before it has
+spent, sorted — live, resolved and unverified alike. **An id is never reused.**
+A resolved issue is dropped from the next round's carry, so the carry alone does
+not say what `i03` meant two rounds ago; this list does, and the next round
+reads it back and mints around it. A consumer that stores issues across rounds
+can treat an id as permanent: one id is one problem, for the life of the
+manuscript. A reader that writes its own `issues.json` for a later round to
+match against must carry the list forward, or that round will mint an id an
+earlier one already reported.
 
 `prior_round` is `None` for a first round, and for a later one it is
 `{'file': 'issues.json', 'digest': '<16 hex>', 'issues': N, 'tally': {...}}`:
@@ -408,6 +434,8 @@ and the renderer all go through, so a consumer can use the same one.
 | --- | --- |
 | `schema_version` | the stamp above; refuse what you do not know |
 | `issues_source` | `editor` or `server` |
+| `issues_source_reason` | why it is `server`, in one line; `None` where an editor closed the review |
+| `issue_ids_used` | every issue id this run and the rounds before it have spent; an id is never reused |
 | `summary` | the editor's paragraph above the issues |
 | `issues` | the rows described above, live ones first |
 | `counts` | the tally described above, less `findings` and `quarantined` — those are ledger-wide, and the reader adds them |
@@ -429,6 +457,22 @@ and the renderer all go through, so a consumer can use the same one.
 Every one of those keys is written on every run, and so is every field of every
 issue row: a run that had nothing of the kind writes the key with `None` —
 `prior_round` on a first round — or with an empty list or object.
+
+**No file meant to be published holds an absolute machine path.** `issues.json`
+and `REVIEW.md` are the two an integration hands on — to the authors, to a
+journal, into a repository — so every path in them is relative to the run folder
+(`review/editor-log.jsonl`, `audit_stats.md`) or is a bare file name
+(`prior_round['file']`, `reports`, `audits`), and the run folder itself appears
+as its own name and nothing more. A test scans both files whole for the
+machine's paths, rather than field by field, because the two that leaked got in
+through fields nobody thought of as paths: the editor's trace inside `stages`,
+and the run folder printed in `REVIEW.md`'s header.
+
+`manifest.json` is the one exception and it is deliberate: it keeps the
+manuscript's **absolute** path, and `read_run()['identity']['pdf']` hands it on
+as it stands. The manifest is the run's own record of what it read — the pdf
+lives outside the run folder, so a relative path would name nothing — and it is
+not in the published set. Strip it yourself if you publish the folder whole.
 
 `REVIEW.md` is rendered from this file alone, and `peerreview report <run>`
 re-renders it from the file on disk. A folder with no `issues.json` renders "No
@@ -857,6 +901,12 @@ and `call_budget` are `None` until the first call, because the budget is the
 server's answer to a call). Every call and every
 refusal is also appended to `editor-log.jsonl` in the run folder, which
 `reports['editor_log']` names.
+
+`editor_trace['log']` is where that file sits, **relative to the run folder** —
+`review/editor-log.jsonl` — and not the path it was read from. The trace is
+carried into `stages`, `stages` is published inside `issues.json`, and an
+absolute path there names the home directory of whoever ran the review. Join it
+onto the run folder you read to open the file.
 
 A run blocked because the editor never produced an accepted review says so with
 those numbers in `cause`, and the trace stays on disk. The silent version of

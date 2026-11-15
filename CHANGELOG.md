@@ -173,6 +173,74 @@ and the overlap experiment.
   count the doc states — 23 in one sentence and 27 in another, against a server
   of 28 — is now checked against `server.TOOLS` by a test, so it cannot drift
   again.
+- **The reopen destroyed an accepted review on calls that stored nothing.**
+  `submit_issues` dropped the editor's accepted package and deleted the
+  `issues.json` it had written *before* validating the call, so `issues=5`
+  answered "nothing was stored" over a review it had just taken apart. The
+  reopen is now part of the batch landing, after validation. It is also refused
+  outright once the editor has filed its `submit_report` and once the run's
+  files are written: a call arriving after `write_review` used to leave a
+  complete run whose `issues.json` had been removed under it.
+- **An id was minted twice.** A resolved issue is dropped from the next round's
+  carry, so the carry alone did not say what `i03` meant two rounds ago and the
+  id was handed to a different problem. `issues.json` now publishes
+  `issue_ids_used` — every id this run and every round before it has spent — the
+  prior-round reader reads it back, and new ids are minted around the whole set.
+  One id is one problem for the life of the manuscript.
+- **A published file named the machine it ran on.** `stages['editor_trace']`
+  carried the absolute path of `editor-log.jsonl` inside `issues.json`, and
+  `REVIEW.md`'s header printed the run folder's absolute path. Both are now
+  relative to the run folder, and the test scans the whole of `issues.json` and
+  `REVIEW.md` for the machine's paths rather than checking a field at a time.
+  `manifest.json` keeps the manuscript's absolute path by design — it is the
+  run's own record, the pdf sits outside the run folder, and it is not in the
+  published set; `docs/INTEGRATIONS.md` says so.
+- **`rebuttal_quote` was accepted where there was nothing to rebut.** The field
+  answers one thing — a checked receipt being called a suggestion — and it was
+  stored on a `major` issue with an invented `rebuttal_block_id` and printed in
+  `REVIEW.md` as a passage of the manuscript. It is now refused anywhere but the
+  `minor`-over-`computed` case it exists for.
+- **An `unverified` row kept nothing for the next round to test.** Ruled
+  `unverified` in one round and `resolved` in the next, an issue skipped the
+  surviving-quote check entirely: the closed row carried no members, so there
+  was nothing to look for. The row now carries its `surviving_quotes`, the check
+  reads them, and the rank it last held is in `prior_rank` whether it was closed
+  once or twice.
+- **`retire: ["C", "C"]` raised a `KeyError` after retiring `C`.** The first
+  retirement had already happened and nothing was logged. The same name twice
+  now means what it means once.
+- **Wrong types never reached the server's own validation.** FastMCP's pydantic
+  layer rejected `issues=5`, `retire="a name"`, `summary=5` and
+  `limitations=[5, None]` before the function ran, so none of them reached
+  `editor-log.jsonl` and a run whose editor died on one reported that no
+  submission call had been made. The tool signatures take them, every type is
+  checked in the function where the refusal is recorded, and the tests go
+  through `create_server().call_tool` as a client does. `significance=None`
+  was also stored as a verdict axis of `None` — `str(None)` is not empty — and
+  is now refused as missing.
+- **The degrade path named the wrong cause.** Four runs end with
+  `issues_source: "server"` and all four printed "this arm runs no editor":
+  a ledger past the 200 findings the editor path supports, an editor slot
+  nobody claimed and an editor that closed nothing read as an arm without an
+  editor. The true reason is written to the document as `issues_source_reason`,
+  printed in `REVIEW.md`, repeated in each synthesised issue's `status_reason`
+  and carried in `not_publishable_reasons`. Where findings pass the limit after
+  the editor claimed the slot, its accepted review stands — `submit_editor`
+  refuses while any finding has no issue, so it covers them all — with the
+  ledger size stated as a limitation instead.
+- **A prior-round file could crash the ingest or carry a duplicate id.** A row
+  that is not an object raised an `AttributeError` naming neither the file nor
+  the row, and two rows under one id matched two issues of this round to the
+  same prior issue. Both are refused by name at ingest.
+- **Small ones.** `uv.lock` pinned `peerreviewagents` 0.9.1 while pyproject said
+  0.10.0, and a test now checks the two agree; the editor's agent file asked for
+  "two sentences at least" where the server counts 40 characters, and the number
+  in the file is now checked against the server's own refusal; a docstring in
+  `runs.py` pointed back to "before 0.9.2", a release that never happened, and a
+  test now requires every version the prose points back to be one `CHANGELOG.md`
+  lists; and `editor_trace['log']`, `issue_ids_used` and `issues_source_reason`
+  are documented in `docs/INTEGRATIONS.md`, with a test that every published
+  top-level key of `issues.json` is named there.
 
 ## [0.9.1] — 2026-11-14
 

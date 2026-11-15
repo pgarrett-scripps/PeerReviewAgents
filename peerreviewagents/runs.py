@@ -643,7 +643,7 @@ def run_status(progress=None, runtime=None, startup=None, problems=None):
 
 
 def publishable_reasons(status, findings_source, guard_status, problems, quarantined=0,
-                        substitutions=(), issues_source=None):
+                        substitutions=(), issues_source=None, issues_source_reason=None):
     """Why this run is not publishable, in words, or an empty list when it is.
 
     One rule, in one place, so that ``publishable`` and the reasons can never
@@ -705,8 +705,14 @@ def publishable_reasons(status, findings_source, guard_status, problems, quarant
     elif findings_source == 'none' and status in COMPLETE_STATUSES:
         reasons.append('the run holds no findings and no issues document')
     if issues_source == 'server':
-        reasons.append('the issues were synthesised by the server, one per finding, because this '
-                       'arm runs no editor, so nothing grouped or ranked them into a review')
+        # The cause comes from the document, because there are three of them
+        # and this line used to print one: an arm with no editor, a ledger past
+        # the editor's stated limit, and an editor that never closed the
+        # review. An older file that does not say which keeps the general line.
+        reasons.append('the issues were synthesised by the server, one per finding, so nothing '
+                       'grouped or ranked them into a review'
+                       + (': ' + str(issues_source_reason).rstrip('.')
+                          if issues_source_reason else ''))
     if guard_status is None:
         reasons.append('no review-guard verdict was recorded, so it is not known whether the '
                        'guard ran over these findings')
@@ -808,13 +814,17 @@ def read_run(path):
         suggestions. :mod:`peerreviewagents.issues` has the helpers that sort
         and group them, so a consumer renders the same order ``REVIEW.md``
         does. ``issues_source`` is ``editor`` where an editor pooled the
-        findings and ``server`` for an arm that ran none, where each finding is
-        its own issue. ``prior_round`` is the earlier round this one was
+        findings and ``server`` where nobody did, in which case each finding is
+        its own issue and the document's ``issues_source_reason`` says which of
+        the four reasons it was: an arm that runs no editor, a ledger past the
+        editor path's stated maximum, an editor slot nobody claimed, or an
+        editor that claimed it and never closed a review.
+        ``prior_round`` is the earlier round this one was
         matched against — the prior file's name, a digest of its contents, how
         many of its issues were carried in, and this round's tally by status —
         or ``None``. It holds no machine path: a run folder is published, and
         where the previous round sat on disk is not the authors' business.
-        It is empty for a run written before 0.9.2, which reported a
+        It is empty for a run written before 0.10.0, which reported a
         body and an appendix instead of issues.
     ``findings``
         Every finding the ledger kept, de-duplicated to the latest row per
@@ -959,7 +969,8 @@ def read_run(path):
     # manuscript with no issues, which is a reading and not an ungrouped pile.
     reasons = publishable_reasons(status, source, guard, problems, len(quarantined), swapped,
                                   issues_source=(document.get('issues_source') if issue_rows
-                                                 else None))
+                                                 else None),
+                                  issues_source_reason=document.get('issues_source_reason'))
     problems += swapped + worker_swapped + citation_lines
 
     probe = startup.get('probe')

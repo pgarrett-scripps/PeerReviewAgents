@@ -326,7 +326,10 @@ def test_a_run_whose_editor_never_closed_says_why_and_keeps_the_trace(tmp_path):
     assert 'The editor never submitted an accepted pooled review.' in blocked['request_rejected']
     assert 'submission call(s) were refused' in blocked['request_rejected']
     assert 'submit_issues' in blocked['request_rejected']
-    assert str(run.review / 'editor-log.jsonl') in blocked['request_rejected']
+    # Run-relative: the trace is named so the holder of the folder can find it,
+    # and never as a path on the machine that happened to run the review.
+    assert 'review/editor-log.jsonl' in blocked['request_rejected']
+    assert str(run.root) not in blocked['request_rejected']
     assert blocked['editor_trace']['refused'] == 1
 
     reading = read_run(run.review)

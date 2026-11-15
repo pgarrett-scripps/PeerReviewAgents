@@ -416,9 +416,13 @@ def _issue_review(document):
                               ('Suggestions', counts.get('suggestions', 0)),
                               ('Findings pooled', counts.get('issue_members', 0))]))
     if document.get('issues_source') == 'server':
-        blocks.append(('labeled', 'No editor in this arm',
-                       'nothing pooled these findings, so each one is its own issue and the '
-                       'ranking is by severity alone.'))
+        # The cause is the run's to state. This label read "No editor in this
+        # arm" over every synthesised file, including the runs whose arm has an
+        # editor that was refused the slot over the size of the ledger.
+        blocks.append(('labeled', 'Nobody grouped these findings',
+                       (str(document['issues_source_reason']).rstrip('.') + '. '
+                        if document.get('issues_source_reason') else '')
+                       + 'Each finding is its own issue and the ranking is by severity alone.'))
     blocks += _verdict_blocks(document)
     required = issue_model.required_issues(rows)
     blocks.append(('heading2', 'Required changes'))
@@ -517,7 +521,11 @@ def report_blocks(run, workspace=None):
               ('Tokens', _tokens(runtime, usage)),
               ('Wall time', _duration(runtime.get('wall_seconds'))),
               ('Claude Code', runtime.get('claude_code_version')),
-              ('Run folder', str(run))]
+              # The folder's own name, not the path to it. REVIEW.md is handed
+              # to authors and editors, and the absolute path names the home
+              # directory of whoever ran the review — which is neither theirs
+              # nor anything they can use.
+              ('Run folder', run.name)]
     title = f"Review: {paper['title']}" if paper and paper.get('title') else f'Review run {run.name}'
     blocks = [('title', title), ('fields', [(key, value) for key, value in fields if value not in (None, '')])]
     if usage.get('usage_limitation'):
