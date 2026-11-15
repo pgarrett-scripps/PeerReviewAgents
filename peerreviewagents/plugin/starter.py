@@ -58,6 +58,7 @@ from .server import (
     TOOLS,
     WORKFLOW_VERSION,
     citation_slots,
+    load_prior_issues,
     plan_slots,
 )
 
@@ -781,7 +782,8 @@ def rerender(review, workspace=None):
         return {'error': str(exc)}
 
 
-def prompt_for(pdf, out, reviewers, arm, cutoff, tracks, models=None, citation_workers=None):
+def prompt_for(pdf, out, reviewers, arm, cutoff, tracks, models=None, citation_workers=None,
+               prior_issues=None):
     text = (f'Use the peer-review-manuscript skill from the {PLUGIN} plugin. Review the '
             f'manuscript at {pdf} and write the run folder to {out}. Use {reviewers} core '
             f'reviewer(s) and the {arm} arm.')
@@ -791,6 +793,12 @@ def prompt_for(pdf, out, reviewers, arm, cutoff, tracks, models=None, citation_w
                 f'write the run folder to {out}, and run these tracks: {chosen}.')
     if cutoff:
         text += f' The literature cutoff is {cutoff}.'
+    if prior_issues:
+        # The round before this one. The editor matches its own issues to those
+        # and keeps the matched ids, so the same issue carries one id across
+        # rounds and a reader can see what was fixed.
+        text += (f' This is a later round of a review whose prior issues are at {prior_issues}: '
+                 'pass that path to ingest as prior_issues.')
     if citation_workers is not None:
         # The count is planned out here, so the session has to be told it: the
         # server's own default would otherwise plan a different number of
@@ -814,7 +822,8 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
            per_agent_tokens=PER_AGENT_TOKENS, per_run_tokens=PER_RUN_TOKENS,
            wall_timeout=WALL_TIMEOUT, directory=None, cwd=None,
            reviewer_models=None, specialist_model=None, editor_model=None,
-           recorder_model=None, citation_workers=CITATION_WORKERS, citation_worker_model=None):
+           recorder_model=None, citation_workers=CITATION_WORKERS, citation_worker_model=None,
+           prior_issues=None):
     """Run one review and return its summary.
 
     The summary is a dict, not an exit code: ``status``, ``blocked_reason``,
@@ -840,6 +849,12 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     starter launches reads those same variables and the two must not reach
     different answers about what the run asked for.
 
+    ``prior_issues`` is the path to an earlier round's ``issues.json`` — the
+    file itself or the run folder holding it. Given one, the editor matches the
+    issues it raises against that round's and keeps the matched ids, so one
+    issue carries one id across rounds and the new document can say what was
+    resolved, what persists and what regressed. Left out, every issue is new.
+
     An unknown arm, a manuscript that is not there, a missing plugin, a model
     this login cannot run and a ``CLAUDE_CODE_SUBAGENT_MODEL`` that would
     outrank the plan all raise ``ValueError`` before anything is written or any
@@ -852,6 +867,11 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     source = Path(pdf).resolve()
     if not source.is_file():
         raise ValueError(f'No manuscript at {source}')
+    # Read here, and the resolved file is what the session is told to pass on.
+    # A prior round named and unreadable is refused before the probe spends
+    # anything, because the alternative is a run that renumbers every issue and
+    # says nothing about it.
+    prior_path, _prior = load_prior_issues(prior_issues)
     root = Path(out).resolve()
     review_dir = root / RUN_DIRECTORY
     directory = Path(directory) if directory else plugin_dir()
@@ -912,7 +932,8 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     accounting = Accounting(per_agent_tokens, per_run_tokens)
     started = time.monotonic()
     prompt = prompt_for(source, root, reviewers, arm, literature_cutoff, tracks, wanted,
-                        citation_workers=len(workers) if citation_lane else None)
+                        citation_workers=len(workers) if citation_lane else None,
+                        prior_issues=prior_path)
     watch = Completion(review_dir, accounting)
     seen, stop, code = launch(prompt, directory, started + wall_timeout,
                               accounting.on_event, cwd, chosen, watch=watch,
@@ -961,6 +982,7 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
         'report': report,
         'arm': arm,
         'reviewers': reviewers,
+        'prior_round': prior_path,
         'wall_seconds': round(wall, 1),
         'tokens_total': accounting.total_tokens(),
         'tokens_by_agent': {row['label']: row.get('tokens') for row in
@@ -976,6 +998,7 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     if progress.is_file():
         done = read(progress)
         summary['findings_delivered'] = done.get('findings_delivered')
+        summary['issues'] = done.get('issues')
         summary['quarantined'] = done.get('quarantined_findings_count')
         summary['stages'] = done.get('stages')
     return summary
@@ -1027,6 +1050,10 @@ def build_parser(prog='peerreview review'):
     parser.add_argument('--citation-worker-model', default=None, metavar='MODEL',
                         help='the model every citation worker runs (default: '
                              + model_plan.DEFAULT_CITATION_WORKER_MODEL + ')')
+    parser.add_argument('--prior-issues', default=None, metavar='PATH',
+                        help="an earlier round's issues.json, or the run folder holding it: "
+                             'the editor matches this round against it, keeps the matched ids '
+                             'and says what was resolved, persists or regressed')
     parser.add_argument('--per-agent-tokens', type=int, default=PER_AGENT_TOKENS)
     parser.add_argument('--per-run-tokens', type=int, default=PER_RUN_TOKENS)
     parser.add_argument('--timeout', type=int, default=WALL_TIMEOUT,
@@ -1069,7 +1096,8 @@ def review_main(argv=None, prog='peerreview review'):
                          editor_model=args.editor_model,
                          recorder_model=args.recorder_model,
                          citation_workers=args.citation_workers,
-                         citation_worker_model=args.citation_worker_model)
+                         citation_worker_model=args.citation_worker_model,
+                         prior_issues=args.prior_issues)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2

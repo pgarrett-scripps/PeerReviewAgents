@@ -37,8 +37,8 @@ follow, or a reference that does not exist, at major severity or above.
 **Where the numbers come from.** The run folder is read once, by
 :func:`peerreviewagents.runs.read_run`, and never by opening the run's files
 here. That matters for a results table in three ways: the findings are
-de-duplicated to one row per ``finding_uid``, so a finding the editor placed in
-both the body and the appendix is one catch and not two; a run that was killed
+de-duplicated to one row per ``finding_uid``, so a finding restated during the
+run is one catch and not two; a run that was killed
 mid-write is read as far as it can be read instead of raising; and every row
 carries ``publishable`` and ``problems``, so a score computed from a damaged
 folder says so in the table rather than passing as a whole review.
@@ -166,8 +166,9 @@ def reading_of(run: Path) -> dict:
     try:
         return read_run(Path(run))
     except (NotARunFolder, FileNotFoundError, ValueError) as refusal:
-        return {'status': 'unknown', 'publishable': False, 'findings': [], 'body': [],
-                'appendix': [], 'findings_source': 'none', 'counts': {}, 'quarantined': [],
+        return {'status': 'unknown', 'publishable': False, 'findings': [], 'issues': [],
+                'issues_source': None, 'findings_source': 'none', 'counts': {},
+                'quarantined': [],
                 'guard_status': None, 'cause': str(refusal), 'note': None,
                 'not_publishable_reasons': [str(refusal)],
                 'runtime': {}, 'usage': {}, 'agents': [], 'problems': [str(refusal)]}
@@ -257,8 +258,9 @@ def score(run: Path, key: dict, reading: dict | None = None) -> dict:
         'near_miss_right_place': near_place,
         'near_miss_right_content': near_content,
         'findings_total': len(findings),
-        'findings_body': len(reading['body']),
-        'findings_appendix': len(reading['appendix']),
+        'issues_total': (reading.get('counts') or {}).get('issues'),
+        'issues_required': (reading.get('counts') or {}).get('required'),
+        'issues_suggestions': (reading.get('counts') or {}).get('suggestions'),
         'findings_by_track': tracks,
         'findings_by_slot': counts(findings, 'slot'),
         'findings_by_severity': counts(findings, 'severity'),
@@ -297,8 +299,9 @@ def score_control(run: Path, paper: str = '', reading: dict | None = None) -> di
         'paper': paper or Path(run).name,
         'kind': 'control',
         'findings_total': len(findings),
-        'findings_body': len(reading['body']),
-        'findings_appendix': len(reading['appendix']),
+        'issues_total': (reading.get('counts') or {}).get('issues'),
+        'issues_required': (reading.get('counts') or {}).get('required'),
+        'issues_suggestions': (reading.get('counts') or {}).get('suggestions'),
         'planted_style_allegations': len(alleged),
         'allegations': alleged,
         'findings_by_slot': counts(findings, 'slot'),

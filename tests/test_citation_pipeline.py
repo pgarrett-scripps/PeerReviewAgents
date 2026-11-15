@@ -1042,11 +1042,19 @@ def finish(run, model=None):
                                  model=model or run.models.get(slot)).get('closed')
     if 'editor' in run.required:
         editor = token_for('editor')
+        pooled = run.pooled()
+        if pooled:
+            # Every finding belongs to exactly one issue, so one issue holding
+            # all of them is the smallest close this helper can make.
+            stored = srv.submit_issues(editor, [{
+                'name': 'The reference list does not hold up',
+                'severity': 'major', 'category': 'literature-and-citations', 'rank': 1,
+                'statement': 'The citation checks found rows nobody could confirm, and the '
+                             'claims resting on them are unsupported as written.',
+                'members': [row['finding_uid'] for row in pooled]}])
+            assert stored.get('stored') == 1, stored
         accepted = srv.submit_editor(
             editor, summary='The reference list is the only weakness anyone confirmed.',
-            decisions=[{'finding_uid': row['finding_uid'], 'placement': 'body',
-                        'reason': 'It bears on whether the reference list is sound.'}
-                       for row in run.pooled()],
             significance='Modest either way.',
             strength_of_evidence='Thin, and not contradicted.',
             verdict_reasoning='No row in the citation table survived a second look.')

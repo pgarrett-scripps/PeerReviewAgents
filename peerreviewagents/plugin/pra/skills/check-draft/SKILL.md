@@ -45,9 +45,11 @@ only one that needs the network. Report its counts as the run gives them, and
 keep "could not be checked" apart from "not found": a lookup that failed says
 nothing about whether a reference exists.
 
-The `draft-check` arm runs no core reviewer and no editor, so every finding
-stands on its own and all of them are in the review's body. There is no
-verdict, and you should not invent one — if the request wants a judgement on
+The `draft-check` arm runs no core reviewer and no editor, so nothing is
+grouped: the server writes `issues.json` with one issue per finding, keeping the
+finding's own severity, so the review reads in the same shape as a full run and
+says plainly that the issues came from the server rather than an editor. There
+is no verdict, and you should not invent one — if the request wants a judgement on
 whether the paper would be accepted, that is `peer-review-manuscript` with the
 `full-two-track` arm.
 

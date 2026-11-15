@@ -18,9 +18,10 @@ Reading a run
     :func:`read_run` reads any run folder: complete, complete without
     findings, blocked, killed by the starter on a token ceiling, a wall-clock
     limit, a rate limit or a session error, or stopped by a start-up probe that
-    never launched a session. It returns the status, the cause, the findings
-    de-duplicated to the latest row per ``finding_uid``, body against appendix,
-    the escalations and their rulings, the manifest identity, the report paths
+    never launched a session. It returns the status, the cause, the issues the
+    editor raised with their member findings, the findings themselves
+    de-duplicated to the latest row per ``finding_uid``, the escalations and
+    their rulings, the manifest identity, the report paths
     and the runtime of each agent. :func:`write_reports` re-renders
     ``REVIEW.md`` and ``REVIEW.txt`` from a run folder, with no model call and
     no workspace path needed. :func:`locate_run` is the resolution those two
@@ -64,7 +65,13 @@ Names
     inside a run, :data:`RUN_STATUSES` and :data:`COMPLETE_STATUSES` are the
     statuses a run folder can record, :data:`CLI_COMMANDS` is the two commands,
     and :data:`FINDING_SCHEMA_VERSION` is the schema every stored finding is
-    stamped with.
+    stamped with. :data:`ISSUES_SCHEMA_VERSION` is the schema of ``issues.json``,
+    the one versioned source of truth a run's review is rendered from, and
+    :data:`ISSUE_SEVERITIES`, :data:`ISSUE_CATEGORIES` and
+    :data:`ISSUE_STATUSES` are the vocabularies an issue is written in.
+    :mod:`peerreviewagents.issues` holds the helpers that order and group them —
+    required changes by rank, suggestions by category — so a consumer renders
+    an issues document the same way ``REVIEW.md`` does.
 
 The callables resolve lazily (PEP 562) so that ``import peerreviewagents``
 stays as cheap as it is on its own, and so a caller that only wants to read a
@@ -76,6 +83,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from .issues import (
+    ISSUE_CATEGORIES,
+    ISSUE_SEVERITIES,
+    ISSUE_STATUSES,
+    ISSUES_SCHEMA_VERSION,
+)
 from .names import (
     CLI_COMMANDS,
     COMPLETE_STATUSES,
@@ -119,6 +132,10 @@ __all__ = [
     "COMPLETE_STATUSES",
     "CLI_COMMANDS",
     "FINDING_SCHEMA_VERSION",
+    "ISSUES_SCHEMA_VERSION",
+    "ISSUE_SEVERITIES",
+    "ISSUE_CATEGORIES",
+    "ISSUE_STATUSES",
 ]
 
 _LAZY = {

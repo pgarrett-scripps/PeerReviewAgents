@@ -11,8 +11,10 @@ every agent in one run, so the things a model must not be trusted with live here
 * **Budgets.** A hard cap on tool calls per agent and per run, and the engine's
   own cap on outside lookups.
 * **Run files and provenance.** ``protocol.json``, ``progress.json``,
-  ``manifest.json``, ``editor-package.json``, ``audit_<track>.md`` and
-  ``REVIEW.md``, with the paper, plugin, workflow and engine hashes beside them.
+  ``manifest.json``, ``issues.json``, ``editor-log.jsonl``, ``audit_<track>.md``
+  and ``REVIEW.md``, with the paper, plugin, workflow and engine hashes beside
+  them. ``issues.json`` is the one versioned source of truth for the review:
+  ``REVIEW.md`` is rendered from it and from nothing else.
 
 The paper tools are the engine's own: every one of them is delegated to a
 per-agent :class:`peerreviewagents.engine.investigation.Investigation`, which is
@@ -36,6 +38,7 @@ from pathlib import Path
 import anyio.from_thread
 import anyio.to_thread
 
+from .. import issues as issue_model
 from ..engine import citation_ledger
 from ..engine.annotations import normalize_review, quarantine_findings
 from ..engine.domain_registry import context as domain_context
@@ -68,10 +71,8 @@ WORKFLOW_VERSION = 'plugin-two-track-v1'
 SPECIALIST_TRACKS = ('stats', 'figures-tables', 'methods-reporting', 'citations',
                      'numbers', 'field')
 MAX_REVIEWERS = 8
-BODY_LIMIT = 8
 SEVERITIES = ('major', 'moderate', 'minor')
 KINDS = ('question', 'edit', 'literature')
-PLACEMENTS = ('body', 'appendix', 'duplicate')
 NUMERIC = r'(?<![\w.])[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?(?![\w.])'
 # The same number without its sign. An expression is tokenised with this one:
 # `b - a` and `b * -a` are arithmetic on the two printed values, not on a
@@ -132,6 +133,28 @@ EXTERNAL_BUDGET = {'core': 24, 'specialist': 16, 'editor': 0, 'recorder': 0,
 # alone can spend a hundred calls that no reviewer used to make. The reviewers'
 # own allowances are unchanged, and `read_run` reports the total either way.
 RUN_CALL_BUDGET = 900
+#: How many use rows the editor's own allowance is sized against: the base
+#: covers reading the ledger and ruling the escalations, and the rest is
+#: measured out per batch of issues and per finding it has to account for. The
+#: editor was the one slot whose allowance did not scale with the work — twelve
+#: calls whether it was handed six findings or forty-six — and that is one of
+#: the two things that made a large set end with nothing submitted.
+EDITOR_BASE_CALLS = 12
+
+
+def editor_call_budget(findings):
+    """The editor's tool allowance for a ledger of *findings* rows.
+
+    Twelve calls for reading the findings and ruling the escalations, two per
+    batch of issues it will submit, and one per four findings for the blocks it
+    has to go back to while pooling them. A run with no findings keeps the base,
+    so an empty ledger is still a claimable slot.
+    """
+    count = max(0, int(findings or 0))
+    batches = -(-count // issue_model.MAX_ISSUE_BATCH) if count else 0
+    return EDITOR_BASE_CALLS + 2 * batches + count // 4
+
+
 #: How many Haiku workers judge the in-text citations, unless a run says otherwise.
 CITATION_WORKERS = 4
 MAX_CITATION_WORKERS = 12
@@ -244,6 +267,12 @@ class Agent:
     receipts: dict = field(default_factory=dict)
     report: dict = None
     editor_package: dict = None
+    # The editor's working set of issues, keyed by the issue's own name folded
+    # for case, in the order the batches arrived. Submitting the same name
+    # again replaces that issue rather than adding a second one, which is what
+    # makes a batched submission re-runnable: a batch the server refused can be
+    # fixed and sent again without the editor having to track what landed.
+    issues: dict = field(default_factory=dict)
 
 
 def plan_slots(arm, reviewers, tracks=None):
@@ -293,12 +322,53 @@ def citation_slots(arm, count=CITATION_WORKERS, tracks=None):
     return tuple(f'cite-{index}' for index in range(1, count + 1))
 
 
+def load_prior_issues(path):
+    """``(path, issues)`` for an earlier round's ``issues.json``, or ``(None, [])``.
+
+    A second round of review is the same workflow over a revised manuscript,
+    and the one thing it needs from the first round is the issues it raised, so
+    that an issue the authors did not fix keeps the id it was reported under.
+    The argument is that file, or the run folder that holds it — both spellings
+    are accepted, because a caller has the folder and a reader has the file.
+
+    Raised, never swallowed: a prior round named and not found is a run that
+    would silently renumber every issue, which is the one thing stable ids
+    exist to prevent.
+    """
+    if not path:
+        return None, []
+    source = Path(str(path)).expanduser()
+    if source.is_dir():
+        for candidate in (source / 'issues.json', source / RUN_DIRECTORY / 'issues.json'):
+            if candidate.is_file():
+                source = candidate
+                break
+    if not source.is_file():
+        raise ValueError('No prior-round issues at ' + str(path) + ': pass the issues.json of an '
+                         'earlier run, or the run folder that holds it.')
+    try:
+        document = read(source)
+    except (ValueError, OSError, UnicodeDecodeError) as exc:
+        raise ValueError('The prior-round issues at ' + str(source) + ' could not be read: '
+                         + str(exc)) from None
+    rows = document.get('issues') if isinstance(document, dict) else None
+    if not isinstance(rows, list):
+        raise ValueError('The prior-round file at ' + str(source) + ' holds no issues list, so it '
+                         'is not an issues.json this version can match against.')
+    kept = [row for row in rows if isinstance(row, dict) and row.get('id')]
+    if not kept:
+        raise ValueError('The prior-round issues at ' + str(source) + ' hold no issue with an id, '
+                         'so there is nothing for this round to match.')
+    return str(source.resolve()), kept
+
+
 class Run:
     """One review in one folder. Created by ``ingest``, finished by ``write_review``."""
 
     def __init__(self, pdf, root, reviewers, arm, literature_cutoff, plugin_root, title=None,
                  tracks=None, reviewer_models=None, specialist_model=None, editor_model=None,
-                 recorder_model=None, citation_workers=None, citation_worker_model=None):
+                 recorder_model=None, citation_workers=None, citation_worker_model=None,
+                 prior_issues=None):
         if arm not in ARMS:
             raise ValueError('Unknown arm: ' + arm + '. Arms: ' + ', '.join(sorted(ARMS)))
         self.arm = arm
@@ -349,6 +419,13 @@ class Run:
         self.review = self.root / RUN_DIRECTORY
         self.cutoff = literature_cutoff
         self.plugin_root = Path(plugin_root).resolve() if plugin_root else None
+        # The prior round, when this run is a second look at a revised paper:
+        # the ``issues.json`` of the earlier run, read here so an unreadable
+        # path is refused at ingest rather than discovered by the editor an
+        # hour later. Nothing is matched here — the matching is the editor's
+        # judgement, issue by issue.
+        self.prior_path, self.prior_issues = load_prior_issues(prior_issues)
+        self.prior_by_id = {str(row['id']): row for row in self.prior_issues}
         self.refuse_foreign_folder(pdf)
         self.review.mkdir(parents=True, exist_ok=True)
         if (self.workspace / 'paper.json').is_file():
@@ -486,6 +563,26 @@ class Run:
         return citation_ledger.Lookups(self.citations.cache, opener=STATE.get('opener'),
                                        limit=citation_ledger.lookup_budget(references))
 
+    def issue_counts(self):
+        """The issue tally the editor has so far, or ``None`` before it submits one.
+
+        Written into ``progress.json`` so a run that is watched from outside —
+        the starter, a heartbeat reader — can see the review taking shape as
+        issues rather than only as a finding count.
+        """
+        editor = self.agents.get('editor')
+        if editor is None:
+            return None
+        if editor.editor_package:
+            return issue_model.counts(editor.editor_package.get('issues') or [])
+        if not editor.issues:
+            return None
+        # Mid-run the issues are still the editor's working set, whose members
+        # are bare uids rather than the evidence rows a finished issue carries.
+        # Reporting the held count and nothing else keeps this field one shape
+        # per state instead of a half-filled tally of the other.
+        return {'issues_held': len(editor.issues), 'accepted': False}
+
     def citation_counts(self):
         """The ledger's numbers, or ``None`` when this arm keeps no ledger."""
         if not self.citations_enabled():
@@ -549,7 +646,12 @@ class Run:
         elif track == 'citations' and self.citations_enabled():
             ledger_tools = ('citation_rows',)
         allowed = (*paper_tools, *ledger_tools)
-        budget = CALL_BUDGET['specialist' if role == 'specialist' else role]
+        # Every other slot's allowance is a constant, because the work is one
+        # manuscript however many findings come out of it. The editor's work is
+        # the findings themselves, so its allowance is measured from the ledger
+        # it is handed — see :func:`editor_call_budget`.
+        budget = (editor_call_budget(len(self.pooled())) if role == 'editor'
+                  else CALL_BUDGET['specialist' if role == 'specialist' else role])
         # The allowance belongs to the slot, not to the claim. A second attempt
         # continues the first one's count, so a re-claim cannot buy more calls.
         used = self.slot_calls.get(slot, 0)
@@ -731,6 +833,42 @@ class Run:
         rows = [q for q in self.quarantined if slot is None or q.get('slot') == slot]
         return 'quarantined' if rows else 'clean'
 
+    def editor_trace(self):
+        """What the editor's submissions did, read back off disk, or ``None``.
+
+        A run whose editor never got an accepted review has to say why, and the
+        only honest answer is the record of what the editor actually tried. This
+        reads ``editor-log.jsonl`` back and keeps the last refusals with their
+        reasons, so a blocked run reports the refusal the editor could not get
+        past instead of only that it never submitted.
+        """
+        rows = []
+        path = self.review / 'editor-log.jsonl'
+        try:
+            text = path.read_text(encoding='utf-8')
+        except OSError:
+            return None
+        for line in text.splitlines():
+            if line.strip():
+                try:
+                    rows.append(json.loads(line))
+                except ValueError:
+                    continue
+        if not rows:
+            return None
+        refused = [row for row in rows if not row.get('accepted')]
+        return {
+            'log': str(path),
+            'calls': len(rows),
+            'accepted': sum(1 for row in rows if row.get('accepted')),
+            'refused': len(refused),
+            'calls_spent': rows[-1].get('calls_spent'),
+            'call_budget': rows[-1].get('call_budget'),
+            'last_refusals': [{'tool': row.get('tool'), 'refusal': row.get('refusal'),
+                               'problems': (row.get('problems') or [])[:3]}
+                              for row in refused[-3:]],
+        }
+
     # -- disk ---------------------------------------------------------------
 
     @staticmethod
@@ -767,6 +905,9 @@ class Run:
             'attempts': {slot: agent.attempt for slot, agent in self.agents.items()},
             'editor_accepted': bool(self.agents.get('editor')
                                     and self.agents['editor'].editor_package),
+            # Present as soon as the editor has made one submission call, so an
+            # unaccepted review is never silent about what it tried.
+            'editor_trace': self.editor_trace(),
         }
 
     def visible_ledger(self, agent):
@@ -802,6 +943,7 @@ class Run:
             'findings_delivered': len(self.pooled()),
             'findings_submitted': len(self.findings),
             'quarantined_findings_count': len(self.quarantined),
+            'issues': self.issue_counts(),
             'review_guard_status': self.guard_status(),
             'citations': self.citation_counts(),
             'tool_calls': {slot: agent.calls for slot, agent in self.agents.items()},
@@ -830,6 +972,8 @@ class Run:
             'code': files,
             'workflow_version': WORKFLOW_VERSION,
             'finding_schema_version': FINDING_SCHEMA_VERSION,
+            'issues_schema_version': issue_model.ISSUES_SCHEMA_VERSION,
+            'prior_round_issues': self.prior_path,
             'claude_code_version': os.environ.get('PEERREVIEW_CLAUDE_VERSION'),
             'plugin_root': str(self.plugin_root) if self.plugin_root else None,
             # The ledger is a file this run produced, so the manifest says where
@@ -868,8 +1012,11 @@ class Run:
             'finding_schema_version': FINDING_SCHEMA_VERSION,
             'independent_tool_allowance': CALL_BUDGET['core'],
             'specialist_tool_allowance': CALL_BUDGET['specialist'],
+            'editor_tool_allowance': editor_call_budget(len(self.pooled())),
             'run_tool_allowance': RUN_CALL_BUDGET,
-            'body_finding_limit': BODY_LIMIT,
+            'issues_schema_version': issue_model.ISSUES_SCHEMA_VERSION,
+            'issue_batch_limit': issue_model.MAX_ISSUE_BATCH,
+            'prior_round_issues': self.prior_path,
             'agents': {slot: {'role': agent.role, 'track': agent.track,
                               'attempt': agent.attempt, 'tool_calls': agent.calls,
                               'model': (agent.report or {}).get('model') or agent.observed,
@@ -928,7 +1075,7 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
            reviewer_models: list = None, specialist_model: str = '',
            editor_model: str = '', recorder_model: str = '',
            citation_workers: int = CITATION_WORKERS,
-           citation_worker_model: str = '') -> dict:
+           citation_worker_model: str = '', prior_issues: str = '') -> dict:
     """Open a run: import the manuscript PDF and fix the plan. Safe to call twice.
 
     ``tracks`` narrows the specialist track to the ones named; the default is
@@ -952,6 +1099,13 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
     citations specialist reads, and a worker that never reports cannot hold the
     run open. The ledger itself is filled here, from the manuscript, with no
     model and no lookup; ``resolve_citations`` does the lookups next.
+
+    ``prior_issues`` makes this run a second round: it is the ``issues.json`` of
+    an earlier run of the same paper, or that run's folder. The editor is shown
+    those issues and matches its own to them, so an issue the authors did not
+    fix keeps the id it was reported under and the review can say what is
+    resolved, what persists and what came back. A path that holds no readable
+    issues is refused here rather than at the editor.
     """
     try:
         # The arguments over the environment, once, in the module that owns the
@@ -993,7 +1147,8 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
                   editor_model=settled.get('editor'),
                   recorder_model=settled.get('recorder'),
                   citation_workers=citation_workers,
-                  citation_worker_model=settled.get('citation_worker'))
+                  citation_worker_model=settled.get('citation_worker'),
+                  prior_issues=prior_issues or None)
     except (ValueError, KeyError, TypeError, OSError) as exc:
         return rejection(str(exc))
     STATE['run'] = run
@@ -1038,6 +1193,11 @@ def summary_of(run):
         'outline': run.outline(),
         'literature_cutoff': run.cutoff,
         'finding_schema_version': FINDING_SCHEMA_VERSION,
+        'issues_schema_version': issue_model.ISSUES_SCHEMA_VERSION,
+        # The prior round, when there is one: the file it was read from and how
+        # many issues it holds. The issues themselves go to the editor alone.
+        'prior_round': ({'path': run.prior_path, 'issues': len(run.prior_issues)}
+                        if run.prior_path else None),
     }
 
 
@@ -1054,6 +1214,12 @@ def claim_agent(slot: str, claim_code: str = '') -> dict:
     except (ValueError, KeyError) as exc:
         return rejection(str(exc))
     run.write_progress()
+    # The protocol is rewritten here so that it records the allowance this slot
+    # was actually handed. The editor's grows with the ledger it is given — see
+    # `editor_call_budget` — so a protocol written at ingest said 12 calls for
+    # a run whose editor got 37, which is the wrong number to debug a run that
+    # ran out of them with.
+    run.write_protocol()
     guidance = ''
     if agent.track in ('core', 'field'):
         try:
@@ -1061,7 +1227,7 @@ def claim_agent(slot: str, claim_code: str = '') -> dict:
             guidance = domain_context(profile) if profile['selected'] else ''
         except (ValueError, KeyError) as exc:  # a pack that does not fit this paper
             guidance = 'Domain routing unavailable: ' + str(exc)
-    return {
+    answer = {
         'agent_token': agent.token,
         'slot': agent.slot,
         'role': agent.role,
@@ -1080,6 +1246,31 @@ def claim_agent(slot: str, claim_code: str = '') -> dict:
         'reminder': ('Your track is set by this token. Quote exactly from the block you cite: an '
                      'unanchored quote is quarantined and the finding is lost.'),
     }
+    if agent.role != 'editor':
+        return answer
+    # The editor writes the issues, so it is the one slot that is handed the
+    # vocabulary they are written in and the prior round they are matched
+    # against. A reviewer is told neither: an issue is not a reviewer's word.
+    answer['issue_model'] = {
+        'severities': list(issue_model.ISSUE_SEVERITIES),
+        'required_severities': list(issue_model.REQUIRED_SEVERITIES),
+        'categories': list(issue_model.ISSUE_CATEGORIES),
+        'statuses': list(issue_model.ISSUE_STATUSES),
+        'matched_statuses': list(issue_model.MATCHED_STATUSES),
+        'batch_limit': issue_model.MAX_ISSUE_BATCH,
+        'schema_version': issue_model.ISSUES_SCHEMA_VERSION,
+    }
+    answer['prior_issues'] = [
+        {key: row.get(key) for key in ('id', 'name', 'severity', 'category', 'rank',
+                                       'statement', 'status')}
+        for row in run.prior_issues]
+    answer['prior_round'] = ({'path': run.prior_path, 'issues': len(run.prior_issues)}
+                             if run.prior_path else None)
+    answer['issues_next'] = (
+        'Submit the issues with submit_issues, at most ' + str(issue_model.MAX_ISSUE_BATCH)
+        + ' per call and as many calls as you need, then close with submit_editor. Every '
+        'finding in the ledger belongs to exactly one issue.')
+    return answer
 
 
 def reissue_claim_code(recorder_key: str, slot: str) -> dict:
@@ -1358,102 +1549,429 @@ def list_findings(agent_token: str, track: str = '', include_comment: bool = Tru
         if include_comment:
             row['comment'] = finding.get('comment')
         out.append(row)
-    return {'count': len(out), 'findings': out, 'order': 'randomised per run',
-            'reports': [a.report for a in run.agents.values() if a.report
-                        and (a.slot in agent.sees or agent.role in ('editor', 'recorder'))],
-            'ledger': run.visible_ledger(agent)}
+    answer = {'count': len(out), 'findings': out, 'order': 'randomised per run',
+              'reports': [a.report for a in run.agents.values() if a.report
+                          and (a.slot in agent.sees or agent.role in ('editor', 'recorder'))],
+              'ledger': run.visible_ledger(agent)}
+    if agent.role == 'editor':
+        # The working set as the server holds it, so an editor that lost track
+        # after a refused batch can read what landed instead of guessing.
+        answer['issues'] = [{'name': issue['name'], 'severity': issue['severity'],
+                             'category': issue['category'], 'rank': issue['rank'],
+                             'members': issue['member_uids'], 'prior_id': issue['prior_id'],
+                             'status': issue['status']}
+                            for issue in agent.issues.values()]
+        answer.update(_issue_state(run, agent))
+    return answer
 
 
-def submit_editor(agent_token: str, summary: str, decisions: list,
-                  significance: str, strength_of_evidence: str, verdict_reasoning: str,
-                  escalation_rulings: list = None, limitations: list = None) -> dict:
-    """Submit the pooled review. Every finding in the ledger needs exactly one decision.
+def _record_editor_call(run, agent, tool, accepted, refusal=None, **extra):
+    """One row per editor submission call, accepted or refused, with its reason.
 
-    ``decisions`` is a list of ``{finding_uid, placement, reason}`` where placement
-    is ``body``, ``appendix`` or ``duplicate`` (then ``duplicate_of`` names the
-    finding it repeats). A ``computed`` finding kept out of the body needs a
-    ``rebuttal_quote`` that anchors exactly in the block it cites. Nothing is
-    deleted: the appendix carries everything the body does not.
+    This is the trace the overlap experiment did not have. Four runs of the
+    fish-antibiotic paper, 42 and 46 findings each, ended with "The editor never
+    submitted an accepted pooled review" and left nothing on disk to say whether
+    a submission had been refused, how many times, or over what:
+    ``tool-log.jsonl`` records the investigation tools only, and the refusals
+    were return values, so they existed nowhere but in a session transcript that
+    is gone. Every call now lands here before it is answered.
+    """
+    run.append(run.review / 'editor-log.jsonl',
+               {'at': now(), 'tool': tool,
+                'slot': getattr(agent, 'slot', None),
+                'attempt': getattr(agent, 'attempt', None),
+                'calls_spent': getattr(agent, 'calls', None),
+                'call_budget': getattr(agent, 'call_budget', None),
+                'accepted': bool(accepted),
+                'refusal': refusal,
+                **extra})
+
+
+def _issue_problems(run, agent, batch):
+    """Every reason one batch of issues is not storable, in the editor's own terms.
+
+    Returns ``(problems, staged)``. Nothing is stored until the whole batch is
+    clean: a batch that is half-stored is a working set the editor cannot
+    reason about, and re-sending the fixed batch would then double what landed.
+    """
+    by_uid = {f['finding_uid']: f for f in run.pooled()}
+    # The uids and prior ids already spoken for, excluding the issues this
+    # batch replaces by name — re-submitting an issue frees its own members.
+    names = {str(row.get('name', '')).strip().casefold() for row in batch
+             if isinstance(row, dict)}
+    held, prior_held = {}, {}
+    for key, issue in agent.issues.items():
+        if key in names:
+            continue
+        for uid in issue['member_uids']:
+            held[uid] = issue['name']
+        if issue.get('prior_id'):
+            prior_held[issue['prior_id']] = issue['name']
+    problems, staged, seen = [], [], {}
+    for index, row in enumerate(batch, 1):
+        if not isinstance(row, dict):
+            problems.append(f'issue {index}: each issue is an object, not a '
+                            + type(row).__name__)
+            continue
+        name = str(row.get('name', '')).strip()
+        key = name.casefold()
+        if not name:
+            problems.append(f'issue {index}: name is required — a short name for the issue, '
+                            'the one the review will list it under')
+            continue
+        if len(name) > 120:
+            problems.append(f'issue {index}: name is at most 120 characters, and yours is '
+                            f'{len(name)}. The paragraph belongs in statement.')
+            continue
+        if key in seen:
+            problems.append(f'issue {index}: the name {name!r} is already used by issue '
+                            f'{seen[key]} in this same batch')
+            continue
+        severity = str(row.get('severity', ''))
+        if severity not in issue_model.ISSUE_SEVERITIES:
+            problems.append(f'issue {index} ({name}): severity is one of '
+                            + ', '.join(issue_model.ISSUE_SEVERITIES))
+            continue
+        category = str(row.get('category', ''))
+        if category not in issue_model.ISSUE_CATEGORIES:
+            problems.append(f'issue {index} ({name}): category is one of '
+                            + ', '.join(issue_model.ISSUE_CATEGORIES))
+            continue
+        rank = row.get('rank')
+        if type(rank) is not int or rank < 1:
+            problems.append(f'issue {index} ({name}): rank is a positive whole number, and the '
+                            'ranks of all your issues have to be 1 to N with no gaps and no ties')
+            continue
+        statement = str(row.get('statement', '')).strip()
+        if len(statement) < 40:
+            problems.append(f'issue {index} ({name}): statement is the one paragraph the authors '
+                            'read — what is wrong and what would answer it. Yours is '
+                            f'{len(statement)} characters.')
+            continue
+        members = [str(uid) for uid in (row.get('members') or [])]
+        if not members:
+            problems.append(f'issue {index} ({name}): members is the finding_uid of every finding '
+                            'this issue is raised from, and an issue needs at least one')
+            continue
+        unknown = [uid for uid in members if uid not in by_uid]
+        if unknown:
+            problems.append(f'issue {index} ({name}): no finding in this run has the uid(s) '
+                            + ', '.join(unknown[:5]) + '. Take the uids from list_findings.')
+            continue
+        repeated = sorted({uid for uid in members if members.count(uid) > 1})
+        if repeated:
+            problems.append(f'issue {index} ({name}): member(s) ' + ', '.join(repeated)
+                            + ' are listed twice in this one issue')
+            continue
+        taken = [(uid, held.get(uid) or seen.get('uid:' + uid)) for uid in members
+                 if uid in held or ('uid:' + uid) in seen]
+        if taken:
+            problems.append(f'issue {index} ({name}): ' + ', '.join(
+                f'{uid} is already a member of {where!r}' for uid, where in taken)
+                + '. A finding belongs to exactly one issue: merge the issues, or move the '
+                  'finding, by submitting that issue again with its members changed.')
+            continue
+        # Nothing is hidden any more, so burying a finding is no longer a
+        # placement: it is calling it a suggestion. The rule that protected a
+        # checked arithmetic finding from the appendix now protects it from
+        # `minor`, and the way out is the same one — quote the passage of the
+        # manuscript that answers it, anchored exactly.
+        computed = [uid for uid in members if by_uid[uid]['basis'] == 'computed']
+        if severity == 'minor' and computed:
+            quote = str(row.get('rebuttal_quote', ''))
+            block = str(row.get('rebuttal_block_id', '')
+                        or by_uid[computed[0]]['block_id'])
+            if run.anchor(block, quote) is None:
+                problems.append(f'issue {index} ({name}): it holds the computed finding(s) '
+                                + ', '.join(computed[:5])
+                                + ', whose arithmetic was checked against the manuscript, so '
+                                  'calling it a suggestion needs a rebuttal_quote that anchors '
+                                  'exactly in the block it cites.')
+                continue
+        prior_id = str(row.get('prior_id') or '') or None
+        status = str(row.get('status') or ('new' if prior_id is None else ''))
+        if prior_id is not None and prior_id not in run.prior_by_id:
+            problems.append(f'issue {index} ({name}): prior_id {prior_id} is not an issue of the '
+                            'prior round. The prior issues are in your claim answer; leave '
+                            'prior_id out for an issue this round is the first to raise.')
+            continue
+        if prior_id is not None and prior_id in prior_held:
+            problems.append(f'issue {index} ({name}): prior issue {prior_id} is already matched '
+                            f'by {prior_held[prior_id]!r}. One prior issue matches one issue of '
+                            'this round.')
+            continue
+        if prior_id is None and status != 'new':
+            problems.append(f'issue {index} ({name}): an issue with no prior_id is new, so its '
+                            f'status cannot be {status!r}')
+            continue
+        if prior_id is not None and status not in issue_model.MATCHED_STATUSES:
+            problems.append(f'issue {index} ({name}): an issue matched to a prior one is '
+                            + ' or '.join(issue_model.MATCHED_STATUSES)
+                            + ', and yours says ' + (repr(status) if status else 'nothing'))
+            continue
+        seen[key] = index
+        for uid in members:
+            seen['uid:' + uid] = name
+        if prior_id is not None:
+            prior_held[prior_id] = name
+        staged.append({'key': key, 'name': name, 'severity': severity, 'category': category,
+                       'rank': rank, 'statement': statement, 'member_uids': members,
+                       'rebuttal_block_id': str(row.get('rebuttal_block_id', '')) or None,
+                       'rebuttal_quote': str(row.get('rebuttal_quote', '')) or None,
+                       'prior_id': prior_id, 'status': status,
+                       'status_reason': str(row.get('status_reason') or '').strip() or None,
+                       'submitted': now()})
+    return problems, staged
+
+
+def submit_issues(agent_token: str, issues: list) -> dict:
+    """Editor only: add or replace a batch of issues. Call it as many times as you need.
+
+    One issue is ``{name, severity, category, rank, statement, members}``, where
+    ``members`` is the ``finding_uid`` of every finding the issue is raised from
+    — the server keeps each member's slot, quote and block ids as the issue's
+    evidence, and counts "raised by N" from them. ``prior_id`` and ``status``
+    name an issue of the prior round this one continues.
+
+    A ``minor`` issue holding a ``computed`` finding — one whose arithmetic was
+    checked against the manuscript — needs a ``rebuttal_quote`` that anchors
+    exactly in the block it cites, with ``rebuttal_block_id`` where that is not
+    the finding's own block. Nothing else may be called a suggestion over a
+    receipt.
+
+    At most :data:`peerreviewagents.issues.MAX_ISSUE_BATCH` issues per call, so
+    the work in one turn is bounded however large the ledger is. Submitting a
+    name again replaces that issue. Nothing is stored from a batch with a
+    problem in it: the answer says what to fix.
     """
     run = current()
     try:
         agent = run.agent_for(agent_token)
     except ValueError as exc:
+        _record_editor_call(run, None, 'submit_issues', False, str(exc))
         return rejection(str(exc))
     if agent.role != 'editor':
-        return rejection('Only the editor submits the pooled review.')
+        refusal = 'Only the editor groups findings into issues.'
+        _record_editor_call(run, agent, 'submit_issues', False, refusal)
+        return rejection(refusal)
+    if agent.editor_package:
+        refusal = ('This run\'s issues are already accepted. Nothing was stored: an issue after '
+                   'submit_editor is not part of the review.')
+        _record_editor_call(run, agent, 'submit_issues', False, refusal)
+        return rejection(refusal)
+    batch = list(issues or [])
+    if not batch:
+        refusal = 'issues is empty: send the issues you have, up to ' + str(
+            issue_model.MAX_ISSUE_BATCH) + ' per call.'
+        _record_editor_call(run, agent, 'submit_issues', False, refusal)
+        return rejection(refusal)
+    if len(batch) > issue_model.MAX_ISSUE_BATCH:
+        refusal = (f'At most {issue_model.MAX_ISSUE_BATCH} issues in one call, and you sent '
+                   f'{len(batch)}. Split them: the issues you have already submitted are kept.')
+        _record_editor_call(run, agent, 'submit_issues', False, refusal, batch_size=len(batch))
+        return rejection(refusal, issues_submitted=len(agent.issues))
+    problems, staged = _issue_problems(run, agent, batch)
+    if problems:
+        state = _issue_state(run, agent)
+        _record_editor_call(run, agent, 'submit_issues', False,
+                            'the batch was not stored', problems=problems,
+                            batch_size=len(batch))
+        return rejection('None of this batch was stored. Fix these and send the batch again; '
+                         'the issues you submitted before are still held.',
+                         problems=problems, **state)
+    for issue in staged:
+        agent.issues[issue['key']] = issue
+    state = _issue_state(run, agent)
+    _record_editor_call(run, agent, 'submit_issues', True, None,
+                        stored=[issue['name'] for issue in staged],
+                        issues_held=len(agent.issues),
+                        findings_without_issue=state['findings_without_issue'])
+    run.write_progress()
+    return {'stored': len(staged), 'issues_held': len(agent.issues), **state,
+            'next': ('Every finding now belongs to an issue: close with submit_editor.'
+                     if not state['findings_without_issue'] else
+                     'Send the next batch, then close with submit_editor.')}
+
+
+def _issue_state(run, agent):
+    """What the editor still owes: the findings no issue holds, and the ranks so far."""
+    taken = {uid for issue in agent.issues.values() for uid in issue['member_uids']}
+    without = [f['finding_uid'] for f in run.pooled() if f['finding_uid'] not in taken]
+    return {'issues_held': len(agent.issues),
+            'findings_in_ledger': len(run.pooled()),
+            'findings_without_issue': len(without),
+            'findings_without_issue_uids': without[:20],
+            'ranks_used': sorted(issue['rank'] for issue in agent.issues.values())}
+
+
+def _rank_problems(agent):
+    """The ranks have to be 1..N with no gaps and no ties, or the report has no order."""
+    ranks = sorted(issue['rank'] for issue in agent.issues.values())
+    wanted = list(range(1, len(ranks) + 1))
+    if ranks == wanted:
+        return []
+    duplicated = sorted({rank for rank in ranks if ranks.count(rank) > 1})
+    missing = [rank for rank in wanted if rank not in ranks]
+    parts = []
+    if duplicated:
+        parts.append('rank(s) given to more than one issue: '
+                     + ', '.join(str(rank) for rank in duplicated))
+    if missing:
+        parts.append('rank(s) nothing holds: ' + ', '.join(str(rank) for rank in missing[:10]))
+    return [f'the ranks of your {len(ranks)} issue(s) have to be 1 to {len(ranks)} with no gaps '
+            'and no ties; ' + '; '.join(parts) + '. Submit the issues whose rank changes again.']
+
+
+def _finalize_issues(run, agent):
+    """The working set as the issues of record: ids assigned, members filled in.
+
+    An issue matched to a prior round keeps that round's id, which is the whole
+    point of naming a prior round; a new issue takes the next id no prior round
+    and no earlier issue of this run is using. The prior issues nothing matched
+    are carried on the end as ``resolved``, so one file says what was fixed as
+    well as what still stands.
+    """
+    by_uid = {f['finding_uid']: f for f in run.pooled()}
+    audits = {path.name.split('audit_', 1)[1].removesuffix('.md'): path.name
+              for path in sorted(run.review.glob('audit_*.md'))}
+    taken = set(run.prior_by_id)
+    number, rows = 0, []
+    for issue in agent.issues.values():
+        if issue['prior_id']:
+            identifier = issue['prior_id']
+        else:
+            number += 1
+            identifier = issue_model.issue_id(number)
+            while identifier in taken:
+                number += 1
+                identifier = issue_model.issue_id(number)
+        taken.add(identifier)
+        members = [issue_model.member_of(by_uid[uid]) for uid in issue['member_uids']
+                   if uid in by_uid]
+        row = {
+            'id': identifier,
+            'name': issue['name'],
+            'severity': issue['severity'],
+            'category': issue['category'],
+            'rank': issue['rank'],
+            'statement': issue['statement'],
+            'members': members,
+            'raised_by': 0,
+            'rebuttal_block_id': issue.get('rebuttal_block_id'),
+            'rebuttal_quote': issue.get('rebuttal_quote'),
+            'prior_id': issue['prior_id'],
+            'status': issue['status'],
+            'status_reason': issue['status_reason'],
+            # The specialist audits this issue rests on. They stay on disk as
+            # evidence and are named here, so a reader of one issue knows which
+            # audit to open rather than reading all six.
+            'audits': sorted({audits[m['track']] for m in members
+                              if m.get('track') in audits}),
+        }
+        row['raised_by'] = issue_model.raised_by(row)
+        rows.append(row)
+    matched = {row['prior_id'] for row in rows if row.get('prior_id')}
+    for identifier, prior in run.prior_by_id.items():
+        if identifier in matched:
+            continue
+        rows.append({
+            'id': identifier,
+            'name': prior.get('name'),
+            'severity': prior.get('severity'),
+            'category': prior.get('category'),
+            'rank': prior.get('rank'),
+            'statement': prior.get('statement'),
+            'members': [],
+            'raised_by': 0,
+            'prior_id': identifier,
+            'status': 'resolved',
+            'status_reason': 'No issue of this round was matched to it.',
+            'audits': [],
+        })
+    return rows
+
+
+def submit_editor(agent_token: str, summary: str, significance: str,
+                  strength_of_evidence: str, verdict_reasoning: str,
+                  escalation_rulings: list = None, limitations: list = None) -> dict:
+    """Close the pooled review. Every finding in the ledger belongs to exactly one issue.
+
+    The issues themselves go in through :func:`submit_issues`, batch by batch;
+    this call is the verdict and the close. It refuses while a finding has no
+    issue, while the ranks are not 1 to N, or while an escalated finding has no
+    ruling, and says which in ``problems``. Nothing is capped and nothing is
+    hidden: major and moderate issues are the required changes, minor ones the
+    suggestions.
+    """
+    run = current()
+    try:
+        agent = run.agent_for(agent_token)
+    except ValueError as exc:
+        _record_editor_call(run, None, 'submit_editor', False, str(exc))
+        return rejection(str(exc))
+    if agent.role != 'editor':
+        refusal = 'Only the editor submits the pooled review.'
+        _record_editor_call(run, agent, 'submit_editor', False, refusal)
+        return rejection(refusal)
     # One row per uid, the latest submission of each: what the editor was shown.
     by_uid = {f['finding_uid']: f for f in run.pooled()}
-    problems, seen, body = [], {}, []
-    for index, decision in enumerate(decisions or [], 1):
-        uid = str(decision.get('finding_uid', ''))
-        placement = decision.get('placement')
-        if uid not in by_uid:
-            problems.append(f'decision {index}: unknown finding_uid {uid or "(missing)"}')
-            continue
-        if uid in seen:
-            problems.append(f'decision {index}: {uid} already decided')
-            continue
-        if placement not in PLACEMENTS:
-            problems.append(f'decision {index}: placement is one of ' + ', '.join(PLACEMENTS))
-            continue
-        if not str(decision.get('reason', '')).strip():
-            problems.append(f'decision {index}: every placement needs a logged reason')
-            continue
-        if placement == 'duplicate':
-            other = str(decision.get('duplicate_of', ''))
-            if other not in by_uid or other == uid:
-                problems.append(f'decision {index}: duplicate_of must name another finding')
-                continue
-        finding = by_uid[uid]
-        if placement != 'body' and finding['basis'] == 'computed':
-            quote = str(decision.get('rebuttal_quote', ''))
-            block = str(decision.get('rebuttal_block_id', finding['block_id']))
-            if run.anchor(block, quote) is None:
-                problems.append(f'decision {index}: a computed finding leaves the body only with '
-                                'a rebuttal_quote that anchors exactly in the block it cites')
-                continue
-        seen[uid] = {**decision, 'finding_uid': uid, 'placement': placement}
-        if placement == 'body':
-            body.append(uid)
-    missing = [uid for uid in by_uid if uid not in seen]
-    if missing:
-        problems.append(f'{len(missing)} finding(s) have no decision: ' + ', '.join(missing[:10]))
-    if len(body) > BODY_LIMIT:
-        problems.append(f'the body holds at most about {BODY_LIMIT} findings and you placed '
-                        f'{len(body)}')
+    state = _issue_state(run, agent)
+    problems = []
+    if by_uid and not agent.issues:
+        problems.append(f'{len(by_uid)} finding(s) are in the ledger and no issue has been '
+                        'submitted. Group them with submit_issues first, at most '
+                        f'{issue_model.MAX_ISSUE_BATCH} issues per call.')
+    elif state['findings_without_issue']:
+        problems.append(f"{state['findings_without_issue']} finding(s) belong to no issue: "
+                        + ', '.join(state['findings_without_issue_uids'][:10])
+                        + '. Every finding belongs to exactly one issue — add it to an issue you '
+                          'already submitted by submitting that issue again with the uid in its '
+                          'members, or submit a new issue for it.')
+    problems += _rank_problems(agent)
     escalated = [uid for uid, f in by_uid.items() if f['escalate']]
     rulings = {str(r.get('finding_uid', '')): r for r in (escalation_rulings or [])}
     for uid in escalated:
         ruling = rulings.get(uid)
         if not ruling or not str(ruling.get('ruling', '')).strip():
-            problems.append('escalated finding ' + uid + ' needs a ruling by name: '
-                            + by_uid[uid]['title'][:60])
+            problems.append('escalated finding ' + uid + ' needs a ruling by name, as '
+                            '{finding_uid, ruling}: ' + by_uid[uid]['title'][:60])
     for axis, value in (('significance', significance),
                         ('strength_of_evidence', strength_of_evidence)):
         if not str(value).strip():
             problems.append(axis + ' is required')
         elif re.fullmatch(r'[\d.\s/]+', str(value)):
             problems.append(axis + ' is a judgement in words, not a score')
+    if not str(summary or '').strip():
+        problems.append('summary is required: the review in a paragraph, above the issues')
     if problems:
-        return rejection('The pooled review was not accepted. Fix these and submit again.',
-                         problems=problems, findings_in_ledger=len(by_uid),
-                         escalated=escalated)
+        _record_editor_call(run, agent, 'submit_editor', False,
+                            'the pooled review was not accepted', problems=problems)
+        return rejection('The pooled review was not accepted. Fix these and submit again; the '
+                         'issues you have submitted are still held.',
+                         problems=problems, escalated=escalated, **state)
+    rows = _finalize_issues(run, agent)
     package = {
         'summary': summary,
         'limitations': list(limitations or []),
-        'decisions': list(seen.values()),
+        'issues': rows,
         'escalation_rulings': [rulings[uid] for uid in escalated],
         'verdict': {'significance': significance, 'strength_of_evidence': strength_of_evidence,
                     'reasoning': verdict_reasoning, 'basis': 'judgement',
                     'limitation': 'Advisory two-axis judgement, not a score and not a decision.'},
-        'body': body,
+        'counts': issue_model.counts(rows),
+        'prior_round': ({'path': run.prior_path, 'issues': len(run.prior_issues),
+                         'tally': issue_model.prior_tally(rows)} if run.prior_path else None),
         'accepted': now(),
     }
     agent.editor_package = package
-    write(agent.out / 'editor-decisions.json', package)
+    write(agent.out / 'issues.json', package)
+    counts = package['counts']
+    _record_editor_call(run, agent, 'submit_editor', True, None,
+                        issues=counts['issues'], required=counts['required'],
+                        suggestions=counts['suggestions'])
     run.write_progress()
-    return {'accepted': True, 'body': len(body), 'appendix': len(by_uid) - len(body),
+    return {'accepted': True, 'issues': counts['issues'], 'required_changes': counts['required'],
+            'suggestions': counts['suggestions'], 'resolved_from_prior': counts['resolved'],
             'escalated_ruled': len(escalated), 'next': 'The recorder calls write_review.'}
 
 
@@ -1783,6 +2301,7 @@ def run_status(recorder_key: str = '') -> dict:
               'reviewers': run.reviewers, 'stages_required': len(ledger['required']),
               'stages_reported': len(ledger['reported']),
               'findings': len(run.pooled()), 'quarantined': len(run.quarantined),
+              'issues': run.issue_counts(),
               'tool_calls': run.calls, 'run': str(run.root),
               'citations': run.citation_counts()}
     if recorder_key and secrets.compare_digest(str(recorder_key), run.recorder_key):
@@ -1815,20 +2334,35 @@ def write_review(agent_token: str) -> dict:
         run.write_manifest()
         return rejection(run.error, status=run.status, ledger=ledger)
     if run.plan['editor'] and not ledger['editor_accepted']:
+        trace = ledger.get('editor_trace')
         run.status = 'blocked'
         run.error = 'The editor never submitted an accepted pooled review.'
+        if trace and trace['last_refusals']:
+            last = trace['last_refusals'][-1]
+            run.error += (f" {trace['refused']} submission call(s) were refused of "
+                          f"{trace['calls']}; the last was {last['tool']}: "
+                          + (last['refusal'] or '')
+                          + (' ' + ' '.join(last['problems']) if last['problems'] else '')
+                          + f" The whole trace is in {trace['log']}.")
+        elif trace:
+            run.error += (f" {trace['calls']} submission call(s) are logged in {trace['log']} "
+                          'and none of them was refused, so the editor stopped before closing.')
+        else:
+            run.error += (' No submission call reached the server at all: the editor never '
+                          'called submit_issues or submit_editor. Nothing is in '
+                          f"{run.review / 'editor-log.jsonl'}.")
         run.write_progress()
         run.write_protocol()
         run.write_manifest()
-        return rejection(run.error, status=run.status, ledger=ledger)
-    package = _editor_package(run)
-    write(run.review / 'editor-package.json', package)
+        return rejection(run.error, status=run.status, ledger=ledger, editor_trace=trace)
+    document = _issues_document(run)
+    write(run.review / 'issues.json', document)
     for index in range(1, run.reviewers + 1):
         slot = f'core-{index}'
         reviewer = run.agents.get(slot)
         if reviewer is None:
             continue
-        write(run.review / f'reviewer-{index}' / 'editor-package.json', {
+        write(run.review / f'reviewer-{index}' / 'findings.json', {
             'summary': (reviewer.report or {}).get('summary', ''),
             'findings': [_public(f) for f in run.pooled() if f['slot'] == slot],
             'limitations': (reviewer.report or {}).get('limitations', []),
@@ -1836,22 +2370,23 @@ def write_review(agent_token: str) -> dict:
             'workflow_version': WORKFLOW_VERSION,
             'review_guard_status': run.guard_status(slot),
         })
-    # The appendix is part of the review: a run that delivered one appendix
-    # finding did not complete without findings.
-    delivered = len(package['findings']) + len(package['appendix'])
-    run.status = 'complete' if delivered else 'complete-without-findings'
+    # Nothing in a review is hidden, so there is one count that decides whether
+    # a run found anything: the findings the issues hold.
+    run.status = 'complete' if document['counts']['members'] else 'complete-without-findings'
     run.error = None
     run.write_progress()
     run.write_protocol()
     run.write_manifest()
     report = _write_reports(run)
     run.write_progress()
+    counts = document['counts']
     return {'status': run.status, 'run': str(run.root),
             'review': str(run.review / 'REVIEW.md'), 'report': report,
-            'body_findings': len(package['findings']),
-            'appendix_findings': len(package['appendix']),
-            'findings_by_track': package['findings_by_track'],
-            'escalated': package['escalated_count'], 'ledger': ledger}
+            'issues': str(run.review / 'issues.json'),
+            'issue_counts': counts,
+            'required_changes': counts['required'], 'suggestions': counts['suggestions'],
+            'findings_by_track': document['findings_by_track'],
+            'escalated': document['escalated_count'], 'ledger': ledger}
 
 
 def _public(finding):
@@ -1864,38 +2399,35 @@ def _public(finding):
     return {key: finding.get(key) for key in keys if key in finding}
 
 
-def _editor_package(run):
+def _issues_document(run):
+    """``issues.json``: the one versioned source of truth a review is rendered from.
+
+    Every arm writes one. Where there is an editor the issues are its own; where
+    there is none, :func:`peerreviewagents.issues.synthesize` makes one issue per
+    finding and ``issues_source`` says ``server``, so a consumer never has to ask
+    whether this arm had an editor before it can read the review.
+    """
     editor = run.agents.get('editor')
     package = editor.editor_package if editor and editor.editor_package else None
     pooled = run.pooled()
-    by_uid = {f['finding_uid']: f for f in pooled}
-    decisions = package['decisions'] if package else [
-        {'finding_uid': uid, 'placement': 'body', 'reason': 'No editor stage in this arm.'}
-        for uid in by_uid]
-    placement = {d['finding_uid']: d for d in decisions}
-    body_uids = [d['finding_uid'] for d in decisions if d['placement'] == 'body']
+    issue_rows = package['issues'] if package else issue_model.synthesize(pooled)
     counts = {}
     for finding in pooled:
         counts[finding['track']] = counts.get(finding['track'], 0) + 1
-    raised_by = {}
-    for decision in decisions:
-        target = decision.get('duplicate_of') or decision['finding_uid']
-        raised_by.setdefault(target, []).append(decision['finding_uid'])
     reports = [a.report for a in run.agents.values() if a.report]
     return {
+        'schema_version': issue_model.ISSUES_SCHEMA_VERSION,
+        'issues_source': 'editor' if package else 'server',
         'summary': (package or {}).get('summary') or _fallback_summary(run),
-        'findings': [{**_public(by_uid[uid]),
-                      'editor_reason': placement[uid].get('reason'),
-                      'reviewers_raising': len(raised_by.get(uid, [uid])),
-                      'duplicate_uids': [u for u in raised_by.get(uid, []) if u != uid]}
-                     for uid in body_uids],
-        'appendix': [{**_public(by_uid[d['finding_uid']]),
-                      'editor_reason': d.get('reason'), 'editor_placement': d['placement'],
-                      'duplicate_of': d.get('duplicate_of'),
-                      'rebuttal_quote': d.get('rebuttal_quote')}
-                     for d in decisions if d['placement'] != 'body'],
+        'issues': issue_rows,
+        'counts': issue_model.counts(issue_rows),
+        'prior_round': (package or {}).get('prior_round') or (
+            {'path': run.prior_path, 'issues': len(run.prior_issues),
+             'tally': issue_model.prior_tally(issue_rows)} if run.prior_path else None),
+        # The specialist audits stay on disk as evidence; each issue names the
+        # ones it rests on, and this is the whole set in one place.
+        'audits': [path.name for path in sorted(run.review.glob('audit_*.md'))],
         'limitations': (package or {}).get('limitations', []),
-        'decisions': decisions,
         'verdict': (package or {}).get('verdict'),
         'escalation_rulings': (package or {}).get('escalation_rulings', []),
         'escalated_count': sum(1 for f in pooled if f['escalate']),
@@ -1936,30 +2468,44 @@ def _write_reports(run):
         write_reports(run.review, run.workspace, run.review)
         return {'renderer': 'engine.run_report'}
     except Exception as exc:  # noqa: BLE001 - a report must never lose a finished review
-        package = read(run.review / 'editor-package.json')
+        document = read(run.review / 'issues.json')
+        issue_rows = document['issues']
         lines = [f"# Review of {run.paper.get('title')}", '',
                  f"Run {run.root.name}, arm {run.arm}, {run.reviewers} core reviewer(s), "
-                 f"status {run.status}.", '', '## Summary', '', package['summary'], '',
-                 '## Findings', '']
-        for finding in package['findings']:
-            lines += [f"### {finding['title']} ({finding['severity']}, {finding['track']}, "
-                      f"{finding['basis']})", '',
-                      f"Block {finding['block_id']}: “{finding['quote']}”", '',
-                      finding.get('comment') or '', '']
-        if package['appendix']:
-            lines += ['## Appendix', '']
-            for finding in package['appendix']:
-                lines += [f"### {finding['title']} ({finding['severity']}, {finding['track']})",
-                          '', f"Placed in the appendix: {finding.get('editor_reason')}", '',
-                          finding.get('comment') or '', '']
+                 f"status {run.status}.", '', '## Summary', '', document['summary'], '',
+                 '## Required changes', '']
+        for issue in issue_model.required_issues(issue_rows):
+            lines += _fallback_issue(issue)
+        if not issue_model.required_issues(issue_rows):
+            lines += ['No required changes.', '']
+        lines += ['## Suggestions', '']
+        for category, rows in issue_model.by_category(issue_model.suggestion_issues(issue_rows)):
+            lines += [f'### {category}', '']
+            for issue in rows:
+                lines += _fallback_issue(issue)
+        if not issue_model.suggestion_issues(issue_rows):
+            lines += ['No suggestions.', '']
         (run.review / 'REVIEW.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
         return {'renderer': 'plugin fallback', 'engine_error': str(exc)}
+
+
+def _fallback_issue(issue):
+    """One issue in the fallback renderer: the statement, then its evidence."""
+    raised = issue.get('raised_by') or issue_model.raised_by(issue)
+    lines = [f"#### {issue.get('rank')}. {issue.get('name')} "
+             f"({issue.get('severity')}, {issue.get('category')}, raised by {raised})", '',
+             issue.get('statement') or '', '']
+    for member in issue.get('members') or []:
+        lines += [f"- {member.get('slot')} on block {member.get('block_id')}: "
+                  f"“{member.get('quote')}”"]
+    return lines + ([''] if issue.get('members') else [])
 
 
 TOOLS = (ingest, claim_agent, reissue_claim_code, read_blocks, search, calculate, save_note,
          view_page, view_supplement, check_citation, search_literature, resolve_identifier,
          lookup_source, inspect_results, record_comparison, validate_synthesis, submit_finding,
-         submit_report, list_findings, submit_editor, resolve_citations, citation_rows,
+         submit_report, list_findings, submit_issues, submit_editor, resolve_citations,
+         citation_rows,
          claim_citation_batch, submit_citation_verdict, mark_blocked, run_status, write_review)
 
 

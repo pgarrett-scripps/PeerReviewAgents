@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from peerreviewagents import issues as issue_model
 from peerreviewagents import names
 from peerreviewagents.plugin import server as srv
 from peerreviewagents.runs import read_run
@@ -520,22 +521,29 @@ def test_agreement_between_two_reviewers_is_two_rows_the_editor_merges(tmp_path)
     close(run.agents['core-1'].token, model='claude-sonnet-5-5')
     close(run.agents['core-2'].token, model='claude-sonnet-5-5')
     editor = token_for('editor')
+    stored = srv.submit_issues(editor, [{
+        'name': 'Both reviewers read the same sentence as unsupported',
+        'severity': 'major', 'category': 'claims-and-conclusions', 'rank': 1,
+        'statement': 'Two reviewers independently read the same passage as claiming more than '
+                     'the data behind it support.',
+        'members': [first['finding_uid'], second['finding_uid']]}])
+    assert stored['stored'] == 1, stored
+    assert stored['findings_without_issue'] == 0
     accepted = srv.submit_editor(
         editor, summary='Both reviewers raise one weakness.',
-        decisions=[{'finding_uid': first['finding_uid'], 'placement': 'body',
-                    'reason': 'Both reviewers raise it.'},
-                   {'finding_uid': second['finding_uid'], 'placement': 'duplicate',
-                    'reason': 'The same passage as the first.',
-                    'duplicate_of': first['finding_uid']}],
         significance='Would matter to the field if it holds.',
         strength_of_evidence='Partly supported.',
         verdict_reasoning='One weakness, raised twice.')
     assert accepted['accepted'] is True, accepted
     close(editor, model='claude-sonnet-5-5')
     assert srv.write_review(token_for('recorder'))['status'] == 'complete'
-    package = json.loads((run.review / 'editor-package.json').read_text(encoding='utf-8'))
-    assert [f['reviewers_raising'] for f in package['findings']] == [2]
-    assert package['findings'][0]['duplicate_uids'] == [second['finding_uid']]
+    document = json.loads((run.review / 'issues.json').read_text(encoding='utf-8'))
+    assert len(document['issues']) == 1, 'one issue, raised by two reviewers'
+    issue = document['issues'][0]
+    assert issue['raised_by'] == 2
+    assert [member['finding_uid'] for member in issue['members']] == [
+        first['finding_uid'], second['finding_uid']]
+    assert {member['slot'] for member in issue['members']} == {'core-1', 'core-2'}
 
 
 def test_a_receipt_input_is_matched_by_value_not_by_how_it_is_written(tmp_path):
@@ -604,14 +612,34 @@ def two_track_run(tmp_path, reviewers=2, model='claude-sonnet-5-5', unclosed=(),
     return run, uids
 
 
+def issue_batch(uids, severity='major', category='claims-and-conclusions'):
+    """One issue per finding, ranked in the order the uids came in.
+
+    This is the smallest grouping that meets the editor's contract — every
+    finding in the ledger belongs to exactly one issue, and the ranks are 1 to
+    N — so a test that is not about the grouping can say nothing about it.
+    """
+    return [{'name': f'What {slot} raised', 'severity': severity, 'category': category,
+             'rank': rank,
+             'statement': 'The manuscript asserts more than the passage behind it supports, '
+                          'and the authors have to say which reading they mean.',
+             'members': [uid]}
+            for rank, (slot, uid) in enumerate(uids.items(), 1)]
+
+
 def accept_editor(run, uids, **overrides):
+    """Group the findings into issues, then close the pooled review.
+
+    ``issues`` replaces the default one-issue-per-finding grouping; everything
+    else in ``overrides`` goes to ``submit_editor``.
+    """
     token = claim('editor')['agent_token']
-    decisions = overrides.pop('decisions', [
-        {'finding_uid': uid, 'placement': 'body', 'reason': 'It bears on the central claim.'}
-        for uid in uids.values()])
+    issues = overrides.pop('issues', issue_batch(uids))
+    if issues:
+        stored = srv.submit_issues(token, issues)
+        assert stored.get('stored') == len(issues), stored
     payload = {
         'summary': 'Two reviewers and the statistics audit agree on one weakness.',
-        'decisions': decisions,
         'significance': 'Would matter to the field if it holds.',
         'strength_of_evidence': 'Partly supported; the main comparison is underpowered.',
         'verdict_reasoning': 'The claim is plausible but the evidence shown is thin.',
@@ -655,10 +683,12 @@ def test_a_stage_that_delivered_findings_without_a_report_is_a_gap_not_a_blocked
     assert written['ledger']['missing_with_findings'] == ['core-1']
     assert written['ledger']['silent'] == []
 
-    package = json.loads((run.review / 'editor-package.json').read_text(encoding='utf-8'))
-    assert uids['core-1'] in [f['finding_uid'] for f in package['findings']], \
-        "the finding was ruled into the body, which is why blocking the run lost it"
-    assert 'core-1' not in {row['slot'] for row in package['reviewer_provenance']}, \
+    document = json.loads((run.review / 'issues.json').read_text(encoding='utf-8'))
+    members = [member['finding_uid'] for issue in document['issues']
+               for member in issue['members']]
+    assert uids['core-1'] in members, \
+        'the finding is in an issue of the review, which is why blocking the run lost it'
+    assert 'core-1' not in {row['slot'] for row in document['reviewer_provenance']}, \
         'there is no report to take a provenance row from, and none is invented'
 
     reading = read_run(run.review)
@@ -732,29 +762,65 @@ def test_write_review_refuses_without_an_accepted_editor_package(tmp_path):
     assert 'never submitted an accepted pooled review' in refusal['request_rejected']
 
 
-def test_every_finding_needs_exactly_one_decision(tmp_path):
+def test_every_finding_belongs_to_exactly_one_issue(tmp_path):
+    """A finding in two issues, and a finding in none: both refused, and said plainly.
+
+    The issue is the unit of the review and the ledger is what it is drawn
+    from, so the two have to account for each other exactly. A finding in two
+    issues would be one weakness counted twice in "raised by N"; a finding in
+    none would be a reviewer's work the review never mentions.
+    """
     run, uids = two_track_run(tmp_path)
-    _, refused = accept_editor(run, uids, decisions=[
-        {'finding_uid': uids['core-1'], 'placement': 'body', 'reason': 'first'},
-        {'finding_uid': uids['core-1'], 'placement': 'appendix', 'reason': 'again'},
-    ])
+    editor = claim('editor')['agent_token']
+    first = issue_batch({'core-1': uids['core-1']})
+    assert srv.submit_issues(editor, first)['stored'] == 1
+    again = [{**first[0], 'name': 'A second issue over the same finding', 'rank': 2}]
+    refused = srv.submit_issues(editor, again)
+    assert 'request_rejected' in refused
     problems = ' '.join(refused['problems'])
-    assert 'already decided' in problems
-    assert 'have no decision' in problems
+    assert 'already a member of' in problems and uids['core-1'] in problems
+
+    closing = srv.submit_editor(
+        editor, summary='Only one of three findings is in an issue.',
+        significance='Would matter to the field if it holds.',
+        strength_of_evidence='Partly supported.',
+        verdict_reasoning='The claim is plausible but the evidence shown is thin.')
+    assert 'request_rejected' in closing
+    assert closing['findings_without_issue'] == 2
+    assert any('belong to no issue' in problem for problem in closing['problems'])
 
 
-def test_a_placement_without_a_reason_is_refused(tmp_path):
+def test_an_issue_without_a_statement_or_a_category_is_refused(tmp_path):
+    """The statement is the paragraph the authors read, so an issue without one is not one."""
     run, uids = two_track_run(tmp_path)
-    _, refused = accept_editor(run, uids, decisions=[
-        {'finding_uid': uid, 'placement': 'body', 'reason': ''} for uid in uids.values()])
-    assert any('logged reason' in problem for problem in refused['problems'])
+    editor = claim('editor')['agent_token']
+    batch = issue_batch(uids)
+    batch[0] = {**batch[0], 'statement': 'Needs work.'}
+    batch[1] = {**batch[1], 'category': 'vibes'}
+    refused = srv.submit_issues(editor, batch)
+    problems = ' '.join(refused['problems'])
+    assert 'statement is the one paragraph' in problems
+    assert 'category is one of' in problems
+    assert srv.current().agents['editor'].issues == {}, 'nothing in a bad batch is stored'
 
 
-def test_the_body_holds_at_most_about_eight_findings(tmp_path, monkeypatch):
-    monkeypatch.setattr(srv, 'BODY_LIMIT', 2)
+def test_a_batch_larger_than_the_cap_is_refused_and_keeps_what_landed(tmp_path):
+    """The batch size is what makes a large finding set fit a bounded turn budget.
+
+    The editor's turns are what ran out on the 40-plus finding runs, so issues
+    go in batch by batch and a batch over the cap is refused by size alone —
+    with the issues already submitted still held, so the editor splits the
+    batch rather than starting again.
+    """
     run, uids = two_track_run(tmp_path)
-    _, refused = accept_editor(run, uids)
-    assert any('at most about 2' in problem for problem in refused['problems'])
+    editor = claim('editor')['agent_token']
+    assert srv.submit_issues(editor, issue_batch({'core-1': uids['core-1']}))['stored'] == 1
+    oversized = [{**issue_batch(uids)[0], 'name': f'Issue {number}', 'rank': number}
+                 for number in range(2, srv.issue_model.MAX_ISSUE_BATCH + 3)]
+    refused = srv.submit_issues(editor, oversized)
+    assert f'At most {srv.issue_model.MAX_ISSUE_BATCH} issues in one call' in \
+        refused['request_rejected']
+    assert refused['issues_submitted'] == 1, 'what already landed is still held'
 
 
 def test_an_escalated_finding_must_be_ruled_on_by_name(tmp_path):
@@ -770,7 +836,14 @@ def test_a_numeric_verdict_is_refused(tmp_path):
     assert any('judgement in words' in problem for problem in refused['problems'])
 
 
-def test_a_computed_finding_leaves_the_body_only_over_an_anchored_rebuttal(tmp_path):
+def test_a_computed_finding_becomes_a_suggestion_only_over_an_anchored_rebuttal(tmp_path):
+    """Nothing is hidden now, so burying a checked sum means calling it minor.
+
+    The protection is the same one the body and the appendix needed, moved to
+    the axis where burial now happens: an issue holding a finding whose
+    arithmetic was checked against the manuscript cannot be a suggestion
+    unless the editor quotes the passage that answers it, anchored exactly.
+    """
     open_run(tmp_path, arm='single')
     run = srv.current()
     token = claim('core-1')['agent_token']
@@ -785,17 +858,25 @@ def test_a_computed_finding_leaves_the_body_only_over_an_anchored_rebuttal(tmp_p
     # recorder, which is where a code for a slot without one comes from.
     run.required = (*run.required, 'editor')
     editor = reclaim('editor')
-    base = {'summary': 's', 'significance': 'Modest.', 'strength_of_evidence': 'Thin.',
-            'verdict_reasoning': 'r'}
-    refused = srv.submit_editor(editor, decisions=[
-        {'finding_uid': stored['finding_uid'], 'placement': 'appendix',
-         'reason': 'I do not agree.'}], **base)
+    issue = {'name': 'The sum is a detail', 'severity': 'minor',
+             'category': 'statistics-and-inference', 'rank': 1,
+             'statement': 'The arithmetic does not come out, but the point it is attached to '
+                          'does not rest on that number.',
+             'members': [stored['finding_uid']]}
+    refused = srv.submit_issues(editor, [issue])
     assert any('rebuttal_quote' in problem for problem in refused['problems'])
-    accepted = srv.submit_editor(editor, decisions=[
-        {'finding_uid': stored['finding_uid'], 'placement': 'appendix',
-         'reason': 'The paper states the correction elsewhere.',
-         'rebuttal_block_id': block, 'rebuttal_quote': quote}], **base)
-    assert accepted['accepted'] is True
+    accepted = srv.submit_issues(editor, [{**issue, 'rebuttal_block_id': block,
+                                           'rebuttal_quote': quote}])
+    assert accepted['stored'] == 1, accepted
+    closed = srv.submit_editor(editor, summary='One suggestion over an answered sum.',
+                               significance='Modest.', strength_of_evidence='Thin.',
+                               verdict_reasoning='r')
+    assert closed['accepted'] is True, closed
+    # And a major issue over the same finding needs no rebuttal: the rule is
+    # about calling a receipt a suggestion, not about receipts.
+    srv.current().agents['editor'].issues.clear()
+    srv.current().agents['editor'].editor_package = None
+    assert srv.submit_issues(editor, [{**issue, 'severity': 'major'}])['stored'] == 1
 
 
 def test_a_finished_run_writes_the_files_a_consumer_reads(tmp_path):
@@ -809,19 +890,30 @@ def test_a_finished_run_writes_the_files_a_consumer_reads(tmp_path):
     assert written['escalated'] == 1
 
     review = run.review
-    for name in ('protocol.json', 'progress.json', 'manifest.json', 'editor-package.json',
-                 'REVIEW.md'):
+    for name in ('protocol.json', 'progress.json', 'manifest.json', 'issues.json',
+                 'editor-log.jsonl', 'REVIEW.md'):
         assert (review / name).is_file(), name
     assert (review / 'audit_stats.md').read_text(encoding='utf-8').startswith('# stats audit')
     assert (review / 'audit_citations.md').is_file()
 
-    package = json.loads((review / 'editor-package.json').read_text(encoding='utf-8'))
-    assert len(package['findings']) == 3
-    assert package['verdict']['basis'] == 'judgement'
-    assert package['escalation_rulings'][0]['finding_uid'] == uids['spec-stats']
-    assert package['reviewer_count'] == 2
-    assert {row['slot'] for row in package['reviewer_provenance']} >= {'core-1', 'spec-stats'}
-    assert all(row['model'] == 'claude-sonnet-5-5' for row in package['reviewer_provenance'])
+    document = json.loads((review / 'issues.json').read_text(encoding='utf-8'))
+    assert document['schema_version'] == issue_model.ISSUES_SCHEMA_VERSION
+    assert document['issues_source'] == 'editor'
+    assert len(document['issues']) == 3
+    assert document['counts'] == {**document['counts'], 'issues': 3, 'required': 3,
+                                  'suggestions': 0, 'members': 3}
+    assert [issue['id'] for issue in document['issues']] == ['i01', 'i02', 'i03']
+    assert [issue['rank'] for issue in document['issues']] == [1, 2, 3]
+    assert document['verdict']['basis'] == 'judgement'
+    assert document['escalation_rulings'][0]['finding_uid'] == uids['spec-stats']
+    assert document['reviewer_count'] == 2
+    assert {row['slot'] for row in document['reviewer_provenance']} >= {'core-1', 'spec-stats'}
+    assert all(row['model'] == 'claude-sonnet-5-5' for row in document['reviewer_provenance'])
+    # The specialist audit the issue rests on is named on the issue and stays
+    # on disk as the evidence behind it.
+    stats = [issue for issue in document['issues']
+             if any(m['slot'] == 'spec-stats' for m in issue['members'])]
+    assert stats and stats[0]['audits'] == ['audit_stats.md']
 
     protocol = json.loads((review / 'protocol.json').read_text(encoding='utf-8'))
     assert protocol['provider'] == 'claude-code'
@@ -837,7 +929,7 @@ def test_a_finished_run_writes_the_files_a_consumer_reads(tmp_path):
     assert progress['status'] == 'complete'
     assert progress['stages']['missing'] == []
     assert progress['review_guard_status'] == 'clean'
-    assert (review / 'reviewer-1' / 'editor-package.json').is_file()
+    assert (review / 'reviewer-1' / 'findings.json').is_file()
 
 
 def test_a_published_review_can_say_which_model_wrote_which_report(tmp_path):
@@ -853,8 +945,8 @@ def test_a_published_review_can_say_which_model_wrote_which_report(tmp_path):
     close(editor, model='claude-fable-5-2')
     srv.write_review(claim('recorder')['agent_token'])
 
-    package = json.loads((run.review / 'editor-package.json').read_text(encoding='utf-8'))
-    rows = {row['slot']: row for row in package['reviewer_provenance']}
+    document = json.loads((run.review / 'issues.json').read_text(encoding='utf-8'))
+    rows = {row['slot']: row for row in document['reviewer_provenance']}
     assert rows['core-1']['assigned_model'] == 'claude-sonnet-5-5'
     assert rows['core-2']['assigned_model'] == 'claude-opus-5-5', 'two reviewers, two models'
     assert rows['core-2']['model'] == 'claude-sonnet-5-5', 'what it reported, kept as it is'
@@ -938,21 +1030,27 @@ def test_a_run_where_nobody_found_anything_is_complete_without_findings(tmp_path
           model='claude-sonnet-5-5')
     written = srv.write_review(claim('recorder')['agent_token'])
     assert written['status'] == 'complete-without-findings'
-    assert written['body_findings'] == 0
+    assert written['issue_counts']['issues'] == 0
+    assert written['required_changes'] == 0 and written['suggestions'] == 0
 
 
-def test_a_run_whose_findings_all_sit_in_the_appendix_still_completed(tmp_path):
-    """An appendix finding is delivered: `complete-without-findings` was a lie."""
+def test_a_run_whose_issues_are_all_suggestions_still_completed(tmp_path):
+    """A suggestion is delivered: `complete-without-findings` would be a lie.
+
+    Nothing is capped or hidden, so the question the status answers is whether
+    the run raised anything at all — not whether what it raised was required.
+    Three minor issues are three issues, and the run is complete.
+    """
     run, uids = two_track_run(tmp_path)
-    editor, accepted = accept_editor(run, uids, decisions=[
-        {'finding_uid': uid, 'placement': 'appendix', 'reason': 'Minor beside the main claim.'}
-        for uid in uids.values()])
+    editor, accepted = accept_editor(run, uids, issues=issue_batch(
+        uids, severity='minor', category='presentation'))
     assert accepted['accepted'] is True, accepted
     close(editor, model='claude-sonnet-5-5')
     written = srv.write_review(token_for('recorder'))
     assert written['status'] == 'complete'
-    assert written['body_findings'] == 0
-    assert written['appendix_findings'] == 3
+    assert written['required_changes'] == 0
+    assert written['suggestions'] == 3
+    assert written['issue_counts']['members'] == 3
 
 
 def test_the_guard_status_in_the_run_files_is_read_and_not_assumed(tmp_path):
@@ -1037,7 +1135,7 @@ def test_the_tool_list_is_the_one_the_agents_are_allowed_to_call(tmp_path):
     names = {tool.__name__ for tool in srv.TOOLS}
     assert names >= set(srv.PAPER_TOOLS)
     assert {'ingest', 'claim_agent', 'reissue_claim_code', 'submit_finding', 'submit_report',
-            'list_findings', 'submit_editor', 'write_review', 'mark_blocked',
+            'list_findings', 'submit_issues', 'submit_editor', 'write_review', 'mark_blocked',
             'run_status'} <= names
     assert {'resolve_citations', *srv.LEDGER_TOOLS} <= names
-    assert len(srv.TOOLS) == len(names) == 27
+    assert len(srv.TOOLS) == len(names) == 28

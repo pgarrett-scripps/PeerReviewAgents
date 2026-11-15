@@ -7,6 +7,95 @@ that made the plugin the only way to run a review.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+The report is issues now, not a body and an appendix, and an editor that cannot
+finish says why. No model was run for this change: every number below comes from
+the test suite and from the saved runs in `runs-0.9.0` and the overlap
+experiment.
+
+### Changed
+
+- **The issue is the unit of the report.** The editor no longer decides a
+  placement per finding; it groups the findings into issues — one problem, one
+  issue, with its findings kept inside it as `members` — and gives each a short
+  name, a severity (`major`, `moderate`, `minor`), a category from a fixed
+  vocabulary, a rank and a one-paragraph statement. "Raised by N" is counted
+  from the members' slots rather than asserted. `submit_issues` takes them in
+  batches of at most twelve and is keyed by name, so a refused batch is
+  re-sent rather than restarted, and `submit_editor` is now the finalizer: it
+  takes the verdict and refuses while a stored finding belongs to no issue or
+  the ranks are not exactly 1..N.
+- **Nothing is capped and nothing is hidden.** `BODY_LIMIT` and the
+  `body`/`appendix`/`duplicate` placement are gone, with no flag to bring them
+  back. The major and moderate issues are the required changes, in rank order;
+  the minor ones are suggestions grouped by category.
+- **A checked receipt is not downgraded in silence.** Placement is gone, so the
+  rule that kept a `computed` finding — one whose arithmetic the server checked
+  against the manuscript — out of the appendix now holds on the severity axis
+  instead: an issue called `minor` that holds a computed finding needs a
+  `rebuttal_quote` (with `rebuttal_block_id` where the passage is not the
+  finding's own block) that anchors exactly, and the quote is kept on the issue
+  in `issues.json`. Calling arithmetic a suggestion takes the same evidence it
+  always took.
+- **`issues.json` is the source of truth**, one versioned document per run, and
+  `REVIEW.md` is rendered from it and nothing else. Every arm writes one: where
+  no editor runs, the server synthesises one issue per finding and the document
+  says `issues_source: "server"`, so `draft-check` and a full review read in
+  one shape. The specialist audits stay on disk as evidence and the issues
+  that rest on them link to them.
+- **`read_run` returns `issues`, `issues_source` and `prior_round`**, and its
+  `counts` carry `issues`, `required`, `suggestions`, `resolved`,
+  `issue_members`, `by_severity` and `by_category`. `body`, `appendix` and
+  `findings_source: "editor-package"` are gone; `findings_source` is now
+  `issues`, `ledger` or `none`, and the findings themselves always come from
+  the append-only ledger, with the issues' members as the fallback when that
+  file is lost. `peerreview report` prints the issue counts beside the finding
+  count.
+- **An arm with no editor is not publishable, and says which reason it is.**
+  `publishable` was already false for `draft-check`, for the absent editor
+  package; now the reason names the synthesis instead.
+- **`docs/paper-scaffold-adapter.patch` is regenerated against issues.** The
+  ledger row is the issue, not the finding, and the severity map keeps
+  `moderate` as a required change — `major` to major, `moderate` to major, an
+  escalated `major` to blocker, `minor` to minor — with the engine's own
+  severity written into the row beside the issue id. The old map sent
+  `moderate` to `minor`, which lost exactly the distinction an author needed.
+
+### Added
+
+- **An earlier round's issues can be passed in**: `--prior-issues PATH` on the
+  review, `prior_issues` to `ingest` and to the workflow. The editor matches
+  this round's issues against that document by reading them, keeps the matched
+  id, and marks each one `persisting` or `regressed`; a prior issue nothing
+  matched is carried into the new document as `resolved`. One problem keeps one
+  id across rounds, so a follow-up is a comparison and not a re-derivation —
+  text hashing was tried first on the saved pilots and predicted merges poorly.
+- **`editor-log.jsonl`**, one row per editor submission call and per refusal,
+  with the reason and the problems that caused it. `read_run`'s
+  `stages['editor_trace']` summarises it — calls, accepted, refused, the call
+  budget and the last refusals — and `reports['editor_log']` names the file.
+
+### Fixed
+
+- **The editor failed silently on large finding sets.** On the overlap
+  experiment's fish-antibiotic paper, 42 and 46 findings, four runs out of four
+  ended as `The editor never submitted an accepted pooled review` with nothing
+  on disk to say why. Three things did it and all three are fixed: the turn
+  budget did not fit the work (the editor's `maxTurns` is 24 and the work was
+  one decision per finding, so the fix is batched issues — the editor now makes
+  about ten to twenty decisions instead of forty-six — plus `maxTurns` 60 and a
+  per-run server call budget that scales with the finding count); refusals said
+  what was wrong without saying what to send instead; and `read_blocks` raised a
+  bare `KeyError` on a `finding_uid` passed where a block id belongs. A blocked
+  run now reports the editor's own numbers and the last refusal in its `cause`,
+  and the trace stays in the run folder.
+- **`protocol.json` recorded an allowance from before the findings existed.**
+  It was written once at ingest, when the ledger was empty, so
+  `editor_tool_allowance` read 12 for a run whose editor was handed 37 — the
+  wrong number to debug a run that ran out of them with. The protocol is
+  rewritten as each slot claims, so it states what that slot actually got.
+
 ## [0.9.1] — 2026-11-14
 
 The five faults the SPOT re-run on 0.9.0 found, fixed, plus one the fixes

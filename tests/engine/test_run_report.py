@@ -34,6 +34,36 @@ QUESTION = {'title': 'Report biological replicates', 'severity': 'moderate', 'ki
             'block_id': 'b2', 'placement': 'anchored', 'quote': 'n = 3', 'replacement': '',
             'comment': 'How many biological replicates were used?'}
 
+# The run's issues document, which is the only thing the review is rendered
+# from. Each issue carries the findings it was raised from as members, and a
+# member keeps the quotation and the block the finding was anchored to, so the
+# page can show the passage under the issue that pools it.
+def _member(finding, slot, uid):
+    return {'finding_uid': uid, 'slot': slot, 'track': 'core',
+            'severity': finding['severity'], 'kind': finding['kind'],
+            'title': finding['title'], 'block_id': finding['block_id'],
+            'placement': 'anchored', 'quote': finding['quote']}
+
+
+ISSUES = {
+    'schema_version': 'review-issues-v1', 'issues_source': 'editor',
+    'summary': 'Two issues remain.',
+    'verdict': {'significance': 'incremental', 'strength_of_evidence': 'moderate',
+                'reasoning': 'The central claim outruns the data by one step.'},
+    'issues': [
+        {'id': 'i01', 'name': 'The prerequisite claim is stronger than the curves',
+         'severity': 'major', 'category': 'claims-and-conclusions', 'rank': 1,
+         'statement': 'The curves are consistent with the model but do not confirm it.',
+         'members': [_member(EDIT, 'core-1', 'f1')]},
+        {'id': 'i02', 'name': 'Replicate counts are not reported', 'severity': 'minor',
+         'category': 'reporting-and-transparency', 'rank': 2,
+         'statement': 'The replicate structure behind n = 3 is never stated.',
+         'members': [_member(QUESTION, 'core-2', 'f2')]},
+    ],
+    'counts': {'issues': 2, 'required': 1, 'suggestions': 1, 'members': 2},
+    'limitations': ['Supplementary data were unavailable.'],
+}
+
 # The slots and the per-slot models of a real two-track run, which is where the
 # header's model rows and the agent table have to come from. ``assigned_model``
 # is what the run asked that slot to run and ``model`` what the slot reported
@@ -87,12 +117,10 @@ def run(tmp_path):
         'tokens_total': 184000, 'claude_code_version': '2.1.322', 'agents': STREAM,
         'rate_limits': [], 'result': {'num_turns': 41, 'session_id': 'abc'},
     })
-    write(review / 'editor-package.json', {
-        'summary': 'Two findings remain.', 'findings': [EDIT, QUESTION],
-        'limitations': ['Supplementary data were unavailable.']})
+    write(review / 'issues.json', ISSUES)
     for index in (1, 2):
-        write(review / f'reviewer-{index}' / 'editor-package.json',
-              {'summary': f'Reviewer {index} summary.', 'findings': [QUESTION],
+        write(review / f'reviewer-{index}' / 'findings.json',
+              {'summary': f'Reviewer {index} summary.', 'findings': [EDIT, QUESTION],
                'limitations': ['No raw data.']})
     usage = review / 'usage' / 'core-1'
     write(usage / 'core-1-1.started.json', {'label': 'core-1'})
@@ -259,9 +287,9 @@ def test_usage_the_run_cannot_account_for_is_said_so_in_the_header(run):
 
 
 def test_a_blocked_run_says_why_and_claims_no_review(run):
-    (run / 'editor-package.json').unlink()
+    (run / 'issues.json').unlink()
     for index in (1, 2):
-        (run / f'reviewer-{index}' / 'editor-package.json').unlink()
+        (run / f'reviewer-{index}' / 'findings.json').unlink()
     write(run / 'progress.json', {'status': 'blocked', 'error': 'the run passed its token ceiling'})
     runtime = json.loads((run / 'runtime.json').read_text(encoding='utf-8'))
     runtime.update(status='blocked', blocked_reason='the run passed its token ceiling')
@@ -269,7 +297,7 @@ def test_a_blocked_run_says_why_and_claims_no_review(run):
     markdown, text = reports(run)
 
     assert rows(markdown)['Run status'] == 'blocked: the run passed its token ceiling'
-    assert '## Review\n\nNo final review was produced.' in markdown
+    assert '## Review\n\nNo review was produced.' in markdown
     assert 'Run error: the run passed its token ceiling' in text
     assert NOTICE not in markdown
 
@@ -285,13 +313,21 @@ def test_a_rate_limit_that_stopped_the_run_is_on_the_page(run):
 # -- the review -------------------------------------------------------------
 
 
-def test_the_final_review_comes_before_each_independent_reviewer(run):
+def test_the_review_comes_before_each_independent_reviewer(run):
+    """The issues are the review, and they come first.
+
+    The page is the editor's review followed by each reviewer's own list, so
+    the order of the headings is part of what the page says: required changes
+    in rank order, then the suggestions, then the independent reviewers.
+    """
     markdown, text = reports(run)
 
     positions = [markdown.index(f'## {name}') for name in
-                 ('Final review (editor)', 'Reviewer 1 (independent)', 'Reviewer 2 (independent)')]
+                 ('Review', 'Required changes', 'Suggestions',
+                  'Reviewer 1 (independent)', 'Reviewer 2 (independent)')]
     assert positions == sorted(positions)
-    for expected in ('> These results confirm the model.',
+    for expected in ('### 1. The prerequisite claim is stronger than the curves',
+                     '> These results confirm the model.',
                      '> These results are consistent with the model.',
                      '**Strongest counterpoint:** The mutant stays inactive.',
                      '- Supplementary data were unavailable.', NOTICE):

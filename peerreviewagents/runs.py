@@ -3,7 +3,7 @@
 An application that shows a review has to answer four questions about a folder
 on disk — did it finish, why did it stop, what did it find, and what did it
 cost — and until 0.9 the only way to answer them was to open
-``editor-package.json``, ``findings.jsonl``, ``runtime.json``,
+``issues.json``, ``findings.jsonl``, ``runtime.json``,
 ``progress.json``, ``protocol.json`` and ``manifest.json`` by hand and know
 which of them a stopped run never wrote. :func:`read_run` is that reading, kept
 beside the writer so it cannot drift from it.
@@ -27,6 +27,7 @@ import os
 import re
 from pathlib import Path
 
+from . import issues as issue_model
 from .engine import citation_ledger
 from .engine.usage import agent_rows, observed_usage
 from .names import (
@@ -46,7 +47,7 @@ from .plugin import models as model_plan
 #: The files that make a folder a review folder. A run that was killed before
 #: the server wrote anything still has ``startup.json`` from the probe.
 RUN_MARKERS = ('protocol.json', 'progress.json', 'runtime.json', 'startup.json',
-               'findings.jsonl', 'editor-package.json')
+               'findings.jsonl', 'issues.json')
 
 #: The status reported for a folder whose status file was never written, or
 #: whose status is a word this version does not know.
@@ -642,7 +643,7 @@ def run_status(progress=None, runtime=None, startup=None, problems=None):
 
 
 def publishable_reasons(status, findings_source, guard_status, problems, quarantined=0,
-                        substitutions=()):
+                        substitutions=(), issues_source=None):
     """Why this run is not publishable, in words, or an empty list when it is.
 
     One rule, in one place, so that ``publishable`` and the reasons can never
@@ -656,19 +657,28 @@ def publishable_reasons(status, findings_source, guard_status, problems, quarant
     run it came from read as not publishable with nothing at all wrong in it.
 
     **A review with no findings in it.** ``complete-without-findings`` is the
-    status for an editor package that delivered nothing, and two different runs
+    status for an issues document that holds no findings, and two different runs
     end that way. If the guard quarantined findings, the reviewers did raise
     something and it is not in the review, so there is nothing publishable to
     show and the reason says how many were held. If nothing was quarantined, the
     reviewers read the manuscript and raised nothing — "we found nothing
-    make-or-break" is a review, and a run that reached it with an editor package
-    and a clean guard is publishable like any other.
+    make-or-break" is a review, and a run that reached it with an issues
+    document and a clean guard is publishable like any other.
 
     What does stop a run from being publishable is the review not being there to
     show: a status that is not ``complete``, a review emptied by the guard,
-    findings that come from the ledger instead of the editor's package, no
-    editor package at all, no guard verdict, or a file that could not be read in
-    full.
+    findings that come from the ledger instead of from ``issues.json``, no
+    issues document at all, no guard verdict, or a file that could not be read
+    in full.
+
+    **Issues the server synthesised** stop it too. Every arm writes
+    ``issues.json`` so that one reader reads them all, but an arm with no editor
+    has its issues made one-per-finding by the server, and nothing grouped,
+    ranked or judged them. That is the right outcome for an author's own check
+    and it is not a peer review, which is what ``publishable`` asks about —
+    ``issues_source`` says ``server`` there and ``editor`` where an editor
+    wrote them. The caller passes it only when the run holds issues at all: an
+    editor-less run nobody raised anything in has nothing that needed grouping.
 
     **A slot that ran a different model family than it was assigned** stops it
     too, and each one is its own reason. Claude Code substitutes a model it may
@@ -690,10 +700,13 @@ def publishable_reasons(status, findings_source, guard_status, problems, quarant
     elif status != COMPLETE:
         reasons.append(f'the run is not complete: its status is {status}')
     if findings_source == 'ledger':
-        reasons.append("the findings come from the ledger rather than from the editor's "
-                       'editor-package.json, so they are not the editor\'s own review')
+        reasons.append('the findings come from the ledger and this run has no readable '
+                       'issues.json, so what is here is the raw findings rather than the review')
     elif findings_source == 'none' and status in COMPLETE_STATUSES:
-        reasons.append('the run holds no findings and no editor package')
+        reasons.append('the run holds no findings and no issues document')
+    if issues_source == 'server':
+        reasons.append('the issues were synthesised by the server, one per finding, because this '
+                       'arm runs no editor, so nothing grouped or ranked them into a review')
     if guard_status is None:
         reasons.append('no review-guard verdict was recorded, so it is not known whether the '
                        'guard ran over these findings')
@@ -724,7 +737,7 @@ def read_run(path):
         that delivered no findings is finished rather than failed.
     ``publishable``, ``not_publishable_reasons``
         True only when the whole review is here to show: status ``complete``,
-        the findings from a readable ``editor-package.json``, a guard that
+        the review from a readable ``issues.json``, a guard that
         recorded a verdict, and nothing in ``problems``. When it is false,
         ``not_publishable_reasons`` says why in words, one entry per reason, and
         it is never false with nothing named. A quarantined finding is not a
@@ -777,13 +790,34 @@ def read_run(path):
     ``stage``
         ``startup`` when no session ever ran and no subscription usage was
         spent, ``session`` once one did.
-    ``findings``, ``body``, ``appendix``
-        The findings, de-duplicated to the latest row per ``finding_uid``, from
-        ``editor-package.json`` when the editor wrote one and from the ledger
-        (``findings.jsonl``) when it did not. ``findings_source`` says which,
-        because a ledger reading has no editor placement: everything the server
-        kept is in ``body`` and ``appendix`` is empty. A uid the editor put in
-        both lists is in ``body`` only, so ``findings`` holds each finding once.
+    ``issues``, ``issues_source``, ``prior_round``
+        The review itself: one entry per issue, in the order ``issues.json``
+        holds them, each with its ``id``, ``name``, ``severity`` (``major``,
+        ``moderate`` or ``minor``), ``category``, ``rank``, one paragraph of
+        ``statement``, its ``status`` against the prior round, and its
+        ``members`` — the findings it is raised from, each with its
+        ``finding_uid``, slot, quote and block ids kept as evidence.
+        ``raised_by`` is how many reviewer slots are among those members.
+        Nothing is capped and nothing is hidden: the major and moderate issues
+        are the required changes in ``rank`` order, and the minor ones are the
+        suggestions. :mod:`peerreviewagents.issues` has the helpers that sort
+        and group them, so a consumer renders the same order ``REVIEW.md``
+        does. ``issues_source`` is ``editor`` where an editor pooled the
+        findings and ``server`` for an arm that ran none, where each finding is
+        its own issue. ``prior_round`` is the earlier run this one was matched
+        against — its path, its issue count and the tally by status — or
+        ``None``. It is empty for a run written before 0.9.2, which reported a
+        body and an appendix instead of issues.
+    ``findings``
+        Every finding the ledger kept, de-duplicated to the latest row per
+        ``finding_uid``, in full. The ledger is the finding set: the editor
+        places nothing out of sight, so a finding is in the review through the
+        issue that holds it. ``findings_source`` is ``issues`` when
+        ``issues.json`` could be read, including the empty review of a
+        manuscript nobody raised anything about; ``ledger`` when it could not,
+        or when it holds no issue over findings that are in the ledger — then
+        what is here is the raw findings and not the review — and ``none`` for
+        a run that holds neither.
     ``escalations``, ``escalation_rulings``
         The specialist findings that asked for a ruling, and the rulings given.
     ``identity``
@@ -815,7 +849,8 @@ def read_run(path):
         tokens, state. Empty for a run that never claimed a slot.
     ``reports``
         Absolute paths to what exists on disk — ``REVIEW.md``, ``REVIEW.txt``,
-        each ``audit_<track>.md``, ``editor-package.json`` — and nothing else.
+        each ``audit_<track>.md``, ``issues.json``, and ``editor_log`` when the
+        editor's submission trace is there — and nothing else.
 
     Raises :class:`NotARunFolder` for a folder that is not a run, and
     ``ValueError`` for a symlink anywhere under the review folder. Nothing else
@@ -836,44 +871,49 @@ def read_run(path):
     state = run_status(progress, runtime, startup, problems)
     status, complete = state['status'], state['status'] in COMPLETE_STATUSES
 
-    package_problems: list[str] = []
-    package = _mapping(review / 'editor-package.json', package_problems) or {}
-    damaged = bool(package_problems)
-    problems += package_problems
-    if damaged:
+    document_problems: list[str] = []
+    document = _mapping(review / 'issues.json', document_problems) or {}
+    problems += document_problems
+    if document_problems:
         # Falling back to the ledger here is right — the findings are real —
-        # but the fallback is not the editor's review, and a consumer that is
-        # not told cannot know the difference.
-        problems.append('editor-package.json is present but could not be read, so the findings '
-                        'below come from the ledger and are not the editor\'s own review')
-    if package.get('findings') is not None or package.get('appendix') is not None:
-        for key in ('findings', 'appendix'):
-            # A string or a number here is a package this version cannot read,
-            # and dropping that list in silence understates the review.
-            if package.get(key) is not None and not isinstance(package.get(key), list):
-                problems.append(f"editor-package.json's {key} is not a list, so the findings in "
-                                'it could not be read')
-        body = dedupe([f for f in package.get('findings') or [] if isinstance(f, dict)])
-        appendix = dedupe([f for f in package.get('appendix') or [] if isinstance(f, dict)])
-        source = 'editor-package'
+        # but the raw findings are not the review, and a consumer that is not
+        # told cannot know the difference.
+        problems.append('issues.json is present but could not be read, so what is below is the '
+                        'raw findings from the ledger and not the review')
+    # The ledger is the finding set. Nothing is placed out of sight any more, so
+    # a finding reaches the review through the issue that holds it, and the two
+    # readings never disagree about how much was found.
+    findings = dedupe(_rows(review / 'findings.jsonl', problems))
+    if document.get('issues') is not None and not isinstance(document.get('issues'), list):
+        problems.append("issues.json's issues is not a list, so the issues in it could not be "
+                        'read')
+    issue_rows = [row for row in document.get('issues') or [] if isinstance(row, dict)]
+    if issue_rows:
+        source = 'issues'
+    elif document and not document_problems:
+        # An issues document that holds no issue is a review of a manuscript
+        # nothing was raised about, which is a reading, not a damaged file. A
+        # ledger with findings in it and no issue over any of them is the other
+        # thing: the review does not account for what was found, so what is
+        # here is the raw findings rather than the review.
+        source = 'ledger' if findings else 'issues'
     else:
-        body = dedupe(_rows(review / 'findings.jsonl', problems))
-        appendix = []
-        source = 'ledger' if body else 'none'
-    # A uid the editor placed in both lists was one finding, and counting it
-    # twice would overstate the review and double it in `escalations`.
-    in_body = {f.get('finding_uid') for f in body if f.get('finding_uid')}
-    appendix = [f for f in appendix if f.get('finding_uid') not in in_body]
-    findings = body + appendix
-    rulings = [r for r in package.get('escalation_rulings') or [] if isinstance(r, dict)]
+        source = 'ledger' if findings else 'none'
+    if not findings:
+        # A run whose ledger is gone still has the issues' own member rows, and
+        # they carry the uid, the slot, the quote and the blocks.
+        findings = dedupe([dict(member) for row in issue_rows
+                           for member in row.get('members') or [] if isinstance(member, dict)])
+    rulings = [r for r in document.get('escalation_rulings') or [] if isinstance(r, dict)]
     quarantined = _rows(review / 'quarantined.jsonl', problems)
-    guard = package.get('review_guard_status') or progress.get('review_guard_status')
+    guard = document.get('review_guard_status') or progress.get('review_guard_status')
+    issue_counts = issue_model.counts(issue_rows)
 
     audits = {name.split('audit_', 1)[1].removesuffix('.md'): str(review / name)
               for name in sorted(path.name for path in review.glob('audit_*.md'))}
     reports = {name: str(review / filename) for name, filename in
                (('markdown', 'REVIEW.md'), ('text', 'REVIEW.txt'),
-                ('editor_package', 'editor-package.json'))
+                ('issues', 'issues.json'), ('editor_log', 'editor-log.jsonl'))
                if (review / filename).is_file()}
     reports['audits'] = audits
     # These two read the usage receipts and the starter's own accounting, which
@@ -896,7 +936,12 @@ def read_run(path):
     # could not be read at all is the same answer rather than a stronger one.
     citations, citation_lines = _citations_reading(review, root=root, protocol=protocol,
                                                    agents=agents)
-    reasons = publishable_reasons(status, source, guard, problems, len(quarantined), swapped)
+    # The synthesis is only a reason when there is something it synthesised: a
+    # run of an editor-less arm that nobody raised anything in is a review of a
+    # manuscript with no issues, which is a reading and not an ungrouped pile.
+    reasons = publishable_reasons(status, source, guard, problems, len(quarantined), swapped,
+                                  issues_source=(document.get('issues_source') if issue_rows
+                                                 else None))
     problems += swapped + worker_swapped + citation_lines
 
     probe = startup.get('probe')
@@ -918,10 +963,18 @@ def read_run(path):
         'stage': 'startup' if (startup.get('problems') and not runtime.get('result')
                                and not progress.get('stages')) else 'session',
         'findings': findings,
-        'body': body,
-        'appendix': appendix,
+        'issues': issue_rows,
+        'issues_source': document.get('issues_source'),
+        'prior_round': document.get('prior_round'),
         'findings_source': source,
-        'counts': {'findings': len(findings), 'body': len(body), 'appendix': len(appendix),
+        'counts': {'findings': len(findings),
+                   'issues': issue_counts['issues'],
+                   'required': issue_counts['required'],
+                   'suggestions': issue_counts['suggestions'],
+                   'resolved': issue_counts['resolved'],
+                   'issue_members': issue_counts['members'],
+                   'by_severity': issue_counts['by_severity'],
+                   'by_category': issue_counts['by_category'],
                    'quarantined': len(quarantined),
                    'findings_delivered': progress.get('findings_delivered'),
                    'findings_submitted': progress.get('findings_submitted')},
@@ -930,9 +983,9 @@ def read_run(path):
         'guard_status': guard,
         'escalations': [f for f in findings if f.get('escalate')],
         'escalation_rulings': rulings,
-        'summary': package.get('summary'),
-        'verdict': package.get('verdict'),
-        'limitations': package.get('limitations') or [],
+        'summary': document.get('summary'),
+        'verdict': document.get('verdict'),
+        'limitations': document.get('limitations') or [],
         'identity': _identity(manifest, protocol, paper,
                               (probe or {}).get('pdf'), problems, agents),
         'stages': progress.get('stages') or (runtime.get('stages') if runtime else None),

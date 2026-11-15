@@ -4,11 +4,18 @@ Nothing here makes a model call. Everything on the page comes from files the run
 wrote about itself: ``protocol.json`` for the arm and the agent slots,
 ``runtime.json`` and the usage receipts for what the run really spent,
 ``citations/ledger.jsonl`` for what the citation checks reached, and
-``editor-package.json`` for the review.
+``issues.json`` for the review.
+
+``issues.json`` is the only thing the review itself is rendered from. The page
+prints the verdict, the required changes in the editor's rank order and the
+suggestions grouped by category, and every issue carries its member findings as
+evidence. Nothing is capped and nothing is left out: an issue the editor raised
+is on the page, whatever the count.
 """
 import textwrap
 from pathlib import Path
 
+from .. import issues as issue_model
 from ..plugin import models as model_plan
 from . import citation_ledger
 from .storage import read
@@ -53,15 +60,15 @@ def find_workspace(run):
 
 def _reviewer_packages(run):
     folders = [path for path in run.glob('reviewer-*') if path.name.split('-', 1)[1].isdigit()]
-    packages = [(int(path.name.split('-', 1)[1]), _optional(path / 'editor-package.json'))
+    packages = [(int(path.name.split('-', 1)[1]), _optional(path / 'findings.json'))
                 for path in sorted(folders, key=lambda path: int(path.name.split('-', 1)[1]))]
     return [(number, package) for number, package in packages if isinstance(package, dict)]
 
 
-def _final_review(run):
-    """The editor's pooled package. An arm that runs without an editor writes none."""
-    package = _optional(run / 'editor-package.json')
-    return package if isinstance(package, dict) else None
+def _issues_document(run):
+    """The run's issues document: the one file the review is rendered from."""
+    document = _optional(run / 'issues.json')
+    return document if isinstance(document, dict) else None
 
 
 def _workflow(protocol):
@@ -223,6 +230,105 @@ def _finding(number, finding):
     return blocks
 
 
+def _member(member):
+    """One member finding of an issue: who raised it, where, and the passage itself."""
+    label = ' · '.join(str(part) for part in
+                       (member.get('slot'), member.get('track'), _location(member)) if part)
+    blocks = [('paragraph', (label + ': ' + (member.get('title') or '')).strip(' :'))]
+    if member.get('quote'):
+        blocks.append(('quote', member['quote']))
+    return blocks
+
+
+def _issue(issue):
+    """One issue: its statement, then the findings it is raised from as evidence."""
+    rank = issue.get('rank')
+    heading = f"{rank}. {issue.get('name') or 'Unnamed issue'}" if rank else str(
+        issue.get('name') or 'Unnamed issue')
+    raised = issue.get('raised_by')
+    raised = issue_model.raised_by(issue) if raised is None else raised
+    inline = [('Severity', issue.get('severity') or 'n/a'),
+              ('Category', issue.get('category') or 'n/a'),
+              ('Raised by', f'{raised} reviewer(s)'),
+              ('Findings', len(issue.get('members') or []))]
+    if issue.get('id'):
+        inline.append(('Issue', issue['id']))
+    # Only a run given a prior round has a status to report; in a first round
+    # every issue is new and the column would say the same thing on every line.
+    if str(issue.get('status') or 'new') != 'new':
+        inline.append(('Since the prior round', issue['status']))
+    blocks = [('heading3', heading), ('inline', inline)]
+    if issue.get('statement'):
+        blocks.append(('paragraph', issue['statement']))
+    if issue.get('status_reason'):
+        blocks.append(('labeled', 'Against the prior round', issue['status_reason']))
+    for member in issue.get('members') or []:
+        blocks += _member(member)
+    if issue.get('audits'):
+        blocks.append(('labeled', 'Specialist audit', ', '.join(str(name) for name
+                                                                in issue['audits'])))
+    return blocks
+
+
+def _verdict_blocks(document):
+    verdict = document.get('verdict') or {}
+    if not verdict:
+        return []
+    fields = [('Significance', verdict.get('significance')),
+              ('Strength of evidence', verdict.get('strength_of_evidence'))]
+    blocks = [('heading2', 'Verdict'),
+              ('fields', [(key, value) for key, value in fields if value])]
+    if verdict.get('reasoning'):
+        blocks.append(('paragraph', verdict['reasoning']))
+    if verdict.get('limitation'):
+        blocks.append(('labeled', 'Limitation', verdict['limitation']))
+    return blocks
+
+
+def _issue_review(document):
+    """The review itself, from the issues document and from nothing else."""
+    rows = document.get('issues') or []
+    counts = document.get('counts') or issue_model.counts(rows)
+    blocks = [('heading2', 'Review')]
+    if document.get('summary'):
+        blocks.append(('paragraph', document['summary']))
+    blocks.append(('inline', [('Issues', counts.get('issues', 0)),
+                              ('Required changes', counts.get('required', 0)),
+                              ('Suggestions', counts.get('suggestions', 0)),
+                              ('Findings pooled', counts.get('members', 0))]))
+    if document.get('issues_source') == 'server':
+        blocks.append(('labeled', 'No editor in this arm',
+                       'nothing pooled these findings, so each one is its own issue and the '
+                       'ranking is by severity alone.'))
+    blocks += _verdict_blocks(document)
+    required = issue_model.required_issues(rows)
+    blocks.append(('heading2', 'Required changes'))
+    if not required:
+        blocks.append(('paragraph', 'No major or moderate issues were raised.'))
+    for issue in required:
+        blocks += _issue(issue)
+    suggestions = issue_model.suggestion_issues(rows)
+    blocks.append(('heading2', 'Suggestions'))
+    if not suggestions:
+        blocks.append(('paragraph', 'No minor issues were raised.'))
+    for category, group in issue_model.by_category(suggestions):
+        blocks.append(('heading3', category.replace('-', ' ').capitalize()))
+        for issue in group:
+            blocks += _issue(issue)
+    resolved = issue_model.resolved_issues(rows)
+    if resolved:
+        blocks += [('heading2', 'Resolved since the prior round'),
+                   ('bullets', [f"{issue.get('id')}: {issue.get('name')}" for issue in resolved])]
+    if document.get('escalation_rulings'):
+        blocks.append(('heading2', 'Escalations ruled on'))
+        blocks.append(('bullets', [str(ruling.get('ruling')) for ruling
+                                   in document['escalation_rulings']]))
+    if document.get('limitations'):
+        blocks += [('heading2', 'Limitations'),
+                   ('bullets', [str(item) for item in document['limitations']])]
+    return blocks
+
+
 def _review(heading, review):
     blocks = [('heading2', heading)]
     if review.get('summary'):
@@ -314,13 +420,13 @@ def report_blocks(run, workspace=None):
         blocks.append(('labeled', 'Models unverified',
                        model_plan.unverified_line(missing).capitalize() + '.'))
     blocks += _citation_blocks(run)
-    final = _final_review(run)
-    if final or reviewers:
+    document = _issues_document(run)
+    if document or reviewers:
         blocks.append(('paragraph', NOTICE))
     if progress.get('error') and progress.get('status') != 'complete':
         blocks.append(('labeled', 'Run error', progress['error']))
-    blocks += (_review('Final review (editor)', final) if final else
-               [('heading2', 'Review'), ('paragraph', 'No final review was produced.')])
+    blocks += (_issue_review(document) if document else
+               [('heading2', 'Review'), ('paragraph', 'No review was produced.')])
     for number, review in reviewers:
         blocks += _review(f'Reviewer {number} (independent)', review)
     return blocks

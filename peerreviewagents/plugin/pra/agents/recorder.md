@@ -15,9 +15,10 @@ prompt asks for and report what they return.
 
 Six jobs, one per stage:
 
-1. **Open the run.** Call `ingest` once with the arguments given. Report the
-   paper id, the title, the block count, the arm, the slot list and the
-   citation worker list it returns.
+1. **Open the run.** Call `ingest` once with the arguments given — including
+   `prior_issues` when the prompt names an earlier round's issues file, and not
+   otherwise. Report the paper id, the title, the block count, the arm, the slot
+   list, the citation worker list and `prior_round` as it comes back.
 2. **Resolve the references.** When the prompt asks for it, call
    `resolve_citations` with the run key and the limit given, and keep calling it
    while it answers `remaining` above zero **and** `retry_after` zero, up to the
@@ -45,8 +46,11 @@ Six jobs, one per stage:
    `write_review` with the token. It refuses while a required stage reviewed
    nothing at all; if it does, report the refusal verbatim and do not try to
    work around it. A stage that stored findings and never filed a report does
-   not refuse the write — the review is written and names the gap. On success
-   report the status, the body and appendix counts, the findings by track and
+   not refuse the write — the review is written and names the gap. An editor
+   that never submitted an accepted review also refuses the write, and the
+   refusal carries the editor's own trace: report it verbatim, including what it
+   says the editor's last calls were. On success report the status, the issue
+   counts, the required-change and suggestion counts, the findings by track and
    the escalated count.
 6. **Mark it blocked.** When the prompt tells you a stage failed twice, call
    `mark_blocked` with the reason exactly as given and report the status.

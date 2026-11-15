@@ -1,12 +1,12 @@
 diff --git a/plugins/paper/skills/draft-check/SKILL.md b/plugins/paper/skills/draft-check/SKILL.md
 new file mode 100644
-index 0000000..a4c6a47
+index 0000000..6b09655
 --- /dev/null
 +++ b/plugins/paper/skills/draft-check/SKILL.md
-@@ -0,0 +1,163 @@
+@@ -0,0 +1,189 @@
 +---
 +name: draft-check
-+description: Run the PeerReviewAgents review engine over the built paper.pdf - specialist tracks only, no reviewer personas and no editor - and write its findings under reviews/ as an actions table. Use to have the review engine audit the built paper, or when asked for an engine, agent or plugin review of the PDF. Needs the peerreview command and a Claude subscription. Read-only.
++description: Run the PeerReviewAgents review engine over the built paper.pdf - specialist tracks only, no reviewer personas and no editor - and write the issues it raises under reviews/ as an actions table. Use to have the review engine audit the built paper, or when asked for an engine, agent or plugin review of the PDF. Needs the peerreview command and a Claude subscription. Read-only.
 +context: fork
 +agent: general-purpose
 +model: sonnet
@@ -74,69 +74,93 @@ index 0000000..a4c6a47
 +peerreview report reviews/engine/<YYYY-MM-DD>
 +```
 +
-+It prints JSON — `status`, `cause`, `findings`, `publishable`,
-+`not_publishable_reasons`, `problems` and the report paths — and makes no
-+model call.
++It prints JSON — `status`, `cause`, `findings`, `issues`, `required`,
++`suggestions`, `publishable`, `not_publishable_reasons`, `problems` and the
++report paths — and makes no model call.
 +
 +* `status` `complete` is the result to read. `blocked` means the run stopped
 +  (a rate limit, a timeout, a session that never launched); report the
 +  `cause`, keep the partial findings out of the ledger, and stop.
 +* `problems` naming files means the run folder could not be read in full.
 +  Say which, and treat the findings as incomplete evidence.
++* `findings` is what the specialists raised; `issues` is what the run reports,
++  `required` of them required changes and `suggestions` the rest. One issue is
++  one ledger row.
 +* `publishable` will be `false`, and this is correct, not a fault:
-+  `not_publishable_reasons` says the findings come from the ledger rather than
-+  from an editor's package, and the `draft-check` arm has no editor by design.
++  `not_publishable_reasons` says the issues were synthesised by the server,
++  one per finding, because the `draft-check` arm runs no editor to group them.
 +  Do not report it as a failure, and do not gate on it. The gate here is
 +  `status` and `problems`.
 +
-+The findings themselves are `reviews/engine/<YYYY-MM-DD>/review/findings.jsonl`
-+(one JSON object per line) with the per-track audits beside them as
-+`review/audit_<track>.md`. Read the JSONL for the table and the audits for
-+what a track concluded overall.
++The review itself is `reviews/engine/<YYYY-MM-DD>/review/issues.json`, with
++the per-track audits beside it as `review/audit_<track>.md` and the raw
++findings as `review/findings.jsonl`. Read the issues for the table and the
++audits for what a track concluded overall. Read the findings only to check an
++issue's evidence: a finding reaches the ledger through the issue that holds
++it, never as a row of its own.
 +
 +A finding in `review/quarantined.jsonl` was rejected by the engine's own
 +guard, nearly always because its quote does not occur in the block it cites.
 +Those are not findings: leave them out of the table and the ledger, and say
 +how many there were.
 +
-+## Translate the findings
++## Translate the issues
 +
-+Each engine finding carries `title`, `comment`, `quote`, `block_id`,
-+`severity` (`major`, `moderate`, `minor`), `kind` (`question`, `edit`,
-+`literature`), `track`, `escalate` and a `finding_uid`. Three columns need a
-+decision:
++`issues.json` holds `issues_source` — `server` for this arm, because no editor
++ran — and `issues`, one object per problem:
 +
-+**Location.** The engine's `block_id` is a position in the PDF, not a place in
++| field | what it is |
++|---|---|
++| `id` | `i01`-style; names the issue inside this run |
++| `name` | a few words for the problem |
++| `severity` | `major`, `moderate` or `minor` |
++| `category` | which part of the paper it is about |
++| `rank` | 1 upwards over the required changes, in the engine's own order |
++| `statement` | one paragraph: the problem and why it matters |
++| `raised_by` | how many reviewer slots raised it |
++| `members` | the findings that evidence it, each with `finding_uid`, `track`, `kind`, `escalate`, `title`, `quote` and `block_id` |
++
++Three columns need a decision:
++
++**Location.** A member's `block_id` is a position in the PDF, not a place in
 +the Typst sources, and it does not survive a rebuild. Give the location as the
-+section heading plus the finding's `quote`, which is the sentence as the PDF
++section heading plus a member's `quote`, which is the sentence as the PDF
 +prints it, and leave the block id to the `source` column. Whoever fixes it
-+searches the sources for the quoted words.
++searches the sources for the quoted words. Where an issue's members quote
++several places, take the one its `statement` turns on and name the others in
++the finding cell.
 +
 +**Severity.** The engine's severities are a reviewer's, not the ledger's, and
 +it has no `blocker`. Map them so the adapter never invents one:
 +
-+| engine | ledger |
++| engine issue | ledger |
 +|---|---|
-+| `major` with `escalate` true | blocker |
++| `major` with a member whose `escalate` is true | blocker |
 +| `major` | major |
-+| `moderate` | minor |
++| `moderate` | major |
 +| `minor` | minor |
 +
-+Say in the verdict paragraph that the mapping is deliberately conservative: a
-+`moderate` the author reads as decisive can be promoted by hand, and a reader
-+of the ledger can see which rows came through it.
++A `moderate` is a required change in the engine's report and not an optional
++one, so it maps up rather than down — but it is not a `major` either, so write
++the engine's own word with the issue id in the `summary` cell, as "(engine
++moderate, i04)". Nothing becomes a blocker that the engine did not escalate,
++because a blocker in this ledger is what decides "not ready" and an outside
++program does not get to declare one. Say in the verdict paragraph that the map
++is deliberate, that a `moderate` the author reads as decisive can be promoted
++by hand, and that every row names the severity it came from.
 +
-+**Fix.** Route by what the finding asks for, to an owner the scaffold already
++**Fix.** Route by what the issue asks for, to an owner the scaffold already
 +has: wording to `/paper:copy-edit`; a number in the text that disagrees with
 +another number, or with none declared, to `/paper:declare-number`; a figure or
 +table that disagrees with its caption or the text to `/paper:new-figure`; a
 +failing gate to `/paper:fix-verify`; a computation the engine says is wrong to
-+"analysis change"; a `question` about what was done, and anything on the
-+`field` track, to "author decision" with the question stated. A `literature`
-+kind is an "author decision" unless it names a citation to add, which is
-+`/paper:copy-edit`.
++"analysis change"; a question about what was done, and an issue whose members
++are all on the `field` track, to "author decision" with the question stated. A
++member of `kind` `literature` is an "author decision" unless it names a
++citation to add, which is `/paper:copy-edit`. Where the members ask for two
++different things, route by the `statement` and say so in the row.
 +
-+Do not re-judge a finding on its merits and do not add findings of your own.
++Do not re-judge an issue on its merits and do not add issues of your own.
 +If the engine is wrong about something, the ledger row says so in the `fix`
 +column as "author decision" with the reason; a disagreement is for the author
 +to close, not for this pass to drop silently.
@@ -146,15 +170,17 @@ index 0000000..a4c6a47
 +Write `reviews/<YYYY-MM-DD>-draft-check.md`:
 +
 +1. A one-paragraph verdict: the arm and tracks, the run folder, how many
-+   findings in each mapped severity, how many the guard quarantined, the
-+   engine's own token and wall-clock numbers from `review/runtime.json`, and
-+   the two or three findings that matter most.
-+2. The findings as a table: severity, location (section and quote), the
-+   finding, what the engine checked (its track and `kind`), the routed fix,
-+   and the `finding_uid` with the run folder as the `source`. The uid names
-+   the finding inside that run, and the run folder is what makes it
-+   traceable — a later run of a rebuilt PDF gives the same finding a different
-+   uid, so a row cites both or neither.
++   issues in each mapped severity and how many findings they were grouped
++   from, how many the guard quarantined, the engine's own token and wall-clock
++   numbers from `review/runtime.json`, and the two or three issues that matter
++   most.
++2. The issues as a table, the required changes in `rank` order first and the
++   suggestions after them grouped by `category`: severity, location (section
++   and quote), the issue's `name` and `statement`, what the engine checked
++   (its members' tracks and `kind`), the routed fix, and the issue `id` with
++   the run folder as the `source`. The id names the issue inside that run, and
++   the run folder is what makes it traceable — a later run of a rebuilt PDF
++   mints its own ids, so a row cites both or neither.
 +3. Anything the run could not do: a `blocked` status with its cause, named
 +   `problems`, a track that returned nothing.
 +
@@ -205,7 +231,7 @@ index a95c565..66e58b5 100644
 -   by `claim-audit`.
 +   by `claim-audit`. A `draft-check` row that matches a scaffold review's
 +   finding is the same action, owned by the scaffold review — which knows the
-+   sources and the code — with the engine's file and `finding_uid` added to
++   sources and the code — with the engine's file and issue `id` added to
 +   `source`, because an outside program agreeing is worth being able to see.
  2. Deduplicate against the ledger: a finding that matches an `open` or
     `wontfix` row adds nothing. One that matches a `done` row whose problem is
@@ -251,7 +277,7 @@ index ac6eee8..15d308f 100644
 +on request; the story review is a plan to discuss and stays out) and merges
 +them. `draft-check` is the one review that is not this session's own reading:
 +it hands the built PDF to the PeerReviewAgents engine, which reviews it in
-+sessions of its own and anchors each finding to a quotation, and it is skipped
++sessions of its own and anchors each issue to a quotation, and it is skipped
 +when the `peerreview` command is not installed.
 +
 +Their maintained files live in `plugins/paper/skills/`

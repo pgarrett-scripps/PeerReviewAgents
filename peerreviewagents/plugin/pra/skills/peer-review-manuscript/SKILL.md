@@ -1,6 +1,6 @@
 ---
 name: peer-review-manuscript
-description: Run a full two-track peer review of one manuscript PDF - N core reviewers and six specialists, then an editor who pools their findings into one review. Use when asked to peer review, referee or critique a manuscript, or to run PeerReviewAgents on a PDF.
+description: Run a full two-track peer review of one manuscript PDF - N core reviewers and six specialists, then an editor who groups their findings into ranked issues. Use when asked to peer review, referee or critique a manuscript, or to run PeerReviewAgents on a PDF.
 ---
 
 # Peer review one manuscript
@@ -25,10 +25,17 @@ files.
    `"specialist_model": "sonnet"` or `"editor_model": "fable"` only when the
    request names models. Left out, the workflow uses its own defaults.
 
+   Add `"prior_issues": "<path>"` when the request is a later round of a review
+   this machine already ran — the `issues.json` of the earlier run, or that
+   run's folder. The editor then matches this round's issues against that one's
+   and keeps the matched ids, so one problem carries one id across rounds and
+   the new review says what was resolved, what persists and what regressed.
+
 3. The workflow runs in the background. Wait for it, then report the object it
-   returns: the status, the findings by track, how many were escalated, what the
-   editor placed in the body, and the run folder. If it throws, report the error
-   text verbatim and do not try to finish the review another way.
+   returns: the status, the findings by track, how many were escalated, the
+   issue count with its required changes and suggestions, and the run folder. If
+   it throws, report the error text verbatim and do not try to finish the review
+   another way.
 
 ## The arms
 
@@ -66,3 +73,8 @@ changes it. Do not retry with another model unless the request asks you to.
 A run is `blocked` when a stage returned nothing twice, when the editor never
 produced an accepted review, or when the rate limit stopped it. Blocked is an
 outcome: report it with its reason. Never fill the gap yourself.
+
+An editor that never produced an accepted review says so with its own numbers —
+how many submission calls it made, how many were refused and what the last
+refusal said — and the whole trace is in `editor-log.jsonl` in the run folder.
+Report that reason as it came and name the file.

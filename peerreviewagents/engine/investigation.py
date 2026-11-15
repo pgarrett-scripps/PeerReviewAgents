@@ -71,8 +71,24 @@ class Investigation:
                 raise ValueError('A source lookup needs a valid manuscript block ID')
             return self.sources.lookup(args['provider'], args['identifier'], args['block_id'])
         if name=='read_blocks':
-            ids=args['ids']
+            ids=[str(i) for i in args['ids']]
             if len(ids)>12:raise ValueError('Read at most 12 blocks')
+            # A bare KeyError here said nothing but the key itself. The editor
+            # reads findings, whose finding_uid is 16 hex characters and is not
+            # a block id, and one such call ended its turn with a message no
+            # agent could act on. Both cases now say what the argument is and
+            # where the right one comes from.
+            unknown=[i for i in ids if i not in self.by]
+            uids=[i for i in unknown if re.fullmatch(r'[0-9a-f]{16}',i)]
+            if uids:
+                raise ValueError('read_blocks takes manuscript block IDs, and '
+                                 +', '.join(uids)+' is a finding_uid. A finding carries the block '
+                                 'it cites in its block_id, and its wider evidence in '
+                                 'evidence_blocks: read those.')
+            if unknown:
+                raise ValueError('No block in this manuscript has the ID '
+                                 +', '.join(unknown[:5])
+                                 +'. The block IDs are in the section index and on every finding.')
             return {'blocks':[text_block(self.by[i]) for i in ids]}
         if name=='search':
             query=args['query']
