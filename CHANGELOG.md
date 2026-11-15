@@ -7,6 +7,28 @@ that made the plugin the only way to run a review.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+The five faults the SPOT re-run on 0.9.0 found, fixed. See
+[`docs/SPOT_0.9.0.md`](docs/SPOT_0.9.0.md) for the run they come from.
+
+### Fixed
+
+- **The harness stopped a healthy review ten minutes after the session's last
+  turn.** Under `-p` the review is the session's background task, and the
+  harness gives background tasks a fixed wait once the turn is over —
+  `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS`, ten minutes unless something sets it.
+  The session's last turn comes early, while the review is still working, so
+  that default was a second deadline nobody chose: the SPOT re-run lost a run
+  at 10.3 minutes with its reference stage mid-flight, and the pilot's seven
+  runs all finished between 6.9 and 10.3 minutes against a wall they could not
+  see. The starter now sets that wait itself, from this run's own deadline
+  (`--timeout`, 5400s by default) plus a two-minute margin, so the driver stays
+  the only thing that ends a run and records why. A value inherited from the
+  shell is overridden, because it was set for some other session and a small
+  one is the fault itself; `0`, which the harness reads as waiting
+  indefinitely, and any value more patient than this run's wall clock are kept.
+
 ## [0.9.0] — unreleased
 
 The review is a Claude Code plugin. The Python orchestration that ran one

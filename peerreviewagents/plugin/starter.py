@@ -69,6 +69,15 @@ PER_AGENT_TOKENS = 500_000
 PER_RUN_TOKENS = 6_000_000
 WALL_TIMEOUT = 5400
 PROBE_TIMEOUT = 180
+#: The harness variable that says how long a headless ``-p`` session waits for
+#: its own background tasks once its last turn is over. The review is that
+#: background task, so this is the engine's to set — see
+#: :func:`background_wait`.
+BG_WAIT = 'CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS'
+#: How much longer than this run's own wall clock the harness is told to wait,
+#: in seconds. The driver ends a run at its deadline and records the reason;
+#: the harness ending one first would be an outcome with no author.
+BG_WAIT_MARGIN = 120
 RATE_LIMIT_CEILING = 0.99
 MISSING_CLAUDE = ('claude is not installed or not on this PATH, so no session can be started: '
                   'install Claude Code and check that `claude --version` runs in this shell')
@@ -152,6 +161,43 @@ def claude_version(binary=None):
     return VERSIONS[binary]
 
 
+def background_wait(deadline=None, inherited=None, wall_timeout=WALL_TIMEOUT):
+    """How long the session waits for the review after its own last turn, in ms.
+
+    The review runs under ``-p`` as the session's background task, and the
+    harness stops background tasks a fixed time after the session's final turn
+    — ten minutes unless something says otherwise. The session's last turn
+    happens early, while the review is still working, so that default is a
+    second deadline nobody set: the SPOT re-run lost a healthy run at 10.3
+    minutes with its reference stage mid-flight, and the pilot's seven runs all
+    finished between 6.9 and 10.3 minutes against a wall they could not see.
+
+    So the engine states the wait itself, from the only wall clock that belongs
+    to this run: :func:`launch`'s deadline, or ``wall_timeout`` when there is
+    none yet. :data:`BG_WAIT_MARGIN` is added on top, because exactly one thing
+    should end a run — the driver, which stops at the deadline and writes down
+    why — and a harness that gives up first takes that away.
+
+    An inherited value is overridden rather than respected, with two
+    exceptions. Overriding is the point: the value this run needs follows from
+    its own wall clock, an inherited one was set for some other session, and a
+    value that is too small is the fault being fixed. The exceptions are values
+    that cannot end a run early — ``0``, which the harness reads as waiting
+    indefinitely, and anything more patient than what this run would ask for.
+    Both are kept, so raising the ceiling by hand still works and lowering it
+    cannot quietly kill a review.
+    """
+    seconds = float(deadline) - time.time() if deadline else float(wall_timeout)
+    wanted = max(int(round(seconds)) + BG_WAIT_MARGIN, BG_WAIT_MARGIN) * 1000
+    try:
+        held = int(str(inherited).strip())
+    except (TypeError, ValueError):
+        held = None
+    if held == 0 or (held or 0) > wanted:
+        return str(held)
+    return str(wanted)
+
+
 def child_environment(binary, chosen=None, deadline=None):
     """The environment a session runs in: subscription login, own interpreter.
 
@@ -166,6 +212,9 @@ def child_environment(binary, chosen=None, deadline=None):
     tell whether the wait ends before the driver ends the run. It is an
     absolute timestamp because a monotonic clock means nothing on the other
     side of a process boundary.
+
+    The same deadline sets :data:`BG_WAIT`, so the harness waits for the review
+    this run is actually allowed to take — see :func:`background_wait`.
     """
     environment = {**os.environ, 'PEERREVIEW_PLUGIN_RUN': '1',
                    # The plugin's `.mcp.json` launches its MCP server through
@@ -174,6 +223,7 @@ def child_environment(binary, chosen=None, deadline=None):
                    'PEERREVIEW_MCP_COMMAND': sys.executable}
     for key, value in (chosen or {}).items():
         environment[key] = value
+    environment[BG_WAIT] = background_wait(deadline, os.environ.get(BG_WAIT))
     if deadline:
         environment['PEERREVIEW_RUN_DEADLINE'] = f'{float(deadline):.0f}'
     for key in ('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'):
