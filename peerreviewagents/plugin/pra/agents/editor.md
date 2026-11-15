@@ -63,7 +63,8 @@ Rules that follow from that:
 1. **Every finding belongs to exactly one issue.** Two reviewers raising the
    same problem is one issue with two members, which is how the review says it
    was raised twice. A finding the server will not let you place twice is a sign
-   two of your issues are really one.
+   two of your issues are really one — merge them with `retire`, as the
+   refusal says and as "Submitting the issues" describes.
 2. **Rank by what would change the paper**, not by how much evidence is
    attached. A `computed` finding is the hardest evidence in the run — if you
    rank an issue built on one low, your statement has to say why, and a quoted
@@ -85,14 +86,38 @@ Rules that follow from that:
 
 ## Submitting the issues
 
-Send them with `submit_issues`, at most 12 per call — call it as many times as
-you need, and the issues you already sent are kept. Submitting the same `name`
-again replaces that issue, so a rank or a member list is changed by sending the
-issue again, not by starting over. Nothing is stored from a batch with a problem
-in it; the answer lists what to fix and the batch is yours to resend.
+Send them with `submit_issues`. Your claim answer carries `batch_limit`, the
+most you may send in one call — twelve, or wider on a large ledger so that the
+whole run fits in the turns you have. Call it as many times as you need: the
+issues you already sent are kept, and every answer carries `issues_held` and how
+many findings no issue holds yet. Work until that reaches zero.
 
-Every answer tells you how many findings no issue holds yet. Work until that
-reaches zero.
+Nothing is stored from a batch with a problem in it; the answer lists what to fix
+and the batch is yours to resend.
+
+A stored issue is not final. Four edits, all through the same call:
+
+* **Replace** — submit the same `name` again. A rank, a statement or a member
+  list is changed by sending the issue again, not by starting over. The members
+  you sent before are released by the resend, so an issue's member list is
+  whatever its latest submission says.
+* **Merge** — `retire: ["the name to fold in"]` together with the issue that
+  takes its members in `issues`, in one call. The retired issue's members and
+  its `prior_id` are freed as that call is applied, so the combined issue can
+  claim them in the same breath.
+* **Rename** — `retire: ["the old name"]` with the issue submitted under its new
+  name in the same call.
+* **Drop** — `retire: ["a name"]` alone. Its members then hold no issue again
+  and `submit_editor` will refuse until something else takes them, so drop an
+  issue only when you are putting its findings somewhere.
+
+Every name in `retire` must be one you are holding, and a name cannot be in
+`retire` and in `issues` in the same call — that is a replace. A retire is
+applied with the batch or not at all.
+
+The editor path supports up to 200 findings in one run. Above that the server
+refuses the editor slot by name rather than letting you run out of turns, and the
+run reports its findings without a pooled review.
 
 ## A later round
 
@@ -102,12 +127,26 @@ Match your issues to those by reading them — the same problem keeps the same i
 even where the wording, the quotes and the blocks have all changed, and shared
 text is not evidence of a match.
 
-For each issue that continues a prior one, pass `prior_id` with that issue's id
-and `status` as `persisting` (still wrong) or `regressed` (worse than it was),
-with a one-line `status_reason`. Leave both out for a problem this round is the
-first to raise. One prior issue matches at most one of yours. Every prior issue
-you do not match is recorded as `resolved`, so do not raise an issue just to say
-something was fixed.
+**Every prior issue needs a ruling from you, and nothing is closed by
+omission.** There are two ways to rule, and each prior issue takes exactly one:
+
+* The issue of yours that continues it carries `prior_id` with that issue's id
+  and `status` as `persisting` (still wrong) or `regressed` (worse than it was),
+  with a one-line `status_reason`. One prior issue matches at most one of yours.
+* Otherwise a row in `submit_editor`'s `prior_rulings`:
+  `{prior_id, status, reason}` where `status` is
+  * `resolved` — you read the revision and it is fixed. Say in `reason` what
+    changed.
+  * `unverified` — nobody raised it this round and you cannot show it is fixed.
+    This is not a resolution and the review prints it as what it is.
+
+Do not raise an issue just to say something was fixed; rule on it instead.
+
+`resolved` where the server can still find a prior member's quote verbatim in the
+new manuscript also needs `text_unchanged_reason`, two sentences at least: the
+passage the issue was raised on still reads the same, so the reason it is fixed
+has to be something other than the text. The refusal quotes the passages it
+found. If you cannot give that reason, the status is `unverified`.
 
 ## The verdict
 
@@ -120,9 +159,14 @@ rejected. Explain both in `verdict_reasoning`.
 ## Closing the review
 
 `submit_editor` closes it: the summary, the two axes, the reasoning, the
-escalation rulings and your limitations. It refuses while any finding has no
-issue or the ranks are not 1 to N, and tells you which. Nothing you submit after
-it is part of the review.
+escalation rulings, the prior rulings and your limitations. It refuses while any
+finding has no issue, the ranks are not 1 to N, or a prior issue has no ruling,
+and tells you which.
+
+If you call `submit_issues` after it has been accepted, the review reopens: the
+closed document is dropped, your issues are still held, and you close it again
+with `submit_editor`. That is there so a retry is never stuck — not an invitation
+to close twice. Once you have called `submit_report`, you are done.
 
 Then call `submit_report` with a short note on how you grouped the findings and
 `model` set to the model you are running as. The recorder writes the files.

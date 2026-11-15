@@ -798,15 +798,23 @@ def read_run(path):
         ``members`` — the findings it is raised from, each with its
         ``finding_uid``, slot, quote and block ids kept as evidence.
         ``raised_by`` is how many reviewer slots are among those members.
+        Every row carries every field of
+        :data:`peerreviewagents.issues.ISSUE_FIELDS`, and every member every
+        field of ``MEMBER_FIELDS``, so a consumer reads a field rather than
+        testing for its presence: what does not apply to a row is ``None``, or
+        an empty list where the field is a list.
         Nothing is capped and nothing is hidden: the major and moderate issues
         are the required changes in ``rank`` order, and the minor ones are the
         suggestions. :mod:`peerreviewagents.issues` has the helpers that sort
         and group them, so a consumer renders the same order ``REVIEW.md``
         does. ``issues_source`` is ``editor`` where an editor pooled the
         findings and ``server`` for an arm that ran none, where each finding is
-        its own issue. ``prior_round`` is the earlier run this one was matched
-        against — its path, its issue count and the tally by status — or
-        ``None``. It is empty for a run written before 0.9.2, which reported a
+        its own issue. ``prior_round`` is the earlier round this one was
+        matched against — the prior file's name, a digest of its contents, how
+        many of its issues were carried in, and this round's tally by status —
+        or ``None``. It holds no machine path: a run folder is published, and
+        where the previous round sat on disk is not the authors' business.
+        It is empty for a run written before 0.9.2, which reported a
         body and an appendix instead of issues.
     ``findings``
         Every finding the ledger kept, de-duplicated to the latest row per
@@ -880,6 +888,16 @@ def read_run(path):
         # told cannot know the difference.
         problems.append('issues.json is present but could not be read, so what is below is the '
                         'raw findings from the ledger and not the review')
+    # The stamp is checked, not just written. An issues document from an engine
+    # this version does not read is not a document to read optimistically: the
+    # ids, the statuses and the member shape in it may not mean what this
+    # version would take them for. The findings in the ledger are still real,
+    # so they are what is reported, with the version named as the reason.
+    stamp_problem = issue_model.schema_problem(document) if document else None
+    if stamp_problem:
+        problems.append(stamp_problem + ', so what is below is the raw findings from the ledger '
+                        'and not the review')
+        document = {}
     # The ledger is the finding set. Nothing is placed out of sight any more, so
     # a finding reaches the review through the issue that holds it, and the two
     # readings never disagree about how much was found.
@@ -972,9 +990,11 @@ def read_run(path):
                    'required': issue_counts['required'],
                    'suggestions': issue_counts['suggestions'],
                    'resolved': issue_counts['resolved'],
-                   'issue_members': issue_counts['members'],
+                   'unverified': issue_counts['unverified'],
+                   'issue_members': issue_counts['issue_members'],
                    'by_severity': issue_counts['by_severity'],
                    'by_category': issue_counts['by_category'],
+                   'by_status': issue_counts['by_status'],
                    'quarantined': len(quarantined),
                    'findings_delivered': progress.get('findings_delivered'),
                    'findings_submitted': progress.get('findings_submitted')},

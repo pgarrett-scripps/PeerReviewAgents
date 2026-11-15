@@ -871,7 +871,12 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     # A prior round named and unreadable is refused before the probe spends
     # anything, because the alternative is a run that renumbers every issue and
     # says nothing about it.
-    prior_path, _prior = load_prior_issues(prior_issues)
+    if prior_issues and not ARMS[arm]['editor']:
+        raise ValueError('The ' + str(arm) + ' arm runs no editor, and matching a round against '
+                         'an earlier one is the editor\'s judgement. Without one the issue ids '
+                         'would be re-minted from scratch and collide with the prior round. Run '
+                         'an arm with an editor, or drop --prior-issues.')
+    prior_path, _prior, _prior_provenance = load_prior_issues(prior_issues)
     root = Path(out).resolve()
     review_dir = root / RUN_DIRECTORY
     directory = Path(directory) if directory else plugin_dir()

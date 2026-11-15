@@ -9,10 +9,15 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-11-15
+
 The report is issues now, not a body and an appendix, and an editor that cannot
-finish says why. No model was run for this change: every number below comes from
-the test suite and from the saved runs in `runs-0.9.0` and the overlap
-experiment.
+finish says why. The shape a consumer reads changed, so this is a minor bump and
+not a patch: `issues.json` is the source of truth, `read_run()` returns issues
+rather than a body and an appendix, and a run folder written by an older engine
+is refused rather than re-rendered. No model was run for this change: every
+number below comes from the test suite and from the saved runs in `runs-0.9.0`
+and the overlap experiment.
 
 ### Changed
 
@@ -22,10 +27,14 @@ experiment.
   name, a severity (`major`, `moderate`, `minor`), a category from a fixed
   vocabulary, a rank and a one-paragraph statement. "Raised by N" is counted
   from the members' slots rather than asserted. `submit_issues` takes them in
-  batches of at most twelve and is keyed by name, so a refused batch is
-  re-sent rather than restarted, and `submit_editor` is now the finalizer: it
-  takes the verdict and refuses while a stored finding belongs to no issue or
-  the ranks are not exactly 1..N.
+  batches — at least twelve, and wider as the finding count grows, so the
+  submissions always fit inside the editor's turn cap — and is keyed by name, so
+  a refused batch is re-sent rather than restarted. Its `retire` argument gives
+  the editor the three edits a stored issue used to be beyond: merge (retire one
+  name, submit another with the combined members, one atomic call), rename
+  (retire the old name, submit under the new one) and drop (retire alone).
+  `submit_editor` is the finalizer: it takes the verdict and refuses while a
+  stored finding belongs to no issue or the ranks are not exactly 1..N.
 - **Nothing is capped and nothing is hidden.** `BODY_LIMIT` and the
   `body`/`appendix`/`duplicate` placement are gone, with no flag to bring them
   back. The major and moderate issues are the required changes, in rank order;
@@ -45,9 +54,9 @@ experiment.
   one shape. The specialist audits stay on disk as evidence and the issues
   that rest on them link to them.
 - **`read_run` returns `issues`, `issues_source` and `prior_round`**, and its
-  `counts` carry `issues`, `required`, `suggestions`, `resolved`,
-  `issue_members`, `by_severity` and `by_category`. `body`, `appendix` and
-  `findings_source: "editor-package"` are gone; `findings_source` is now
+  `counts` carry `issues`, `required`, `suggestions`, `resolved`, `unverified`,
+  `issue_members`, `by_severity`, `by_category` and `by_status`. `body`,
+  `appendix` and `findings_source: "editor-package"` are gone; `findings_source` is now
   `issues`, `ledger` or `none`, and the findings themselves always come from
   the append-only ledger, with the issues' members as the fallback when that
   file is lost. `peerreview report` prints the issue counts beside the finding
@@ -65,12 +74,25 @@ experiment.
 ### Added
 
 - **An earlier round's issues can be passed in**: `--prior-issues PATH` on the
-  review, `prior_issues` to `ingest` and to the workflow. The editor matches
-  this round's issues against that document by reading them, keeps the matched
-  id, and marks each one `persisting` or `regressed`; a prior issue nothing
-  matched is carried into the new document as `resolved`. One problem keeps one
-  id across rounds, so a follow-up is a comparison and not a re-derivation —
+  review, `prior_issues` to `ingest` and to the workflow, refused at ingest for
+  an arm that runs no editor because nothing in it could rule on a prior round.
+  The editor matches this round's issues against that document by reading them,
+  keeps the matched id, and marks each one `persisting` or `regressed`. Nothing
+  closes by omission: every prior issue needs either a match or an explicit row
+  in `submit_editor`'s `prior_rulings`, `resolved` or `unverified`, with a
+  reason. Where a prior member's quote still appears verbatim in the new
+  manuscript, `resolved` additionally needs a stated reason why it is fixed
+  although the text reads the same, and the surviving passages are kept on the
+  row as `surviving_quotes`. `unverified` is the status for "not raised again
+  this round and not verified fixed" — the thing the pilots kept recording as a
+  resolution. A `resolved` row is reported in the round that resolved it and
+  then dropped from later rounds' carry and counts, so a tally cannot grow by
+  recounting; a carried closed row holds `rank: null` and its old rank as
+  `prior_rank`, so it cannot collide with a live issue's rank. One problem keeps
+  one id across rounds, so a follow-up is a comparison and not a re-derivation —
   text hashing was tried first on the saved pilots and predicted merges poorly.
+  `prior_round` in `issues.json` records the file's name and a digest of its
+  contents, never a path from the machine that ran it.
 - **`editor-log.jsonl`**, one row per editor submission call and per refusal,
   with the reason and the problems that caused it. `read_run`'s
   `stages['editor_trace']` summarises it — calls, accepted, refused, the call
@@ -95,6 +117,62 @@ experiment.
   `editor_tool_allowance` read 12 for a run whose editor was handed 37 — the
   wrong number to debug a run that ran out of them with. The protocol is
   rewritten as each slot claims, so it states what that slot actually got.
+- **The editor could still dead-end on a stored issue.** A stored issue could
+  not be merged, renamed or dropped, while the refusal that fired when a finding
+  was already a member of another issue told the editor to merge — so it looped
+  to `maxTurns`. `retire` makes all three possible and the refusal now names
+  them.
+- **A re-claimed editor started from nothing.** The working set and the accepted
+  package belong to the slot, not to the attempt, so a retry keeps what was
+  submitted before; and `submit_issues` after an accepted close reopens the
+  package and removes the stale `issues.json` instead of refusing.
+- **The budget and the turn cap disagreed.** The server's call allowance could
+  pass the editor's `maxTurns` near 80–100 findings. The turn cap is now the one
+  source of truth: the allowance is capped eight turns below it and the batch
+  width grows with the finding count so the submissions fit. The editor path
+  supports up to 200 findings; above that the editor slot is refused by name and
+  the run completes on the server's synthesis, not publishable, with the reason
+  in `limitations`.
+- **"The editor never closed" could not be read.** `write_review` answered with
+  the silent stages before it reached the trace, so the one case that needed the
+  numbers — an editor that never called `submit_report` — got none of them. The
+  trace and the refusal count are now in that rejection too.
+- **Malformed input is refused before it is stored, and logged.** `members: 5`,
+  `issues=5`, `escalation_rulings: ["abc"]` and `members: "uid"` — a string
+  silently split into one-character uids — now each get a typed refusal with a
+  row in `editor-log.jsonl`. A null name no longer becomes an issue called
+  `"None"` and a null `rebuttal_quote` is no longer stored as the string
+  `"None"`: null is absent.
+- **`schema_version` is checked, not just written.** `read_run`, the prior-round
+  reader and the renderer each refuse an unknown version by name. A run folder
+  from an engine that wrote its review as `editor-package.json` is refused by
+  `peerreview report` with that reason and its `REVIEW.md` is left untouched —
+  it used to be rewritten to "No review was produced".
+- **`REVIEW.md` prints what the document holds**: the rebuttal quote behind a
+  computed finding ruled minor, the prior round's provenance, statuses and
+  tally, a closed issue's own statement and ruling, and the issue each
+  escalation ruling refers to.
+- **Every issue row carries every field, and so does every member.** A row's
+  seventeen fields are `peerreviewagents.issues.ISSUE_FIELDS` and a member's
+  eleven are `MEMBER_FIELDS`; what does not apply to a row is `null`, or an
+  empty list where the field is a list — live or closed, edited or synthesised,
+  in `issues.json` and out of `read_run`. Fields used to be left out where they
+  did not apply, so a consumer had to test for a key before reading it. It now
+  reads the field.
+- **`stages['editor_trace']` is present for every run of an arm with an
+  editor**, as a row of zeros where the editor made no submission call at all,
+  rather than absent — the one case the trace was built for was the one case it
+  was missing from. `write_review` reports the trace in that rejection on the
+  call count rather than on the trace's presence.
+- **`docs/INTEGRATIONS.md` is audited field by field against the code.** Every
+  top-level key of `issues.json` is documented, with the five statuses and what
+  each means for `rank` and `members`, the `prior_round` shape, `audits` as bare
+  file names, the `members[].finding_uid` join to `read_run()['findings']` for
+  the fields the ledger alone carries, what a reading is when the ledger cannot
+  be read, and the `ISSUE_*` names on the supported import surface. The MCP tool
+  count the doc states — 23 in one sentence and 27 in another, against a server
+  of 28 — is now checked against `server.TOOLS` by a test, so it cannot drift
+  again.
 
 ## [0.9.1] — 2026-11-14
 

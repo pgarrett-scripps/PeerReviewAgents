@@ -1,7 +1,7 @@
 export const meta = {
   name: 'review',
   description: 'Two-track peer review: ingest, N core reviewers and six specialists in parallel, editor, write the run',
-  whenToUse: 'Reviewing one manuscript PDF with PeerReviewAgents 0.9. Pass {pdf, out, reviewers, arm}, {prior_issues} to match a later round against an earlier run\'s issues.json, and {reviewer_models, specialist_model, editor_model, recorder_model, citation_worker_model} to choose the models.',
+  whenToUse: 'Reviewing one manuscript PDF with PeerReviewAgents 0.10. Pass {pdf, out, reviewers, arm}, {prior_issues} to match a later round against an earlier run\'s issues.json, and {reviewer_models, specialist_model, editor_model, recorder_model, citation_worker_model} to choose the models.',
   phases: [
     { title: 'Ingest', detail: 'import the PDF and fix the plan for this arm' },
     { title: 'Citations', detail: 'resolve every reference, then judge each in-text use against the source' },
@@ -137,7 +137,11 @@ const EDITED = {
     issues: { type: 'integer', description: 'issues the accepted review holds' },
     required_changes: { type: 'integer', description: 'major and moderate issues' },
     suggestions: { type: 'integer', description: 'minor issues' },
-    resolved_from_prior: { type: 'integer', description: 'prior-round issues nothing matched' },
+    resolved_from_prior: { type: 'integer', description: 'prior issues you ruled resolved' },
+    unverified_from_prior: {
+      type: 'integer',
+      description: 'prior issues you ruled unverified: not raised again, not verified fixed',
+    },
     escalated_ruled: { type: 'integer' },
     batches: { type: 'integer', description: 'how many times you called submit_issues' },
     attempts: { type: 'integer', description: 'how many times you called submit_editor' },
@@ -660,14 +664,20 @@ if (hasEditor) {
     code => 'Every reviewer and specialist has reported. Claim slot="editor" with claim_code="'
     + code + '", read every finding with list_findings, then group them into issues: one issue'
     + ' per problem with the findings that raised it as its members, a severity, a category, a'
-    + ' rank and the paragraph the authors read. Send them with submit_issues, at most 12 per'
-    + ' call and as many calls as you need — every answer tells you how many findings no issue'
-    + ' holds yet, and that has to reach zero. Where your claim answer carries prior_issues,'
+    + ' rank and the paragraph the authors read. Send them with submit_issues, at most'
+    + ' issue_model.batch_limit from your claim answer per call and as many calls as you need —'
+    + ' every answer tells you how many findings no issue holds yet, and that has to reach zero.'
+    + ' Read issues_held in your claim answer first: it lists the issues an earlier attempt of'
+    + ' this slot already stored, and they are still held, so send only what is missing or what'
+    + ' you are changing. To merge, rename or drop one of them, name it in submit_issues\''
+    + ' retire beside the batch that replaces it. Where your claim answer carries prior_issues,'
     + ' match each issue you can to one of those with prior_id and a status of persisting or'
-    + ' regressed. Then close with submit_editor: the summary, a ruling by name on every'
-    + ' escalated finding, and the two-axis verdict in words. If a call returns problems, fix'
-    + ' exactly those and send that batch again; what you submitted before is kept. Close with'
-    + ' submit_report, and report how many batches you sent in the batches field.',
+    + ' regressed, and rule on every one you did not match in submit_editor\'s prior_rulings as'
+    + ' resolved or unverified with a reason. Then close with submit_editor: the summary, a'
+    + ' ruling by name on every escalated finding, and the two-axis verdict in words. If a call'
+    + ' returns problems, fix exactly those and send that batch again; what you submitted before'
+    + ' is kept. Close with submit_report, and report how many batches you sent in the batches'
+    + ' field.',
     EDITED,
   )
   if (!edited) {
@@ -730,6 +740,7 @@ return {
     required_changes: edited.required_changes || 0,
     suggestions: edited.suggestions || 0,
     resolved_from_prior: edited.resolved_from_prior || 0,
+    unverified_from_prior: edited.unverified_from_prior || 0,
     escalated_ruled: edited.escalated_ruled || 0,
     batches: edited.batches || null,
     attempts: edited.attempts,

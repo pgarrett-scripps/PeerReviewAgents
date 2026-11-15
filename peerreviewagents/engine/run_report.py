@@ -68,7 +68,29 @@ def _reviewer_packages(run):
 def _issues_document(run):
     """The run's issues document: the one file the review is rendered from."""
     document = _optional(run / 'issues.json')
-    return document if isinstance(document, dict) else None
+    if not isinstance(document, dict):
+        # No issues.json at all is normal for a run whose editor never closed,
+        # and that run renders "No review was produced". A folder from an engine
+        # that wrote its review as `editor-package.json` is a different thing:
+        # the review exists, this engine cannot read it, and rendering would
+        # replace a real REVIEW.md with that sentence. Refuse instead.
+        if (Path(run) / 'editor-package.json').is_file():
+            raise ValueError(
+                str(Path(run) / 'editor-package.json') + ' holds the review and there is no '
+                'issues.json beside it, so that folder was written by an engine before the '
+                'review became issues. This engine will not re-render it; REVIEW.md is left '
+                'untouched.')
+        return None
+    # A run folder written by an engine this version does not read is refused,
+    # not rendered. Rendering it would print "No review was produced" over a
+    # review that was produced, and `write_reports` would then overwrite the
+    # REVIEW.md that engine wrote. The refusal happens before anything is
+    # written, so the existing file is left exactly as it is.
+    problem = issue_model.schema_problem(document, label=str(Path(run) / 'issues.json'))
+    if problem:
+        raise ValueError(problem + '. The review in that folder was written by another engine '
+                         'and this one will not re-render it; REVIEW.md is left untouched.')
+    return document
 
 
 def _workflow(protocol):
@@ -262,11 +284,108 @@ def _issue(issue):
         blocks.append(('paragraph', issue['statement']))
     if issue.get('status_reason'):
         blocks.append(('labeled', 'Against the prior round', issue['status_reason']))
+    if issue.get('rebuttal_quote'):
+        where = (f" in block {issue['rebuttal_block_id']}"
+                 if issue.get('rebuttal_block_id') else '')
+        blocks += [('paragraph', 'Ruled a suggestion rather than a required change because '
+                                 'the manuscript already carries its own qualification'
+                                 + where + ':'),
+                   ('quote', issue['rebuttal_quote'])]
     for member in issue.get('members') or []:
         blocks += _member(member)
     if issue.get('audits'):
         blocks.append(('labeled', 'Specialist audit', ', '.join(str(name) for name
                                                                 in issue['audits'])))
+    return blocks
+
+
+#: What each prior-round status means, printed with the tally so a reader of
+#: REVIEW.md does not have to find the documentation to know what it claims.
+_STATUS_MEANINGS = (
+    ('new', 'raised for the first time this round'),
+    ('persisting', 'the prior issue was raised again, unchanged in substance'),
+    ('regressed', 'the prior issue was raised again and is worse'),
+    ('resolved', 'the editor ruled the prior issue fixed, with a reason'),
+    ('unverified', 'the prior issue was not raised again this round and was not '
+                   'verified as fixed — it is not a resolution'),
+)
+
+
+def _closed(issue):
+    """A prior issue this round closed: what it said, and the ruling against it."""
+    name = str(issue.get('name') or 'Unnamed issue')
+    heading = f"{issue['id']}: {name}" if issue.get('id') else name
+    inline = [('Ruling', issue.get('status') or 'resolved')]
+    if issue.get('prior_rank') is not None:
+        inline.append(('Rank in the prior round', issue['prior_rank']))
+    if issue.get('severity'):
+        inline.append(('Severity then', issue['severity']))
+    blocks = [('heading3', heading), ('inline', inline)]
+    if issue.get('statement'):
+        blocks.append(('paragraph', issue['statement']))
+    if issue.get('status_reason'):
+        blocks.append(('labeled', 'Why it is closed', issue['status_reason']))
+    if issue.get('text_unchanged_reason'):
+        blocks.append(('labeled', 'Why it is fixed although the passages it cited still '
+                                  'read the same', issue['text_unchanged_reason']))
+    for quote in issue.get('surviving_quotes') or []:
+        if isinstance(quote, dict) and quote.get('quote'):
+            blocks.append(('quote', str(quote['quote'])))
+    return blocks
+
+
+def _prior_round_blocks(document, rows):
+    """The prior round: where it came from, how it was ruled, and what closed."""
+    prior = document.get('prior_round') or {}
+    closed = issue_model.closed_issues(rows)
+    if not prior and not closed:
+        return []
+    blocks = [('heading2', 'Since the prior round')]
+    if prior:
+        fields = [('Prior round file', prior.get('file')),
+                  ('Prior round digest', prior.get('digest')),
+                  ('Issues carried in', prior.get('issues'))]
+        tally = prior.get('tally') or {}
+        fields += [(status.capitalize(), tally[status])
+                   for status in issue_model.ISSUE_STATUSES if status in tally]
+        blocks.append(('fields', [(key, value) for key, value in fields if value is not None]))
+    blocks.append(('bullets', [f'{status}: {meaning}' for status, meaning in _STATUS_MEANINGS]))
+    if closed:
+        for issue in closed:
+            blocks += _closed(issue)
+    elif prior:
+        blocks.append(('paragraph', 'No prior issue was closed this round.'))
+    return blocks
+
+
+def _escalation_blocks(document, rows):
+    """Each escalated finding's ruling, named against the issue that holds it."""
+    rulings = document.get('escalation_rulings') or []
+    if not rulings:
+        return []
+    held = {}
+    for issue in rows:
+        for member in issue.get('members') or []:
+            if member.get('finding_uid'):
+                held[str(member['finding_uid'])] = (issue, member)
+    blocks = [('heading2', 'Escalations ruled on')]
+    for ruling in rulings:
+        ruling = ruling if isinstance(ruling, dict) else {}
+        uid = str(ruling.get('finding_uid') or '').strip()
+        pair = held.get(uid)
+        if pair:
+            issue, member = pair
+            name = str(issue.get('name') or 'Unnamed issue')
+            heading = f"{issue['id']}: {name}" if issue.get('id') else name
+            title = str(member.get('title') or '')
+        else:
+            heading = 'Not held by any issue in this review'
+            title = ''
+        blocks.append(('heading3', heading))
+        inline = [('Finding', uid or 'unknown')]
+        if title:
+            inline.append(('Raised as', title))
+        blocks += [('inline', inline), ('paragraph', str(ruling.get('ruling') or ''))]
     return blocks
 
 
@@ -295,7 +414,7 @@ def _issue_review(document):
     blocks.append(('inline', [('Issues', counts.get('issues', 0)),
                               ('Required changes', counts.get('required', 0)),
                               ('Suggestions', counts.get('suggestions', 0)),
-                              ('Findings pooled', counts.get('members', 0))]))
+                              ('Findings pooled', counts.get('issue_members', 0))]))
     if document.get('issues_source') == 'server':
         blocks.append(('labeled', 'No editor in this arm',
                        'nothing pooled these findings, so each one is its own issue and the '
@@ -315,14 +434,8 @@ def _issue_review(document):
         blocks.append(('heading3', category.replace('-', ' ').capitalize()))
         for issue in group:
             blocks += _issue(issue)
-    resolved = issue_model.resolved_issues(rows)
-    if resolved:
-        blocks += [('heading2', 'Resolved since the prior round'),
-                   ('bullets', [f"{issue.get('id')}: {issue.get('name')}" for issue in resolved])]
-    if document.get('escalation_rulings'):
-        blocks.append(('heading2', 'Escalations ruled on'))
-        blocks.append(('bullets', [str(ruling.get('ruling')) for ruling
-                                   in document['escalation_rulings']]))
+    blocks += _prior_round_blocks(document, rows)
+    blocks += _escalation_blocks(document, rows)
     if document.get('limitations'):
         blocks += [('heading2', 'Limitations'),
                    ('bullets', [str(item) for item in document['limitations']])]

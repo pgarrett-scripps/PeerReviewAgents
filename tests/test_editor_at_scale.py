@@ -215,7 +215,7 @@ def test_sixty_findings_reach_the_review_in_batches_of_issues(tmp_path):
     assert closed.get('closed'), closed
     written = srv.write_review(token_for('recorder'))
     assert written['status'] == 'complete', written
-    assert written['issue_counts']['members'] == LEDGER
+    assert written['issue_counts']['issue_members'] == LEDGER
 
     document = json.loads((run.review / 'issues.json').read_text(encoding='utf-8'))
     members = [member['finding_uid'] for issue in document['issues']

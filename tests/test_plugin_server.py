@@ -901,7 +901,7 @@ def test_a_finished_run_writes_the_files_a_consumer_reads(tmp_path):
     assert document['issues_source'] == 'editor'
     assert len(document['issues']) == 3
     assert document['counts'] == {**document['counts'], 'issues': 3, 'required': 3,
-                                  'suggestions': 0, 'members': 3}
+                                  'suggestions': 0, 'issue_members': 3}
     assert [issue['id'] for issue in document['issues']] == ['i01', 'i02', 'i03']
     assert [issue['rank'] for issue in document['issues']] == [1, 2, 3]
     assert document['verdict']['basis'] == 'judgement'
@@ -1050,7 +1050,7 @@ def test_a_run_whose_issues_are_all_suggestions_still_completed(tmp_path):
     assert written['status'] == 'complete'
     assert written['required_changes'] == 0
     assert written['suggestions'] == 3
-    assert written['issue_counts']['members'] == 3
+    assert written['issue_counts']['issue_members'] == 3
 
 
 def test_the_guard_status_in_the_run_files_is_read_and_not_assumed(tmp_path):

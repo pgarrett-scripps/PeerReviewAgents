@@ -53,21 +53,33 @@ def _finding(uid, title, **extra):
             'schema_version': names.FINDING_SCHEMA_VERSION, **extra}
 
 
+def _issue_row(**fields):
+    """One issue row in the shape the server writes: every field, null where it does not apply."""
+    row = {'rank': None, 'members': [], 'raised_by': 0, 'rebuttal_block_id': None,
+           'rebuttal_quote': None, 'prior_id': None, 'prior_rank': None, 'status': 'new',
+           'status_reason': None, 'text_unchanged_reason': None, 'surviving_quotes': [],
+           'audits': []}
+    row.update(fields)
+    assert sorted(row) == sorted(issue_model.ISSUE_FIELDS), sorted(row)
+    return row
+
+
 def _issues(raised):
     """The two issues the editor grouped the fixture's findings into."""
     total, stated_n = raised
     return [
-        {'id': 'i01', 'name': 'The reported total does not follow from its parts',
-         'severity': 'major', 'category': 'results-and-numbers', 'rank': 1, 'status': 'new',
-         'statement': 'The total in the abstract is not the sum of the groups it is drawn '
+        _issue_row(
+            id='i01', name='The reported total does not follow from its parts',
+            severity='major', category='results-and-numbers', rank=1,
+            statement='The total in the abstract is not the sum of the groups it is drawn '
                       'from, and the headline conclusion rests on the larger number.',
-         'members': [issue_model.member_of(total)]},
-        {'id': 'i02', 'name': 'The stated n disagrees with Table 2',
-         'severity': 'minor', 'category': 'statistics-and-inference', 'rank': 2,
-         'status': 'new',
-         'statement': 'Table 2 counts fewer animals than the methods report, so a reader '
+            members=[issue_model.member_of(total)], raised_by=1),
+        _issue_row(
+            id='i02', name='The stated n disagrees with Table 2',
+            severity='minor', category='statistics-and-inference', rank=2,
+            statement='Table 2 counts fewer animals than the methods report, so a reader '
                       'cannot tell which n the tests were run over.',
-         'members': [issue_model.member_of(stated_n)]},
+            members=[issue_model.member_of(stated_n)], raised_by=1),
     ]
 
 
@@ -184,9 +196,11 @@ def test_read_run_reads_a_complete_run(tmp_path):
     assert [f['finding_uid'] for f in run['findings']] == ['aaa1', 'bbb2']
     assert run['counts'] == {
         'findings': 2, 'issues': 2, 'required': 1, 'suggestions': 1, 'resolved': 0,
-        'issue_members': 2,
+        'unverified': 0, 'issue_members': 2,
         'by_severity': {'major': 1, 'moderate': 0, 'minor': 1},
         'by_category': {'results-and-numbers': 1, 'statistics-and-inference': 1},
+        'by_status': {'new': 2, 'persisting': 0, 'regressed': 0, 'resolved': 0,
+                      'unverified': 0},
         'quarantined': 0, 'findings_delivered': 2, 'findings_submitted': 3}
     assert run['identity']['source_sha256'] == 'cafe' * 16
     assert run['identity']['arm'] == 'full-two-track'
@@ -737,6 +751,49 @@ def test_a_damaged_issues_document_on_a_complete_run_is_not_a_whole_review(tmp_p
 
     assert shaped['issues'] == [] and shaped['publishable'] is False
     assert any("issues is not a list" in problem for problem in shaped['problems'])
+
+
+def test_an_issues_document_stamped_with_an_unknown_version_is_refused_by_name(tmp_path):
+    """A stamp is only worth writing if a reader checks it."""
+    review = complete_run(tmp_path)
+    document = json.loads((review / 'issues.json').read_text(encoding='utf-8'))
+    _write(review / 'issues.json', {**document, 'schema_version': 'review-issues-v9'})
+
+    run = read_run(review)
+
+    assert run['issues'] == [] and run['publishable'] is False
+    assert run['findings_source'] == 'ledger', 'the findings are still real'
+    assert any('review-issues-v9' in problem for problem in run['problems']), run['problems']
+
+    # No stamp at all is the same refusal with its own reason: a folder from
+    # before the issues document existed, not a review with no issues in it.
+    older = complete_run(tmp_path / 'older')
+    stored = json.loads((older / 'issues.json').read_text(encoding='utf-8'))
+    stored.pop('schema_version')
+    _write(older / 'issues.json', stored)
+
+    reading = read_run(older)
+
+    assert reading['issues'] == [] and reading['publishable'] is False
+    assert any('no schema_version' in problem for problem in reading['problems'])
+
+
+def test_every_issue_row_carries_every_field_of_the_shape(tmp_path):
+    """Absent or null was the consumer's problem either way; always-present is the rule."""
+    review = complete_run(tmp_path)
+    document = json.loads((review / 'issues.json').read_text(encoding='utf-8'))
+
+    for row in document['issues']:
+        assert sorted(row) == sorted(issue_model.ISSUE_FIELDS), row['id']
+    for row in read_run(review)['issues']:
+        assert sorted(row) == sorted(issue_model.ISSUE_FIELDS), row['id']
+
+    # The no-editor path writes the same shape; a consumer reads one document.
+    synthesized = issue_model.synthesize([
+        {'finding_uid': 'aaa1', 'slot': 'core-1', 'track': 'core', 'severity': 'major',
+         'kind': 'issue', 'title': 'A finding on its own', 'comment': 'Why it matters.'}])
+    assert sorted(synthesized[0]) == sorted(issue_model.ISSUE_FIELDS)
+    assert sorted(synthesized[0]['members'][0]) == sorted(issue_model.MEMBER_FIELDS)
 
 
 def test_a_startup_blocked_run_records_the_tracks_the_arm_would_have_run(tmp_path):

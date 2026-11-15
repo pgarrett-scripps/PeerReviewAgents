@@ -70,3 +70,23 @@ def test_license_agrees_with_pyproject():
     declared = _pyproject()["project"]["license"]
     text = declared if isinstance(declared, str) else declared.get("text", "")
     assert cff_license == text, f"CITATION.cff says {cff_license}, pyproject says {text}"
+
+
+def test_the_integrations_doc_counts_the_tools_the_server_has():
+    """A number in prose drifts the moment a tool is added, and silently.
+
+    ``docs/INTEGRATIONS.md`` tells an integrator how many tools the server
+    serves and how many the agents are allowed, in two different sentences.
+    They were 23 and 27 against a server of 28 — the doc had been right about
+    one release and then two tools arrived. The count is the server's to state,
+    so the doc is checked against it rather than against itself.
+    """
+    import re
+
+    from peerreviewagents.plugin.server import TOOLS
+
+    text = (ROOT / "docs" / "INTEGRATIONS.md").read_text(encoding="utf-8")
+    numbers = re.findall(r"(\d+) (?:MCP tools|`peerreview` tools)", text)
+    assert numbers, "the doc no longer states a tool count anywhere"
+    assert set(numbers) == {str(len(TOOLS))}, (
+        f"the server serves {len(TOOLS)} tools and the doc says {sorted(set(numbers))}")
