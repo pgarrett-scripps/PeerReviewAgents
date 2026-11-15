@@ -228,14 +228,26 @@ model at all:
    registered, with a note that its authors could not be corroborated because
    no index this version reads holds its metadata. Each row also carries
    a per-field comparison of title, first author, year and venue, any retraction notice,
-   and the abstract or open-access full text with the URL it came from. Every
-   response is cached in the run folder, and the requests carry a generic
+   and the abstract or open-access full text with the URL it came from. Source
+   text is looked for in four places, in order and stopping at the first that
+   answers: the record the index already returned, Europe PMC for the article
+   and its open-access full text, PubMed Central for the same article where
+   Europe PMC's copy did not answer, and arXiv for a preprint neither index
+   holds an abstract for. A full text is the article's `<body>` and nothing
+   else, so an answer carrying only front matter is recorded as no full text.
+   Every response is cached in the run folder, and the requests carry a generic
    `User-Agent` with no address and nothing identifying the person running it.
 3. **Judge.** `--citation-workers` Haiku workers (`cite-1`, `cite-2`, …) claim
    batches and write one verdict per in-text use — supports, partly supports,
    does not support, cannot tell — each quoting the exact source passage it
-   judged from. `cannot tell` is the only verdict allowed no source text. A
-   worker files no findings and cannot hold `write_review` open.
+   judged from. `cannot tell` is the only verdict allowed no source text. The
+   source text on a row is the abstract plus, for an open-access full text, the
+   few windows of it whose sentences share the most subject-matter words with
+   the citing sentence being checked — a paper is far longer than any window a
+   worker is shown, and the opening of it is a title and an introduction about
+   other people's work. The row records which passages were shown and how they
+   were chosen, so "this verdict rests on full text" names the passage it
+   rested on. A worker files no findings and cannot hold `write_review` open.
 4. **Confirm.** The citations specialist reads the whole ledger instead of
    sampling it, re-checks every problem row itself, and only what it confirms
    becomes a finding. A worker's verdict is a row in a table, never a finding.

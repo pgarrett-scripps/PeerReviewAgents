@@ -382,13 +382,21 @@ if cites["enabled"]:
   reference and one per in-text use, last record per `row_id` winning. Use
   `read_citation_ledger` for the rows (below); `counts` is there so you do not
   have to read them at all.
-- `counts` holds twenty-four integers: `references`, `resolved`, `not_found`,
+- `counts` holds twenty-six integers: `references`, `resolved`, `not_found`,
   `not_located`, `could_not_check`, `no_lookup`, `damaged_dois`,
   `repaired_dois`, `candidates`, `errors`,
-  `unresolved`, `mismatched`, `retracted`, `with_source_text`, `uses`,
+  `unresolved`, `mismatched`, `retracted`, `with_source_text`,
+  `with_abstract`, `with_full_text`, `uses`,
   `uses_unmatched`, `uses_judged`, `supported`,
   `partly_supported`, `not_supported`, `cannot_tell`, `uses_unjudged`,
   `lookups` and `unreadable_rows`.
+- **`with_abstract` and `with_full_text` are not the same evidence**, and
+  `with_source_text` is the references that have either. An abstract answers
+  what a paper claims; only the full text answers whether a number, a method or
+  a limit the citing sentence attributes to it is in it. A page reporting one
+  number for both reads as if every reference had been read. Most reference
+  lists are mostly abstracts: open-access full text exists for a minority of
+  what a paper cites, and nothing here reads a paywalled page or a PDF.
 - **Four entries under `counts` are not numbers**, and an integration that maps
   the dict to an integer schema will trip over them: `ledger` is a string, the
   path `citations/ledger.jsonl` relative to the review folder; `stages` is a
@@ -508,12 +516,16 @@ for row in cites["uses"]:
   the citation slots and no `plan` as well: both readers call it a planned
   lane.
 - **Source text is left out by default.** A resolved reference carries the
-  abstract and the opening of the full text the worker was shown, which is most
-  of the bytes in the file and is someone else's copyrighted prose. Those rows
+  abstract and, where an open-access archive gave one, the article body the
+  passages shown to a worker were cut from, which is most of the bytes in the
+  file and is someone else's copyrighted prose. Those rows
   come back without `resolution['abstract']` and `resolution['full_text']` and
   with `resolution['has_source_text']` instead, so you can tell a reference
-  nobody fetched text for from one whose text was dropped here. Pass
-  `source_text=True` for the rows exactly as stored.
+  nobody fetched text for from one whose text was dropped here. Beside it,
+  `resolution['has_abstract']` and `resolution['has_full_text']` say *which*
+  of the two was dropped, because a page that only knows text existed cannot
+  tell its reader whether a verdict rested on an abstract or on the article.
+  Pass `source_text=True` for the rows exactly as stored.
 - The guards are `read_run`'s. A symlinked `review/`, `citations/` or
   `ledger.jsonl` is refused by name — `ValueError`, naming the file with its
   folder — rather than followed, and damaged content never raises: an

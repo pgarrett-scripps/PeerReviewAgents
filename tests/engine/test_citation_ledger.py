@@ -2090,3 +2090,262 @@ def test_a_record_a_repaired_doi_resolves_to_still_has_to_be_corroborated(tmp_pa
     assert resolution['repairs_refused'] == [ELSEWHERE]
     assert resolution.get('record') is None
     assert resolution['exists'] != 'yes', 'a refused candidate is not a registration'
+
+
+# -- the passage a verdict rests on -----------------------------------------
+#
+# A full text is twenty to a hundred times longer than the window a worker is
+# shown, so which part of it is chosen decides what the worker can answer.
+# These tests pin the choice: the citing sentence picks the passages, the same
+# sentence always picks the same ones, a quote has to come out of a passage
+# that was really shown, and a source that gave no body is not full text.
+
+#: An open-access article as Europe PMC serves it: front matter, then a body
+#: whose first paragraph is about other people's work and whose result — the
+#: one the citing sentence is about — is thousands of characters in.
+def jats(result, filler=120):
+    padding = ('Animals were housed in groups of four under a twelve-hour cycle. '
+               'Electrodes were lowered in half-millimetre steps across sessions. ') * filler
+    return ('<article><front><article-meta><title-group><article-title>'
+            + TITLE + '</article-title></title-group></article-meta></front>'
+            '<body><sec><title>Introduction</title><p>Spatial coding in rodents has '
+            'a long history, and the anatomy of the region has been described in '
+            'detail elsewhere.</p></sec><sec><title>Methods</title><p>' + padding
+            + '</p></sec><sec><title>Results</title><p>' + result
+            + '</p></sec></body></article>')
+
+
+OPEN_ACCESS_HIT = {'doi': '10.1234/replay', 'title': TITLE, 'authorString': 'Lin M, Ito K.',
+                   'firstPublicationDate': '2019-04-01', 'pmcid': 'PMC12345',
+                   'journalTitle': 'Journal of Neuroscience', 'isOpenAccess': 'Y'}
+RESULT = ('Replay of the same place-cell sequences was seen during quiet rest in '
+          'every animal, though only in the first twenty minutes after the task.')
+
+
+def full_text_ledger(tmp_path, body, abstract=None, hit=None, name='review', **kwargs):
+    """A ledger resolved against an open-access article, with a full text to window."""
+    ledger = cl.Ledger(tmp_path / name)
+    cl.build(ledger, paper(**kwargs))
+    net = Net([('/works/10.1234', crossref_work('10.1234/replay', TITLE, '2019',
+                                                abstract=abstract)),
+               ('DOI%3A', europepmc([hit if hit is not None else OPEN_ACCESS_HIT])),
+               ('PMC12345/fullTextXML', body)])
+    cl.resolve(ledger, cl.Lookups(tmp_path / name / 'citations' / 'lookups', opener=net))
+    return ledger, net
+
+
+def test_the_passages_a_worker_sees_are_the_ones_the_citing_sentence_points_at(tmp_path):
+    """The window is chosen by the sentence being checked, not by the file order.
+
+    This is the fault the item exists for. The window used to be the first
+    characters of the full text — the title, the authors and an introduction
+    about other people's work — so a sentence citing a paper for its result was
+    judged against its introduction, and `cannot tell` was the honest answer to
+    a passage that never had the answer in it.
+    """
+    ledger, _ = full_text_ledger(tmp_path, jats(RESULT))
+    row = cl.batch(ledger, 'cite-1')[0]
+    assert row['source_kind'] == 'full text'
+    assert 'Replay of the same place-cell sequences' in row['source_text']
+    assert 'the first twenty minutes' in row['source_text'], (
+        'the qualification around the result has to be inside the window, '
+        'or a worker reads a finding as a flat claim')
+    assert len(row['source_text']) <= cl.SOURCE_TEXT_LIMIT
+    assert 'subject-matter words' in row['passage_rule']
+    reference = {one['row_id']: one for one in ledger.rows()}['ref:r1']
+    # The window this stage used to send, on the same row: the opening, which
+    # is where the result is not.
+    opening = cl.source_window(reference)
+    assert 'Replay of the same place-cell sequences' not in opening['source_text']
+    assert 'opening' in opening['passage_rule']
+    # Where in the stored text the passages came from, so "this verdict rests
+    # on full text" can be checked rather than taken on trust. The offsets are
+    # the ledger's, not the worker's: it has the text and the rule.
+    assert 'passages' not in row and 'source_passages' not in row
+    stored = cl.squeeze(reference['resolution']['full_text'])
+    spans = cl.source_window(reference, row['sentence'])['passages']
+    assert spans
+    for span in spans:
+        assert stored[span['start']:span['end']] in row['source_text']
+
+
+def test_a_citing_sentence_the_paper_shares_nothing_with_gets_the_opening(tmp_path):
+    """No shared subject matter is no basis for choosing, so the opening it is.
+
+    And the row says which of the two rules produced the window, because a
+    worker reading the opening of a paper is in the position every `cannot
+    tell` in 0.9.0 was in, and a reader of the table should be able to see it.
+    """
+    ledger, _ = full_text_ledger(
+        tmp_path, jats(RESULT),
+        text='Funding bodies were acknowledged by all of the authors [1].')
+    row = cl.batch(ledger, 'cite-1')[0]
+    assert row['source_text'].startswith('FULL TEXT (opening)')
+    assert 'Spatial coding in rodents' in row['source_text']
+    assert 'shares no subject-matter word' in row['passage_rule']
+
+
+def test_the_same_sentence_always_chooses_the_same_passages(tmp_path):
+    """A verdict is checked against the window it was judged from, so it is stable.
+
+    :func:`check_verdict` rebuilds the window from the stored full text and the
+    citing sentence to find out whether the quote was really in what the worker
+    was shown. If the choice moved between the two calls, every full-text
+    verdict would be a coin toss.
+    """
+    ledger, _ = full_text_ledger(tmp_path, jats(RESULT))
+    reference = {one['row_id']: one for one in ledger.rows()}['ref:r1']
+    sentence = cl.batch(ledger, 'cite-1')[0]['sentence']
+    first = cl.source_window(reference, sentence)
+    for _ in range(3):
+        assert cl.source_window(reference, sentence) == first
+    # And a different sentence is allowed to get a different window: that is
+    # the whole point of choosing by sentence.
+    other = cl.source_window(reference, 'Electrodes were lowered in half-millimetre steps.')
+    assert other['source_text'] != first['source_text']
+
+
+def test_a_quote_out_of_the_full_text_is_accepted_and_a_reassembled_one_is_not(tmp_path):
+    """The passage rule does not loosen because the source got longer.
+
+    A quote has to appear in the text the worker was shown. Two passages from
+    different parts of one paper are not one sentence, so the gap between them
+    stays in the text the quote is checked against and a quote spanning it is
+    refused like any other reassembly.
+    """
+    ledger, _ = full_text_ledger(tmp_path, jats(RESULT))
+    row = cl.batch(ledger, 'cite-1')[0]
+    stored, why = cl.verdict(ledger, 'cite-1', row['row_id'], 'partly supports',
+                             'Replay of the same place-cell sequences was seen during quiet rest')
+    assert why is None and stored['verdict'] == 'partly supports'
+    assert stored['source_kind'] == 'full text'
+    assert stored['passage_rule'] and stored['source_passages']
+
+    across = cl.PASSAGE_GAP.join(['Electrodes were lowered in half-millimetre steps across '
+                                  'sessions.', 'Replay of the same place-cell sequences'])
+    assert cl.PASSAGE_GAP in across
+    second = cl.batch(ledger, 'cite-1')
+    if second:
+        stored, why = cl.verdict(ledger, 'cite-1', second[0]['row_id'], 'supports',
+                                 across.replace(cl.PASSAGE_GAP, ' '))
+        assert stored is None and 'not in the source text' in why
+
+
+def test_an_archive_that_sent_no_body_is_not_a_row_resting_on_full_text(tmp_path):
+    """A 200 carrying front matter only is not the paper's text, and says so.
+
+    Europe PMC and PubMed Central both answer for an article whose licence does
+    not allow redistribution: the answer is the title, the authors and
+    sometimes the abstract, with no ``<body>`` at all. Reading that as full text
+    would put "rests on full text" on a row whose text nobody ever got.
+    """
+    front = ('<article><front><article-meta><title-group><article-title>' + TITLE
+             + '</article-title></title-group></article-meta></front></article>')
+    ledger, net = full_text_ledger(tmp_path, front, abstract='Replay was seen during quiet rest.')
+    reference = {one['row_id']: one for one in ledger.rows()}['ref:r1']
+    assert reference['resolution']['full_text'] is None
+    assert reference['resolution']['full_text_url'] is None
+    row = cl.batch(ledger, 'cite-1')[0]
+    assert row['source_kind'] == 'abstract'
+    assert 'FULL TEXT' not in row['source_text']
+    # Europe PMC having no usable copy is not the end of it: PubMed Central
+    # holds the same archive and is asked next.
+    assert any('efetch' in url for url in net.urls)
+
+
+def test_pubmed_central_answers_for_an_article_europe_pmc_did_not_serve(tmp_path):
+    """Two mirrors of one open-access archive, and either may be the reachable one."""
+    ledger = cl.Ledger(tmp_path / 'review')
+    cl.build(ledger, paper())
+    net = Net([('/works/10.1234', crossref_work('10.1234/replay', TITLE, '2019')),
+               ('DOI%3A', europepmc([OPEN_ACCESS_HIT])),
+               ('PMC12345/fullTextXML', 503),
+               ('efetch', jats(RESULT, filler=4))])
+    cl.resolve(ledger, cl.Lookups(tmp_path / 'review' / 'citations' / 'lookups', opener=net))
+    reference = {one['row_id']: one for one in ledger.rows()}['ref:r1']
+    assert 'eutils.ncbi.nlm.nih.gov' in reference['resolution']['full_text_url']
+    assert 'Replay of the same place-cell sequences' in reference['resolution']['full_text']
+    assert cl.counts(ledger)['with_full_text'] == 1
+
+
+def test_a_preprints_abstract_comes_from_arxiv_when_no_index_holds_one(tmp_path):
+    """The source text of last resort, and the corroboration every hit faces.
+
+    Crossref holds the registration of a preprint and no abstract for it, and
+    Europe PMC does not hold it at all — which is most of the physics,
+    mathematics and computer-science literature a paper cites. arXiv has the
+    abstract, and answers a title query with its nearest neighbours like any
+    other index, so the title still has to match and the first author still has
+    to agree before the text is read as this reference's.
+    """
+    entry = ('<feed><title>ArXiv Query: ti:"a title that is not the one"</title><entry>'
+             '<id>http://arxiv.org/abs/1901.00001v1</id><title>' + TITLE + '</title>'
+             '<summary>Replay was decoded during quiet rest in all animals.</summary>'
+             '<published>2019-01-02T00:00:00Z</published>'
+             '<author><name>Mei Lin</name></author></entry></feed>')
+    ledger = cl.Ledger(tmp_path / 'review')
+    cl.build(ledger, paper())
+    net = Net([('/works/10.1234', crossref_work('10.1234/replay', TITLE, '2019')),
+               ('DOI%3A', europepmc([])), ('export.arxiv.org', entry)])
+    cl.resolve(ledger, cl.Lookups(tmp_path / 'review' / 'citations' / 'lookups', opener=net))
+    resolution = {one['row_id']: one for one in ledger.rows()}['ref:r1']['resolution']
+    assert resolution['abstract'] == 'Replay was decoded during quiet rest in all animals.'
+    assert 'export.arxiv.org' in resolution['abstract_url']
+    # The feed's own <title> is the query echoed back, and reading it as a hit
+    # matched every search against itself.
+    assert 'not the one' not in str(resolution['abstract'])
+
+    other = ('<feed><entry><id>http://arxiv.org/abs/1901.00002v1</id>'
+             '<title>An unrelated study of mast cells in culture</title>'
+             '<summary>Mast cells were counted.</summary>'
+             '<published>2013-01-02T00:00:00Z</published>'
+             '<author><name>Kenji Okada</name></author></entry></feed>')
+    second = cl.Ledger(tmp_path / 'other')
+    cl.build(second, paper())
+    net = Net([('/works/10.1234', crossref_work('10.1234/replay', TITLE, '2019')),
+               ('DOI%3A', europepmc([])), ('export.arxiv.org', other)])
+    cl.resolve(second, cl.Lookups(tmp_path / 'other' / 'citations' / 'lookups', opener=net))
+    assert {one['row_id']: one for one in second.rows()}['ref:r1'][
+        'resolution']['abstract'] is None
+
+
+def test_an_arxiv_doi_is_asked_about_by_its_own_identifier(tmp_path):
+    """arXiv's API has no DOI field, so only the DOI it registered itself can be one."""
+    assert 'id_list=2301.01234' in cl.arxiv_id_url('10.48550/arXiv.2301.01234')
+    assert cl.arxiv_id_url('10.1234/replay') is None
+    with pytest.raises(ValueError):
+        cl.arxiv_title_url('short')
+    with pytest.raises(ValueError):
+        cl.pmc_full_text_url('../etc/passwd')
+    assert 'PMC12345' in cl.pmc_full_text_url('pmc12345')
+
+
+def test_one_reference_cannot_spend_the_run_on_looking_for_its_own_abstract(tmp_path):
+    """The source allowance is per reference, so a hopeless row costs a fixed amount.
+
+    The run-wide budget cannot tell forty references asking once from one
+    reference asking forty times, and the second is what a reference with no
+    abstract anywhere would do if nothing stopped it.
+    """
+    ledger, net = full_text_ledger(tmp_path, 503, abstract=None)
+    resolution = {one['row_id']: one for one in ledger.rows()}['ref:r1']['resolution']
+    source_requests = [one for one in resolution['requests']
+                       if 'fullTextXML' in one['url'] or 'efetch' in one['url']
+                       or 'arxiv' in one['url'] or 'DOI%3A' in one['url']]
+    assert len(source_requests) <= cl.SOURCE_FETCHES
+    assert sum(1 for one in source_requests if one['status'] == 'source_budget') <= 1
+
+
+def test_the_counts_say_how_much_of_the_list_has_text_behind_it(tmp_path):
+    """Two numbers a reader needs to tell an unchecked list from a checked one."""
+    ledger, _ = full_text_ledger(tmp_path, jats(RESULT),
+                                 abstract='Replay was seen during quiet rest.')
+    totals = cl.counts(ledger)
+    assert (totals['with_abstract'], totals['with_full_text']) == (1, 1)
+    # One reference with text behind it, counted once, and the two kinds
+    # counted apart: a table reporting one number for both reads as if every
+    # reference had been read rather than skimmed.
+    assert totals['with_source_text'] == 1
+    row = cl.batch(ledger, 'cite-1')[0]
+    assert row['source_kind'] == 'abstract and full text'
+    assert row['source_text'].startswith('ABSTRACT')
