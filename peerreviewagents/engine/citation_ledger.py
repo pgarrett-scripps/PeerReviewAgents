@@ -330,6 +330,19 @@ _NOTICE_SUFFIX = re.compile(
 #: PubMed" has a notice word in a nine-word clause and is a real paper.
 NOTICE_LABEL_WORDS = 5
 _YEAR_SUFFIX = re.compile(r'\b((?:1[89]|20)\d{2})([a-z])\b')
+#: A URL, a DOI or an article number inside a reference string carries digits
+#: that read as a year — ``10.1016/j.aanat.2021.151882`` holds two — so they
+#: come out before the year the page prints is looked for.
+_YEAR_NOISE = re.compile(r'https?://\S+|\b10\.\d{4,9}/\S+|\bdoi:\s*\S+', re.IGNORECASE)
+#: The year a reference list prints, in the two shapes that say plainly that
+#: this number is the year and not a page, a volume or an article number: in
+#: brackets, as ``Authors (2022) Title`` and ``25, 7121–7128 (2018).``, and
+#: before the volume's punctuation, as ``Science. 2017;356(6340)``. The third
+#: branch is the second one with a space inside the year, which is how a
+#: two-column PDF's text layer hands over ``201 7;356``.
+_PAGE_YEAR = re.compile(r'\((1[89]\d\d|20[0-2]\d)[a-z]?\)'
+                        r'|\b(1[89]\d\d|20[0-2]\d)\s*[;:]'
+                        r'|\b(1[89]\d|20[0-2])\s(\d)\s*[;:]')
 #: Letters no Unicode decomposition takes apart, folded the way an index does.
 _FOLDED = {'ø': 'o', 'ß': 'ss', 'đ': 'd', 'ł': 'l', 'æ': 'ae', 'œ': 'oe', 'ð': 'd', 'þ': 'th',
            'ı': 'i', 'ħ': 'h', 'ŋ': 'n', 'ʼ': "'", '’': "'", '‘': "'", '–': '-', '—': '-'}
@@ -860,25 +873,59 @@ def _printed_from_raw(raw):
     return author, None, venue
 
 
+def page_year(raw):
+    """The year the reference text itself prints, or ``None``.
+
+    Only the two unambiguous shapes count — a year in brackets and a year in
+    front of the volume's punctuation — and the leftmost one wins, because a
+    reference string often ends in material that is not the reference: a
+    running footer, an access date, the next entry's opening. A number that
+    could be a page, a volume or an article number is not read as a year, and
+    URLs and DOIs come out first so their digits are never read as one.
+    """
+    body = _YEAR_NOISE.sub(' ', squeeze(raw) or '')
+    found = _PAGE_YEAR.search(body)
+    if not found:
+        return None
+    bracketed, before_volume, split_high, split_low = found.groups()
+    return bracketed or before_volume or (split_high + split_low)
+
+
 def _printed_year(reference):
-    """The year the reference list prints, and the letter after it if any.
+    """The year to compare, the letter after it, where it came from, and the
+    year the ingest's own field gave where that field disagrees with the page.
 
     ``(2020a)`` and ``(2020b)`` are two different references by one author in
     one year, and the letter is the only thing that tells them apart. It is
     printed in the year field in some styles and only in the raw string in
     others, so both are read.
+
+    The ingest's year field is not always the year the page prints. A reader
+    that cut ``240:151882`` out of an entry printing ``(2022)`` filed 1882, and
+    one that swept up a page footer filed the footer's year — and each was then
+    reported as the paper printing a year its own indexed record disagrees
+    with, which is a finding about the reader and not about the authors. So
+    where the reference text prints a year of its own and the field disagrees
+    with it, the page's year is the one compared and the field's is kept beside
+    it as the reader's.
     """
     year = squeeze(reference.get('year'))
     base = re.sub(r'\D', '', year)[:4]
-    if len(base) != 4:
-        return None, None
-    match = re.search(re.escape(base) + r'\s*([a-z])\b', year)
+    base = base if len(base) == 4 else None
+    printed = page_year(reference.get('raw'))
+    if base and printed and printed != base:
+        chosen, source, reader = printed, 'raw', base
+    elif base:
+        chosen, source, reader = base, 'reference', None
+    else:
+        return None, None, None, None
+    match = re.search(re.escape(chosen) + r'\s*([a-z])\b', year)
     if match:
-        return base, match.group(1)
+        return chosen, match.group(1), source, reader
     for found in _YEAR_SUFFIX.finditer(squeeze(reference.get('raw'))):
-        if found.group(1) == base:
-            return base, found.group(2)
-    return base, None
+        if found.group(1) == chosen:
+            return chosen, found.group(2), source, reader
+    return chosen, None, source, reader
 
 
 # -- stage 1: fill ----------------------------------------------------------
@@ -944,7 +991,7 @@ def _by_author_year(references):
     for reference in references:
         author = surname(reference.get('first_author')) or _printed_from_raw(
             reference.get('raw'))[0]
-        year, suffix = _printed_year(reference)
+        year, suffix, _, _ = _printed_year(reference)
         if not author or not year:
             continue
         if suffix:
@@ -963,7 +1010,7 @@ def reference_rows(paper):
         if not identifier:
             continue
         author, title, venue = _printed_from_raw(reference.get('raw'))
-        year, suffix = _printed_year(reference)
+        year, suffix, year_from, reader_year = _printed_year(reference)
         given_author = surname(reference.get('first_author'))
         given_title = squeeze(reference.get('title')) or None
         given_venue = squeeze(reference.get('venue') or reference.get('journal')) or None
@@ -986,6 +1033,10 @@ def reference_rows(paper):
                 'title': given_title or title,
                 'year': year,
                 'year_suffix': suffix,
+                # The ingest's year field where the reference text prints a
+                # different year, so a report can say which of the two was
+                # compared and that the other one is the reader's.
+                'reader_year': reader_year,
                 'first_author': given_author or author,
                 'venue': given_venue or venue,
                 'doi': field_doi or raw_doi,
@@ -997,7 +1048,7 @@ def reference_rows(paper):
                 # the cited work. An unsure extraction is "not compared".
                 'extracted': {
                     'title': 'reference' if given_title else ('raw' if title else None),
-                    'year': 'reference' if year else None,
+                    'year': year_from,
                     'first_author': ('reference' if given_author
                                      else ('raw' if author else None)),
                     'venue': ('reference' if given_venue else ('raw' if venue else None)),
@@ -3788,8 +3839,19 @@ def reference_problem(row):
     if resolution.get('retracted'):
         reasons.append('the resolved work is retracted')
     if resolution.get('mismatched'):
-        reasons.append('printed ' + ', '.join(resolution['mismatched'])
-                       + ' differs from the indexed record')
+        reason = ('printed ' + ', '.join(resolution['mismatched'])
+                  + ' differs from the indexed record')
+        # A record year *earlier* than the printed year is the shape an
+        # online-first reference makes: the work appeared online in the year
+        # the index holds and in an issue in the year the page cites. One year
+        # of that is already the same year to :func:`_year_same`, but a journal
+        # can sit on an accepted paper for longer than that, so where the gap
+        # is wider the row stays a finding and names the cause to rule out.
+        if 'year' in resolution['mismatched'] and _earlier_record_year(row):
+            reason += (' — the record year is earlier than the printed one, which is what a '
+                       'work cited by its issue year and indexed by its online-first year '
+                       'looks like, so check the issue the page cites before reporting it')
+        reasons.append(reason)
     if resolution.get('printed_doi_registered') is False and resolution.get('exists') != 'no':
         if resolution.get('repaired_doi'):
             reasons.append('the DOI in the reference row is cut short — the page prints '
@@ -3809,7 +3871,27 @@ def reference_problem(row):
         reasons.append('a near-title work was found but nothing corroborates it as this one')
     if resolution.get('error'):
         reasons.append('looking it up failed inside the ledger: ' + str(resolution['error']))
+    # Only where the row is already a problem: a row whose page year agrees
+    # with its record is not one, and adding every reader slip to the
+    # specialist's work list would bury the rows that need reading. Where the
+    # row is on the list anyway, which of the two years was compared is part of
+    # reading it.
+    printed = row.get('printed') or {}
+    if reasons and printed.get('reader_year'):
+        reasons.append('the year in the reference row, ' + str(printed['reader_year'])
+                       + ', is not the year the reference text prints, '
+                       + str(printed.get('year')) + ': the printed year is the one compared')
     return joined(reasons)
+
+
+def _earlier_record_year(row):
+    """Whether the resolved record's year is earlier than the printed year."""
+    resolution, printed = row.get('resolution') or {}, row.get('printed') or {}
+    mine = re.sub(r'\D', '', str(printed.get('year') or ''))[:4]
+    theirs = re.sub(r'\D', '', str((resolution.get('record') or {}).get('year') or ''))[:4]
+    if len(mine) != 4 or len(theirs) != 4:
+        return False
+    return int(theirs) < int(mine)
 
 
 def use_problem(row):

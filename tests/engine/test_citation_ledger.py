@@ -643,6 +643,121 @@ def test_a_real_doi_with_the_wrong_year_resolves_and_mismatches(tmp_path):
     assert 'year' in flagged['references'][0]['mismatched']
 
 
+def test_the_year_the_page_prints_is_compared_not_the_one_the_reader_filed(tmp_path):
+    """A reader that filed a DOI's digits as the year is not the paper's error.
+
+    ``10.1016/j.aanat.2021.151882`` ends in an article number, and the reader
+    that cut ``240:151882`` out of this entry filed 1882 as the year. The entry
+    itself prints ``(2022)``, the record says 2021, and those are the same
+    publication year to within the online-first gap — so the row is not a
+    finding, and the reader's 1882 stays beside the printed year instead of
+    being asserted against the authors.
+    """
+    reference = {'id': 'r1', 'label': '1', 'title': TITLE, 'year': '1882',
+                 'first_author': 'Lin, M.', 'doi': '10.1234/replay',
+                 'venue': 'Journal of Neuroscience',
+                 'raw': '1. Lin M (2022) ' + TITLE + '. Ann Anat Anz 240:151882. '
+                        'https://doi.org/10.1016/j.aanat.2021.151882'}
+    ledger = filled(tmp_path, [reference])
+    printed = {row['row_id']: row for row in ledger.rows()}['ref:r1']['printed']
+    assert (printed['year'], printed['reader_year']) == ('2022', '1882')
+    assert printed['extracted']['year'] == 'raw'
+    net = Net([('/works/10.1234', crossref_work('10.1234/replay', TITLE, '2021')),
+               ('DOI%3A', europepmc([]))])
+    cl.resolve(ledger, lookups(tmp_path, net))
+    row = {one['row_id']: one for one in ledger.rows()}['ref:r1']
+    assert row['resolution']['matches']['year'] is True
+    assert row['resolution']['mismatched'] == []
+    assert cl.reference_problem(row) == ''
+
+
+def test_a_year_the_text_layer_broke_reads_and_a_running_footer_does_not(tmp_path):
+    """The leftmost year of the two unambiguous shapes, space inside it or not.
+
+    This is a reference as a two-column PDF hands it over: the year printed in
+    front of the volume with a space dropped into it, and a page footer from
+    the citing paper swept up behind it. The reader filed the footer's year.
+    """
+    reference = {'id': 'r1', 'label': '27', 'title': TITLE, 'year': '2024',
+                 'first_author': 'Lin, M.',
+                 'raw': '27. Lin M, et al. ' + TITLE + '. Science. 201 7;356(6340):eaal3321 . '
+                        'H amoud et al. Cell Communication and Signaling (2024) 22:501'}
+    ledger = filled(tmp_path, [reference])
+    printed = {row['row_id']: row for row in ledger.rows()}['ref:r1']['printed']
+    assert (printed['year'], printed['reader_year']) == ('2017', '2024')
+    assert printed['extracted']['year'] == 'raw'
+
+
+def test_a_doi_is_never_read_as_the_year_and_a_bare_year_is_not_one_either():
+    """What the page-year reader refuses to read, which is most of a reference.
+
+    A DOI, a URL, a volume, an issue and a page range all carry four digits,
+    and a year printed bare at the end of an entry cannot be told from any of
+    them — so only brackets and the volume's punctuation count, and a reference
+    whose printed year the reader cannot place keeps the ingest's own field.
+    """
+    assert cl.page_year('J. Chem. Pharmacol. Res. 8 (2), 1-6. '
+                        'https://doi.org/10.1016/j.crgsc.2021.100195 (2016).') == '2016'
+    assert cl.page_year('S. Afr. J. Chem. Eng. 47 (1), 136-141. '
+                        'https://doi.org/10.1016/j.jallcom.2022.164300') is None
+    assert cl.page_year('1. Lin M. ' + TITLE + '. Journal of Neuroscience, 2019.') is None
+    # The page prints what the field says: nothing changes, and the row still
+    # says the year is the paper's own rather than this module's reading.
+    agreeing = {'year': '2016', 'raw': '54. Jain P. Phytochemical analysis. J. Chem. 8 (2), '
+                                       '1-6. https://doi.org/10.1016/j.crgsc.2021.100195 (2016).'}
+    assert cl._printed_year(agreeing) == ('2016', None, 'reference', None)
+    # And the letter that tells 2022a from 2022b is read off the year the page
+    # prints, not off the one the reader filed.
+    lettered = {'year': '1882', 'raw': 'Lin M (2022a) ' + TITLE + '. Ann Anat Anz 240:151882.'}
+    assert cl._printed_year(lettered) == ('2022', 'a', 'raw', '1882')
+
+
+def test_an_online_first_year_is_named_where_the_record_is_the_earlier_one(tmp_path):
+    """The one-year tolerance does not stretch, so the wider gap says its cause.
+
+    A record year earlier than the printed year is what a work cited by its
+    issue year and indexed by its online-first year looks like. Three years of
+    it is still a finding — the tolerance stays at one — but the row has to
+    name the cause a specialist must rule out before writing anything.
+    """
+    earlier = filled(tmp_path / 'earlier')
+    cl.resolve(earlier, lookups(tmp_path / 'earlier', Net(
+        [('/works/10.1234', crossref_work('10.1234/replay', TITLE, '2015')),
+         ('DOI%3A', europepmc([]))])))
+    row = {one['row_id']: one for one in earlier.rows()}['ref:r1']
+    assert row['resolution']['mismatched'] == ['year']
+    assert 'online-first year' in cl.reference_problem(row)
+
+    later = filled(tmp_path / 'later')
+    cl.resolve(later, lookups(tmp_path / 'later', Net(
+        [('/works/10.1234', crossref_work('10.1234/replay', TITLE, '2023')),
+         ('DOI%3A', europepmc([]))])))
+    row = {one['row_id']: one for one in later.rows()}['ref:r1']
+    assert row['resolution']['mismatched'] == ['year']
+    assert 'online-first' not in cl.reference_problem(row)
+
+
+def test_the_reader_s_year_is_named_on_a_row_that_is_a_problem_anyway(tmp_path):
+    """Which of the two years was compared is part of reading a flagged row.
+
+    The page prints 2022, the reader filed 1882, and the record says 2015: the
+    row is a finding on the page's own year, and it says so rather than leaving
+    a specialist to wonder which year the table compared.
+    """
+    reference = {'id': 'r1', 'label': '1', 'title': TITLE, 'year': '1882',
+                 'first_author': 'Lin, M.', 'doi': '10.1234/replay',
+                 'raw': '1. Lin M (2022) ' + TITLE + '. Ann Anat Anz 240:151882.'}
+    ledger = filled(tmp_path, [reference])
+    cl.resolve(ledger, lookups(tmp_path, Net(
+        [('/works/10.1234', crossref_work('10.1234/replay', TITLE, '2015')),
+         ('DOI%3A', europepmc([]))])))
+    row = {one['row_id']: one for one in ledger.rows()}['ref:r1']
+    problem = cl.reference_problem(row)
+    assert 'the year in the reference row, 1882, is not the year the reference text prints' \
+        in problem
+    assert '2022: the printed year is the one compared' in problem
+
+
 def test_a_lookup_that_never_answered_is_could_not_check_and_never_not_found(tmp_path):
     """A failed lookup says nothing about whether a paper exists.
 

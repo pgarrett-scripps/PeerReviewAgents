@@ -112,6 +112,18 @@ and how many there were, so a reader can tell a spot-check from a wave-through.
   Without it, the rejoined DOI was tried and did not land. Either way the row
   cannot be `no`, and the note names the DOI the page prints. Check it in the
   PDF with `read_blocks` before you write anything about that reference.
+- `reader_year` on a row means the year in the reference row is not the year the
+  reference text prints, and the page's year is the one that was compared. A
+  reader that cut an article number out of an entry — `240:151882` out of one
+  printing `(2022)` — files 1882 as the year, and "this paper printed 1882" is a
+  finding about the reader. The row names both years and says which it used, so
+  **check the year in the PDF before writing about it** either way.
+- Where a year mismatch stands and the **record's** year is the earlier one, the
+  row says so: that is the shape of a work cited by its issue year and indexed
+  by its online-first year. A gap of one year is already the same year to this
+  table, so a row that survives is a wider gap than online-first usually
+  explains — but not one it cannot, and the issue the page cites is what settles
+  it.
 - `exists: "not located"` means an index answered and listed nothing. It is
   weak evidence, not a missing reference: books, chapters, theses, standards,
   software and preprints outside Crossref and Europe PMC land here while being
