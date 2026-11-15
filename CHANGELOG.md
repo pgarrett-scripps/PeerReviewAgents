@@ -9,8 +9,9 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-The five faults the SPOT re-run on 0.9.0 found, fixed. See
-[`docs/SPOT_0.9.0.md`](docs/SPOT_0.9.0.md) for the run they come from.
+The five faults the SPOT re-run on 0.9.0 found, fixed, plus one the fixes
+uncovered. See [`docs/SPOT_0.9.0.md`](docs/SPOT_0.9.0.md) for the run they come
+from.
 
 ### Fixed
 
@@ -162,9 +163,32 @@ The five faults the SPOT re-run on 0.9.0 found, fixed. See
     **0 to 75**, and references with some source text from 153 to 203. Of the
     269 uses that could not be judged, 87 now have evidence that did not exist
     — 62 that had nothing now have an abstract or a body, and 25 more that had
-    only an abstract now have the body as well — while 182 still have nothing
-    to judge against. Engineering reference lists stay the hard case:
+    only an abstract now have the body as well — while 182 have nothing new:
+    151 of those have no source text at all and 31 have the abstract they
+    already had. Engineering reference lists stay the hard case:
     beamforming's 25 IEEE references yield one abstract and no body.
+- **A year the reference reader got wrong was reported as a year the paper
+  printed wrong.** The ingest's `year` field is not always the year the page
+  prints: a reader that cut `240:151882` out of an entry printing `(2022)`
+  filed 1882, and one that swept a page footer into the entry filed the
+  footer's 2024 over a reference printing `Science. 201 7;356` — and both rows
+  came out of the table as the paper printing a year its own indexed record
+  disagrees with. The ledger now reads the year the reference text itself
+  prints, in the two shapes that say plainly that the number is a year — in
+  brackets, and in front of the volume's punctuation, a space inside it or not
+  — with URLs, DOIs and article numbers taken out first and the leftmost year
+  winning, so a footer behind the entry cannot outrank it. Where that year and
+  the field disagree, the page's year is the one compared, the field's is kept
+  on the row as `reader_year`, and a row flagged for any other reason says
+  which of the two it used. The one-year tolerance is unchanged: a record year
+  *earlier* than the printed one is what a work cited by its issue year and
+  indexed by its online-first year looks like, so a mismatch that stands now
+  names that as the cause to rule out. Offline over the same 325 reference
+  rows, year mismatches go from 5 to 3: cgrp r16 (1882 against a record of
+  2021) and dark-kinome r27 (2024 against 2017) were the reader and are gone,
+  while photocatalytic r40 and r54 — whose reference text prints a DOI
+  belonging to another paper — and oxytetracycline r72, printed 2018 against a
+  record of 2015, stay findings.
 
 ## [0.9.0] — 2026-11-14
 
