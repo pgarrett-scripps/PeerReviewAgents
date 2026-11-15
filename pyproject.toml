@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "peerreviewagents"
-version = "0.9.0"
+version = "0.9.1"
 description = "Evidence-linked peer review of a manuscript PDF, on a coding-agent subscription"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"
@@ -57,7 +57,7 @@ dependencies = [
     # Pinned exactly: peerreviewagents.engine records the converter version in
     # every run manifest and compares it when resuming, so a floating minor
     # would invalidate in-flight runs.
-    "rustypaper==0.2.3",
+    "rustypaper==0.2.4",
     # peerreviewagents.engine runtime: Pillow renders the page images the
     # importer attaches to a review.
     "Pillow>=10",
