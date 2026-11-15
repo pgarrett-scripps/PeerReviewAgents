@@ -18,6 +18,13 @@ HOSTS = {'api.crossref.org', 'api.datacite.org', 'www.ebi.ac.uk', 'rest.uniprot.
 # `citation_ledger.doi_handle_url`.
 HOSTS.add('doi.org')
 HOSTS.update({'rest.ensembl.org', 'reactome.org', 'cmr.earthdata.nasa.gov', 'api.worldbank.org'})
+# Where a cited work's own words come from when Europe PMC has none: PubMed
+# Central's copy of the same open-access article, and arXiv's abstract for the
+# preprint literature neither metadata index carries one for. See
+# `citation_ledger.PMC_FETCH` and `citation_ledger.ARXIV_SEARCH`. Both are
+# free, keyless public APIs, and neither is asked for anything but a public
+# identifier or a printed title.
+HOSTS.update({'eutils.ncbi.nlm.nih.gov', 'export.arxiv.org'})
 
 #: How this software names itself to a public API. Generic on purpose: a request
 #: a reviewer's tool makes says what the software is and nothing about whose

@@ -123,6 +123,48 @@ The five faults the SPOT re-run on 0.9.0 found, fixed. See
     registered, with no record and a note that the printed authors could not be
     corroborated because no index this version reads holds its metadata. The
     corroboration rule for *taking* a record is unchanged.
+- **269 of 434 citation uses were `cannot tell` because no source text was ever
+  fetched.** 0.9.0 asked Europe PMC for an abstract and nothing else, so 153 of
+  325 references carried an abstract, **none** carried full text, and the
+  largest single category of verdict was "no evidence to judge against" — a
+  review that reads as if it checked a reference list while two thirds of it
+  was never read. The resolver now tries four sources in order and stops at the
+  first article body it gets: Europe PMC's `fullTextXML` where the record is
+  open access, PubMed Central for a PMCID Europe PMC named, arXiv by DOI and
+  then by printed title, and the abstract from whichever of them answered.
+  - **Full text means the article's `<body>`.** Both archive legs keep the
+    `<body>` of the JATS answer and drop the front matter, because an archive
+    that holds only metadata still answers `fullTextXML` with a document, and
+    storing that would record "rests on full text" about a reference whose text
+    nobody has. It also keeps the title, authors and affiliations out of the
+    stored text, where they were scoring as the passage a citing sentence
+    pointed at.
+  - **No publisher pages and no PDFs.** An open-access link on a Crossref
+    record usually leads to an HTML landing page or a PDF behind a paywall, and
+    a link followed is not a text extracted, so such a reference is counted
+    honestly as having no full text.
+  - **The worker is shown passages, not the article.** A body can run past a
+    megabyte, far more than a verdict agent should read, so the judge is given
+    the abstract plus up to three 1,200-character windows of the body chosen by
+    the content words of the citing sentence itself — snapped to sentence
+    boundaries, joined by a visible gap so a quote cannot be reassembled across
+    one, and falling back to the body's opening only when the sentence shares
+    no content word with it. The use row records the windows' offsets and a
+    `passage_rule` naming which of the two rules chose them, so "rests on full
+    text" can be checked against the passage it rested on.
+  - Each reference gets at most four source fetches and 2 MB, both recorded on
+    the row, and every request is a public identifier or a printed title sent
+    to a free keyless API under a generic client name. The ledger counts
+    `with_abstract` and `with_full_text` separately, because one number for
+    both reads as if every reference had been read.
+  - Replayed live over the same 325 reference rows, with no model and no run
+    re-done: abstracts go from 153 to 201, open-access article bodies from
+    **0 to 75**, and references with some source text from 153 to 203. Of the
+    269 uses that could not be judged, 87 now have evidence that did not exist
+    — 62 that had nothing now have an abstract or a body, and 25 more that had
+    only an abstract now have the body as well — while 182 still have nothing
+    to judge against. Engineering reference lists stay the hard case:
+    beamforming's 25 IEEE references yield one abstract and no body.
 
 ## [0.9.0] — 2026-11-14
 

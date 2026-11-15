@@ -35,9 +35,9 @@ much of it could not be checked, and leave the rest alone.
   indexed record, a retracted work, a marker that matches no entry in the
   reference list, and every use a worker read as *does not support* or *partly
   supports*. This is your work list.
-- `unverified` — the uses nobody could judge, because there was no abstract or
-  full text to judge against. These are not findings. They are the part of the
-  reference list this run did not manage to check.
+- `unverified` — the uses nobody could judge, because there was no abstract and
+  no open-access article body to judge against. These are not findings. They
+  are the part of the reference list this run did not manage to check.
 - `supported` — every use a worker read as *supports*, with the passage it
   quoted. Not a work list, a sample to spot-check: see below.
 - `row` with a `row_id` — one row in full, with the source text, so you can
@@ -127,6 +127,14 @@ and how many there were, so a reader can tell a spot-check from a wave-through.
   treats it as a missing reference is wrong. Report it as unchecked.
 - `cannot tell` on a use row means the same thing one level down: no source
   text, so no judgement. Not a finding.
+- A verdict that *was* made rested on what the row says it rested on. Where
+  there is an article body, the worker was not shown all of it: it was shown
+  the abstract plus a few windows of the body chosen by the citing sentence's
+  own words, and `passage_rule` on the use row names which rule picked them —
+  the sentence's words, or the opening of the body when the sentence shared
+  none of them. The second case is weaker evidence than the first, and a
+  write-up that leans on such a verdict should say the passage was not chosen
+  by the sentence.
 
 ## What else you audit
 

@@ -57,6 +57,7 @@ from __future__ import annotations
 import contextlib
 import datetime
 import difflib
+import html
 import json
 import math
 import re
@@ -184,6 +185,19 @@ MAX_LOOKUPS = 5_000
 SOURCE_TEXT_LIMIT = 6_000
 #: How much full text the ledger stores for a reference.
 FULL_TEXT_LIMIT = 40_000
+#: How many characters of full text one passage is, and how many passages one
+#: use row gets. Three windows of this size fit inside
+#: :data:`SOURCE_TEXT_LIMIT` beside an abstract, and a window is wide enough to
+#: carry the sentence the citing sentence points at together with the sentences
+#: that qualify it — a result stripped of the hedge around it is how a worker
+#: reads a qualified finding as a flat one.
+PASSAGE_WINDOW = 1_200
+PASSAGE_WINDOWS = 3
+#: How many source fetches one reference may spend looking for text to judge
+#: against: the Europe PMC record, its open-access full text, the same article
+#: at PubMed Central, and arXiv. A reference list is long and none of this is
+#: worth a second round.
+SOURCE_FETCHES = 4
 #: How much of a reference's raw string is kept in its row.
 RAW_LIMIT = 1_200
 #: Similarity above which two titles are the same work, and two venues the same
@@ -209,6 +223,15 @@ HANDLE_FOUND = (1, 200)
 HANDLE_NOT_FOUND = 100
 EUROPEPMC_SEARCH = 'https://www.ebi.ac.uk/europepmc/webservices/rest/search?'
 EUROPEPMC_FULL_TEXT = 'https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTextXML'
+#: PubMed Central's own copy of an article, asked for only where Europe PMC's
+#: mirror of it did not answer. Both hold the same open-access archive and
+#: either may be the one that is reachable.
+PMC_FETCH = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?'
+#: arXiv's API. A preprint's abstract is often the only source text a
+#: physics, mathematics or computer-science reference has: neither Crossref nor
+#: Europe PMC holds one, and the paper itself is a PDF this version does not
+#: read.
+ARXIV_SEARCH = 'https://export.arxiv.org/api/query?'
 
 #: A DOI in running text. Brackets are *inside* the match because a DOI suffix
 #: may hold them — every Lancet DOI does, ``10.1016/S0140-6736(20)30183-5`` —
@@ -230,6 +253,10 @@ _DOI_TAIL = re.compile(r'^([./\-_]?)[ \t]+([0-9A-Za-z][0-9A-Za-z./_()-]*)')
 REPAIR_TOKENS = 3
 #: What a Europe PMC full-text identifier looks like, for the same reason.
 _PMCID = re.compile(r'^PMC\d{1,12}$', re.IGNORECASE)
+#: A DOI arXiv registered itself, and the arXiv identifier inside it.
+_ARXIV_DOI = re.compile(r'^10\.48550/arxiv\.([0-9A-Za-z./-]{4,40})$', re.IGNORECASE)
+#: One hit in an arXiv Atom feed. See :func:`_arxiv_records`.
+_ARXIV_ENTRY = re.compile(r'<entry\b.*?</entry>', re.DOTALL)
 #: Initials, printed either side of a family name: ``JA``, ``J.A.``, ``J. A.``
 _INITIALS = re.compile(r'^(?:[A-Z]\.?){1,3}$')
 #: One word in an author block: a family name, possibly hyphenated or
@@ -347,7 +374,32 @@ _SPACE = re.compile(r'\s+')
 #: Block kinds whose text is prose a citation can sit in.
 PROSE_KINDS = ('paragraph', 'heading', 'caption', 'abstract', 'list', 'quote', 'text')
 #: The headings this module writes above the source text it hands a worker.
-SOURCE_LABELS = ('ABSTRACT', 'FULL TEXT (opening)')
+SOURCE_LABELS = ('ABSTRACT', 'FULL TEXT (opening)',
+                 'FULL TEXT (the passages this sentence points at)')
+#: What stands between two passages taken from different parts of one full
+#: text. It is left in the text a quotation is checked against on purpose: a
+#: passage quoted across the gap is two places in the paper read as one
+#: sentence, and it should fail.
+PASSAGE_GAP = '\n[…]\n'
+#: Words that carry no subject matter, so sharing one says nothing about which
+#: part of a paper a citing sentence is pointing at. Short words are dropped by
+#: length; these are the long ones that are everywhere in scientific prose.
+_COMMON_WORDS = frozenset((
+    'about', 'above', 'after', 'again', 'against', 'all', 'almost', 'also', 'although', 'among',
+    'analysis', 'and', 'another', 'any', 'approach', 'are', 'article', 'because', 'been',
+    'before', 'being', 'below', 'besides', 'between', 'both', 'but', 'can', 'cannot', 'could',
+    'data', 'did', 'different', 'does', 'during', 'each', 'either', 'etal', 'every', 'figure',
+    'first', 'from', 'further', 'given', 'has', 'have', 'here', 'high', 'higher', 'how',
+    'however', 'including', 'into', 'its', 'itself', 'large', 'less', 'like', 'low', 'lower',
+    'made', 'main', 'major', 'many', 'may', 'method', 'methods', 'might', 'more', 'most', 'much',
+    'must', 'new', 'not', 'number', 'observed', 'often', 'one', 'only', 'other', 'others', 'our',
+    'over', 'paper', 'possible', 'present', 'previous', 'provide', 'reported', 'respectively',
+    'result', 'results', 'same', 'see', 'several', 'shown', 'shows', 'significant', 'significantly',
+    'similar', 'since', 'some', 'studies', 'study', 'such', 'suggest', 'table', 'than', 'that',
+    'the', 'their', 'them', 'then', 'there', 'therefore', 'these', 'they', 'this', 'those',
+    'three', 'through', 'thus', 'two', 'under', 'use', 'used', 'using', 'various', 'very', 'was',
+    'well', 'were', 'what', 'when', 'where', 'whether', 'which', 'while', 'who', 'will', 'with',
+    'within', 'without', 'work', 'would', 'year', 'years'))
 #: What every reader of this table is told about the text in it. Abstracts,
 #: titles and manuscript sentences are quoted material to judge: a sentence in
 #: one of them that reads like an instruction is part of the thing being
@@ -1725,6 +1777,96 @@ def europepmc_doi_url(doi):
                                          'format': 'json', 'resultType': 'core', 'pageSize': 1})
 
 
+def pmc_full_text_url(pmcid):
+    """PubMed Central's own copy of one open-access article, as XML."""
+    body = squeeze(pmcid).upper()
+    if not _PMCID.match(body):
+        raise ValueError('A PubMed Central full text needs a PMC identifier')
+    return PMC_FETCH + urlencode({'db': 'pmc', 'id': body, 'rettype': 'xml', 'retmode': 'xml'})
+
+
+def arxiv_id_url(doi):
+    """The arXiv entry for a DOI arXiv itself registered, or ``None``.
+
+    arXiv's API searches titles, authors and abstracts and has no DOI field, so
+    the only DOI it can be asked about is its own: ``10.48550/arXiv.2301.01234``
+    carries the identifier the API does take. Every other DOI goes by title.
+    """
+    found = _ARXIV_DOI.match(squeeze(doi))
+    if not found:
+        return None
+    return ARXIV_SEARCH + urlencode({'id_list': found.group(1), 'max_results': 1})
+
+
+def arxiv_title_url(title):
+    """An arXiv title search, with the punctuation its query parser chokes on gone."""
+    query = normal(title)[:200].strip()
+    if len(query) < MIN_SEARCH_TITLE:
+        raise ValueError('An arXiv search needs the title the paper printed')
+    return ARXIV_SEARCH + urlencode({'search_query': 'ti:"' + query + '"', 'max_results': 3})
+
+
+def _xml_text(tag, body):
+    """The text of the first ``tag`` element in ``body``, unescaped."""
+    found = re.search(r'<' + tag + r'\b[^>]*>(.*?)</' + tag + r'>', body, re.DOTALL)
+    if not found:
+        return None
+    return squeeze(html.unescape(_TAGS.sub(' ', found.group(1)))) or None
+
+
+def _archive_body(text):
+    """The article body in an open-access archive's JATS answer, or ``None``.
+
+    Only the ``<body>``, and the same rule for both mirrors. An answer for an
+    article whose licence does not allow redistribution is still a 200: it
+    carries the front matter — title, authors, journal, sometimes the abstract
+    — and no body at all. Reading that as full text would record "rests on full
+    text" about a row the archive never gave the text of, which is the one
+    thing this field must not say. It also kept the authors and affiliations
+    out of the stored text, where they were scoring as passages a citing
+    sentence pointed at.
+    """
+    body = str(text or '')
+    found = re.search(r'<body\b[^>]*>(.*?)</body>', body, re.DOTALL)
+    if not found:
+        return None
+    return strip_markup(found.group(1), FULL_TEXT_LIMIT) or None
+
+
+def _arxiv_records(text):
+    """The entries in an arXiv answer as records the comparison reads.
+
+    The feed is parsed by pattern rather than by an XML parser on purpose: this
+    is a third party's document and the module already reads JATS the same way.
+    Only the fields inside an ``<entry>`` are read, because the feed's own
+    ``<title>`` is the query echoed back and reading it as a hit matched every
+    search against itself.
+    """
+    out = []
+    for found in _ARXIV_ENTRY.finditer(str(text or '')):
+        entry = found.group(0)
+        title = _xml_text('title', entry)
+        if not title:
+            continue
+        identifier = _xml_text('id', entry) or ''
+        arxiv_id = (identifier.rsplit('/abs/', 1)[-1] or None) if '/abs/' in identifier else None
+        out.append({
+            'doi': squeeze(_xml_text('arxiv:doi', entry)).casefold() or (
+                '10.48550/arxiv.' + arxiv_id.split('v')[0] if arxiv_id else None),
+            'pmcid': None,
+            'title': title,
+            'first_author': surname(_xml_text('name', entry)),
+            'year': (squeeze(_xml_text('published', entry)) or '')[:4] or None,
+            'venue': 'arXiv',
+            'abstract': squeeze(_xml_text('summary', entry), FULL_TEXT_LIMIT) or None,
+            'open_access': True,
+            'retracted': False,
+            'retraction_notice': None,
+            'is_notice': False,
+        })
+    return out
+
+
 def _crossref_message(answer):
     """One Crossref work answer's ``message``, or ``None`` if it is not one.
 
@@ -2240,22 +2382,87 @@ def _best(printed, candidates):
             'corroborated_by': corroboration}, None
 
 
-def _abstract_and_text(lookups, record, resolution):
-    """The abstract and any open-access full text for a resolved record."""
+def _source_fetch(lookups, url, resolution, spent, json_body=True):
+    """One fetch for source text, counted against this reference's allowance.
+
+    The allowance is per reference, not per run: a reference whose abstract is
+    nowhere must not be able to spend the run's remaining lookups searching for
+    it, and the run-wide budget :class:`Lookups` keeps cannot tell the
+    difference between forty references asking once and one asking forty times.
+    """
+    if spent['count'] >= SOURCE_FETCHES:
+        resolution['requests'].append({'url': url, 'status': 'source_budget'})
+        return {'status': 'source_budget', 'source_url': url}
+    spent['count'] += 1
+    answer = lookups.fetch(url, json_body=json_body)
+    resolution['requests'].append({'url': url, 'status': answer.get('status')})
+    return answer
+
+
+def _arxiv_abstract(lookups, printed, record, resolution, spent):
+    """``(abstract, url)`` from arXiv for a record no index holds one for.
+
+    The same corroboration every search hit faces: the title has to match and
+    the first author has to agree, because an abstract is what every verdict
+    about this reference is then judged against, and arXiv answers a title
+    query with its nearest neighbours like any other index. An arXiv-registered
+    DOI skips that — the paper named the record itself — and goes by
+    identifier.
+    """
+    doi = squeeze(record.get('doi'))
+    url = arxiv_id_url(doi) if doi else None
+    if url:
+        answer = _source_fetch(lookups, url, resolution, spent, json_body=False)
+        if answer.get('status') == 'ok':
+            found = _arxiv_records(answer.get('text'))
+            if found and found[0].get('abstract'):
+                return found[0]['abstract'], url
+        return None, None
+    title = record.get('title') or printed.get('title')
+    if not searchable(title) or len(normal(title)) < MIN_SEARCH_TITLE:
+        return None, None
+    url = arxiv_title_url(title)
+    answer = _source_fetch(lookups, url, resolution, spent, json_body=False)
+    if answer.get('status') != 'ok':
+        return None, None
+    taken, _ = _best({**printed, 'title': title}, _arxiv_records(answer.get('text')))
+    if not taken or not taken.get('abstract'):
+        return None, None
+    return taken['abstract'], url
+
+
+def _abstract_and_text(lookups, printed, record, resolution):
+    """The abstract and any open-access full text for a resolved record.
+
+    Four sources, in the order of how much they are worth and how sure the
+    text is the cited work's: the record the resolver already has, Europe PMC
+    for the article and its open-access full text, PubMed Central for the same
+    article where Europe PMC's copy did not answer, and arXiv for a preprint
+    neither index holds an abstract for. Everything free and keyless; nothing
+    is sent but a public identifier or the printed title, and the client names
+    the software and not the person running it.
+
+    The leg that is deliberately missing: the publisher link a Crossref record
+    often carries. Those are arbitrary hosts, the URL comes out of a PDF this
+    module did not write, and the answer is usually a paywall page or a PDF —
+    so following them would mean fetching attacker-influenced URLs off the
+    allowlist to extract, most of the time, nothing. A row with no text says
+    so instead.
+    """
     abstract, source = record.get('abstract'), None
     pmcid, open_access = record.get('pmcid'), record.get('open_access')
     doi = clean_doi(record.get('doi'))
+    spent = {'count': 0}
     if (not abstract or not pmcid) and doi:
         url = europepmc_doi_url(doi)
-        answer = lookups.fetch(url)
-        resolution['requests'].append({'url': url, 'status': answer.get('status')})
+        answer = _source_fetch(lookups, url, resolution, spent)
         hits = _europepmc_hits(answer, doi, 1) if answer.get('status') == 'ok' else None
         if hits:
             found = _europepmc_record(hits[0])
-            abstract = abstract or found.get('abstract')
+            if found.get('abstract') and not abstract:
+                abstract, source = found['abstract'], url
             pmcid = pmcid or found.get('pmcid')
             open_access = open_access or found.get('open_access')
-            source = url
             if found.get('retracted') and not resolution.get('retracted'):
                 resolution['retracted'] = True
                 resolution['retraction_notice'] = found.get('retraction_notice')
@@ -2263,13 +2470,22 @@ def _abstract_and_text(lookups, record, resolution):
     # The identifier goes into a URL path, so it is checked against what a
     # Europe PMC identifier looks like rather than trimmed to twenty characters
     # and pasted in.
-    if pmcid and open_access and _PMCID.match(squeeze(pmcid)):
-        url = EUROPEPMC_FULL_TEXT.format(pmcid=quote(squeeze(pmcid).upper(), safe=''))
-        answer = lookups.fetch(url, json_body=False)
-        resolution['requests'].append({'url': url, 'status': answer.get('status')})
-        if answer.get('status') == 'ok':
-            full_text = strip_markup(answer.get('text'), FULL_TEXT_LIMIT) or None
-            full_text_url = url
+    if pmcid and _PMCID.match(squeeze(pmcid)):
+        if open_access:
+            url = EUROPEPMC_FULL_TEXT.format(pmcid=quote(squeeze(pmcid).upper(), safe=''))
+            answer = _source_fetch(lookups, url, resolution, spent, json_body=False)
+            if answer.get('status') == 'ok':
+                full_text = _archive_body(answer.get('text'))
+                full_text_url = url if full_text else None
+        if not full_text:
+            url = pmc_full_text_url(pmcid)
+            answer = _source_fetch(lookups, url, resolution, spent, json_body=False)
+            if answer.get('status') == 'ok':
+                full_text = _archive_body(answer.get('text'))
+                full_text_url = url if full_text else None
+    if not abstract and not full_text:
+        abstract, arxiv_url = _arxiv_abstract(lookups, printed, record, resolution, spent)
+        source = arxiv_url if abstract else source
     return abstract, source, full_text, full_text_url
 
 
@@ -2741,7 +2957,7 @@ def resolve_reference(row, lookups):
     resolution['mismatched'] = [field for field, same in resolution['matches'].items()
                                 if same is False]
     abstract, abstract_url, full_text, full_text_url = _abstract_and_text(
-        lookups, record, resolution)
+        lookups, printed, record, resolution)
     resolution['abstract'] = abstract
     resolution['abstract_url'] = abstract_url or resolution.get('source_url')
     resolution['full_text'] = full_text
@@ -3107,8 +3323,97 @@ def resolve(ledger, lookups, limit=0, retry=True, wait=RETRY_WAIT_SECONDS, patie
 # -- stage 3: judge ---------------------------------------------------------
 
 
-def source_window(reference_row):
-    """The source text one use row shows a worker, and where it came from."""
+def _content_words(text):
+    """The words in one sentence that say what it is about."""
+    return {word for word in normal(text).split()
+            if len(word) >= 4 and word not in _COMMON_WORDS}
+
+
+def _snapped(body, start, end):
+    """One span moved to the nearest word boundaries inside it."""
+    if start > 0:
+        space = body.find(' ', start, min(end, start + 80))
+        start = space + 1 if space != -1 else start
+    if end < len(body):
+        space = body.rfind(' ', max(start, end - 80), end)
+        end = space if space != -1 else end
+    return start, max(end, start)
+
+
+def passages(full_text, sentence, room, width=PASSAGE_WINDOW, windows=PASSAGE_WINDOWS):
+    """``(spans, rule)``: which parts of a full text one citing sentence gets.
+
+    A paper is twenty to a hundred times longer than the source text a worker
+    is shown, so *which* part it is shown decides what it can possibly answer.
+    The opening of the full text — what this stage used to send — is the title,
+    the authors, the affiliations and the start of an introduction about other
+    people's work. A sentence citing a paper for its result was judged against
+    its introduction, and `cannot tell` was the honest verdict for a passage
+    that was never going to hold the answer.
+
+    So the citing sentence chooses. The full text is split into sentences, each
+    is scored by how many subject-matter words it shares with the citing
+    sentence, and the best few are returned as windows of ``width`` characters
+    centred on them — wide enough to carry the qualifications around a result,
+    which is the difference between a finding and a flat claim. The windows are
+    returned in document order, never overlapping, within ``room`` characters
+    in total. A citing sentence that shares nothing with the paper gets the
+    opening, and the rule says which of the two happened, so a verdict that
+    "rests on full text" names the passage it rested on.
+    """
+    body = squeeze(full_text)
+    if not body or room <= 0:
+        return [], None
+    room = min(room, len(body))
+    wanted = _content_words(sentence)
+    if not wanted:
+        return [_snapped(body, 0, room)], 'opening'
+    width = max(200, min(int(width), room))
+    scored, cursor = [], 0
+    for part in sentences(body):
+        found = body.find(part, cursor)
+        start = found if found >= 0 else cursor
+        cursor = start + len(part)
+        shared = len(wanted & _content_words(part))
+        if shared:
+            # Sorted by how much is shared, then by where it is: the earlier of
+            # two equally good passages, every time, so the same row and the
+            # same sentence always produce the same window and a verdict can be
+            # re-checked against the text it was actually judged from.
+            scored.append((-shared, start, len(part)))
+    if not scored:
+        return [_snapped(body, 0, room)], 'opening'
+    scored.sort()
+    spans = []
+    for _, start, length in scored:
+        middle = start + length // 2
+        span = (max(0, middle - width // 2), min(len(body), middle + width // 2))
+        if any(span[0] < done[1] and done[0] < span[1] for done in spans):
+            continue
+        spans.append(span)
+        if len(spans) >= max(1, int(windows)):
+            break
+    spans.sort()
+    out, used = [], 0
+    for start, end in spans:
+        if used >= room:
+            break
+        start, end = _snapped(body, start, min(end, start + (room - used)))
+        if end > start:
+            out.append((start, end))
+            used += end - start
+    return out, 'passages'
+
+
+def source_window(reference_row, sentence=None):
+    """The source text one use row shows a worker, and where it came from.
+
+    ``sentence`` is the citing sentence this source is being read for. It
+    chooses which passages of a full text are shown — see :func:`passages` —
+    and the same sentence always chooses the same ones, because
+    :func:`check_verdict` rebuilds this window to check the passage a worker
+    quoted against the text it was given.
+    """
     resolution = (reference_row or {}).get('resolution') or {}
     abstract = squeeze(resolution.get('abstract'))
     full_text = squeeze(resolution.get('full_text'))
@@ -3116,9 +3421,17 @@ def source_window(reference_row):
     if abstract:
         parts.append('ABSTRACT\n' + abstract)
         kinds.append('abstract')
-    room = SOURCE_TEXT_LIMIT - len(parts[0]) if parts else SOURCE_TEXT_LIMIT
-    if full_text and room > 400:
-        parts.append('FULL TEXT (opening)\n' + full_text[:room - 20])
+    # The room left over, less what the heading and the gaps between passages
+    # cost: a window computed against the whole allowance was then cut by the
+    # final truncation, and the cut landed mid-word in the last passage.
+    room = SOURCE_TEXT_LIMIT - (len(parts[0]) + 2 if parts else 0) - 60 - len(
+        PASSAGE_GAP) * PASSAGE_WINDOWS
+    spans, rule = passages(full_text, sentence, room) if full_text and room > 400 else ([], None)
+    if spans:
+        body = squeeze(full_text)
+        label = ('FULL TEXT (the passages this sentence points at)' if rule == 'passages'
+                 else 'FULL TEXT (opening)')
+        parts.append(label + '\n' + PASSAGE_GAP.join(body[start:end] for start, end in spans))
         kinds.append('full text')
     text = '\n\n'.join(parts)[:SOURCE_TEXT_LIMIT]
     return {
@@ -3129,8 +3442,28 @@ def source_window(reference_row):
         'source_kind': ' and '.join(kinds) or None,
         'source_url': resolution.get('full_text_url') or resolution.get(
             'abstract_url') or resolution.get('source_url'),
-        'truncated': bool(full_text) and len(full_text) > max(0, room - 20),
+        'truncated': bool(full_text) and sum(
+            end - start for start, end in spans) < len(squeeze(full_text)),
+        # Where in the stored full text the passages came from, and how they
+        # were chosen. On the row, so "this verdict rests on full text" can be
+        # read as the passage it rested on rather than taken on trust.
+        'passages': [{'start': start, 'end': end} for start, end in spans] or None,
+        'passage_rule': _passage_rule(rule, spans, sentence),
     }
+
+
+def _passage_rule(rule, spans, sentence):
+    """One sentence saying how the passages shown were chosen."""
+    if not spans or not rule:
+        return None
+    shown = sum(end - start for start, end in spans)
+    if rule == 'passages':
+        return (str(len(spans)) + (' passage' if len(spans) == 1 else ' passages') + ' of '
+                + str(shown) + ' characters in all, centred on the full-text sentences sharing '
+                'the most subject-matter words with the citing sentence, in document order')
+    return ('the opening ' + str(shown) + ' characters of the full text, because '
+            + ('no citing sentence was given' if not squeeze(sentence)
+               else 'the citing sentence shares no subject-matter word with it'))
 
 
 def source_body(window):
@@ -3214,7 +3547,7 @@ def batch(ledger, slot, size=10, stale_seconds=900):
         reference = references.get(row['reference_id']) or {}
         printed = reference.get('printed') or {}
         resolution = reference.get('resolution') or {}
-        window = source_window(reference)
+        window = source_window(reference, row.get('sentence'))
         ledger.append({**row, 'claimed_by': slot, 'claimed_at': now()})
         out.append({
             'row_id': row['row_id'],
@@ -3230,7 +3563,12 @@ def batch(ledger, slot, size=10, stale_seconds=900):
                 'retracted': resolution.get('retracted'),
                 'resolved_title': (resolution.get('record') or {}).get('title'),
             },
-            **window,
+            # Everything the window says except the character offsets the
+            # passages were cut at. Those are for the ledger, which records
+            # them on the verdict so the passage can be found again; a worker
+            # has the text itself and the sentence saying how it was chosen,
+            # and two numbers it cannot use are two numbers it may try to.
+            **{name: value for name, value in window.items() if name != 'passages'},
         })
     return out
 
@@ -3290,7 +3628,9 @@ def verdict(ledger, slot, row_id, answer, passage='', note='', stale_seconds=900
                       + ', who is still working. Judge the rows your own batch handed you.')
     reference = next((one for one in rows.values() if one.get('kind') == 'reference'
                       and one.get('reference_id') == row.get('reference_id')), None)
-    window = source_window(reference)
+    # The same sentence that chose the passages when the batch was handed out,
+    # so the text a passage is checked against is the text the worker read.
+    window = source_window(reference, row.get('sentence'))
     body = source_body(window)
     if not window['source_text'] and answer != NO_SOURCE_VERDICT:
         return None, ('The ledger holds no abstract or full text for this reference, so the only '
@@ -3310,7 +3650,11 @@ def verdict(ledger, slot, row_id, answer, passage='', note='', stale_seconds=900
                           'source, character for character, from the text you were given.')
     stored = {**row, 'stage': 'judge', 'verdict': answer, 'passage': passage or None,
               'note': squeeze(note, 600) or None, 'judged_by': slot, 'judged_at': now(),
-              'source_kind': window['source_kind'], 'source_url': window['source_url']}
+              'source_kind': window['source_kind'], 'source_url': window['source_url'],
+              # Which passages of the full text this verdict was judged from,
+              # and how they were chosen. Without them "rests on full text"
+              # names a document, not the text anybody read.
+              'source_passages': window['passages'], 'passage_rule': window['passage_rule']}
     ledger.append(stored)
     # Stage 3 is recorded the way stages 1 and 2 are, so a reader can see what
     # each stage did without re-deriving it from the rows: how many verdicts
@@ -3359,6 +3703,13 @@ def reference_view(row):
         'retraction_notice': resolution.get('retraction_notice'),
         'is_retraction_notice': resolution.get('is_retraction_notice'),
         'has_source_text': bool(resolution.get('abstract') or resolution.get('full_text')),
+        # Which of the two, as well as whether there is any. An abstract
+        # answers what a paper claims; only the full text answers whether a
+        # number, a method or a limit the citing sentence attributes to it is
+        # in it, and a specialist reporting how much of the list was read
+        # should be able to say which it was.
+        'has_abstract': bool(resolution.get('abstract')),
+        'has_full_text': bool(resolution.get('full_text')),
         'source_url': (resolution.get('full_text_url') or resolution.get('abstract_url')
                        or resolution.get('source_url')),
         'note': resolution.get('note'),
@@ -3385,6 +3736,8 @@ def use_view(row):
         'claimed_by': row.get('claimed_by'),
         'source_kind': row.get('source_kind'),
         'source_url': row.get('source_url'),
+        'passage_rule': row.get('passage_rule'),
+        'source_passages': row.get('source_passages'),
     }
 
 
@@ -3552,7 +3905,7 @@ def row_detail(ledger, row_id):
                       and one.get('reference_id') == row.get('reference_id')), None)
     return {'row': {**use_view(row), 'problem': use_problem(row)},
             'reference': reference_view(reference) if reference else None,
-            **source_window(reference), 'untrusted_text': UNTRUSTED_NOTE}
+            **source_window(reference, row.get('sentence')), 'untrusted_text': UNTRUSTED_NOTE}
 
 
 # -- what the run says ------------------------------------------------------
@@ -3592,6 +3945,13 @@ def counts(ledger):
         'retracted': sum(1 for one in resolutions if one.get('retracted')),
         'with_source_text': sum(1 for one in resolutions
                                 if one.get('abstract') or one.get('full_text')),
+        # Split, because the two are not the same evidence. An abstract answers
+        # what a paper claims; only the full text answers whether a number, a
+        # method or a limit the citing sentence attributes to it is in it. A
+        # table reporting one number for both reads as if every reference had
+        # been read.
+        'with_abstract': sum(1 for one in resolutions if one.get('abstract')),
+        'with_full_text': sum(1 for one in resolutions if one.get('full_text')),
         'uses': len(uses),
         'uses_unmatched': sum(1 for row in uses if not row.get('reference_id')),
         'uses_judged': len(judged),
