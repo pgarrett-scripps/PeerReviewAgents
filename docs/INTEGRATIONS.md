@@ -417,7 +417,10 @@ if cites["enabled"]:
   short at a space inside it, which `damaged_dois` counts and which the
   resolver rejoins and looks up again (`repaired_dois` counts the rows where
   the rejoined DOI resolved, and those rows are `resolved` — the reference was
-  fine and the text layer was not). Those rows are `not_located` and carry the
+  fine and the text layer was not; a rejoined DOI that is registered while no
+  index holds its metadata is `resolved` too, with no `record`, since the
+  identifier does exist, and its note says the printed authors could not be
+  corroborated against anything). Those rows are `not_located` and carry the
   caveat in their note. `not_found`, and only it, is the table saying a work
   does not exist; a metadata index that merely does not hold the record leaves
   the row in `could_not_check`. `not_located` counts the rows where an index
@@ -425,9 +428,10 @@ if cites["enabled"]:
   standards, software and preprints outside Crossref and Europe PMC land here
   while being perfectly real. `could_not_check` counts the rows where no lookup
   answered — or where no lookup was made at all, which is `no_lookup`, a subset
-  of it: this version read no DOI and no searchable title out of those rows, so
-  no index was ever asked, and `looked_up` on the row says which of the two it
-  is. Either way it says nothing whatever about the work.
+  of it: this version read no DOI and no searchable title out of those rows —
+  neither from a title field nor out of the reference text, which it also
+  parses for the title in the styles journals print — so no index was ever
+  asked, and `looked_up` on the row says which of the two it is. Either way it says nothing whatever about the work.
   **Do not add them.** An integration that prints "N references do not exist"
   from the sum of the three is misreporting the run; `not_located` and
   `could_not_check` belong in the same sentence as how much of the list could

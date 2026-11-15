@@ -100,8 +100,15 @@ and how many there were, so a reader can tell a spot-check from a wave-through.
   the reference field is cut short — the page prints it with a space inside it
   and the reader kept only the half before the break. The resolver rejoined it
   and looked the whole DOI up: with `repaired_doi` set, that whole DOI resolves
-  and the printed first author agrees with the record, so **the reference is
-  fine and the finding, if any, is about the extraction, not the authors**.
+  and, where an index holds its metadata, the printed first author agrees with
+  the record, so **the reference is fine and the finding, if any, is about the
+  extraction, not the authors**. Where no index holds it — the `method` says
+  `doi-repaired-agency` or `doi-repaired-handle`, there is no `record` and the
+  note says so — the row is "yes, registered, no metadata record": the whole
+  DOI is registered, with another agency where `registered_with` names one, and
+  the authors could not be corroborated because no index this version reads
+  holds its metadata. That is a limit of the reader, not a fault in the
+  reference, and it is not grounds for a finding about the authors.
   Without it, the rejoined DOI was tried and did not land. Either way the row
   cannot be `no`, and the note names the DOI the page prints. Check it in the
   PDF with `read_blocks` before you write anything about that reference.
@@ -112,7 +119,8 @@ and how many there were, so a reader can tell a spot-check from a wave-through.
   does not resolve, report it as not located rather than as fabricated.
 - `exists: "could not check"` means **no lookup was made, or none answered**.
   `looked_up: false` is the first of those: this version read no DOI and no
-  searchable title out of the row, so nothing was ever asked — that is the
+  searchable title out of the row — not from a title field and not out of the
+  reference text either — so nothing was ever asked. That is the
   pipeline's reference parser falling short, not an index failing, and the
   write-up should say so rather than blaming Crossref or Europe PMC. Either
   way it says **nothing** about whether the work exists, and a finding that

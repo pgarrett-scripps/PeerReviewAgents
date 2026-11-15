@@ -1641,6 +1641,12 @@ SPLIT = [{'id': 'r1', 'label': '1', 'first_author': 'Mikami, N.', 'year': '2013'
 #: What the repaired DOI is: the identifier the page prints.
 WHOLE = '10.4049/jimmunol.1203102'
 
+#: The same reference with nothing title-shaped in its raw string, so no title
+#: search can run and the repair leg is the only leg left. Seven of the eight
+#: 0.9.0 rows gave no title field; this is the stronger version of that shape.
+UNTITLED = [{**SPLIT[0], 'raw': '1. Mikami N, Watanabe K, Yoshikawa N, et al. '
+                                'https://doi.org/10.4049/jimmunol. 1203102'}]
+
 
 def split_doi_row(tmp_path, net, references=None, name='review'):
     """Resolve one broken-DOI reference and hand back its resolution row."""
@@ -1696,7 +1702,7 @@ def test_a_rejoined_doi_by_other_authors_is_refused_rather_than_resolved(tmp_pat
     net = Net([('/works/' + WHOLE, crossref_work(
                    WHOLE, 'An unrelated study of mast cells', '2013', author='Okada')),
                ('/works/10.4049/jimmunol', 404), NO_HANDLE])
-    resolution = split_doi_row(tmp_path, net)['resolution']
+    resolution = split_doi_row(tmp_path, net, UNTITLED)['resolution']
     assert resolution['exists'] == 'not located'
     assert resolution['method'] == 'doi-repair'
     assert resolution['repairs_refused'] == [WHOLE]
@@ -1728,10 +1734,10 @@ def test_a_doi_the_reader_broke_can_never_make_a_reference_not_exist(tmp_path):
     assert 'check the DOI in the PDF' in resolution['note']
     assert 'cut short' in cl.reference_problem(row)
 
-    # And with no title to search for — the shape seven of the eight have —
-    # the state is the same, by the repair leg alone.
+    # And with no title to search for anywhere, not in the field and not in the
+    # raw string either, the state is the same, by the repair leg alone.
     bare = split_doi_row(tmp_path, Net([('/works/10.4049/jimmunol', 404), NO_HANDLE]),
-                         name='bare')['resolution']
+                         UNTITLED, name='bare')['resolution']
     assert bare['exists'] == 'not located'
     assert bare['method'] == 'doi-repair'
 
@@ -1822,3 +1828,265 @@ def test_the_doi_a_split_page_prints_is_recovered_and_prose_is_not_absorbed(tmp_
     # A DOI the raw text does not contain cannot be repaired from it: the
     # hypothesis is about this page's own text layer and nothing else.
     assert cl.doi_repairs('1. Lin M. ' + TITLE + '. Neuron 2019.', '10.1234/replay') == []
+
+
+# -- the reference styles the page prints -----------------------------------
+
+
+def reference_row(tmp_path, references, name='review'):
+    """One reference row as the build stage leaves it: what the parser read."""
+    ledger = cl.Ledger(tmp_path / name)
+    cl.build(ledger, paper(references))
+    return {row['row_id']: row for row in ledger.rows()}['ref:r1']
+
+
+#: The style 29 of one 0.9.0 paper's 31 references are printed in, with no
+#: title field of its own: ``Authors: Title. Venue year, vol(issue):pages``.
+COLON_STYLE = [{'id': 'r1', 'label': '1',
+                'raw': '14. Nicholson DT, Chalk C, Funnell WRJ, Daniel SJ: Can virtual reality '
+                       'improve anatomy education? A randomised controlled study of a '
+                       'computer-generated three-dimensional anatomical ear model. Medical '
+                       'education 2006, 40(3):1081-1087.'}]
+
+
+def test_a_style_that_prints_the_title_after_the_authors_is_read_and_searched(tmp_path):
+    """55 of 325 references were never asked about, because no title was read.
+
+    A reference list that prints ``Authors: Title. Venue year, vol(issue):pages``
+    and gives no title field left 0.9.0 with nothing to search for, so 29 real
+    references in one paper came out "could not check" without a single lookup
+    — and the write-up blamed the indexes. The style is read here, the title is
+    searched, and the venue and first author are read with it, because those
+    are what a mismatch is judged on.
+    """
+    row = reference_row(tmp_path, COLON_STYLE)
+    printed = row['printed']
+    assert printed['title'] == ('Can virtual reality improve anatomy education? A randomised '
+                                'controlled study of a computer-generated three-dimensional '
+                                'anatomical ear model.')
+    assert printed['venue'] == 'Medical education', 'the volume and pages are not the journal'
+    assert printed['first_author'] == 'nicholson'
+    assert printed['extracted']['title'] == 'raw', 'a guess has to say it is a guess'
+    assert cl.searchable(printed['title'])
+
+    # And the title that was read is the title that gets asked about.
+    ledger = cl.Ledger(tmp_path / 'review')
+    hit = {'DOI': '10.1111/j.1365-2929.2006.02592.x',
+           'title': ['Can virtual reality improve anatomy education? A randomised controlled '
+                     'study of a computer-generated three-dimensional anatomical ear model'],
+           'author': [{'given': 'Dale', 'family': 'Nicholson'}],
+           'issued': {'date-parts': [[2006]]},
+           'container-title': ['Medical education'],
+           'abstract': 'Students using the three-dimensional model scored higher.'}
+    net = Net([('/works?', crossref_search([hit])), ('/search?', europepmc([]))])
+    cl.resolve(ledger, lookups(tmp_path, net))
+    resolution = {row['row_id']: row for row in ledger.rows()}['ref:r1']['resolution']
+    assert resolution['exists'] == 'yes' and resolution['method'] == 'crossref-title'
+    assert resolution['looked_up'] is True
+    assert resolution['mismatched'] == []
+    assert resolution['abstract'], 'a resolved record is also a source text to judge against'
+
+
+def test_a_title_a_question_mark_cuts_short_does_not_leave_its_rest_as_the_venue(tmp_path):
+    """``education? A randomised controlled study …`` is one title, not a journal.
+
+    A question mark ends a sentence, so the sentence after it is the rest of
+    the title. Read as the venue it is a journal name no index can match, and
+    a printed venue that disagrees with the record is a mismatch finding about
+    a correctly cited paper.
+    """
+    printed = reference_row(tmp_path, COLON_STYLE)['printed']
+    assert 'randomised controlled study' in printed['title']
+    assert printed['venue'] == 'Medical education'
+
+    # Where the sentence after the question mark is the venue — it carries the
+    # volume and the year — the title stops at the question mark.
+    short = [{**COLON_STYLE[0],
+              'raw': '1. Nicholson DT, Chalk C: Can virtual reality improve anatomy education? '
+                     'Medical education 2006, 40(3):1081-1087.'}]
+    printed = reference_row(tmp_path, short, name='short')['printed']
+    assert printed['title'] == 'Can virtual reality improve anatomy education?'
+    assert printed['venue'] == 'Medical education'
+
+
+def test_a_colon_inside_a_title_is_not_the_boundary_after_the_authors(tmp_path):
+    """``Alganem K, et al. Kaleidoscope: a new bioinformatics pipeline …``.
+
+    The colon style would read everything before the first colon as the authors
+    here, which swallows the first word of the title and loses the venue. A
+    full stop inside that candidate author block — ``et al.`` is not one, a
+    sentence is — refuses the style, and the numbered style reads the row
+    properly. The venue is spelled with a small first letter, which no sentence
+    split finds on its own.
+    """
+    printed = reference_row(tmp_path, [{
+        'id': 'r1', 'label': '1',
+        'raw': '28. Alganem K, et al. Kaleidoscope: a new bioinformatics pipeline web '
+               'application for in silico hypothesis exploration of omics signatures. '
+               'bioRxiv, 2020:2020.05.01.070805. https://doi.org/10.1101/2020.05.01.070805.'}])[
+        'printed']
+    assert printed['title'] == ('Kaleidoscope: a new bioinformatics pipeline web application '
+                               'for in silico hypothesis exploration of omics signatures')
+    assert printed['venue'] == 'bioRxiv'
+    assert printed['first_author'] == 'alganem'
+
+
+def test_a_style_whose_boundary_lands_inside_the_author_list_is_refused(tmp_path):
+    """Half a read style is worse than none: the half is what gets searched.
+
+    ``Andre Tavora de A. Silva, Claudio Ferreira Dias, and Gustavo
+    Fraidenraich.`` has a full stop after an initial in the middle of it, and
+    the text after that stop opens with two more names. A title search for the
+    rest of an author list returns an index's nearest neighbours to nothing, so
+    the row is left with no title at all and says that no lookup was made.
+    """
+    row = reference_row(tmp_path, [{
+        'id': 'r1', 'label': '1',
+        'raw': '[8] Andre Tavora de A. Silva, Claudio Ferreira Dias, and Gustavo Fraidenraich. '
+               'Hybrid beamforming design. IEEE Wireless Communications, 25(4):40-46, '
+               'August 2018.'}])
+    assert row['printed']['title'] is None
+    assert row['printed']['extracted']['title'] is None
+
+    ledger = cl.Ledger(tmp_path / 'review')
+    net = Net()
+    cl.resolve(ledger, lookups(tmp_path, net))
+    resolution = {row['row_id']: row for row in ledger.rows()}['ref:r1']['resolution']
+    assert net.urls == [], 'a name list is not a question to put to an index'
+    assert resolution['exists'] == 'could not check' and resolution['looked_up'] is False
+
+
+def test_a_word_ending_in_an_abbreviation_does_not_swallow_the_next_sentence():
+    """``a randomized trial.`` ends in ``al.`` and ended no sentence in 0.9.0.
+
+    The abbreviation guard matched anywhere in a word, so every sentence
+    ending in *trial*, *total* or *clinical* was read joined to the one after
+    it — in a reference list that put the venue inside the title, and in the
+    manuscript that it read citing sentences out of.
+    """
+    assert cl.sentences('Anatomy by simulation: a randomized trial. Medical education 2006.') == [
+        'Anatomy by simulation: a randomized trial.', 'Medical education 2006.']
+    assert cl.sentences('Replay was reported in total. Six rats were used.') == [
+        'Replay was reported in total.', 'Six rats were used.']
+    # And the abbreviation itself still holds a sentence together.
+    assert cl.sentences('Mikami N, et al. CGRP regulates hypersensitivity.') == [
+        'Mikami N, et al. CGRP regulates hypersensitivity.']
+
+
+def test_a_title_read_off_the_raw_string_is_never_a_mismatch_finding(tmp_path):
+    """A parser's guess may not be reported as what the paper printed.
+
+    The title here was read out of the reference text by this module, not given
+    as a field by the reader, and the record the DOI resolves to is the right
+    work. A disagreement between a guess and the record is this module's
+    mistake; filed as a mismatch it is a finding about a reference that is
+    perfectly correct.
+    """
+    guessed = [{'id': 'r1', 'label': '1', 'year': '2019', 'doi': '10.1234/replay',
+                'raw': '1. Lin M. Replay of hippocampal sequences during quiet rest in rats. '
+                       'Journal of Neuroscience 2019;39:1-10.'}]
+    ledger = cl.Ledger(tmp_path / 'review')
+    cl.build(ledger, paper(guessed))
+    printed ={row['row_id']: row for row in ledger.rows()}['ref:r1']['printed']
+    assert printed['extracted']['title'] == 'raw'
+    assert printed['title'] != TITLE, 'the guess and the record disagree'
+
+    net = Net([('/works/10.1234', crossref_work('10.1234/replay', TITLE, '2019'))])
+    cl.resolve(ledger, lookups(tmp_path, net))
+    resolution = {row['row_id']: row for row in ledger.rows()}['ref:r1']['resolution']
+    assert resolution['exists'] == 'yes' and resolution['method'] == 'doi'
+    assert resolution['matches']['title'] is None, 'a guess is not compared'
+    assert 'title' not in resolution['mismatched']
+
+
+# -- a repaired DOI no index holds ------------------------------------------
+
+
+#: The eighth of the eight broken DOIs: rejoined it is 404 at Crossref and has
+#: a handle at the DOI resolver, because another agency registered it.
+ELSEWHERE = '10.3969/j.issn.1672-7347.2010.02.002'
+#: That reference as the reader handed it over, its DOI cut at the space.
+OTHER_AGENCY = [{'id': 'r1', 'label': '1', 'first_author': 'Li, Y.', 'year': '2010',
+                 'doi': '10.3969/j.issn',
+                 'raw': '1. Li Y, Zhang X. Effect of calcitonin gene-related peptide on bone '
+                        'marrow stromal cells. Zhong Nan Da Xue Xue Bao 2010;35(2):100-106. '
+                        'https://doi.org/ 10.3969/j.issn. 1672-7347.2010.02.002'}]
+
+
+def test_a_repaired_doi_crossref_lacks_is_still_asked_of_the_doi_resolver(tmp_path):
+    """Crossref not holding a DOI is not the DOI system saying there is no DOI.
+
+    This is the eighth row of the eight: the rejoined DOI is 404 at Crossref,
+    and the resolver has a handle for it, because an agency Crossref reads no
+    metadata from registered it. The repair leg asked Crossref alone, so a
+    correctly repaired, live DOI was left at "not located" — a real reference
+    reported as one nothing indexes.
+
+    The row says the work exists and carries no record, and the note has to say
+    why: there is nothing to corroborate the printed authors against, so
+    ``repaired_doi`` here does not mean the authors agree.
+    """
+    net = Net([('doi.org/api/handles/' + ELSEWHERE, {'responseCode': 1, 'values': []}),
+               NO_HANDLE])
+    row = split_doi_row(tmp_path, net, OTHER_AGENCY)
+    resolution = row['resolution']
+    assert resolution['exists'] == 'yes'
+    assert resolution['method'] == 'doi-repaired-handle'
+    assert resolution['repaired_doi'] == ELSEWHERE
+    assert resolution['printed_doi_registered'] is False
+    assert resolution.get('record') is None
+    assert resolution['mismatched'] == [], 'no record is nothing to disagree with'
+    assert not resolution.get('abstract'), 'no metadata record is no source text either'
+    assert 'could not be corroborated' in resolution['note']
+    assert ELSEWHERE in resolution['note']
+    assert 'about the reader, not about the paper' in resolution['note']
+
+    totals = cl.counts(cl.Ledger(tmp_path / 'review'))
+    assert (totals['resolved'], totals['not_located'], totals['not_found']) == (1, 0, 0)
+
+
+def test_a_repaired_doi_an_agency_registered_is_named_by_its_agency(tmp_path):
+    """The agency route answers for a repaired DOI as it does for a printed one.
+
+    Where Crossref's agency index names who registered the rejoined DOI, that
+    is the stronger answer of the two and the row records it, still without a
+    metadata record and still without claiming the authors were corroborated.
+    """
+    net = Net([('/works/' + ELSEWHERE + '/agency',
+                {'message': {'DOI': ELSEWHERE, 'agency': {'id': 'mEDRA'}}}),
+               NO_HANDLE])
+    resolution = split_doi_row(tmp_path, net, OTHER_AGENCY)['resolution']
+    assert resolution['exists'] == 'yes'
+    assert resolution['method'] == 'doi-repaired-agency'
+    assert resolution['registered_with'] == 'medra'
+    assert resolution['repaired_doi'] == ELSEWHERE
+    assert resolution.get('record') is None
+    assert 'could not be corroborated' in resolution['note']
+
+    # A candidate the resolver has no handle for is still not the work, and a
+    # resolver that did not answer is weaker than one that said no.
+    none = split_doi_row(tmp_path, Net([NO_HANDLE]), OTHER_AGENCY, name='none')['resolution']
+    assert none['exists'] != 'yes' and none['exists'] != 'no'
+    quiet = split_doi_row(tmp_path, Net([NO_HANDLE], fail=['api/handles/' + ELSEWHERE]),
+                          OTHER_AGENCY, name='quiet')['resolution']
+    assert quiet['exists'] == 'could not check'
+
+
+def test_a_record_a_repaired_doi_resolves_to_still_has_to_be_corroborated(tmp_path):
+    """The registration routes do not loosen the corroboration rule.
+
+    A Crossref record for a rejoined DOI is still a guess about the reader, so
+    a record whose authors disagree with the printed ones is refused — and the
+    agency and handle routes are then asked about that same candidate, because
+    "Crossref holds someone else's paper under this DOI" is not "this DOI does
+    not exist".
+    """
+    net = Net([('/works/' + ELSEWHERE + '/agency', 404),
+               ('/works/' + ELSEWHERE, crossref_work(
+                   ELSEWHERE, 'An unrelated study of mast cells', '2013', author='Okada')),
+               ('doi.org/api/handles/' + ELSEWHERE, {'responseCode': 1, 'values': []}),
+               NO_HANDLE])
+    resolution = split_doi_row(tmp_path, net, OTHER_AGENCY)['resolution']
+    assert resolution['repairs_refused'] == [ELSEWHERE]
+    assert resolution.get('record') is None
+    assert resolution['exists'] != 'yes', 'a refused candidate is not a registration'

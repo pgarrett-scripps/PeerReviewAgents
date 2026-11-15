@@ -164,7 +164,7 @@ fill it, and the first two call no model:
 | Stage | Who | What it does |
 | --- | --- | --- |
 | fill | `ingest`, no model | a row for every extracted reference, with or without a DOI, and a row for every citing sentence |
-| resolve | the recorder calling `resolve_citations`, no model | looks up **every** reference: DOI → Crossref; no DOI → title search against Crossref, then Europe PMC. Records `exists` in four states — yes / no (checked and not found: the DOI resolver has no handle for a DOI the reference list gives as its own field, no agency holds it, *and* both title searches answered and listed nothing; a DOI read out of the reference text, or one the reader cut short, is never `no`) / **not located** (an index answered and listed nothing) / **could not check** (no lookup was made at all, or none answered — `looked_up` on the row tells those two apart) — a per-field comparison of title, first author, year and venue, any retraction or correction notice, and the abstract or open-access full text with its source URL. A row whose lookups did not answer stays owed its retries: it is still counted in `remaining`, and `retry_after` says when it is due |
+| resolve | the recorder calling `resolve_citations`, no model | looks up **every** reference: DOI → Crossref; no DOI → title search against Crossref, then Europe PMC, the title read out of the reference text itself where the reference list gives no title field. Records `exists` in four states — yes / no (checked and not found: the DOI resolver has no handle for a DOI the reference list gives as its own field, no agency holds it, *and* both title searches answered and listed nothing; a DOI read out of the reference text, or one the reader cut short, is never `no`) / **not located** (an index answered and listed nothing) / **could not check** (no lookup was made at all, or none answered — `looked_up` on the row tells those two apart) — a per-field comparison of title, first author, year and venue, any retraction or correction notice, and the abstract or open-access full text with its source URL. A row whose lookups did not answer stays owed its retries: it is still counted in `remaining`, and `retry_after` says when it is due |
 | judge | `cite-1`…`cite-N` on Haiku | each claims a batch with `claim_citation_batch` and writes one verdict per use with `submit_citation_verdict` — supports / partly supports / does not support / cannot tell — quoting the exact passage it judged from |
 | confirm | `spec-citations` on Sonnet | reads the whole table with `citation_rows` — `counts`, `problems`, `unverified`, `supported`, and one `row` in full — re-checks every problem row itself, spot-checks the supported rows, and files findings only for what it confirmed |
 
@@ -187,7 +187,11 @@ Four rules this pipeline is built on:
   takes the record only where the printed first author agrees with it —
   joining across a space can land on somebody else's real paper, and a wrong
   record here would become the source text every verdict about that reference
-  is judged from. A row with any such candidate can never be `no`, and its
+  is judged from. Where no index holds the rejoined DOI, it is still asked of
+  the DOI resolver and of its registration agency, so a DOI registered with
+  an agency neither index covers is `yes`, registered, with no record and a
+  note that the authors could not be corroborated because nothing holds its
+  metadata. A row with any such candidate can never be `no`, and its
   note names the DOI the page prints so a human can check the PDF. The
   eight "does not exist" rows of the 0.9.0 corpus were all this.
 - **The rows are quoted material.** Every citation read carries an
