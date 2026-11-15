@@ -155,6 +155,40 @@ def test_the_workflow_briefs_the_tracks_the_server_plans():
     assert 'consistency' not in source
 
 
+def test_every_tool_the_workflow_asks_an_agent_for_is_in_that_agent_s_tool_list():
+    """A prompt naming a tool the agent file does not list is a dead branch.
+
+    The workflow's one retry asked the recorder to call ``reissue_claim_code``
+    and ``recorder.md`` did not list it, so a stage that had to be retried
+    could never have been: the recorder had no such tool, the reissue would
+    return nothing, and `stage()` would report that the slot could not be
+    claimed. Nothing in SPOT 0.9.0 reached that branch — every stage claimed to
+    have closed — so the dead path cost nothing visible until the ledger was
+    checked against those claims, which is what sends a stage back.
+    """
+    source = (PLUGIN / 'workflows' / 'review.js').read_text(encoding='utf-8')
+    # The tools whose names are not also ordinary English: a prompt that says
+    # "search the paper" is not a prompt that calls `search`.
+    vocabulary = {tool.__name__ for tool in srv.TOOLS
+                  if '_' in tool.__name__ or tool.__name__ == 'ingest'}
+    # Each `agent(...)` call names its agent type after its prompt, so the text
+    # between one `agent(` and the next `agentType:` is that agent's brief.
+    briefs = re.findall(r"agent\((.*?)agentType: '(pra:[a-z-]+)'", source, re.S)
+    assert briefs, 'no agent call in the workflow names the agent it spawns'
+    checked = 0
+    for prompt, spawned in briefs:
+        agent_file = AGENTS / (spawned[len('pra:'):] + '.md')
+        assert agent_file.is_file(), f'{spawned} has no agent file'
+        allowed = set(re.findall(r'mcp__plugin_pra_peerreview__([a-z_]+)',
+                                 agent_file.read_text(encoding='utf-8')))
+        for tool in sorted(vocabulary):
+            if re.search(r'\b' + tool + r'\b', prompt):
+                assert tool in allowed, \
+                    f'the workflow asks {spawned} to call {tool} and its agent file forbids it'
+                checked += 1
+    assert checked >= 6, 'this test is matching nothing, so it is checking nothing'
+
+
 def test_the_draft_check_default_names_tracks_that_exist():
     assert set(starter.DRAFT_CHECK_TRACKS) <= set(srv.SPECIALIST_TRACKS)
     assert 'numbers' in starter.DRAFT_CHECK_TRACKS, \

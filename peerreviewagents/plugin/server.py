@@ -745,10 +745,23 @@ class Run:
     def ledger(self):
         reported = {slot: self.agents[slot].report for slot in self.required
                     if slot in self.agents and self.agents[slot].report}
+        missing = [slot for slot in self.required if slot not in reported]
+        delivered = {finding['slot'] for finding in self.pooled()}
         return {
             'required': list(self.required),
             'reported': sorted(reported),
-            'missing': [slot for slot in self.required if slot not in reported],
+            'missing': missing,
+            # There are two ways to be missing from this ledger and they are
+            # not the same run. A stage that stored findings and never filed a
+            # report left a gap in the record — its summary and its
+            # limitations — while the findings themselves reached the editor
+            # like any other. A stage that stored nothing and filed nothing was
+            # not reviewed at all. SPOT 0.9.0's dark-kinome run was the first:
+            # core-1 delivered five findings the editor ruled on and never
+            # closed its slot, and blocking on `missing` threw out a finished
+            # review in order to report a missing summary.
+            'missing_with_findings': [slot for slot in missing if slot in delivered],
+            'silent': [slot for slot in missing if slot not in delivered],
             'none_found': sorted(slot for slot, report in reported.items()
                                  if report.get('none_found')),
             'attempts': {slot: agent.attempt for slot, agent in self.agents.items()},
@@ -1269,10 +1282,13 @@ def submit_report(agent_token: str, summary: str, limitations: list = None,
     try:
         agent = run.agent_for(agent_token)
     except ValueError as exc:
+        _record_closure(run, None, None, str(exc))
         return rejection(str(exc))
     mine = [f for f in run.pooled() if f['slot'] == agent.slot]
     if none_found and mine:
-        return rejection(f'You stored {len(mine)} finding(s); none_found contradicts the ledger.')
+        refusal = f'You stored {len(mine)} finding(s); none_found contradicts the ledger.'
+        _record_closure(run, agent.slot, agent.attempt, refusal)
+        return rejection(refusal)
     agent.report = {'slot': agent.slot, 'role': agent.role, 'track': agent.track,
                     'attempt': agent.attempt, 'summary': summary,
                     'limitations': list(limitations or []),
@@ -1286,9 +1302,25 @@ def submit_report(agent_token: str, summary: str, limitations: list = None,
         body = report_markdown.strip() or _audit_markdown(agent, mine)
         (run.review / f'audit_{agent.track}.md').write_text(
             f'# {agent.track} audit\n\n{body}\n', encoding='utf-8')
+    _record_closure(run, agent.slot, agent.attempt, None)
     run.write_progress()
     return {'closed': True, 'slot': agent.slot, 'findings': len(mine),
             'none_found': agent.report['none_found'], 'ledger': run.visible_ledger(agent)}
+
+
+def _record_closure(run, slot, attempt, refusal):
+    """One row per ``submit_report`` call, accepted or refused.
+
+    Without this a refused closure leaves nothing on disk: ``tool-log.jsonl``
+    records the investigation tools only, and the ledger records the reports
+    that landed. SPOT 0.9.0's dark-kinome run could not be read any further
+    than "core-1 has no report" — whether it never called ``submit_report`` or
+    called it and was refused over an expired token or a ``none_found``
+    contradiction was not in the run folder at all. It is now.
+    """
+    run.append(run.review / 'closures.jsonl',
+               {'at': now(), 'tool': 'submit_report', 'slot': slot, 'attempt': attempt,
+                'accepted': refusal is None, 'refusal': refusal})
 
 
 def _audit_markdown(agent, findings):
@@ -1759,7 +1791,14 @@ def run_status(recorder_key: str = '') -> dict:
 
 
 def write_review(agent_token: str) -> dict:
-    """Write the run files. Refuses while a required stage has not reported."""
+    """Write the run files. Refuses while a required stage reviewed nothing.
+
+    A stage missing from the ledger that stored findings the editor ruled on is
+    a gap in the record, not a run that did not happen: the review is written
+    and ``stages.missing_with_findings`` names the stage whose summary and
+    limitations are not in it. A stage that stored nothing and filed nothing
+    blocks the run, because there is no review of its share of the manuscript.
+    """
     run = current()
     try:
         agent = run.agent_for(agent_token)
@@ -1768,9 +1807,9 @@ def write_review(agent_token: str) -> dict:
     if agent.role != 'recorder':
         return rejection('The recorder writes the review.')
     ledger = run.ledger()
-    if ledger['missing']:
+    if ledger['silent']:
         run.status = 'blocked'
-        run.error = 'Stages that never reported: ' + ', '.join(ledger['missing'])
+        run.error = 'Stages that never reported: ' + ', '.join(ledger['silent'])
         run.write_progress()
         run.write_protocol()
         run.write_manifest()

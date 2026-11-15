@@ -570,12 +570,14 @@ def test_a_finding_cites_the_blocks_it_rests_on_and_not_every_block(tmp_path):
 # -- the ledger and the files ----------------------------------------------
 
 
-def two_track_run(tmp_path, reviewers=2, model='claude-sonnet-5-5', **opened):
+def two_track_run(tmp_path, reviewers=2, model='claude-sonnet-5-5', unclosed=(), **opened):
     """A whole run short of the editor: every stage reported, findings stored.
 
     ``model`` is what every stage *reports* running, and anything in ``opened``
     goes to ``ingest`` — which is how a test asks for a run whose plan and
-    whose reports disagree.
+    whose reports disagree. A core slot named in ``unclosed`` stores its
+    finding and never calls ``submit_report``, which is the shape SPOT 0.9.0's
+    dark-kinome run ended in.
     """
     open_run(tmp_path, reviewers=reviewers, **opened)
     run = srv.current()
@@ -586,7 +588,8 @@ def two_track_run(tmp_path, reviewers=2, model='claude-sonnet-5-5', **opened):
         stored = srv.submit_finding(token, title=f'Reviewer {index} finding', block_id=block,
                                     quote=quote, comment='...', severity='major')
         uids[f'core-{index}'] = stored['finding_uid']
-        close(token, model=model)
+        if f'core-{index}' not in unclosed:
+            close(token, model=model)
     for position, track in enumerate(srv.SPECIALIST_TRACKS):
         token = claim(f'spec-{track}')['agent_token']
         if track == 'stats':
@@ -629,6 +632,97 @@ def test_write_review_refuses_while_a_stage_has_not_reported(tmp_path):
     assert 'core-2' in refusal['request_rejected']
     assert refusal['status'] == 'blocked'
     assert json.loads((run.review / 'progress.json').read_text(encoding='utf-8'))['status'] == 'blocked'
+
+
+def test_a_stage_that_delivered_findings_without_a_report_is_a_gap_not_a_blocked_run(tmp_path):
+    """SPOT 0.9.0, dark-kinome: the findings were in the review and the run was blocked.
+
+    core-1 stored five findings, the editor ruled on them, the pooled review
+    was accepted — and ``write_review`` refused and marked the run blocked
+    because that slot had no report, which threw out a finished review in order
+    to report a missing summary. A stage that delivered findings is a gap in
+    the record, not a run that did not happen: the review is written, the
+    status is complete, and the ledger, the status note and ``REVIEW.md`` all
+    name the stage whose summary and limitations are missing from it.
+    """
+    run, uids = two_track_run(tmp_path, unclosed=('core-1',))
+    editor, accepted = accept_editor(run, uids)
+    assert accepted['accepted'] is True, accepted
+    close(editor, model='claude-sonnet-5-5')
+    written = srv.write_review(claim('recorder')['agent_token'])
+    assert written['status'] == 'complete', written
+    assert written['ledger']['missing'] == ['core-1']
+    assert written['ledger']['missing_with_findings'] == ['core-1']
+    assert written['ledger']['silent'] == []
+
+    package = json.loads((run.review / 'editor-package.json').read_text(encoding='utf-8'))
+    assert uids['core-1'] in [f['finding_uid'] for f in package['findings']], \
+        "the finding was ruled into the body, which is why blocking the run lost it"
+    assert 'core-1' not in {row['slot'] for row in package['reviewer_provenance']}, \
+        'there is no report to take a provenance row from, and none is invented'
+
+    reading = read_run(run.review)
+    assert reading['status'] == 'complete'
+    assert 'core-1 delivered findings but never filed a report' in reading['note']
+    assert 'summary and limitations are not in this review' in reading['note']
+    assert 'never filed a report' in (run.review / 'REVIEW.md').read_text(encoding='utf-8')
+
+
+def test_a_stage_that_reviewed_nothing_holds_the_run_beside_one_that_only_missed_its_report(
+        tmp_path):
+    """The other half of the rule, and the reason it is not simply `missing`.
+
+    core-1 stored a finding and filed no report; core-2 was never claimed at
+    all. The first is a gap, the second is a third of the manuscript nobody
+    reviewed, so the run is still blocked — and the refusal names the silent
+    slots rather than every slot absent from the ledger.
+    """
+    open_run(tmp_path, reviewers=2)
+    run = srv.current()
+    token = claim('core-1')['agent_token']
+    block, quote = quote_from(run, 0)
+    srv.submit_finding(token, title='Stored and never closed', block_id=block, quote=quote,
+                       comment='...', severity='major')
+    for track in srv.SPECIALIST_TRACKS:
+        close(claim(f'spec-{track}')['agent_token'], none_found=True)
+    refusal = srv.write_review(claim('recorder')['agent_token'])
+    assert refusal['status'] == 'blocked'
+    assert 'core-2' in refusal['request_rejected']
+    assert 'core-1' not in refusal['request_rejected']
+    assert refusal['ledger']['missing_with_findings'] == ['core-1']
+    assert refusal['ledger']['silent'] == ['core-2', 'editor']
+    assert not (run.review / 'REVIEW.md').is_file()
+
+
+def test_every_closure_is_on_disk_whether_it_was_taken_or_refused(tmp_path):
+    """A refused ``submit_report`` used to leave nothing behind at all.
+
+    dark-kinome could be read no further than "core-1 has no report":
+    ``tool-log.jsonl`` records the investigation tools only and the ledger
+    records the reports that landed, so whether that slot never called
+    ``submit_report`` or called it and was refused — over a spent token, or
+    over a ``none_found`` that contradicted its own findings — was not in the
+    run folder in any form. One row per call now says which.
+    """
+    open_run(tmp_path, arm='single')
+    run = srv.current()
+    token = claim('core-1')['agent_token']
+    block, quote = quote_from(run, 0)
+    srv.submit_finding(token, title='One finding', block_id=block, quote=quote, comment='...',
+                       severity='major')
+    assert 'request_rejected' in srv.submit_report(token, 'Nothing to report.', none_found=True)
+    assert 'request_rejected' in srv.submit_report('not-a-token', 'Let me close something')
+    close(token, model='claude-sonnet-5-5')
+
+    rows = [json.loads(line) for line
+            in (run.review / 'closures.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert [row['accepted'] for row in rows] == [False, False, True]
+    assert all(row['tool'] == 'submit_report' for row in rows)
+    assert rows[0]['slot'] == 'core-1'
+    assert 'none_found contradicts the ledger' in rows[0]['refusal']
+    assert rows[1]['slot'] is None, 'a token the run does not know names no slot'
+    assert rows[2] == {'at': rows[2]['at'], 'tool': 'submit_report', 'slot': 'core-1',
+                       'attempt': 1, 'accepted': True, 'refusal': None}
 
 
 def test_write_review_refuses_without_an_accepted_editor_package(tmp_path):

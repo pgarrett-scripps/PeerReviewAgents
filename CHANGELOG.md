@@ -28,6 +28,39 @@ The five faults the SPOT re-run on 0.9.0 found, fixed. See
   shell is overridden, because it was set for some other session and a small
   one is the fault itself; `0`, which the harness reads as waiting
   indefinitely, and any value more patient than this run's wall clock are kept.
+- **A run was blocked over a stage whose findings were already in the review.**
+  dark-kinome ended `blocked: Stages that never reported: core-1` while
+  `findings.jsonl` held core-1's five findings, the editor had ruled all five
+  into the review, and the slot had spent 72,673 tokens. Three things were
+  wrong and all three are fixed.
+  - The workflow decided a stage had closed from the stage's own structured
+    `closed: true`, never from the server's ledger — so a stage that claimed
+    closure without filing a report looked done, and `attempts: 1` is the
+    record of a retry that never fired. The claims are now checked against
+    `run_status`'s ledger once, at the review barrier, and a slot the ledger
+    does not hold is reopened and closed properly before the editor runs.
+  - That retry could not have worked anyway: it asks the recorder for a fresh
+    claim code through `reissue_claim_code`, and `recorder.md` never listed
+    that tool, so the recorder had no way to call it. The tool is in the
+    recorder's list, its brief says when to use it, and a test now checks every
+    tool the workflow asks an agent for against that agent's own tool list.
+  - `write_review` refused over any required slot absent from the ledger, which
+    threw out a finished review in order to report a missing summary. The
+    ledger now splits `missing` in two: `silent` (stored nothing, filed
+    nothing — nobody reviewed that share of the manuscript, so the run is still
+    blocked) and `missing_with_findings` (findings delivered and ruled on, no
+    report filed). The second writes the review as `complete` and names the
+    gap — the stage's summary and limitations — in `read_run`'s `note` and in
+    `REVIEW.md`, instead of losing the whole review to it.
+- **A refused closure left nothing on disk.** dark-kinome could be read no
+  further than "core-1 has no report": `tool-log.jsonl` records the
+  investigation tools only, so whether that slot never called `submit_report`
+  or called it and was refused — over a spent token, or over a `none_found`
+  that contradicted its own findings — was not in the run folder in any form,
+  and that part of the cause is still not recoverable from the 0.9.0 runs.
+  Every `submit_report` call, taken or refused, is now a row in
+  `<run>/review/closures.jsonl` with the slot, the attempt and the refusal
+  text.
 
 ## [0.9.0] — unreleased
 
