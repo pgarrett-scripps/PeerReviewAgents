@@ -109,6 +109,19 @@ def drafted(tmp_path, pieces=CONVERTED, supplement=None, **kwargs):
     return opened
 
 
+#: A table the converter emitted as one paragraph of run-together cells, which
+#: is what it did to two tables of the first paper a reader was run on. Nothing
+#: in the listing calls it a table, so nothing asks for it to be repaired.
+GARBLED_TABLE = 'Hour Current (mA) 1 4.5 2 9.0'
+
+#: A paragraph holding the debris of the displayed equation beside it — the
+#: converter emitted "$R =$ log2(1 + SNR) (9)" as a paragraph and left the next
+#: equation's symbols in the prose that followed.
+DEBRIS_PARAGRAPH = ('At high signal-to-noise the logarithm is well approximated by a linear '
+                    'function of the bandwidth. We have SNR ln 2 In that regime the gain is '
+                    'linear in the bandwidth and nothing else.')
+
+
 def reading(tmp_path, **kwargs):
     """``(ingest's answer, the reader's token)``: the stage, claimed and ready."""
     opened = drafted(tmp_path, **kwargs)
@@ -133,6 +146,20 @@ def ids_of(token):
               if str(row['text']).startswith('Caption: Table 1')]
     return {'mangled': equations[0], 'split': equations[1:3],
             'figure': figures[0], 'table_caption': tables[0]}
+
+
+def garbled(tmp_path, **kwargs):
+    """The same stage over a draft that also holds two pieces the converter mislabelled."""
+    return reading(tmp_path, pieces=[*CONVERTED, piece('paragraph', GARBLED_TABLE),
+                                     piece('paragraph', DEBRIS_PARAGRAPH)], **kwargs)
+
+
+def paragraph_ids(token):
+    """The ids of the two paragraphs that are not paragraphs."""
+    rows = listed(token)
+    return {'garbled': next(key for key, row in rows.items()
+                            if 'Hour Current' in str(row['text'])),
+            'debris': next(key for key, row in rows.items() if 'SNR ln 2' in str(row['text']))}
 
 
 def account_for_everything(token, marks):
@@ -374,6 +401,309 @@ def test_a_table_the_converter_missed_is_added_after_its_caption(tmp_path):
     start, end = table['lines']
     assert end - start == 3, 'a header, its rule and two rows'
     assert text.splitlines()[start - 1] == '| Day | Reading (mm) |'
+
+
+def test_a_table_the_converter_called_a_paragraph_is_re_read_as_what_the_page_prints(tmp_path):
+    """One piece out, the pieces the page prints in, and nothing lost in between.
+
+    The two failures this is for, both off the first real run: a table that
+    came out as a one-line paragraph of run-together cells, which no repair
+    tool could reach because nothing had labelled it a table; and one
+    converter table that held a table, the next table's caption and that table
+    as well, where replacing it with one table dropped the rest of it with
+    nothing in the manifest to say so.
+    """
+    opened, token = garbled(tmp_path)
+    marks = ids_of(token)
+    prose = paragraph_ids(token)
+    # Nothing asks for it. The converter called it a paragraph, so it is not
+    # outstanding, and the reader finds it by reading the page.
+    assert 'account' not in listed(token)[prose['garbled']]
+    assert len(srv.read_draft(token)['outstanding']['pieces']) == TO_ACCOUNT_FOR
+
+    refused = srv.reread_piece(token, prose['garbled'], 1,
+                               [{'kind': 'table', 'rows': [['Hour', 'Current (mA)']]}])
+    assert 'not viewed page 1' in refused['request_rejected']
+
+    assert 'request_rejected' not in srv.view_page(token, 1)
+    answer = srv.reread_piece(token, prose['garbled'], 1, [
+        {'kind': 'table', 'rows': [['Hour', 'Current (mA)'], ['1', '4.5'], ['2', '9.0']]},
+        {'kind': 'caption', 'text': 'Table 2. Current drawn by the red widgets, by hour.'},
+        {'kind': 'equation', 'latex': 'I = V / R', 'number': '(3)'}])
+    assert 'request_rejected' not in answer, answer
+    assert answer['replaced'] == prose['garbled']
+    assert answer['kinds'] == ['table', 'caption', 'equation']
+    assert answer['was']['text'] == GARBLED_TABLE
+    assert answer['was']['kind'] == 'paragraph'
+
+    rows = listed(token)
+    assert prose['garbled'] not in rows, 'the piece it replaced is gone'
+    pieces = answer['pieces']
+    assert [rows[one]['kind'] for one in pieces] == ['table', 'caption', 'equation']
+    # The two a reviewer reads as display objects were accounted for by the
+    # writing of them; the caption is a caption and was never outstanding.
+    assert rows[pieces[0]]['settled'] == 'reread'
+    assert rows[pieces[2]]['settled'] == 'reread'
+    assert 'account' not in rows[pieces[1]]
+    order = [row['piece'] for row in srv.read_draft(token)['pieces']]
+    at = order.index(pieces[0])
+    assert order[at:at + 3] == pieces, 'in printed order, where the piece was'
+
+    account_for_everything(token, marks)
+    assert 'request_rejected' not in srv.seal_manuscript(token)
+    text, sealed, manifest = base_of(srv.current())
+    assert '| Hour | Current (mA) |' in text
+    assert 'Caption: Table 2. Current drawn by the red widgets, by hour.' in text
+    assert '$$ I = V / R \\tag{(3)} $$' in text.splitlines()
+    assert GARBLED_TABLE not in text, 'and the line it was is not in the manuscript twice'
+    # Every piece it became keeps the whole reading it came out of, and says
+    # which part of it it is, so the re-read can be audited against it.
+    parts = [row for row in sealed if row.get('original', {}).get('piece') == prose['garbled']]
+    assert len(parts) == 3
+    assert [row['original']['part'] for row in parts] == [1, 2, 3]
+    assert all(row['original']['of'] == 3 for row in parts)
+    assert all(row['source'] == 'ai-reconstructed' for row in parts)
+    assert all(row['original']['text'] == GARBLED_TABLE for row in parts)
+    assert manifest['ai_read']['actions']['reread'] == 3
+
+
+def test_a_paragraph_re_read_names_the_debris_and_the_engine_cuts_it(tmp_path):
+    """Debris of a displayed equation comes out; nothing a model types goes in.
+
+    The converter half-swallows a displayed equation and leaves the rest of it
+    inside the paragraph beside it, so the paragraph cannot be left as it is —
+    and a model that may retype a paragraph is a model that may write the
+    paper. So prose is not typed here at all: the reader names the span and the
+    engine cuts it, and every character that comes out is a character of the
+    converter's reading because it is a slice of it.
+    """
+    opened, token = garbled(tmp_path)
+    marks = ids_of(token)
+    prose = paragraph_ids(token)
+    assert 'request_rejected' not in srv.view_page(token, 1)
+
+    typed = srv.reread_piece(token, prose['debris'], 1, [
+        {'kind': 'equation', 'latex': 'R = \\log_{2}(1 + \\mathrm{SNR})', 'number': '(9)'},
+        {'kind': 'paragraph', 'text': 'At high signal-to-noise the logarithm is well '
+                                      'approximated by a linear function of the bandwidth.'}])
+    assert 'not typed here' in typed['request_rejected']
+    assert DEBRIS_PARAGRAPH in typed['request_rejected'], \
+        'the refusal carries the whole reading, which the listing truncates'
+    assert prose['debris'] in listed(token), 'and nothing was replaced'
+
+    nowhere = srv.reread_piece(token, prose['debris'], 1, [
+        {'kind': 'paragraph', 'remove': ['We have SNR divided by ln 2']}])
+    assert 'reads nowhere in this piece' in nowhere['request_rejected']
+    twice = srv.reread_piece(token, prose['debris'], 1,
+                             [{'kind': 'paragraph', 'remove': ['the bandwidth']}])
+    assert 'reads 2 times' in twice['request_rejected']
+    too_much = srv.reread_piece(token, prose['debris'], 1, [
+        {'kind': 'paragraph',
+         'remove': ['At high signal-to-noise the logarithm is well approximated by a linear '
+                    'function of the bandwidth.']}])
+    assert '% of what the converter read' in too_much['request_rejected']
+    crowded = srv.reread_piece(token, prose['debris'], 1, [
+        {'kind': 'paragraph', 'remove': ['We have', 'SNR', 'ln 2', 'nothing else']}])
+    assert '4 spans is more than the 3' in crowded['request_rejected']
+
+    answer = srv.reread_piece(token, prose['debris'], 1, [
+        {'kind': 'equation', 'latex': 'R = \\log_{2}(1 + \\mathrm{SNR})', 'number': '(9)'},
+        {'kind': 'paragraph', 'remove': ['We have SNR ln 2']}])
+    assert 'request_rejected' not in answer, answer
+    assert answer['kinds'] == ['equation', 'paragraph']
+
+    # `keep` is the other way round: most of the block was a table, and one run
+    # of prose is left over. It drops everything it does not name, so it is
+    # allowed only where a table or an equation in the same re-read accounts
+    # for the rest — prose alone, it would be a silent loss of a paragraph.
+    alone = srv.reread_piece(token, prose['garbled'], 1,
+                             [{'kind': 'paragraph', 'keep': 'Hour Current'}])
+    assert '`keep` drops everything it does not name' in alone['request_rejected']
+    assert 'Use `remove`' in alone['request_rejected']
+    assert prose['garbled'] in listed(token), 'and nothing was replaced'
+
+    held = srv.reread_piece(token, prose['garbled'], 1, [
+        {'kind': 'table', 'rows': [['Hour', 'Current (mA)'], ['1', '4.5']]},
+        {'kind': 'paragraph', 'keep': '2 9.0'}])
+    assert 'request_rejected' not in held, held
+
+    account_for_everything(token, marks)
+    assert 'request_rejected' not in srv.seal_manuscript(token)
+    text, sealed, _ = base_of(srv.current())
+    assert 'SNR ln 2' not in text, 'the equation\'s debris left the paragraph'
+    assert ('At high signal-to-noise the logarithm is well approximated by a linear function of '
+            'the bandwidth. In that regime the gain is linear in the bandwidth and nothing '
+            'else.') in text, 'and the authors\' own characters are what is left'
+    assert '$$ R = \\log_{2}(1 + \\mathrm{SNR}) \\tag{(9)} $$' in text.splitlines()
+    trimmed = next(row for row in sealed
+                   if row.get('original', {}).get('piece') == prose['debris']
+                   and row['kind'] == 'paragraph')
+    assert trimmed['source'] == 'ai-reconstructed'
+    assert trimmed['original']['text'] == DEBRIS_PARAGRAPH
+
+
+def test_a_sentence_a_model_invents_cannot_reach_a_paragraph(tmp_path):
+    """The lead's probe of the first design, which that design accepted.
+
+    A character-subsequence test was the first guard, and almost any short
+    sentence is a character subsequence of a long paragraph: re-reading the
+    exosome abstract as its own text plus "This result is highly significant."
+    passed, and the sentence reached the sealed line. The same probe also
+    retyped a truncated preview of a long paragraph and silently dropped most
+    of it. Both are refused here because prose is never typed.
+    """
+    opened, token = garbled(tmp_path)
+    marks = ids_of(token)
+    prose = paragraph_ids(token)
+    assert 'request_rejected' not in srv.view_page(token, 1)
+    whole = DEBRIS_PARAGRAPH
+
+    for written in (whole + ' This result is highly significant.',
+                    'This result is highly significant.',
+                    whole[:60],
+                    whole.replace('linear', 'lineer')):
+        answer = srv.reread_piece(token, prose['debris'], 1,
+                                  [{'kind': 'paragraph', 'text': written}])
+        assert 'request_rejected' in answer, written
+        assert 'not typed here' in answer['request_rejected']
+
+    # The page's own pieces come back whole, so naming a span does not depend
+    # on a preview that is cut off at CONTEXT_CHARACTERS. A page is an image
+    # and a JSON payload beside it, which is where the pieces are.
+    page = srv.view_page(token, 1)
+    payload = json.loads(page[1]) if isinstance(page, list) else page
+    shown = {row['piece']: row['text'] for row in payload['pieces']}
+    assert shown[prose['debris']] == whole
+    assert '…' not in shown[prose['debris']]
+
+    # And `keep` is not the way round it: three words of an abstract kept and
+    # the rest dropped was the hole the lead found in the span design itself.
+    three = srv.reread_piece(token, prose['debris'], 1,
+                             [{'kind': 'paragraph', 'keep': 'At high signal-to-noise'}])
+    assert '`keep` drops everything it does not name' in three['request_rejected']
+
+    assert 'request_rejected' not in srv.reread_piece(
+        token, prose['debris'], 1, [{'kind': 'paragraph', 'remove': ['We have SNR ln 2']}])
+    account_for_everything(token, marks)
+    assert 'request_rejected' not in srv.seal_manuscript(token)
+    text, _, _ = base_of(srv.current())
+    assert 'highly significant' not in text
+    assert 'SNR ln 2' not in text
+    assert 'In that regime the gain is linear in the bandwidth' in text, \
+        'the paragraph is still the paragraph, not three words of it'
+
+
+def test_an_empty_piece_is_refused_and_one_the_stage_added_can_be_withdrawn(tmp_path):
+    """The caption that got in through the wrong argument, and the way back out.
+
+    ``add_piece`` with the text in ``rows`` wrote a caption whose text was
+    empty: the rendered line is ``Caption:`` and not empty, so the check that
+    was on the rendered line passed it, and the stage had nothing that could
+    take a piece out again. It reached a sealed manuscript.
+    """
+    opened, token = reading(tmp_path)
+    marks = ids_of(token)
+    assert 'request_rejected' not in srv.view_page(token, 1)
+    before_count = len(listed(token))
+
+    refused = srv.add_piece(token, marks['table_caption'], 'caption', 1,
+                            rows=[['Table 2. Readings of the red widgets.']])
+    assert 'a caption is its text' in refused['request_rejected']
+    assert len(listed(token)) == before_count, 'and nothing was written'
+
+    added = srv.add_piece(token, marks['table_caption'], 'caption', 1,
+                          text='Table 2. Readings of the red widgets.')
+    assert 'request_rejected' not in added, added
+    gone = srv.withdraw_piece(token, added['piece'])
+    assert 'request_rejected' not in gone, gone
+    assert gone['kind'] == 'caption' and gone['unsettled'] == ''
+    assert added['piece'] not in listed(token)
+    assert len(listed(token)) == before_count
+
+    # A converter piece is the authors' text, and leaving one out is not a
+    # repair of it.
+    held = srv.withdraw_piece(token, marks['mangled'])
+    assert 'not a piece this stage added' in held['request_rejected']
+    assert 'reread_piece' in held['request_rejected']
+    assert marks['mangled'] in listed(token)
+
+    # A figure's description is this stage's own, and withdrawing it leaves the
+    # figure unaccounted for rather than sealing a figure with no description.
+    assert 'request_rejected' not in srv.describe_figure(token, marks['figure'], 1, DESCRIPTION)
+    assert listed(token)[marks['figure']]['settled'] == 'described'
+    description = next(key for key, row in listed(token).items()
+                       if row['kind'] == 'figure-description')
+    dropped = srv.withdraw_piece(token, description)
+    assert 'request_rejected' not in dropped, dropped
+    assert dropped['unsettled'] == marks['figure']
+    assert listed(token)[marks['figure']]['settled'] is None
+    assert marks['figure'] in [row['piece']
+                               for row in srv.read_draft(token)['outstanding']['pieces']]
+
+
+def test_a_paragraph_the_converter_mislabelled_can_become_an_equation(tmp_path):
+    """The kind gate was on the converter's guess, which is what was wrong.
+
+    ``replace_equation`` and ``replace_table`` checked that the piece was
+    already an equation or a table, so the one case they were needed for —
+    the converter having emitted a displayed piece as a paragraph — was the
+    one case they refused.
+    """
+    opened, token = garbled(tmp_path)
+    marks = ids_of(token)
+    prose = paragraph_ids(token)
+    assert 'request_rejected' not in srv.view_page(token, 1)
+
+    answer = srv.replace_table(token, prose['garbled'], 1,
+                               [['Hour', 'Current (mA)'], ['1', '4.5'], ['2', '9.0']])
+    assert 'request_rejected' not in answer, answer
+    assert answer['kind'] == 'table' and answer['source'] == 'ai-reconstructed'
+    assert answer['replaced']['kind'] == 'paragraph'
+    assert answer['replaced']['text'] == GARBLED_TABLE
+    assert listed(token)[prose['garbled']]['settled'] == 'repaired'
+
+    # A figure's caption is not retyped into something else: its image is what
+    # is missing. Nor is a caption written over, because the piece it names
+    # would be left with none.
+    assert 'is the caption of a figure' in srv.replace_table(
+        token, marks['figure'], 1, [['a', 'b']])['request_rejected']
+    kept = srv.replace_table(token, marks['table_caption'], 1, [['a', 'b']])
+    assert 'reread_piece' in kept['request_rejected']
+    assert 'no caption' in kept['request_rejected']
+
+
+def test_the_reader_leaves_a_note_about_the_document_for_whoever_reads_it(tmp_path):
+    """What the reader knew and no reviewer could work out, where they will see it.
+
+    On the first real run the reader's own report said a table had been
+    dropped by the converter and two more were garbled. None of it reached a
+    file: the reviewers read the manuscript with nothing saying any of that,
+    and an application reading the run could not find it either.
+    """
+    opened, token = reading(tmp_path)
+    marks = ids_of(token)
+    account_for_everything(token, marks)
+
+    assert 'says nothing' in srv.seal_manuscript(token, note='garbled')['request_rejected']
+    long = srv.seal_manuscript(token, note='The converter dropped a table. ' * 100)
+    assert 'the manifest keeps' in long['request_rejected']
+    assert srv.current().base is None, 'and a refused note sealed nothing'
+
+    note = ('Table 1 is the converter\'s; its cells ran together and I re-read it off page 1. '
+            'Figure 1 is a photograph and its scale bar is too small to read in the image.')
+    sealed = srv.seal_manuscript(token, note=note)
+    assert 'request_rejected' not in sealed, sealed
+    assert sealed['ai_read']['note'] == note
+    _, _, manifest = base_of(srv.current())
+    assert manifest['ai_read']['note'] == note
+
+    # Where a reviewer reads it: above the manuscript, as the reader's account
+    # and not as the paper's.
+    reviewer = srv.claim_agent('core-1', CODES['core-1'])['agent_token']
+    served = srv.read_paper(reviewer)
+    text = served if type(served) is str else json.dumps(served)
+    assert note in text
+    assert 'not the authors\' text and not a finding' in text
 
 
 def test_a_run_without_a_reader_is_sealed_as_converted_and_says_so(tmp_path):

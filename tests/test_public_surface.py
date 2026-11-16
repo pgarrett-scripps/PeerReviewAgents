@@ -225,7 +225,7 @@ def test_read_run_says_what_state_the_manuscript_is_in(tmp_path):
     workspace = review.parent / names.MANUSCRIPT_DIRECTORY
     assert read_run(review)['manuscript'] == {
         'state': 'absent', 'sealed': False, 'reason': '', 'reader_model': '',
-        'lost_pages': [], 'documents': [], 'folder': None}
+        'lost_pages': [], 'note': '', 'documents': [], 'folder': None}
 
     # The draft the converter writes, before anything sealed it.
     workspace.mkdir(parents=True)
@@ -247,6 +247,7 @@ def test_read_run_says_what_state_the_manuscript_is_in(tmp_path):
     # And the base the Read stage seals, which names the model that read it.
     build_base(workspace, [{'kind': 'title', 'text': 'A manuscript', 'section': 'Title'}],
                manifest={'ai_read': {'read': True, 'reader_model': 'claude-sonnet-5-5',
+                                     'note': 'Table 4 was inside the converter\'s Table 3.',
                                      'lost_pages': [{'page': 2, 'words': 36, 'rotation': 0,
                                                      'added': [{'piece': 'p3',
                                                                 'document': names.MAIN_DOCUMENT,
@@ -255,6 +256,8 @@ def test_read_run_says_what_state_the_manuscript_is_in(tmp_path):
     assert (read['state'], read['sealed']) == ('sealed-by-reader', True)
     assert read['reader_model'] == 'claude-sonnet-5-5' and read['reason'] == ''
     assert read['lost_pages'][0]['added'][0]['lines'] == [3, 4]
+    assert read['note'] == 'Table 4 was inside the converter\'s Table 3.', \
+        'what the reader knew about the document and a reviewer could not work out'
     assert read['state'] in names.MANUSCRIPT_STATES
 
 

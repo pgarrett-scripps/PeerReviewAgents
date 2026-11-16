@@ -34,15 +34,49 @@ from .storage import write
 #: it; both need a description, and neither is settled without one.
 ACCOUNTABLE = ('equation', 'table', 'figure')
 
-#: What a repair may add that the converter missed.
-ADDABLE = ('equation', 'table', 'figure-description')
+#: What a repair may add that the converter missed. A caption is here because
+#: the converter loses them: on one paper it emitted Table 3's caption *inside*
+#: the table block, so the caption was nowhere a reader could repair it and
+#: nowhere a reviewer could read it. A caption belongs to the display object it
+#: names rather than to the authors' running prose, which is the line this list
+#: draws.
+ADDABLE = ('equation', 'table', 'caption', 'figure-description')
 
 #: What may be added on a page the converter returned nothing from, over and
 #: above :data:`ADDABLE`. That page's words are in the draft nowhere at all, so
-#: its prose and its captions have to be addable somewhere; everywhere else the
-#: text is the authors' as the converter read it, and a model writing a
-#: paragraph into it would be writing the paper.
-ADDABLE_ON_LOST_PAGE = ('paragraph', 'caption')
+#: its prose has to be addable somewhere; everywhere else the running text is
+#: the authors' as the converter read it, and a model writing a paragraph into
+#: it would be writing the paper.
+ADDABLE_ON_LOST_PAGE = ('paragraph',)
+
+#: The authors' running text. A piece of one of these kinds is never typed by
+#: this stage: a re-read of one names the spans to take out, or the one span to
+#: keep, and the engine cuts them — see :func:`prose_from`.
+PROSE_KINDS = ('paragraph', 'footnote', 'heading', 'title')
+
+#: How many spans one prose re-read may cut, and how much of the piece they may
+#: come to between them. The case they are for is the antenna paragraph that
+#: swallowed equation 10: ``"We have SNR ln 2 "``, 17 characters of a
+#: 700-character paragraph, 2.4% of it, in one span. Three is room for a
+#: paragraph that caught the debris of two displayed pieces and a stray
+#: equation number, and a fifth of a paragraph is already far more than any
+#: debris — a model asking to cut that much is asking to rewrite, which is the
+#: thing this stage must not do.
+MOST_SPANS = 3
+MOST_REMOVED = 0.2
+
+#: What is printed as a block of its own rather than as running text. The
+#: reader writes these from the page image: an equation, a table and a caption
+#: are the three things the converter reads worst, and what it produced for one
+#: is no constraint on what the page turns out to print there.
+DISPLAY_KINDS = ('equation', 'table', 'caption')
+
+#: The kinds one piece may be re-read as. The converter's ``kind`` is a guess
+#: from the layout — it emitted a full-page table as a one-line ``footnote``
+#: and a displayed equation as a ``paragraph`` — so the kind a piece arrives
+#: with is not the kind the page prints, and a stage that could only repair
+#: what the converter had already labelled left both of those as garbage.
+REREADABLE = DISPLAY_KINDS + PROSE_KINDS
 
 #: How much of a piece the listing shows. An equation, a table or a caption is
 #: shown whole, because that is what gets repaired; prose is context, and a
@@ -117,6 +151,147 @@ def shown(piece):
     return text
 
 
+def converter_reading(piece):
+    """Everything the converter read into one piece, as one string.
+
+    Text, LaTeX and every cell of a table, because a piece being re-read may be
+    any of those: the one that held Table 3, its caption and all of Table 4 was
+    a table, and the caption a reader takes out of it is in its cells.
+    """
+    found = [str(piece.get('text') or ''), str(piece.get('latex') or '')]
+    for row in piece.get('table') or []:
+        found.extend(str(cell) for cell in row)
+    return ' '.join(part for part in found if part.strip())
+
+
+def span(held, wanted, where, named):
+    """``(start, end)`` in *held*, for the one place it reads *wanted*.
+
+    The reader names a span of prose; the engine finds it and cuts it. Matching
+    is on the normal form, the same one a citation's quote is matched on, so a
+    span typed with a hyphen for a minus or without the line break the
+    converter left in the middle of it is still the span the page prints; the
+    offsets take the match back to the characters, so what comes out is the
+    converter's own text and not a normalised copy of it.
+
+    A span that reads nowhere is refused with the whole of what the converter
+    read, because the model is working from a page image and the converter's
+    line may not be the page's. A span that reads twice is refused for being
+    two places at once: the engine will not pick.
+    """
+    from . import paper_text
+    normal, offsets = paper_text.normalise(held)
+    needle = paper_text.normalised(wanted)
+    if not needle:
+        raise ValueError(where + ': ' + named + ' is empty. Give the words to take out, as they '
+                         'stand in the converter\'s reading.')
+    found = [at for at in range(len(normal) - len(needle) + 1) if normal.startswith(needle, at)]
+    if not found:
+        raise ValueError(where + ': ' + named + ' reads nowhere in this piece, so there is '
+                         'nothing to cut. Give it as the converter has it — it read: ' + held)
+    if len(found) > 1:
+        raise ValueError(where + ': ' + named + ' reads ' + str(len(found)) + ' times in this '
+                         'piece, and the engine will not choose which. Give a longer span, one '
+                         'that reads once.')
+    at = found[0]
+    start, last = offsets[at], offsets[at + len(needle) - 1]
+    end = last + 1
+    # A cluster the normal form expanded — a ligature, a compatibility form —
+    # is several normal characters at one offset, and cutting half of one would
+    # leave the other half in the prose. The cut takes the whole character.
+    while end < len(held) and (at + len(needle)) < len(offsets) \
+            and offsets[at + len(needle)] == last:
+        end += 1
+    return start, end
+
+
+def prose_from(held, part, where, accounted):
+    """The text of a prose part of a re-read: a cut of *held*, never typed.
+
+    A model asked to retype a paragraph minus some debris retypes the paragraph
+    too, and a character-by-character comparison does not catch it — almost any
+    invented sentence is a subsequence of a long paragraph, which is how
+    "This result is highly significant." was accepted onto the end of an
+    abstract. So prose is not written here at all. The reader says what to take
+    out, in ``remove``, or which single run of it to keep, in ``keep``, and the
+    engine does the cutting: every character that comes out is one the
+    converter read, in the order it read it, because it is a slice of it.
+
+    ``keep`` is the harder of the two to hold, because what it drops is
+    everything it does not name: ``keep='Cytokine storms, which'`` on an
+    abstract was accepted and sealed those three words as the paragraph. It is
+    for one case — the prose left over from a piece that is really a table or
+    an equation as well — so it is allowed only when *accounted* says some
+    other part of this re-read is that table or equation, and the cells or the
+    LaTeX hold the rest of what the converter read. A re-read that is prose
+    alone has nothing to account for a drop, and uses ``remove``, which keeps
+    the piece and cuts what it names.
+    """
+    if str(part.get('text') or '').strip():
+        raise ValueError(where + ': the running text is the authors\', so a paragraph, footnote, '
+                         'heading or title is not typed here. Name the debris to take out of what '
+                         'the converter read, in `remove` — ["We have SNR ln 2"] — or the one run '
+                         'of it this piece is, in `keep`. It read: ' + held)
+    cuts = [str(one) for one in (part.get('remove') or []) if str(one).strip()]
+    keep = str(part.get('keep') or '')
+    if cuts and keep.strip():
+        raise ValueError(where + ': give `remove` or `keep`, not both. `remove` keeps the piece '
+                         'and cuts the spans you name; `keep` takes the one span you name and '
+                         'drops the rest.')
+    if keep.strip():
+        if not accounted:
+            raise ValueError(where + ': `keep` drops everything it does not name, so it is only '
+                             'for the prose left over from a piece that is really a table or an '
+                             'equation as well — those parts are what account for the rest of the '
+                             'converter\'s reading. This re-read is prose alone, so nothing here '
+                             'would say where the rest of it went. Use `remove`, which keeps the '
+                             'piece and cuts the spans you name.')
+        start, end = span(held, keep, where, '`keep`')
+        return held[start:end]
+    if not cuts:
+        raise ValueError(where + ': name the debris to take out, in `remove`, or the one run of '
+                         'the converter\'s reading this piece is, in `keep`. To leave the prose '
+                         'exactly as the converter read it, leave this part out of `pieces` — the '
+                         'piece it comes from is what is being replaced.')
+    if len(cuts) > MOST_SPANS:
+        raise ValueError(where + ': ' + str(len(cuts)) + ' spans is more than the ' +
+                         str(MOST_SPANS) + ' this is for. `remove` takes a displayed piece\'s '
+                         'debris out of a paragraph; a paragraph that needs more cuts than that '
+                         'is one you are rewriting, and this stage does not rewrite prose.')
+    places = sorted(span(held, one, where, '`remove[' + str(number) + ']`')
+                    for number, one in enumerate(cuts))
+    for (_, ends), (begins, _) in zip(places, places[1:]):
+        if begins < ends:
+            raise ValueError(where + ': those spans overlap, so one of them is part of another. '
+                             'Name each run of debris once.')
+    from . import paper_text
+    whole = len(paper_text.normalised(held))
+    cut = sum(len(paper_text.normalised(held[start:end])) for start, end in places)
+    if whole and cut > whole * MOST_REMOVED:
+        raise ValueError(where + ': that takes out ' + str(round(100 * cut / whole)) + '% of what '
+                         'the converter read here, and `remove` is for a displayed piece\'s '
+                         'debris, which is a few words. If most of this piece is not prose, '
+                         're-read it as the table or equation it is and leave no paragraph part.')
+    rest, kept = 0, []
+    for start, end in places:
+        kept.append(held[rest:start])
+        rest = end
+    kept.append(held[rest:])
+    written = ' '.join(''.join(kept).split())
+    if not written:
+        raise ValueError(where + ': those spans are the whole piece, so no prose is left. Leave '
+                         'the paragraph part out of `pieces` instead.')
+    return written
+
+
+def original_of(piece):
+    """The converter's whole reading of a piece, as a map row keeps it."""
+    account = {'kind': str(piece.get('kind') or 'paragraph'), 'text': piece.get('text'),
+               'latex': piece.get('latex'), 'number': piece.get('number'),
+               'rows': piece.get('table')}
+    return {key: value for key, value in account.items() if value not in (None, '')}
+
+
 def viewed(draft):
     """Every page this draft's reading has opened, in order."""
     return sorted(int(page) for page in (draft.get('read') or {}).get('pages_viewed') or [])
@@ -129,6 +304,42 @@ def record_view(draft, page):
     seen.add(int(page))
     read['pages_viewed'] = sorted(seen)
     return read['pages_viewed']
+
+
+def shaped(kind, page, document, section, where, text='', latex='', number='', rows=()):
+    """One new piece of a kind, refused by *where* if it carries no content.
+
+    *where* is how the refusal names this piece — ``'add_piece'`` or a part's
+    position in a re-read — because a caller that passed the wrong argument has
+    to be told which piece it got wrong. The check is on the content and not on
+    the rendered line: a caption with no text renders as ``Caption: ``, which
+    is not empty and is not a caption either, and one of those reached a sealed
+    manuscript where nothing could take it out again.
+    """
+    piece = {'text': ' '.join(str(text).split()), 'section': section, 'kind': kind,
+             'page': int(page), 'bbox': None, 'citations': [], 'table': None,
+             'source': 'ai', 'document': document, 'original': {}}
+    if kind == 'equation':
+        piece['latex'] = ' '.join(str(latex).split())
+        piece['number'] = ' '.join(str(number).split())
+        piece['text'] = piece['latex']
+        if not piece['latex']:
+            raise ValueError(where + ': give the equation\'s LaTeX, in `latex`.')
+    elif kind == 'table':
+        piece['table'] = [[str(cell) for cell in row] for row in rows]
+        if not any(any(str(cell).strip() for cell in row) for row in piece['table']):
+            raise ValueError(where + ': give the table\'s rows, the header row first, in `rows`.')
+    elif kind == 'figure-description':
+        if len(piece['text']) < 40:
+            raise ValueError(where + ': a figure description says what is plotted, the axes and '
+                                     'their units, the series, and the values and trends that are '
+                                     'visible. This one is too short to be that.')
+    elif not piece['text']:
+        raise ValueError(where + ': a ' + kind + ' is its text, and this one has none. Give it in '
+                                                 '`text`.')
+    if not any(line.strip() for line in paper_base.piece_lines(piece)):
+        raise ValueError(where + ': that piece would render as nothing.')
+    return piece
 
 
 def settle(piece, action, page):
@@ -270,6 +481,45 @@ class Desk:
                 'reader that has opened that page: call view_page(' + str(page) + ') first.')
         return page
 
+    def retype(self, piece_id, kind, page, verb):
+        """One piece re-read as a kind of its own, with the converter's reading kept.
+
+        The kind the converter gave a piece is not checked, because it is a
+        guess from the layout and the page is the fact: it labelled a full-page
+        table a one-line ``footnote`` and a displayed equation a ``paragraph``,
+        and while this gate was on the converter's kind neither of them could
+        be repaired at all. What is refused is a figure — its image is not in
+        the text, so there is nothing to retype — and a piece this stage has
+        already settled some other way.
+        """
+        document, index, piece = locate(self.draft, piece_id)
+        if is_figure(piece):
+            raise ValueError(str(piece_id) + ' is the caption of a figure, and ' + verb + ' would '
+                             'replace it. Its image is what is missing, not its text: describe it '
+                             'with describe_figure.')
+        held = str(piece.get('kind') or 'paragraph')
+        if held == 'caption' and kind != 'caption':
+            raise ValueError(str(piece_id) + ' is a caption, and ' + verb + ' would write over '
+                             'it. A reviewer reads a caption and the piece it names together, so '
+                             'a ' + kind + ' written in its place leaves the manuscript with no '
+                             'caption and nothing saying it had one. Use reread_piece, which '
+                             'writes several pieces where there was one: give the caption and '
+                             'the ' + kind + ' as two.')
+        if held in PROSE_KINDS and kind in PROSE_KINDS:
+            raise ValueError(str(piece_id) + ' is a ' + held + ' and ' + verb + ' would rewrite it '
+                             'as prose. The running text is the authors\' as the converter read '
+                             'it. To take a displayed piece\'s debris out of a paragraph, use '
+                             'reread_piece, which only lets you remove what is there.')
+        piece['original'] = piece.get('original') or original_of(piece)
+        piece['kind'] = kind
+        piece['source'] = 'ai-reconstructed'
+        if kind == 'equation':
+            piece['table'] = None
+        if kind == 'table':
+            piece['latex'] = ''
+            piece['number'] = ''
+        return document, index, piece
+
     def target(self, piece_id, kinds, verb):
         document, index, piece = locate(self.draft, piece_id)
         kind = account_kind(piece) or str(piece.get('kind') or '')
@@ -306,6 +556,11 @@ class Desk:
                                   args.get('page'), args.get('text') or '',
                                   args.get('latex') or '', args.get('number') or '',
                                   args.get('rows') or [])
+        if name == 'reread_piece':
+            return self.reread_piece(str(args.get('piece') or ''), args.get('page'),
+                                     list(args.get('pieces') or []))
+        if name == 'withdraw_piece':
+            return self.withdraw_piece(str(args.get('piece') or ''))
         if name == 'merge_equations':
             return self.merge_equations(list(args.get('pieces') or []), args.get('latex') or '',
                                         args.get('number') or '', args.get('page'))
@@ -343,8 +598,14 @@ class Desk:
         answer = {'document': name, 'documents': documents, 'part': part, 'parts': parts,
                   'pieces': listed, 'outstanding': left,
                   'page_count': int(self.draft.get('page_count') or 0),
-                  'reading': ('The text here is the converter\'s. Where it disagrees with the '
-                              'page image, the page image is the manuscript.')}
+                  'reading': ('The text here is the converter\'s, and so is every `kind`: it '
+                              'guesses from the layout, and it is wrong often enough that a '
+                              'one-line paragraph of run-together numbers is usually a table it '
+                              'failed to see, and a short paragraph ending in "(9)" is usually a '
+                              'displayed equation. Only `account` says a piece is waiting on you. '
+                              'Where any of this disagrees with the page image, the page image is '
+                              'the manuscript: reread_piece turns a piece into the pieces the '
+                              'page really prints.')}
         if left['lost_pages']:
             answer['unconverted_pages'] = (
                 'The converter returned nothing at all from page(s) '
@@ -358,13 +619,34 @@ class Desk:
         return answer
 
     def view_page(self, page):
-        """One page of the original PDF, as the image a repair is read from."""
+        """One page of the original PDF, as the image a repair is read from.
+
+        With it, every piece the converter put on that page, whole. The listing
+        shows a long paragraph cut off at :data:`CONTEXT_CHARACTERS`, which is
+        enough to recognise a piece by and not enough to name a span inside it:
+        a reader asked to cut the debris out of a 700-character paragraph could
+        not see the end of the paragraph it was cutting. A page is a bounded
+        amount of text, and this is the call made while looking at it.
+        """
         target = pages.page_image(self.workspace, page, self.out,
                                   int(self.draft.get('page_count') or 0))
         self.pages_seen.add(int(page))
         record_view(self.draft, page)
         self.save()
+        here = []
+        for name, pieces in (self.draft.get('documents') or {}).items():
+            for piece in pieces:
+                if int(piece.get('page') or 0) != int(page):
+                    continue
+                here.append({'piece': piece.get('piece_id'),
+                             'kind': str(piece.get('kind') or 'paragraph'),
+                             'document': name, 'source': piece.get('source') or 'text',
+                             'text': rendered(piece)})
         return {'label': 'Original PDF page ' + str(page), 'page': int(page),
+                'pieces': here,
+                'reading': ('Those are the converter\'s pieces for this page, whole, with the '
+                            'text it read. A span you name in `remove` or `keep` is matched '
+                            'against this, not against the page.'),
                 'image': base64.b64encode(target.read_bytes()).decode()}
 
     def replace_equation(self, piece_id, latex, number, page):
@@ -374,13 +656,10 @@ class Desk:
         if not latex:
             raise ValueError('Give the equation\'s LaTeX. To keep what the converter had, '
                              'confirm_piece it instead.')
-        document, index, piece = self.target(piece_id, ('equation',), 'replace_equation')
-        piece.setdefault('original', {'latex': piece.get('latex'), 'number': piece.get('number'),
-                                      'text': piece.get('text')})
+        document, index, piece = self.retype(piece_id, 'equation', page, 'replace_equation')
         piece['latex'] = latex
         piece['number'] = ' '.join(str(number).split())
         piece['text'] = latex
-        piece['source'] = 'ai-reconstructed'
         settle(piece, 'repaired', page)
         self.save()
         return {'piece': piece_id, 'kind': 'equation', 'source': piece['source'],
@@ -394,11 +673,9 @@ class Desk:
         if not rows or not any(any(cell.strip() for cell in row) for row in rows):
             raise ValueError('Give the table\'s rows, the header row first. To keep what the '
                              'converter had, confirm_piece it instead.')
-        document, index, piece = self.target(piece_id, ('table',), 'replace_table')
-        piece.setdefault('original', {'rows': piece.get('table'), 'text': piece.get('text')})
+        document, index, piece = self.retype(piece_id, 'table', page, 'replace_table')
         piece['table'] = rows
         piece['text'] = ''
-        piece['source'] = 'ai-reconstructed'
         settle(piece, 'repaired', page)
         self.save()
         return {'piece': piece_id, 'kind': 'table', 'source': piece['source'],
@@ -459,32 +736,127 @@ class Desk:
                    else 'On a page the converter returned nothing from, '
                         + ' and '.join(ADDABLE_ON_LOST_PAGE) + ' may be added too.'))
         document, index, anchor = locate(self.draft, after)
-        piece = {'text': ' '.join(str(text).split()), 'section': anchor.get('section'),
-                 'kind': kind, 'page': page, 'bbox': None, 'citations': [], 'table': None,
-                 'source': 'ai', 'document': document, 'original': {},
-                 'piece_id': self.next_id()}
-        if kind == 'equation':
-            piece['latex'] = ' '.join(str(latex).split())
-            piece['number'] = ' '.join(str(number).split())
-            piece['text'] = piece['latex']
-            if not piece['latex']:
-                raise ValueError('Give the equation\'s LaTeX.')
-        if kind == 'table':
-            piece['table'] = [[str(cell) for cell in row] for row in rows]
-            if not piece['table']:
-                raise ValueError('Give the table\'s rows, the header row first.')
+        piece = shaped(kind, page, document, anchor.get('section'), 'add_piece',
+                       text=text, latex=latex, number=number, rows=rows)
+        piece['piece_id'] = self.next_id()
         if kind == 'figure-description':
             piece['describes'] = after
-            if len(piece['text']) < 40:
-                raise ValueError('A figure description says what is plotted, the axes and their '
-                                 'units, the series, and the values and trends that are visible.')
-        if not any(line.strip() for line in paper_base.piece_lines(piece)):
-            raise ValueError('That piece would render as nothing.')
         settle(piece, 'added', page)
         self.draft['documents'][document].insert(index + 1, piece)
         self.save()
         return {'piece': piece['piece_id'], 'kind': kind, 'after': after, 'source': 'ai',
                 'text': rendered(piece), 'outstanding': outstanding(self.draft)}
+
+    def reread_piece(self, piece_id, page, parts):
+        """One converted piece re-read as the pieces the page actually prints.
+
+        The converter emits one block per thing it *thinks* it found, and when
+        it is wrong about that nothing else could put it right: its table on
+        one page held Table 3, Table 3's caption, all of Table 4 and Table 4's
+        caption, and ``replace_table`` wrote Table 3 over the lot — the rest
+        left the manuscript with nothing saying it had. So a piece may be
+        replaced by several, in printed order.
+
+        Two rules hold it to transcription. A part of one of the
+        :data:`DISPLAY_KINDS` is written freely, because it is a transcription
+        of something printed as a block and the converter's reading of it is
+        kept beside it. A part that is prose is not written at all: it names
+        the spans to cut, or the one span to keep, and the engine cuts them —
+        see :func:`prose_from` — so a displayed piece's debris can leave a
+        paragraph and nothing a model types can get into one.
+        """
+        page = self.off_page(page)
+        parts = [dict(part or {}) for part in parts]
+        if not parts:
+            raise ValueError('Give the pieces this one is really made of, in printed order, in '
+                             '`pieces`. To replace it with one equation or one table, '
+                             'replace_equation and replace_table are shorter.')
+        document, index, piece = locate(self.draft, piece_id)
+        if is_figure(piece):
+            raise ValueError(str(piece_id) + ' is the caption of a figure. Its image is what is '
+                             'missing from the manuscript, not its text: describe_figure.')
+        if (piece.get('read') or {}).get('action') == 'added':
+            raise ValueError(str(piece_id) + ' is a piece this stage added, so there is no '
+                             'converter reading under it to re-read. Withdraw it with '
+                             'withdraw_piece and add what the page prints.')
+        held = converter_reading(piece)
+        # Whether anything in this re-read is a displayed piece: what `keep`
+        # drops has to be accounted for by a table's cells or an equation's
+        # LaTeX, and in a re-read that is prose alone nothing would be.
+        accounted = any(str(part.get('kind') or '') not in PROSE_KINDS for part in parts)
+        written = []
+        for at, part in enumerate(parts, 1):
+            kind = str(part.get('kind') or '')
+            where = 'pieces[' + str(at) + ']'
+            if kind not in REREADABLE:
+                raise ValueError(where + ': a piece is re-read as one of '
+                                 + ', '.join(REREADABLE) + ', and not as ' + (kind or 'nothing')
+                                 + '. A figure\'s image is describe_figure\'s.')
+            if kind in PROSE_KINDS:
+                text = prose_from(held, part, where, accounted)
+            else:
+                text = str(part.get('text') or '')
+                if part.get('remove') or part.get('keep'):
+                    raise ValueError(where + ': `remove` and `keep` are for prose, which this '
+                                     'stage cuts rather than writes. A ' + kind + ' is '
+                                     'transcribed from the page image, in `' +
+                                     ('rows' if kind == 'table' else
+                                      'latex' if kind == 'equation' else 'text') + '`.')
+            made = shaped(kind, page, document, piece.get('section'), where,
+                          text=text, latex=part.get('latex') or '',
+                          number=part.get('number') or '', rows=part.get('rows') or [])
+            made['source'] = 'ai-reconstructed'
+            made['original'] = {**original_of(piece), 'piece': piece_id,
+                                'part': at, 'of': len(parts)}
+            if len(parts) == 1:
+                made['bbox'] = piece.get('bbox')
+            made['piece_id'] = self.next_id()
+            settle(made, 'reread', page)
+            written.append(made)
+            self.draft['documents'][document].insert(index + len(written), made)
+        self.draft['documents'][document] = [one for one in self.draft['documents'][document]
+                                             if one.get('piece_id') != piece_id]
+        self.save()
+        return {'replaced': piece_id, 'pieces': [one['piece_id'] for one in written],
+                'kinds': [one['kind'] for one in written], 'source': 'ai-reconstructed',
+                'text': '\n'.join(rendered(one) for one in written),
+                'was': original_of(piece), 'outstanding': outstanding(self.draft)}
+
+    def withdraw_piece(self, piece_id):
+        """Take out a piece this stage added, having got it wrong.
+
+        Only this stage's own: a piece the converter produced is the authors'
+        text and leaving it out is not a repair. The one that made this
+        necessary was a caption added with the wrong argument, which rendered
+        as ``Caption: `` and sat in the sealed manuscript with no way to
+        remove it. Withdrawing a figure's description un-settles the figure, so
+        the seal waits for a description again rather than going out with none.
+        """
+        document, index, piece = locate(self.draft, piece_id)
+        action = (piece.get('read') or {}).get('action')
+        describes = piece.get('describes')
+        if action != 'added' and not (str(piece.get('kind')) == 'figure-description' and describes):
+            raise ValueError(str(piece_id) + ' is not a piece this stage added' + (
+                ', it is the converter\'s reading of the paper. The manuscript holds what the '
+                'authors printed, whether or not it reads well.' if action is None else
+                ' — it was ' + str(action) + '. Nothing this stage did to the authors\' own text '
+                'is undone by taking the text out.') + ' To re-read it as what the page prints, '
+                'reread_piece.')
+        self.draft['documents'][document] = [one for one in self.draft['documents'][document]
+                                             if one.get('piece_id') != piece_id]
+        unsettled = ''
+        if describes:
+            try:
+                _, _, figure = locate(self.draft, describes)
+            except ValueError:
+                figure = None
+            if figure is not None and (figure.get('read') or {}).get('action') == 'described':
+                figure.pop('read', None)
+                unsettled = describes
+        self.save()
+        return {'withdrawn': piece_id, 'kind': str(piece.get('kind') or ''),
+                'text': rendered(piece), 'unsettled': unsettled,
+                'outstanding': outstanding(self.draft)}
 
     def merge_equations(self, piece_ids, latex, number, page):
         """One equation the converter split into several pieces, put back together."""

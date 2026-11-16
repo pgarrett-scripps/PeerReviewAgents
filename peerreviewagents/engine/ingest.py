@@ -850,11 +850,15 @@ def seal_draft(output, draft=None, ai_read=None):
             + str(read_account.get('reader_model') or 'a model') + ', which is a separate piece '
             'whose source is "ai". The description is not the authors\' words.')
         gaps['equation_confidence'] = (
-            'Displayed equations carry the converter\'s own confidence in the map. Every equation '
-            'was checked against the page image: one whose source is "ai-reconstructed" was '
-            'rewritten from that image and keeps the converter\'s LaTeX in `original`, and one '
-            'whose source is "text" was confirmed as the converter had it. The confidence is the '
-            'converter\'s and was not updated.')
+            'Displayed equations carry the converter\'s own confidence in the map. Every piece '
+            'the converter emitted as an equation was checked against the page image: one whose '
+            'source is "ai-reconstructed" was rewritten from that image and keeps the '
+            'converter\'s LaTeX in `original`, and one whose source is "text" was confirmed as '
+            'the converter had it. The confidence is the converter\'s and was not updated. What '
+            'the converter emitted as something else is not covered by that: it labels a '
+            'displayed equation a paragraph often enough that an equation may be sitting in a '
+            'line whose source is "text", and the reader is asked to look for those but nothing '
+            'can list them. Inline maths inside a paragraph was not rechecked at all.')
     # A page nothing was converted from is in the manuscript only because a
     # model transcribed it off the image. A reader of the base is told which
     # pages those are, and which lines of which document they became, rather
