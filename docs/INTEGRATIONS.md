@@ -502,9 +502,10 @@ shows `REVIEW.md` are showing the same review.
 keys for anything that reads the file directly. `schema_version` is the one to
 check first: `peerreviewagents.ISSUES_SCHEMA_VERSION` is what this release
 writes (`review-issues-v3`, which added a member's `start`, `end` and
-`anchor_text`; a `review-issues-v2` file from a prior round still loads, with
-those three missing rather than wrong), and a stamp this release does not know is refused
-by name rather than read as far as it happens to parse —
+`anchor_text`), and it is the only one it reads: every earlier stamp —
+`review-issues-v1`, and `review-issues-v2`, which was written and superseded
+inside this release and never shipped in one — is refused by name rather than
+read as far as it happens to parse.
 `issues.schema_problem(document)` is the rule the reader, the prior-round loader
 and the renderer all go through, so a consumer can use the same one.
 

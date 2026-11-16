@@ -892,6 +892,20 @@ def test_an_issues_document_stamped_with_an_unknown_version_is_refused_by_name(t
     assert reading['issues'] == [] and reading['publishable'] is False
     assert any('no schema_version' in problem for problem in reading['problems'])
 
+    # And the reading is forward only: the one stamp this release writes is the
+    # only one it reads. `review-issues-v2` was written and superseded inside
+    # this release and never shipped in one, so reading it would be a
+    # compatibility path for a file nobody has.
+    assert issue_model.KNOWN_ISSUES_SCHEMAS == (issue_model.ISSUES_SCHEMA_VERSION,)
+    superseded = complete_run(tmp_path / 'superseded')
+    held = json.loads((superseded / 'issues.json').read_text(encoding='utf-8'))
+    _write(superseded / 'issues.json', {**held, 'schema_version': 'review-issues-v2'})
+
+    earlier = read_run(superseded)
+
+    assert earlier['issues'] == [] and earlier['publishable'] is False
+    assert any('review-issues-v2' in problem for problem in earlier['problems'])
+
 
 def test_every_issue_row_carries_every_field_of_the_shape(tmp_path):
     """Absent or null was the consumer's problem either way; always-present is the rule."""

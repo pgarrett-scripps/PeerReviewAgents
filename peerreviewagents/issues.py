@@ -29,13 +29,13 @@ ISSUES_SCHEMA_VERSION = 'review-issues-v3'
 #: Every schema this version can read. A stamp is only worth writing if someone
 #: checks it: :func:`schema_problem` is that check, and the reader, the prior-round
 #: loader and the renderer all go through it rather than each deciding for itself.
-#: ``v2`` is where evidence became lines in the manuscript instead of block ids,
-#: and a ``v1`` file is refused rather than read as though its ids meant
-#: something here: nothing in this release can turn one into the other.
-#: ``v3`` added the offsets of the quote within its line to every member, which
-#: is additive: a ``v2`` file is read as it stands, with those fields missing
-#: rather than wrong, which is why a prior round's file still loads.
-KNOWN_ISSUES_SCHEMAS = ('review-issues-v2', 'review-issues-v3')
+#: ``v3`` is the one this release reads, and every earlier stamp is refused by
+#: name rather than read as far as it happens to parse. ``v1`` held evidence as
+#: block ids, which nothing here can turn into lines of the manuscript, and
+#: ``v2`` was never in a release — it was written and superseded inside this
+#: one — so reading either would be a compatibility path for a file nobody has.
+#: Forward only, as the manuscript base is.
+KNOWN_ISSUES_SCHEMAS = ('review-issues-v3',)
 
 #: An issue's severity. The same three words a finding carries, because an
 #: issue's severity is the editor's judgement of the same scale.

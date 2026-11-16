@@ -18,6 +18,7 @@ import re
 
 import pytest
 
+from peerreviewagents import ISSUES_SCHEMA_VERSION
 from peerreviewagents.engine.run_report import NOTICE, WIDTH, report_blocks, write_reports
 from peerreviewagents.engine.storage import write
 
@@ -50,7 +51,7 @@ def _member(finding, slot, uid):
 
 
 ISSUES = {
-    'schema_version': 'review-issues-v2', 'issues_source': 'editor',
+    'schema_version': ISSUES_SCHEMA_VERSION, 'issues_source': 'editor',
     'summary': 'Two issues remain.',
     'verdict': {'significance': 'incremental', 'strength_of_evidence': 'moderate',
                 'reasoning': 'The central claim outruns the data by one step.'},

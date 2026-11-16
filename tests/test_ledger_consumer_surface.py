@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from peerreviewagents import read_citation_ledger, read_run, runs
+from peerreviewagents import ISSUES_SCHEMA_VERSION, read_citation_ledger, read_run, runs
 from peerreviewagents.engine import citation_ledger as cl
 from peerreviewagents.engine import run_report
 
@@ -63,7 +63,7 @@ def run_folder(tmp_path, rows=(), stages=None, protocol=PLANNED):
     (review / 'protocol.json').write_text(json.dumps(protocol), encoding='utf-8')
     (review / 'progress.json').write_text(json.dumps({'status': 'complete'}), encoding='utf-8')
     (review / 'issues.json').write_text(
-        json.dumps({'schema_version': 'review-issues-v2', 'issues_source': 'editor',
+        json.dumps({'schema_version': ISSUES_SCHEMA_VERSION, 'issues_source': 'editor',
                     'issues': [{'id': 'i01', 'name': 'One problem', 'severity': 'major',
                                 'category': 'claims-and-conclusions', 'rank': 1,
                                 'statement': 'The one issue this run raised.',

@@ -59,9 +59,11 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   had to search the line for the words again to underline them: the search the
   engine had already done, done a second time by code that cannot refuse a
   quote that occurs twice in the line. `issues.json` is stamped
-  `review-issues-v3`; the change is additive, so a prior round's
-  `review-issues-v2` file still loads, with the three fields missing rather
-  than wrong. A ledger use row's `line` now locates the citing sentence rather
+  `review-issues-v3`, and that is the only stamp this release reads: the
+  reading is forward only, as the manuscript base is, and `review-issues-v2`
+  — written and superseded inside this release, never shipped in one — is
+  refused by name like any other stamp it does not know. A ledger use row's
+  `line` now locates the citing sentence rather
   than the paragraph around it, which is the point of the row; `row_id` is
   still built from the paragraph's first line, so a row keeps its identity
   across rounds. `docs/INTEGRATIONS.md` states the rule in one place and both
