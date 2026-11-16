@@ -210,6 +210,7 @@ class PaperBase:
         self.documents = documents
         self.rows = rows
         self._projections = {}
+        self._folded = {}
         self.manifest = manifest or {}
         self.paper_id = self.manifest.get('paper_id')
         self.title = self.manifest.get('title')
@@ -247,6 +248,47 @@ class PaperBase:
         end = start if end is None else end
         return '\n'.join(self.line_text(number, document)
                          for number in range(int(start), int(end) + 1))
+
+    def projection(self, document=MAIN_DOCUMENT):
+        """``(normal_form, offsets, line_starts)`` for a whole document, computed once.
+
+        The normal form of the document, not of a line: a quote that runs over
+        a line break — the rows of a table, a sentence quoted across the blank
+        separator — is one run of words to a reader and has to be one run here
+        too. ``offsets`` maps each character of it back to the file, and
+        ``line_starts`` turns that offset into the line number a citation is
+        recorded as.
+        """
+        if document not in self._projections:
+            text = self.documents[document]
+            normal, offsets = paper_text.normalise(text)
+            starts = [0]
+            for index, character in enumerate(text):
+                if character == '\n':
+                    starts.append(index + 1)
+            self._projections[document] = (normal, offsets, starts)
+        return self._projections[document]
+
+    def folded(self, document=MAIN_DOCUMENT):
+        """``(casefolded_normal_form, index_into_the_normal_form)``, computed once.
+
+        Case is the one difference the normal form keeps, because a manuscript
+        that says one thing and a quote that says something like it are not the
+        same claim. But a reviewer who lowers the first letter of a sentence to
+        splice it into its own has not misquoted anyone, so a quote that
+        differs only in case is matched here and reported as inexact rather
+        than refused. Folding a character can lengthen it, so each character of
+        the fold carries the index it came from.
+        """
+        if document not in self._folded:
+            normal, _, _ = self.projection(document)
+            characters, origins = [], []
+            for index, character in enumerate(normal):
+                for folded in (character.casefold() or character):
+                    characters.append(folded)
+                    origins.append(index)
+            self._folded[document] = (''.join(characters), origins)
+        return self._folded[document]
 
     def piece_at(self, line, document=MAIN_DOCUMENT):
         """The map row whose line range holds this line, or ``None``.

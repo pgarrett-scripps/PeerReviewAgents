@@ -53,6 +53,20 @@ QUOTES = {
 DROPPED = frozenset('­​‌‍‎‏⁠﻿')
 
 
+#: The Unicode categories of a combining mark: a character that is drawn on the
+#: one before it and is part of it, not a character of its own.
+MARKS = ('Mn', 'Mc', 'Me')
+
+
+def is_mark(character) -> bool:
+    """Whether a character belongs to the character printed before it.
+
+    A span that ends between a letter and its accent is not a span of the text,
+    so anything measuring a span in the original string has to ask this.
+    """
+    return bool(character) and unicodedata.category(character) in MARKS
+
+
 def _clusters(text):
     """``text`` split so that every combining mark stays with the character it marks.
 
@@ -66,7 +80,7 @@ def _clusters(text):
     """
     start = 0
     for index, character in enumerate(text):
-        if index > start and unicodedata.category(character) not in ('Mn', 'Mc', 'Me'):
+        if index > start and not is_mark(character):
             yield start, text[start:index]
             start = index
     if start < len(text):
@@ -129,4 +143,5 @@ def words(text) -> list:
     return normalised(text).casefold().split()
 
 
-__all__ = ['DASHES', 'QUOTES', 'DROPPED', 'normalise', 'normalised', 'fingerprint', 'words']
+__all__ = ['DASHES', 'QUOTES', 'DROPPED', 'MARKS', 'is_mark', 'normalise', 'normalised',
+           'fingerprint', 'words']
