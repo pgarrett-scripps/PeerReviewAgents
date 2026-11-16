@@ -23,6 +23,15 @@ MANUSCRIPT_DIRECTORY = 'manuscript'
 #: The schema every stored finding is stamped with, in its ``schema_version``.
 FINDING_SCHEMA_VERSION = 'review-finding-v4'
 
+#: What ``map.json`` and ``manifest.json`` of a manuscript workspace are. The
+#: base is written once and never edited, so a reader checks this before
+#: trusting the rows.
+BASE_SCHEMA_VERSION = 'paper-base-v1'
+
+#: The name of the main document of a manuscript workspace. Supplements are
+#: ``supplement-<name>.md`` beside it, and every citation names its document.
+MAIN_DOCUMENT = 'paper.md'
+
 #: ``running`` while the session is alive, ``blocked`` for any outcome that is
 #: not a written review, and the two ``complete`` statuses for one that is.
 RUNNING = 'running'
@@ -45,6 +54,6 @@ COMPLETE_STATUSES = (COMPLETE, COMPLETE_WITHOUT_FINDINGS)
 #: :func:`peerreviewagents.report_parser`.
 CLI_COMMANDS = ('review', 'report')
 
-__all__ = ['RUN_DIRECTORY', 'MANUSCRIPT_DIRECTORY', 'FINDING_SCHEMA_VERSION', 'RUN_STATUSES',
-           'COMPLETE_STATUSES', 'RUNNING', 'BLOCKED', 'COMPLETE', 'COMPLETE_WITHOUT_FINDINGS',
-           'CLI_COMMANDS']
+__all__ = ['RUN_DIRECTORY', 'MANUSCRIPT_DIRECTORY', 'FINDING_SCHEMA_VERSION',
+           'BASE_SCHEMA_VERSION', 'MAIN_DOCUMENT', 'RUN_STATUSES', 'COMPLETE_STATUSES',
+           'RUNNING', 'BLOCKED', 'COMPLETE', 'COMPLETE_WITHOUT_FINDINGS', 'CLI_COMMANDS']

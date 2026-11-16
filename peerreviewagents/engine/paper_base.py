@@ -32,15 +32,15 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from ..names import BASE_SCHEMA_VERSION, MAIN_DOCUMENT
 from . import paper_text
 from .storage import read, write
 
-#: What ``map.json`` and ``manifest.json`` are. The base is written once per
-#: import and never edited, so a reader checks this before trusting the rows.
-BASE_SCHEMA_VERSION = 'paper-base-v1'
-
-#: The name of the main document. Supplements are ``supplement-<name>.md``.
-MAIN_DOCUMENT = 'paper.md'
+# The schema version and the main document's name live in
+# `peerreviewagents.names`, the module that imports nothing, because they are
+# the two things a consumer needs before it has read a single file: the name to
+# open and the version to check. They are re-exported here so the engine's own
+# modules keep reading them from the format they belong to.
 
 #: Where a piece's text came from. ``text`` is the document's own text layer as
 #: the converter read it. ``ai`` is a page image read by a model and

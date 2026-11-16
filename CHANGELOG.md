@@ -47,6 +47,35 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The manuscript base is on the public surface.** `write_manuscript(folder,
+  pieces, ...)` writes a whole manuscript workspace — the documents, `map.json`,
+  `references.json`, `statistics.json` and a `manifest.json` whose `files`
+  digests the folder — from pieces a caller composed itself, and returns that
+  manifest, as `import_paper` does. `read_manuscript(folder)` reads one back as
+  a `PaperBase`, which is `verify_workspace` without the digest check, for an
+  application showing a folder rather than reviewing it; `PaperBase`,
+  `BASE_SCHEMA_VERSION` and `MAIN_DOCUMENT` are exported with them. An app that
+  keeps its manuscript in its own format — a Typst source it parses itself —
+  had to write `paper.md` and the map by hand against a private engine module,
+  which is a second copy of the format in a place no test of this package
+  reaches. A piece's `page` and `bbox` are optional, because a Typst source has
+  no pages until it is built: a pageless piece gets `null` in both columns, the
+  reviewer's `view_page` refuses, and the citation is the line, which is what
+  it already was for a PDF.
+  `docs/INTEGRATIONS.md` documents what a piece is on the way in, field by
+  field, what `verify_workspace` returns, and what a scaffold workspace must
+  contain. The suite's own manuscript fixtures are built through this call, so
+  a test anchors against the workspace an application writes.
+- **A box in `map.json` says what unit it is in, and the manifest says how big
+  the page is.** `manifest['pages']` is one `{page, width, height, rotation}`
+  record per page, in the same points, and `manifest['box_convention']` states
+  the unit and the origin: PDF points, origin at the top-left corner, `y`
+  growing down. Verified against `pdftotext -bbox` over the shared fixture,
+  word for word. An application drawing a highlight on a page image had both to
+  guess, and a guessed origin puts the box at the other end of the page.
+  `import_paper` reads the sizes from the PDF; `write_manuscript` takes them as
+  `pages=`. An empty list means the sizes were not recorded — no pages, or no
+  `pdfinfo` on the importing machine — and never a default page size.
 - **`validate_prior_issues(document)` on the public surface.** Every problem
   that would stop an issues document being read as the prior round of a later
   review, in words, worst first; an empty list means `peerreview review

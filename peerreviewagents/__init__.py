@@ -63,15 +63,24 @@ Checking a wrapper's own commands
 
 Manuscripts and workspaces
     :func:`import_paper` imports a PDF into a manuscript workspace without any
-    model call. :func:`verify_workspace` re-checks an imported workspace
-    against its own manifest and returns its manuscript — the Markdown and the
-    map over it, as a :class:`~peerreviewagents.engine.paper_base.PaperBase`.
+    model call. :func:`write_manuscript` writes the same workspace from pieces
+    a caller composed itself — a Typst or LaTeX source it parsed, an editor's
+    own document — and returns the manifest, as the import does; a piece's
+    ``page`` and ``bbox`` are optional there, because a manuscript built from a
+    source file has no pages. :func:`read_manuscript` reads a workspace back as
+    a :class:`PaperBase`: the documents' text, their lines, the map rows and
+    the manifest. :func:`verify_workspace` is the same read with the manifest's
+    digests re-checked first, and returns that same :class:`PaperBase`, so a
+    folder whose Markdown was edited after it was written is refused by name
+    instead of producing line numbers that no longer mean anything.
     :func:`export_draft`
     applies the accepted anchored edits of a review to a copy of ``paper.md``.
     :mod:`peerreviewagents.workspace` holds the smaller tools those are built
     from, for an app that writes files the engine reads back: the manifest
     digest, the atomic JSON read and write, the review normalisation and save,
     and the two text helpers the import uses.
+    ``docs/INTEGRATIONS.md`` documents what a piece is on the way in and what a
+    map row says on the way out.
 
 Names
     :data:`RUN_DIRECTORY` and :data:`MANUSCRIPT_DIRECTORY` are the two folders
@@ -82,6 +91,9 @@ Names
     the one versioned source of truth a run's review is rendered from, and
     :data:`ISSUE_SEVERITIES`, :data:`ISSUE_CATEGORIES` and
     :data:`ISSUE_STATUSES` are the vocabularies an issue is written in.
+    :data:`BASE_SCHEMA_VERSION` is the schema of a manuscript workspace's
+    ``map.json`` and ``manifest.json``, and :data:`MAIN_DOCUMENT` is the name of
+    its main document, the one every workspace holds.
     :mod:`peerreviewagents.issues` holds the helpers that order and group them —
     required changes by rank, suggestions by category — so a consumer renders
     an issues document the same way ``REVIEW.md`` does.
@@ -103,9 +115,11 @@ from .issues import (
     ISSUES_SCHEMA_VERSION,
 )
 from .names import (
+    BASE_SCHEMA_VERSION,
     CLI_COMMANDS,
     COMPLETE_STATUSES,
     FINDING_SCHEMA_VERSION,
+    MAIN_DOCUMENT,
     MANUSCRIPT_DIRECTORY,
     RUN_DIRECTORY,
     RUN_STATUSES,
@@ -114,7 +128,9 @@ from .names import (
 if TYPE_CHECKING:  # Static tooling sees the real objects, not the fallback.
     from .cli.main import report_parser
     from .engine.annotations import export_draft, verify_workspace
-    from .engine.ingest import import_paper
+    from .engine.ingest import import_paper, write_manuscript
+    from .engine.paper_base import PaperBase
+    from .engine.paper_base import load as read_manuscript
     from .engine.run_report import write_reports
     from .plugin.starter import build_parser as review_parser
     from .plugin.starter import claude_version as claude_code_version
@@ -133,6 +149,9 @@ __all__ = [
     "locate_run",
     "NotARunFolder",
     "import_paper",
+    "write_manuscript",
+    "read_manuscript",
+    "PaperBase",
     "write_reports",
     "verify_workspace",
     "export_draft",
@@ -146,6 +165,8 @@ __all__ = [
     "COMPLETE_STATUSES",
     "CLI_COMMANDS",
     "FINDING_SCHEMA_VERSION",
+    "BASE_SCHEMA_VERSION",
+    "MAIN_DOCUMENT",
     "ISSUES_SCHEMA_VERSION",
     "ISSUE_SEVERITIES",
     "ISSUE_CATEGORIES",
@@ -175,6 +196,14 @@ _LAZY = {
     "review_parser": (".plugin.starter", "build_parser"),
     "report_parser": (".cli.main", "report_parser"),
     "import_paper": (".engine.ingest", "import_paper"),
+    # The other end of the import, and the read it leaves behind: an app that
+    # composes its own pieces writes them with `write_manuscript` and reads the
+    # workspace back with `read_manuscript`, which is `verify_workspace`
+    # without the digest check — what a viewer wants, since it is showing the
+    # folder rather than reviewing it. `PaperBase` is the type both return.
+    "write_manuscript": (".engine.ingest", "write_manuscript"),
+    "read_manuscript": (".engine.paper_base", "load"),
+    "PaperBase": (".engine.paper_base", "PaperBase"),
     "write_reports": (".engine.run_report", "write_reports"),
     "verify_workspace": (".engine.annotations", "verify_workspace"),
     "export_draft": (".engine.annotations", "export_draft"),
