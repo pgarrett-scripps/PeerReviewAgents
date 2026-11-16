@@ -288,6 +288,14 @@ and the overlap experiment.
   is all the round can say. The header's `Run folder | review` — the name of the
   directory the renderer is handed, for every run ever written — now names the
   run folder.
+- **A published path carried the separator of the machine that wrote it.** The
+  editor trace in `issues.json` named `review\editor-log.jsonl` on Windows and
+  `review/editor-log.jsonl` everywhere else, so nothing matching the one found
+  the other; the manuscript manifest keyed its files the same way, which the
+  scaffold inventory check — built with `as_posix` — read as a changed
+  manuscript and refused every run over a scaffold source on Windows. One
+  `storage.relative_name` makes every run-relative name POSIX on every OS, and
+  the refusal that names the editor log no longer prints an absolute path.
 
 ## [0.9.1] — 2026-11-14
 

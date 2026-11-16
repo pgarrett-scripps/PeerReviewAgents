@@ -45,7 +45,7 @@ from ..engine.domain_registry import context as domain_context
 from ..engine.domain_registry import route as domain_route
 from ..engine.ingest import import_paper
 from ..engine.investigation import Investigation
-from ..engine.storage import digest, read, write
+from ..engine.storage import digest, read, relative_name, write
 from ..names import (
     COMPLETE_STATUSES,
     FINDING_SCHEMA_VERSION,
@@ -1045,10 +1045,12 @@ class Run:
         """
         rows = []
         path = self.review / 'editor-log.jsonl'
-        # Run-relative, never absolute: this trace is carried into the stage
-        # ledger, and the ledger is published inside issues.json. An absolute
-        # path there names the home directory of whoever ran the review.
-        where = str(path.relative_to(self.root))
+        # Run-relative, never absolute, and in POSIX form on every OS: this
+        # trace is carried into the stage ledger, and the ledger is published
+        # inside issues.json. An absolute path there names the home directory
+        # of whoever ran the review, and a separator from the machine that ran
+        # it makes the same name unmatchable on the next reader's machine.
+        where = relative_name(path, self.root)
         try:
             text = path.read_text(encoding='utf-8')
         except OSError:
@@ -3103,7 +3105,7 @@ def write_review(agent_token: str) -> dict:
             else:
                 parts.append('No submission call reached the server at all: the editor never '
                              'called submit_issues or submit_editor. Nothing is in '
-                             f"{run.review / 'editor-log.jsonl'}.")
+                             + relative_name(run.review / 'editor-log.jsonl', run.root) + '.')
         if silent:
             parts.append('Stages that never reported: ' + ', '.join(silent) + '.')
             if not unclosed and 'editor' in silent and trace:

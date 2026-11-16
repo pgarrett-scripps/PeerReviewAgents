@@ -18,11 +18,12 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 
 from peerreviewagents import issues as issue_model
+from peerreviewagents.engine.storage import relative_name
 from peerreviewagents.plugin import server as srv
 from peerreviewagents.runs import read_run
 
@@ -849,6 +850,30 @@ def test_no_published_file_holds_a_path_from_the_machine(tmp_path):
     document = json.loads((run.review / 'issues.json').read_text(encoding='utf-8'))
     assert document['stages']['editor_trace']['log'] == 'review/editor-log.jsonl'
     assert document['stages']['editor_trace']['refused'] == 1
+    for value in (document['stages']['editor_trace']['log'],
+                  *json.loads((run.root / 'manuscript' / 'manifest.json')
+                              .read_text(encoding='utf-8'))['files']):
+        assert '\\' not in value, value
+
+
+def test_a_published_path_is_posix_whichever_os_wrote_the_review(tmp_path):
+    """A run-relative name is read on another OS than the one that wrote it.
+
+    ``str()`` of a relative path writes the separator of the machine that ran
+    the review, so the editor's trace said ``review\\editor-log.jsonl`` on
+    Windows and the manuscript manifest keyed its files the same way — which
+    the scaffold inventory check, built with ``as_posix``, read as a changed
+    manuscript. Nothing matched across the two, and nothing said why.
+    """
+    windows = PureWindowsPath(r'C:\Users\someone\runs\paper')
+    assert relative_name(windows / 'review' / 'editor-log.jsonl',
+                         windows) == 'review/editor-log.jsonl'
+    assert relative_name(windows / 'scaffold' / 'main.typ', windows) == 'scaffold/main.typ'
+    posix = PurePosixPath('/runs/paper')
+    assert relative_name(posix / 'review' / 'editor-log.jsonl',
+                         posix) == 'review/editor-log.jsonl'
+    assert relative_name(str(tmp_path / 'review' / 'issues.json'),
+                         str(tmp_path)) == 'review/issues.json'
 
 
 # -- the rebuttal quote answers one thing only ------------------------------
