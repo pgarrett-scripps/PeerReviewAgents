@@ -193,7 +193,7 @@ peerreview review manuscript.pdf arms/manuscript-only --literature-cutoff "$CUTO
 
 One core reviewer with the manuscript text only. The server removes the page
 and supplement image tools and every network tool from that slot's allow list,
-so the reviewer keeps `read_blocks`, `search`, `calculate`, `save_note`,
+so the reviewer keeps `read_paper`, `search`, `calculate`, `save_note`,
 `inspect_results` and `record_comparison` and has no way to look at a figure or
 check a citation. It is the floor the evidence-linked arms are measured
 against: against `single`, the evidence is what differs.

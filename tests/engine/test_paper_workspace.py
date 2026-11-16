@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from peerreviewagents.engine.annotations import normalize_review,export_draft,verify_workspace
 from peerreviewagents.engine.calculator import calculate
+from peerreviewagents.engine.paper_base import write_base
 from peerreviewagents.engine.storage import digest,write
 from peerreviewagents.engine.investigation import Investigation
 
@@ -76,11 +77,40 @@ class SourceIntegrity(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d)
             write(root/'paper.json',self.paper)
+            # The investigation reads the base as well as paper.json, so the
+            # folder holds the one paragraph as paper.md and its map row.
+            write_base(root,{'paper.md':[{'kind':'paragraph','text':self.paper['blocks'][0]['text'],
+                                          'section':'Results','page':1}]})
             write(root/'manifest.json',{'files':{'paper.json':digest((root/'paper.json').read_bytes())}})
             server=Investigation({'paper':d,'output':str(root/'out'),'cache':str(root/'cache'),'tool_limit':1})
             self.assertTrue(server.call('save_note',{'text':'A hypothesis','evidence_blocks':['b1']})['saved'])
             self.assertIn('notice',server.call('search',{'query':'samples'}))
             self.assertEqual(len((root/'out/notes.jsonl').read_text(encoding='utf-8').splitlines()),1)
+
+    def test_reading_the_paper_is_free_and_searching_is_not(self):
+        """``read_paper`` is outside the allowance; it is also what every agent reads."""
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            write(root/'paper.json',self.paper)
+            write_base(root,{'paper.md':[{'kind':'paragraph','text':self.paper['blocks'][0]['text'],
+                                          'section':'Results','page':1}]})
+            write(root/'manifest.json',{'files':{'paper.json':digest((root/'paper.json').read_bytes())}})
+            server=Investigation({'paper':d,'output':str(root/'out'),'cache':str(root/'cache'),'tool_limit':1})
+            for _ in range(3):
+                served=server.call('read_paper',{})
+                self.assertIn('    1| A 🧠 finding has 12 samples.',served['text'])
+                self.assertEqual(served['parts'],1)
+                self.assertIs(served['tool_receipt']['spent'],False)
+            self.assertEqual(server.calls,0)
+            found=server.call('search',{'query':'12 samples'})
+            self.assertEqual([m['line'] for m in found['matches']],[1])
+            self.assertIs(found['tool_receipt']['spent'],True)
+            self.assertEqual(server.calls,1)
+            logged=[json.loads(line) for line
+                    in (root/'out/tool-log.jsonl').read_text(encoding='utf-8').splitlines()]
+            self.assertEqual([row['tool'] for row in logged],['read_paper']*3+['search'])
+            self.assertTrue(all('text' not in row['result'] for row in logged),
+                            'the log records which part was served, not the manuscript')
 
     def test_imported_pilot_references_and_table_boundaries(self):
         path=Path('runs/pra-workspace-pilot-v1/paper-v2/paper.json')

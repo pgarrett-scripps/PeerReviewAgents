@@ -61,11 +61,24 @@ def open_run(tmp_path, **kwargs):
     return opened
 
 
+def read_whole_paper(token):
+    """Read every part of the manuscript, as the brief tells every agent to.
+
+    The server refuses a finding from a slot it has not served the whole paper
+    to, and reading spends nothing from the allowance.
+    """
+    run = srv.current()
+    if 'read_paper' in run.agent_for(token).allowed:
+        for part in range(1, srv.paper_view.served(run.base) + 1):
+            assert isinstance(srv.read_paper(token, part=part), str)
+    return token
+
+
 def token_for(slot):
     taken = srv.claim_agent(slot, CODES.get(slot, ''))
     assert 'agent_token' in taken, taken
     CODES.pop(slot, None)
-    return taken['agent_token']
+    return read_whole_paper(taken['agent_token'])
 
 
 def quote_pool(run, wanted):
