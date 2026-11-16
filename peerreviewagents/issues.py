@@ -24,18 +24,22 @@ from __future__ import annotations
 import re
 
 #: The schema every ``issues.json`` is stamped with, in its ``schema_version``.
-ISSUES_SCHEMA_VERSION = 'review-issues-v3'
+ISSUES_SCHEMA_VERSION = 'review-issues-v4'
 
 #: Every schema this version can read. A stamp is only worth writing if someone
 #: checks it: :func:`schema_problem` is that check, and the reader, the prior-round
 #: loader and the renderer all go through it rather than each deciding for itself.
-#: ``v3`` is the one this release reads, and every earlier stamp is refused by
+#: ``v4`` is the one this release reads, and every earlier stamp is refused by
 #: name rather than read as far as it happens to parse. ``v1`` held evidence as
-#: block ids, which nothing here can turn into lines of the manuscript, and
-#: ``v2`` was never in a release — it was written and superseded inside this
-#: one — so reading either would be a compatibility path for a file nobody has.
-#: Forward only, as the manuscript base is.
-KNOWN_ISSUES_SCHEMAS = ('review-issues-v3',)
+#: block ids, which nothing here can turn into lines of the manuscript; ``v2``
+#: and ``v3`` were never in a release — both were written and superseded inside
+#: the unreleased one; and a ``v3`` row has no ``rebuttal_document``, so a
+#: rebuttal quoted from a
+#: supplement would be read as the manuscript's and anchored at a line of
+#: ``paper.md`` that says something else. Reading any of them would be a
+#: compatibility path that answers with the wrong passage. Forward only, as the
+#: manuscript base is.
+KNOWN_ISSUES_SCHEMAS = ('review-issues-v4',)
 
 #: An issue's severity. The same three words a finding carries, because an
 #: issue's severity is the editor's judgement of the same scale.
@@ -152,9 +156,9 @@ MEMBER_FIELDS = ('finding_uid', 'slot', 'track', 'severity', 'kind', 'basis', 'e
 #: consumer reads a field by name instead of testing for its presence, and
 #: ``docs/INTEGRATIONS.md`` documents this list.
 ISSUE_FIELDS = ('id', 'name', 'severity', 'category', 'rank', 'statement', 'members',
-                'raised_by', 'rebuttal_line', 'rebuttal_quote', 'prior_id', 'prior_rank',
-                'status', 'status_reason', 'text_unchanged_reason', 'surviving_quotes',
-                'audits')
+                'raised_by', 'rebuttal_document', 'rebuttal_line', 'rebuttal_quote',
+                'prior_id', 'prior_rank', 'status', 'status_reason', 'text_unchanged_reason',
+                'surviving_quotes', 'audits')
 
 
 def issue_id(number: int) -> str:
@@ -653,6 +657,7 @@ def synthesize(findings, reason=None, prior=(), spent=(), surviving=None) -> lis
             'statement': str(finding.get('comment') or ''),
             'members': [member_of(finding)],
             'raised_by': 1,
+            'rebuttal_document': None,
             'rebuttal_line': None,
             'rebuttal_quote': None,
             'prior_id': None,
@@ -681,6 +686,7 @@ def synthesize(findings, reason=None, prior=(), spent=(), surviving=None) -> lis
             'statement': prior_row.get('statement'),
             'members': [],
             'raised_by': 0,
+            'rebuttal_document': None,
             'rebuttal_line': None,
             'rebuttal_quote': None,
             'prior_id': identifier,

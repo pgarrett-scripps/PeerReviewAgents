@@ -1236,6 +1236,43 @@ def use_rows(base, references):
     return rows
 
 
+def citation_uses(base, references):
+    """Every in-text use of a reference in *base*, as the engine's own rows.
+
+    The anchor rule, exported. An application building a citation ledger of its
+    own has the manuscript (:func:`peerreviewagents.read_manuscript`) and the
+    references, and everything else it needs to render a row is already public
+    — :func:`peerreviewagents.cited_text` reads a row's anchor back off the
+    base, and ``docs/INTEGRATIONS.md`` documents the row's fields and the
+    ledger's file format. What was not public is the rule that *produces* an
+    anchor: where one sentence ends and the next begins, how a sentence that
+    crosses a line break is spanned, and that ``row_id`` is built from the
+    piece's first line rather than the sentence's. A second implementation of
+    that rule would differ by a character or a line somewhere, and the engine
+    and the application would then disagree about which sentence a row is,
+    silently. This is the engine's rule itself, not a copy of it.
+
+    *base* is a :class:`~peerreviewagents.engine.paper_base.PaperBase` — what
+    ``read_manuscript(folder)`` answers with. *references* is the reference
+    list as ``references.json`` holds it: one dict per reference with at least
+    an ``id``, and a ``label`` or the author and year fields the markers in the
+    text would name. Pass ``[]`` and you get the unmatched uses only.
+
+    The answer is a list of ``use`` rows in document order, each as
+    ``docs/INTEGRATIONS.md`` describes under "Building a ledger fixture":
+    ``row_id``, ``reference_id``, ``document``, ``line``, ``end_line``,
+    ``start``, ``end``, ``piece_lines``, ``section``, ``sentence_index``,
+    ``sentence``, ``marker``, ``derivation`` and ``stage``. They are rows, not
+    a ledger: writing them to ``citations/ledger.jsonl`` and answering them is
+    the application's own business, and the engine's own ledger is built from
+    these same rows.
+
+    See :func:`use_rows` for what each derivation means and how a marker is
+    matched to a reference.
+    """
+    return use_rows(base, references)
+
+
 def _links(text):
     """The text as printed, and every marker-to-reference link under it.
 

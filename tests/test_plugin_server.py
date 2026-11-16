@@ -974,6 +974,115 @@ def test_a_computed_finding_becomes_a_suggestion_only_over_an_anchored_rebuttal(
     assert srv.submit_issues(editor, [{**issue, 'severity': 'major'}])['stored'] == 1
 
 
+#: The passage the supplement prints, which the rebuttal below quotes.
+SUPPLEMENT_SENTENCE = ('The totals in the main text are rounded to whole units, so the parts '
+                       'sum to the reported figure only to that precision.')
+
+
+def supplement_folder(tmp_path, sentence=SUPPLEMENT_SENTENCE):
+    """A folder holding one ``.docx`` supplement carrying *sentence*.
+
+    Written byte by byte, because what the import reads out of a ``.docx`` is
+    one entry in the zip — ``word/document.xml`` — and a fixture file would
+    carry a hundred others that say nothing about this test.
+    """
+    import zipfile
+
+    folder = Path(tmp_path) / 'supplements'
+    folder.mkdir(parents=True, exist_ok=True)
+    body = ''.join(f'<w:p><w:r><w:t>{text}</w:t></w:r></w:p>' for text in
+                   ('Supplementary note on the totals', sentence))
+    with zipfile.ZipFile(folder / 'supplementary-note.docx', 'w') as archive:
+        archive.writestr('word/document.xml',
+                         '<?xml version="1.0"?><w:document xmlns:w="http://schemas.'
+                         'openxmlformats.org/wordprocessingml/2006/main"><w:body>'
+                         + body + '</w:body></w:document>')
+    return folder
+
+
+def computed_run_with_a_supplement(tmp_path):
+    """A run whose manuscript has a supplement, and one computed finding in it."""
+    open_run(tmp_path, arm='single', supplements=str(supplement_folder(tmp_path)))
+    run = srv.current()
+    token = claim('core-1')['agent_token']
+    line, quote, number = numeric_quote(run)
+    receipt = srv.calculate(token, f'{number} + {number}')['receipt']
+    stored = srv.submit_finding(token, title='Arithmetic', line=line, quote=quote,
+                                comment='the parts do not sum to the total as printed',
+                                severity='major', calculate_receipt=receipt)
+    assert stored['basis'] == 'computed', stored
+    close(token, model='claude-sonnet-5-5')
+    run.required = (*run.required, 'editor')
+    return run, reclaim('editor'), stored['finding_uid']
+
+
+def test_a_rebuttal_quoted_from_a_supplement_is_anchored_in_the_supplement(tmp_path):
+    """The quote was looked for in paper.md, where a supplement's words are not.
+
+    An issue holds members from several documents at once, so the member's
+    document is not the rebuttal's: the pointer carries its own, read exactly
+    as a member's ``document`` is, and empty means ``paper.md``.
+    """
+    run, editor, uid = computed_run_with_a_supplement(tmp_path)
+    document, = [name for name in run.base.document_names() if name != 'paper.md']
+    assert SUPPLEMENT_SENTENCE in run.base.documents[document]
+    issue = {'name': 'Rounding, not arithmetic', 'severity': 'minor',
+             'category': 'statistics-and-inference', 'rank': 1,
+             'statement': 'The sum does not come out as printed, and the supplement says the '
+                          'figures are rounded, so this is a presentation point.',
+             'members': [uid], 'rebuttal_quote': SUPPLEMENT_SENTENCE}
+
+    # Without the document it is looked for in paper.md, which does not hold it.
+    refused = srv.submit_issues(editor, [issue])
+    assert any('rebuttal_quote' in problem for problem in refused['problems']), refused
+    assert any('rebuttal_document' in problem for problem in refused['problems']), refused
+
+    accepted = srv.submit_issues(editor, [{**issue, 'rebuttal_document': document}])
+    assert accepted['stored'] == 1, accepted
+
+    closed = srv.submit_editor(editor, summary='One suggestion the supplement answers.',
+                               significance='Modest.', strength_of_evidence='Thin.',
+                               verdict_reasoning='r')
+    assert closed['accepted'] is True, closed
+    close(editor, model='claude-sonnet-5-5')
+    srv.write_review(claim('recorder')['agent_token'])
+
+    stored, = json.loads((run.review / 'issues.json').read_text(encoding='utf-8'))['issues']
+    assert stored['rebuttal_document'] == document
+    assert stored['rebuttal_quote'] == SUPPLEMENT_SENTENCE
+    assert stored['rebuttal_line'] == run.locate(SUPPLEMENT_SENTENCE, None, document)['line']
+    # And the review says which file that line is in, because a line number on
+    # its own reads as a line of the manuscript.
+    review = (run.review / 'REVIEW.md').read_text(encoding='utf-8')
+    assert f"in {document} on line {stored['rebuttal_line']}" in review
+
+
+def test_a_rebuttal_document_is_a_document_of_this_manuscript_or_nothing(tmp_path):
+    """A name nothing holds is refused by name, with what the base does hold."""
+    run, editor, uid = computed_run_with_a_supplement(tmp_path)
+    issue = {'name': 'Rounding, not arithmetic', 'severity': 'minor',
+             'category': 'statistics-and-inference', 'rank': 1,
+             'statement': 'The sum does not come out as printed, and the supplement says the '
+                          'figures are rounded, so this is a presentation point.',
+             'members': [uid], 'rebuttal_quote': SUPPLEMENT_SENTENCE,
+             'rebuttal_document': 'appendix-that-was-never-imported.md'}
+
+    refused = srv.submit_issues(editor, [issue])
+
+    assert any('no document named appendix-that-was-never-imported.md' in problem
+               for problem in refused['problems']), refused
+    assert any('paper.md' in problem for problem in refused['problems']), refused
+    assert not srv.list_findings(editor)['issues'], 'nothing was stored'
+
+    # And it is the rebuttal's own field: an issue with nothing to rebut may
+    # not carry it, exactly as it may not carry the quote or the line.
+    document, = [name for name in run.base.document_names() if name != 'paper.md']
+    stray = srv.submit_issues(editor, [{**issue, 'severity': 'major',
+                                        'rebuttal_quote': '', 'rebuttal_document': document}])
+    assert any('rebuttal_document' in problem for problem in stray['problems']), stray
+    assert not srv.list_findings(editor)['issues'], 'nothing was stored'
+
+
 def test_a_finished_run_writes_the_files_a_consumer_reads(tmp_path):
     run, uids = two_track_run(tmp_path)
     editor, accepted = accept_editor(run, uids)

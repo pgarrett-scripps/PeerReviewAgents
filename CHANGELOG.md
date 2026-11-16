@@ -45,8 +45,27 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   there can be reported in the coordinates of the file an author reads. It is
   what fingerprints are taken over, and what citing a quote will rest on.
 
+- **A rebuttal quote says which document it is in.** An issue holds members
+  from several documents at once, so the document a rebuttal is quoted from is
+  not the first member's: the editor's `rebuttal_quote` was looked for in
+  whichever document that member happened to be in, and a rebuttal quoted from
+  a supplement could not be anchored at all. The pointer now carries its own
+  `rebuttal_document`, read exactly as a member's `document` is — empty means
+  `paper.md`, a name the base does not hold is refused with the names it does,
+  and the field may not be set on an issue with nothing to rebut. `issues.json`
+  rows carry it, `REVIEW.md` names the file beside the line, and the stamp is
+  `review-issues-v4`.
+
 ### Added
 
+- **A ledger of your own: `peerreviewagents.citation_uses(base, references)`.**
+  Every in-text use of a reference in a manuscript base, as the engine's own
+  rows: the citing sentence, its line range and offsets, the piece it sits in,
+  the reference it resolves to, and the `row_id` a round keeps its identity by.
+  An application that wanted to check citations itself — or to build a ledger
+  fixture for its own tests — had to re-implement the anchor rule the engine
+  already applies, and a sentence that spans a line break or a marker that
+  matches nothing are exactly where a second implementation goes wrong.
 - **One model reads the paper's pages before any reviewer reads its text.** A
   Read stage sits between the import and the review, one slot (`reader`,
   `--reader-model`, default `claude-sonnet-5-5`), and the import no longer
@@ -105,10 +124,11 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   had to search the line for the words again to underline them: the search the
   engine had already done, done a second time by code that cannot refuse a
   quote that occurs twice in the line. `issues.json` is stamped
-  `review-issues-v3`, and that is the only stamp this release reads: the
+  `review-issues-v4`, and that is the only stamp this release reads: the
   reading is forward only, as the manuscript base is, and `review-issues-v2`
-  — written and superseded inside this release, never shipped in one — is
-  refused by name like any other stamp it does not know. A ledger use row's
+  and `review-issues-v3` — both written and superseded inside this release,
+  never shipped in one — are refused by name like any other stamp it does not
+  know. A ledger use row's
   `line` now locates the citing sentence rather
   than the paragraph around it, which is the point of the row; `row_id` is
   still built from the paragraph's first line, so a row keeps its identity
