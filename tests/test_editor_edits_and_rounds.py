@@ -1398,6 +1398,66 @@ def test_the_paths_in_a_write_review_answer_are_in_no_file_of_the_run(tmp_path):
         {key: value for key, value in manifest.items() if key != 'pdf'})
 
 
+@pytest.mark.parametrize('arm', ['single', 'manuscript-only'])
+def test_run_status_carries_the_counts_of_a_written_review_on_every_arm(tmp_path, arm):
+    """The one answer a recorder whose write answer was lost can read.
+
+    ``issues`` was the editor's working tally and nothing else, so on an arm
+    that runs no editor it was ``null`` after the review was written — and the
+    workflow's fallback, which reads this answer for the counts of the document
+    on disk, had nothing to report. The document is the source once it exists,
+    on every arm, and the escalated count comes with it.
+    """
+    open_run(tmp_path, arm=arm)
+    run = srv.current()
+    if 'core-1' in run.required:
+        file_findings(run, 2)
+    for slot in run.required:
+        agent = run.agents.get(slot)
+        if agent is not None and agent.report:
+            continue
+        assert srv.submit_report(token_for(slot), 'Nothing further.', none_found=True,
+                                 model=run.models.get(slot))['closed']
+    written = srv.write_review(token_for('recorder'))
+    assert written['status'] in srv.COMPLETE_STATUSES, written
+    document = json.loads((run.review / 'issues.json').read_text(encoding='utf-8'))
+    assert run.issue_counts() is None, 'this arm runs no editor, so the run holds no tally'
+
+    standing = srv.run_status(CODES['recorder_key'])
+
+    assert standing['status'] in srv.COMPLETE_STATUSES
+    assert standing['issues'] == document['counts'], 'the counts of the document on disk'
+    assert standing['escalated'] == document['escalated_count']
+    assert standing['review'] == str(run.review / 'REVIEW.md')
+    if 'core-1' in run.required:
+        assert standing['issues']['issues'] == 2, 'and they are not a review of nothing'
+
+
+def test_the_session_that_wrote_the_review_does_not_attach_to_it_either(tmp_path):
+    """Ingest in the process that wrote the review answered ``attached: true``.
+
+    The folder guard catches a second process. This is the one that wrote the
+    review, whose run object says complete, and it handed the caller a finished
+    review as a run to work in — a workflow stage run twice, a second paper
+    passed to a live server — with nothing at the start saying the review was
+    over, while the docs say ingest refuses a complete folder by name. One
+    paper per session, and both cases refuse in the same words.
+    """
+    run, _, _ = a_written_review(tmp_path)
+    before = folder_state(run.root)
+
+    refused = srv.ingest(str(FIXTURE), str(run.root), arm='reviewers-only', reviewers=2)
+
+    assert 'request_rejected' in refused, refused
+    said = refused['request_rejected']
+    assert 'already holds a complete review' in said, said
+    assert 'prior_issues=' + str(run.review / 'issues.json') in said, 'and how a round two runs'
+    assert str(run.review / 'REVIEW.md') in said, 'and where the review it holds is'
+    assert 'attached' not in refused, 'nothing was attached to'
+    assert folder_state(run.root) == before, 'the finished folder was written to'
+    assert srv.STATE['run'] is run, 'and the session still serves the run it wrote'
+
+
 def test_the_record_stage_treats_an_already_written_review_as_the_run_it_is():
     """The workflow's Record stage had one attempt at the one call that writes.
 
@@ -1416,6 +1476,13 @@ def test_the_record_stage_treats_an_already_written_review_as_the_run_it_is():
     assert record.index('const asFound') < record.index('await block('), (
         'and it is asked before the run is blocked')
     assert 'written(asFound.status)' in record, 'a complete folder is the success'
+    # And a count the run did not report is unknown, not zero. The stage used
+    # to tell the recorder to report 0 where a count was absent, and `issues`
+    # is absent from run_status on every arm that runs no editor — so a lost
+    # answer came back as a review with no issues while two sat in issues.json.
+    assert 'Where a count is absent' not in record, 'a count nobody read is not a count of none'
+    assert 'never report 0 for a count that is absent' in record
+    assert 'counts_unknown' in record, 'and the result says which counts those were'
 
 
 # -- the editor closes after its review, not before ------------------------

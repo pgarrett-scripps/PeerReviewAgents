@@ -237,6 +237,22 @@ def rejection(message, **extra):
     return {'request_rejected': message, **extra}
 
 
+def complete_folder_message(root, review, status):
+    """Why a finished folder is not a run to open, in one wording.
+
+    Two guards say this: the folder guard a new server process meets, and the
+    attach a caller makes in the process that wrote the review. They are the
+    same refusal to the same caller, so they are the same sentence — and it has
+    to say where the review is and how a further round runs, because a caller
+    that cannot see either reads the refusal as a dead end.
+    """
+    return ('The folder ' + str(root) + ' already holds a ' + str(status) + ' review, written '
+            'and not a draft. Nothing in it was changed. A further round of review is a fresh '
+            'out folder with this one as its prior round: pass prior_issues='
+            + str(Path(review) / 'issues.json') + ' to that run. Reading what is here takes no '
+            'run at all: the review is ' + str(Path(review) / 'REVIEW.md') + '.')
+
+
 def run_deadline():
     """The POSIX second the launcher will end this run at, or ``None``.
 
@@ -646,13 +662,8 @@ class Run:
             # and the only way out was a blocked run. A blocked folder is left
             # open on purpose: re-ingesting into one is the documented recovery.
             if before.get('status') in COMPLETE_STATUSES:
-                raise ValueError(
-                    'The folder ' + str(self.root) + ' already holds a ' + str(before['status'])
-                    + ' review, written and not a draft. Nothing in it was changed. A further '
-                    'round of review is a fresh out folder with this one as its prior round: '
-                    'pass prior_issues=' + str(self.review / 'issues.json') + ' to that run. '
-                    'Reading what is here takes no run at all: the review is '
-                    + str(self.review / 'REVIEW.md') + '.')
+                raise ValueError(complete_folder_message(self.root, self.review,
+                                                         before['status']))
             if before.get('arm') and (before['arm'] != self.arm
                                       or before.get('reviewers') != self.reviewers):
                 raise ValueError(
@@ -1373,6 +1384,16 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
         return rejection(str(exc))
     run = STATE['run']
     if run is not None and str(Path(out).resolve()) == str(run.root):
+        # A written review is not attached to either. The folder guard above
+        # catches a second process; this is the one that wrote it, whose run
+        # object says complete, and it answered `attached: true` — so a second
+        # caller in the same session was handed a finished review as a run to
+        # work in. It would claim a slot (refused), file findings (refused) and
+        # reach write_review for a refusal, with nothing at the start having
+        # said the review was over, while the docs say ingest refuses a
+        # complete folder by name. One paper per session, and it fails here.
+        if run.status in COMPLETE_STATUSES:
+            return rejection(complete_folder_message(run.root, run.review, run.status))
         wanted = ARMS[arm]['reviewers'] if arm in ARMS else reviewers
         if arm != run.arm or (wanted if wanted is not None else reviewers) != run.reviewers:
             return rejection('This run is the ' + run.arm + ' arm with ' + str(run.reviewers)
@@ -2845,6 +2866,18 @@ async def resolve_citations(recorder_key: str, limit: int = 15) -> dict:
     if not run.citations_enabled():
         return rejection('This run keeps no citation ledger: the ' + run.arm + ' arm runs no '
                          'citations specialist.')
+    # The lookups fill the table the published citation counts were read from.
+    # This call was the one way into a finished folder: it rewrote
+    # citations/stages.json and progress.json, added lookup receipts and
+    # appended to ledger.jsonl, and REVIEW.md then said "Resolved 0" over a
+    # progress.json saying three. A pass already running cannot be caught here
+    # — it is in a worker thread — so `write_review` refuses while one is open,
+    # which is what keeps the window between this guard and the write shut.
+    if run.status in COMPLETE_STATUSES:
+        return rejection('This run is ' + run.status + ' and its review is written from the '
+                         'citation table as it stood. No reference was looked up and nothing '
+                         'was stored: the ledger is closed. A further round of lookups is a '
+                         'fresh run over the revised manuscript.', status=run.status)
     if type(limit) is not int or limit < 0:
         return rejection('Resolve a whole number of references, or 0 for every one left.')
     # One pass at a time. Two passes over the same owed rows would fetch every
@@ -3086,14 +3119,37 @@ def run_status(recorder_key: str = '') -> dict:
 
     The counts are safe for anyone in the run to read; the ledger names every
     slot, so it goes only to the holder of the recorder's key.
+
+    Once the review is written, ``issues`` is the tally of the document that
+    was published and ``escalated`` and ``review`` come with it, on every arm —
+    so a recorder whose ``write_review`` answer was lost can report what the
+    review says without calling anything that writes. Before that, ``issues``
+    is the editor's working tally and is absent on an arm with no editor:
+    absent means this answer does not say, never zero.
     """
     run = current()
     ledger = run.ledger()
+    counts, escalated = run.issue_counts(), None
+    if run.status in COMPLETE_STATUSES:
+        # Once the review is written the document is the source, not the run.
+        # `issue_counts` is the editor's working tally, and it is None on every
+        # arm that runs no editor — so a recorder whose first answer was lost
+        # read this for the counts of a finished review and was told nothing at
+        # all, while issues.json beside it held them. The escalated count is
+        # only ever in the document, which is why it comes back only here.
+        try:
+            written = read(run.review / 'issues.json')
+        except (OSError, ValueError):
+            written = {}
+        counts = written.get('counts') or counts
+        escalated = written.get('escalated_count')
     status = {'status': run.status, 'error': run.error, 'arm': run.arm,
               'reviewers': run.reviewers, 'stages_required': len(ledger['required']),
               'stages_reported': len(ledger['reported']),
               'findings': len(run.pooled()), 'quarantined': len(run.quarantined),
-              'issues': run.issue_counts(),
+              'issues': counts, 'escalated': escalated,
+              'review': str(run.review / 'REVIEW.md') if run.status in COMPLETE_STATUSES
+              else None,
               'tool_calls': run.calls, 'run': str(run.root),
               'citations': run.citation_counts()}
     if recorder_key and secrets.compare_digest(str(recorder_key), run.recorder_key):
@@ -3117,6 +3173,19 @@ def write_review(agent_token: str) -> dict:
         return rejection(str(exc))
     if agent.role != 'recorder':
         return rejection('The recorder writes the review.')
+    # Not while the references are being looked up. A resolve pass runs in a
+    # worker thread, and a review written out from under it was published from
+    # a table the pass then went on writing: ledger.jsonl grew, lookup receipts
+    # appeared, progress.json was rewritten with counts REVIEW.md does not
+    # have, and the folder disagreed with itself. The stage holds its own lock
+    # (`run.resolving`) and the pass stops waiting the moment the run is no
+    # longer running, so this refusal lasts as long as the lookups do and
+    # `mark_blocked` still ends a run whose pass will not come back.
+    if run.resolving:
+        return rejection('A resolve_citations pass is still looking references up. The review '
+                         'is written from the citation table, so it is not written while the '
+                         'table is being filled: nothing was written here. Wait for that call '
+                         'to answer and then write the review.', resolving=True)
     # Written once. A second call republished every file from whatever the run
     # held by then, which is how a rewritten editor review reached the authors'
     # copy; and even with the editor's submissions now refused after the write,

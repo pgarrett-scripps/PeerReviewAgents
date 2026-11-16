@@ -19,6 +19,8 @@ import functools
 import inspect
 import io
 import json
+import re
+import shutil
 import time
 import urllib.error
 from pathlib import Path
@@ -28,6 +30,7 @@ import anyio
 import pytest
 
 from peerreviewagents import names
+from peerreviewagents.cli.main import report_main
 from peerreviewagents.engine import citation_ledger as cl
 from peerreviewagents.engine.run_report import report_blocks
 from peerreviewagents.plugin import server as srv
@@ -1023,16 +1026,12 @@ def test_the_clean_verdicts_are_readable_too_so_nobody_waves_a_list_through(tmp_
 # -- what the run reports, and what it costs --------------------------------
 
 
-def finish(run, model=None):
-    """Close every stage and publish: nobody confirmed anything, which is a run.
+def close_every_stage(run, model=None):
+    """Every stage reported and the editor closed: the run, up to the write.
 
-    ``model`` is what every slot reports running; ``None`` means each slot
-    reports the model it was assigned, which is the run that ran its own arm
-    and the only one whose ``publishable`` is about anything else.
-
-    The citation workers are deliberately not in this loop. They are not stages
-    of the review and none of them has to report for the review to be written —
-    which is the whole reason they can be fanned out over a long reference list.
+    Apart from :func:`finish`, this is what a test that has something to do
+    between the last stage and ``write_review`` calls — holding a resolve pass
+    open across the write, for one.
     """
     for slot in run.required:
         agent = run.agents.get(slot)
@@ -1061,6 +1060,20 @@ def finish(run, model=None):
         assert accepted['accepted'] is True, accepted
         assert srv.submit_report(editor, 'Nothing further.',
                                  model=model or run.models.get('editor')).get('closed')
+
+
+def finish(run, model=None):
+    """Close every stage and publish: nobody confirmed anything, which is a run.
+
+    ``model`` is what every slot reports running; ``None`` means each slot
+    reports the model it was assigned, which is the run that ran its own arm
+    and the only one whose ``publishable`` is about anything else.
+
+    The citation workers are deliberately not in this loop. They are not stages
+    of the review and none of them has to report for the review to be written —
+    which is the whole reason they can be fanned out over a long reference list.
+    """
+    close_every_stage(run, model)
     written = srv.write_review(token_for('recorder'))
     assert written['status'] in names.COMPLETE_STATUSES, written
     return written
@@ -1105,7 +1118,10 @@ def test_the_run_files_and_the_report_say_what_the_citations_cost(tmp_path):
     rendered = {label: value for block in fields for label, value in block[1]}
     assert str(rendered['References']) == '3'
     assert str(rendered['Supported']) == '3'
-    assert rendered['Ledger'] == str(run.review / cl.LEDGER_PATH)
+    # The published name, not the path. This row printed the ledger's absolute
+    # location into REVIEW.md and REVIEW.txt, so the two documents the authors
+    # are sent named the machine the review ran on.
+    assert rendered['Ledger'] == names.RUN_DIRECTORY + '/' + cl.LEDGER_PATH
 
 
 def test_a_worker_that_ran_another_model_family_is_reported_and_the_review_stands(tmp_path):
@@ -1179,6 +1195,12 @@ def test_a_planned_citations_lane_with_no_table_is_not_read_as_no_lane(tmp_path)
     assert all('citation' not in line for line in silent['problems'])
 
 
+def folder_digests(root):
+    """Every file under one run folder, by run-relative name and digest."""
+    return {path.relative_to(root).as_posix(): srv.digest(path.read_bytes())
+            for path in sorted(Path(root).rglob('*')) if path.is_file()}
+
+
 def test_the_ledger_of_a_written_review_takes_no_claim_and_no_verdict(tmp_path):
     """A worker went on filling the table the published counts were taken from.
 
@@ -1193,8 +1215,7 @@ def test_the_ledger_of_a_written_review_takes_no_claim_and_no_verdict(tmp_path):
     token, claimed, _ = judged(tmp_path)
     run = srv.current()
     finish(run)
-    before = {path.relative_to(run.root).as_posix(): srv.digest(path.read_bytes())
-              for path in sorted(run.root.rglob('*')) if path.is_file()}
+    before = folder_digests(run.root)
 
     again = srv.claim_citation_batch(token, size=10, model='claude-haiku-5-5')
     stored = srv.submit_citation_verdict(token, claimed['rows'][0]['row_id'], 'contradicts',
@@ -1204,9 +1225,250 @@ def test_the_ledger_of_a_written_review_takes_no_claim_and_no_verdict(tmp_path):
         assert 'request_rejected' in answer, answer
         assert 'complete' in answer['request_rejected'], answer
         assert 'stored nothing' in answer['request_rejected'], answer
-    assert {path.relative_to(run.root).as_posix(): srv.digest(path.read_bytes())
-            for path in sorted(run.root.rglob('*')) if path.is_file()} == before
+    assert folder_digests(run.root) == before
     assert read_run(run.review)['status'] in names.COMPLETE_STATUSES
+
+
+def test_the_references_of_a_written_review_are_not_looked_up_again(tmp_path):
+    """``resolve_citations`` was the one way left into a finished folder.
+
+    It had no completion guard at all, so a recorder that called it again over
+    a written review — a retry, a workflow stage run twice — was accepted: it
+    rewrote citations/stages.json and progress.json, and with rows still owed a
+    lookup it appended to ledger.jsonl and left receipts beside it, under a
+    REVIEW.md rendered from the table as it had been. The stage is closed with
+    the review.
+    """
+    judged(tmp_path)
+    run = srv.current()
+    finish(run)
+    before = folder_digests(run.root)
+
+    refused = resolving(CODES['recorder_key'], limit=0)
+
+    assert 'request_rejected' in refused, refused
+    said = refused['request_rejected']
+    assert 'complete' in said and 'ledger is closed' in said, said
+    assert refused['status'] in names.COMPLETE_STATUSES
+    assert 'remaining' not in refused, 'a pass ran'
+    assert folder_digests(run.root) == before, 'the finished folder was written to'
+    assert read_run(run.review)['status'] in names.COMPLETE_STATUSES
+
+
+def test_the_review_is_not_written_from_under_a_resolve_pass(tmp_path, monkeypatch):
+    """A pass in flight when the review was written went on writing after it.
+
+    The lookups run in a worker thread, so the guard on the call cannot catch a
+    pass that has already started: the recorder wrote the review while one was
+    waiting out a retry gap, and the pass then appended to ledger.jsonl, left
+    its receipts and rewrote progress.json with counts the REVIEW.md beside it
+    was not rendered from — "Resolved 0" in the review, three in progress.json.
+    The review is written from the table, so it is not written while the table
+    is being filled: ``write_review`` refuses for as long as the pass is open,
+    and ``mark_blocked`` still ends a run whose pass will not come back.
+    """
+    open_run(tmp_path)
+    srv.STATE['opener'] = Index(fail=('crossref.org', 'ebi.ac.uk'))
+    run = srv.current()
+    close_every_stage(run)
+    clock = FakeClock()
+    nap = time.sleep
+
+    class Napping:
+        """Twenty fake seconds and two real milliseconds per slice, as above."""
+
+        @staticmethod
+        def time():
+            return clock.time()
+
+        @staticmethod
+        def sleep(seconds):
+            clock.sleep(seconds)
+            nap(0.002)
+
+    monkeypatch.setattr(cl, 'time', Napping)
+    monkeypatch.setattr(cl, 'Patience', functools.partial(cl.Patience, slice_seconds=20))
+    monkeypatch.setenv('PEERREVIEW_RUN_DEADLINE', str(int(clock.time()) + 3600))
+    recorder = token_for('recorder')
+    seen = {}
+
+    async def the_recorder_resolves():
+        seen['pass'] = await srv.resolve_citations(CODES['recorder_key'], limit=0)
+
+    async def drive():
+        async with anyio.create_task_group() as group:
+            group.start_soon(the_recorder_resolves)
+            for _ in range(2000):
+                if clock.slept:
+                    break
+                await anyio.sleep(0.001)
+            assert clock.slept, 'the stage never got as far as waiting'
+            assert run.resolving is True
+            # The write, on the same loop, while the pass holds the stage.
+            seen['refused'] = srv.write_review(recorder)
+            seen['during'] = folder_digests(run.root)
+
+    anyio.run(drive)
+
+    refused = seen['refused']
+    assert 'request_rejected' in refused, refused
+    assert 'resolve_citations pass is still looking references up' in refused['request_rejected']
+    assert refused['resolving'] is True
+    assert 'status' not in refused, 'nothing was published'
+    assert not (run.review / 'REVIEW.md').exists(), 'the review was written mid-pass'
+    assert run.status == 'running'
+    assert 'request_rejected' not in seen['pass'], seen['pass']
+
+    # The pass has answered, and the write is the recorder's again. The review
+    # and the table agree, which is what the refusal is for.
+    written = srv.write_review(recorder)
+    assert written['status'] in names.COMPLETE_STATUSES, written
+    totals = cl.counts(cl.Ledger(run.review))
+    progress = json.loads((run.review / 'progress.json').read_text(encoding='utf-8'))
+    review = (run.review / 'REVIEW.md').read_text(encoding='utf-8')
+    assert progress['citations']['resolved'] == totals['resolved']
+    assert re.search(r'Resolved[^\n\d]*' + str(totals['resolved']) + r'\b', review), review
+
+
+def complete_two_track_run(tmp_path):
+    """A written review of the arm that runs every stage, and a token for each.
+
+    The citation worker's token and the row it judged come back with it: they
+    are the only caller and the only argument the ledger tools take that no
+    other stage can hand them.
+    """
+    worker, claimed, _ = judged(tmp_path)
+    run = srv.current()
+    finish(run)
+    return run, worker, claimed['rows'][0]['row_id']
+
+
+def test_no_registered_tool_writes_in_a_complete_folder(tmp_path):
+    """Every tool the server registers, over a finished two-track run.
+
+    The guards were added one path at a time, and ``resolve_citations`` was
+    missed because nothing checked the whole surface: this loops over
+    ``srv.TOOLS`` itself, so a tool added later is a failure here until it is
+    called with arguments and the folder is still unchanged after it. The arm
+    is the full one, because it is the only one with a ledger, citation workers
+    and an editor — the stages whose tools the smaller arms never register.
+    """
+    run, worker, row_id = complete_two_track_run(tmp_path)
+    reviewer, editor, recorder = token_for('core-1'), token_for('editor'), token_for('recorder')
+    key = CODES['recorder_key']
+    block = run.paper['blocks'][0]
+    quote = block['text'].split('. ')[0]
+    calls = {
+        'ingest': lambda: srv.ingest(str(FIXTURE), str(run.root)),
+        'claim_agent': lambda: srv.claim_agent('core-2', 'whatever-code-it-holds'),
+        'reissue_claim_code': lambda: srv.reissue_claim_code(key, 'editor'),
+        'read_blocks': lambda: srv.read_blocks(reviewer, [block['id']]),
+        'search': lambda: srv.search(reviewer, 'widget'),
+        'calculate': lambda: srv.calculate(reviewer, '2 + 2'),
+        'save_note': lambda: srv.save_note(reviewer, 'A late thought.', [block['id']]),
+        'view_page': lambda: srv.view_page(reviewer, 1),
+        'view_supplement': lambda: srv.view_supplement(reviewer, 'S1'),
+        'check_citation': lambda: srv.check_citation(reviewer, 'b0006'),
+        'search_literature': lambda: srv.search_literature(reviewer, 'widgets', block['id']),
+        'resolve_identifier': lambda: srv.resolve_identifier(reviewer, 'doi', '10.5555/x',
+                                                             block['id']),
+        'lookup_source': lambda: srv.lookup_source(reviewer, 'crossref', '10.5555/x',
+                                                   block['id']),
+        'inspect_results': lambda: srv.inspect_results(reviewer, block['id']),
+        'record_comparison': lambda: srv.record_comparison(reviewer, []),
+        'validate_synthesis': lambda: srv.validate_synthesis(reviewer, '{}'),
+        'submit_finding': lambda: srv.submit_finding(
+            reviewer, title='A late reading', block_id=block['id'], quote=quote,
+            comment='Raised after the review was written.', severity='minor'),
+        'submit_report': lambda: srv.submit_report(reviewer, 'A second report.',
+                                                   model=run.models.get('core-1')),
+        'list_findings': lambda: srv.list_findings(editor),
+        'submit_issues': lambda: srv.submit_issues(
+            editor, retire=['The reference list does not hold up']),
+        'submit_editor': lambda: srv.submit_editor(
+            editor, summary='On reflection the paper is fine.',
+            significance='Nothing here matters after all.',
+            strength_of_evidence='Fully supported.',
+            verdict_reasoning='I have changed my mind about every issue of this review.'),
+        'resolve_citations': lambda: resolving(key, limit=0),
+        'citation_rows': lambda: srv.citation_rows(token_for('spec-citations'), 'counts'),
+        'claim_citation_batch': lambda: srv.claim_citation_batch(worker, size=10,
+                                                                 model='claude-haiku-5-5'),
+        'submit_citation_verdict': lambda: srv.submit_citation_verdict(
+            worker, row_id, 'contradicts', passage=ABSTRACT.split('. ')[0] + '.'),
+        'mark_blocked': lambda: srv.mark_blocked(key, 'Something went wrong after all.'),
+        'run_status': lambda: srv.run_status(key),
+        'write_review': lambda: srv.write_review(recorder),
+    }
+    # A tool nobody listed here is a tool nobody checked.
+    assert set(calls) == {tool.__name__ for tool in srv.TOOLS}
+    # The two that answer rather than refuse, and write nothing either way: one
+    # reports how the run stands, which is how a lost answer is recovered, and
+    # the other reads the pool the editor already ruled on.
+    reads = {'run_status', 'list_findings'}
+    # And the one tool that refuses every caller in every state of every run:
+    # it belongs to the standalone engine, and there is nothing about this run
+    # for its refusal to say.
+    always_refuses = {'validate_synthesis'}
+    before = folder_digests(run.root)
+
+    for name, call in calls.items():
+        answer = call()
+        assert folder_digests(run.root) == before, f'{name} wrote in a finished folder'
+        if name in reads:
+            assert 'request_rejected' not in answer, (name, answer)
+            continue
+        assert 'request_rejected' in answer, (name, answer)
+        if name in always_refuses:
+            continue
+        assert 'complete' in answer['request_rejected'], (name, answer)
+    assert read_run(run.review)['status'] in names.COMPLETE_STATUSES
+    assert run.status in names.COMPLETE_STATUSES, 'and the run still says what it says'
+
+
+def test_no_file_of_a_two_track_run_names_the_machine_it_ran_on(tmp_path):
+    """REVIEW.md and REVIEW.txt printed the absolute path of the ledger.
+
+    The reviewers-only arm keeps no ledger, so the scan that checks every file
+    for the run's own location passed over the one row that held one: the
+    citations page's Ledger field, written straight from the run folder. A
+    published name is run-relative POSIX, and the test runs on the arm that has
+    every file a run can write.
+    """
+    run, _, _ = complete_two_track_run(tmp_path)
+
+    for path in sorted(run.root.rglob('*')):
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding='utf-8', errors='ignore')
+        where = path.relative_to(run.root).as_posix()
+        for machine in (str(run.root), str(tmp_path)):
+            # Raw, and escaped as a JSON string writes a Windows path.
+            assert machine not in text and json.dumps(machine)[1:-1] not in text, (
+                f'{where} names {machine}')
+    assert cl.LEDGER_PATH in (run.review / 'REVIEW.md').read_text(encoding='utf-8'), (
+        'the ledger is still named, by the name it is published under')
+
+
+def test_a_moved_complete_folder_re_renders_to_the_same_two_files(tmp_path):
+    """``peerreview report`` on a copy of a finished run changes nothing.
+
+    A report that names the folder it was rendered in cannot be re-rendered
+    anywhere else: the same run, copied or moved, produced a different
+    REVIEW.md. Byte-identical is the whole claim, and it is only true once no
+    path from the machine is printed.
+    """
+    run, _, _ = complete_two_track_run(tmp_path)
+    before = {name: (run.review / name).read_bytes() for name in ('REVIEW.md', 'REVIEW.txt')}
+    moved = tmp_path / 'moved' / 'run'
+    shutil.copytree(run.root, moved)
+
+    assert report_main([str(moved)]) == 0
+    assert report_main([str(run.root)]) == 0
+
+    for name, raw in before.items():
+        assert (moved / names.RUN_DIRECTORY / name).read_bytes() == raw, f'{name} moved'
+        assert (run.review / name).read_bytes() == raw, f'{name} re-rendered in place'
 
 
 def test_an_unfinished_ledger_is_reported_and_does_not_hold_the_review(tmp_path):
