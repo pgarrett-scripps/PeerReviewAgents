@@ -16,6 +16,7 @@ import textwrap
 from pathlib import Path
 
 from .. import issues as issue_model
+from ..names import RUN_DIRECTORY
 from ..plugin import models as model_plan
 from . import citation_ledger
 from .storage import read
@@ -311,6 +312,19 @@ _STATUS_MEANINGS = (
 )
 
 
+def _run_folder(run):
+    """The run's own folder name, not the name of the directory inside it.
+
+    Every caller hands this module the review directory, so the header printed
+    "review" for every run ever written — a row that told a reader nothing and
+    a title that read "Review run review". The run folder is its parent, and
+    that name is the run id a reader can look up.
+    """
+    if run.name == RUN_DIRECTORY and run.parent.name:
+        return run.parent.name
+    return run.name
+
+
 def _closed(issue):
     """A prior issue this round closed: what it said, and the ruling against it."""
     name = str(issue.get('name') or 'Unnamed issue')
@@ -328,9 +342,23 @@ def _closed(issue):
     if issue.get('text_unchanged_reason'):
         blocks.append(('labeled', 'Why it is fixed although the passages it cited still '
                                   'read the same', issue['text_unchanged_reason']))
-    for quote in issue.get('surviving_quotes') or []:
-        if isinstance(quote, dict) and quote.get('quote'):
-            blocks.append(('quote', str(quote['quote'])))
+    quotes = [str(quote['quote']) for quote in issue.get('surviving_quotes') or []
+              if isinstance(quote, dict) and quote.get('quote')]
+    if quotes:
+        # Labelled, because an unlabelled blockquote under "Why it is closed"
+        # read as part of the ruling — the authors could not tell whether they
+        # were being quoted their own revision or the prior round's complaint.
+        # This is the revision as it now reads, and what it means depends on
+        # the ruling: under `unverified` nobody checked it, and the passage
+        # standing is the whole of what this round can say about the issue.
+        blocks.append((
+            'labeled',
+            'The prior round\'s evidence still in the manuscript',
+            'Quoted from the revision as it now reads. '
+            + ('No ruling was made on this issue this round, so the passage standing is all '
+               'this round can say about it.' if issue.get('status') == 'unverified' else
+               'The ruling above was made with these passages in front of it.')))
+        blocks += [('quote', quote) for quote in quotes]
     return blocks
 
 
@@ -525,8 +553,9 @@ def report_blocks(run, workspace=None):
               # to authors and editors, and the absolute path names the home
               # directory of whoever ran the review — which is neither theirs
               # nor anything they can use.
-              ('Run folder', run.name)]
-    title = f"Review: {paper['title']}" if paper and paper.get('title') else f'Review run {run.name}'
+              ('Run folder', _run_folder(run))]
+    title = (f"Review: {paper['title']}" if paper and paper.get('title')
+             else f'Review run {_run_folder(run)}')
     blocks = [('title', title), ('fields', [(key, value) for key, value in fields if value not in (None, '')])]
     if usage.get('usage_limitation'):
         blocks.append(('labeled', 'Usage limitation', usage['usage_limitation']))

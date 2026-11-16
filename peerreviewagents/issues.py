@@ -21,6 +21,8 @@ writer, the renderer and the reader cannot drift apart.
 
 from __future__ import annotations
 
+import re
+
 #: The schema every ``issues.json`` is stamped with, in its ``schema_version``.
 ISSUES_SCHEMA_VERSION = 'review-issues-v1'
 
@@ -129,6 +131,22 @@ ISSUE_FIELDS = ('id', 'name', 'severity', 'category', 'rank', 'statement', 'memb
 def issue_id(number: int) -> str:
     """The id minted for the *number*-th new issue of a run: ``i01``, ``i02``, …"""
     return f'i{int(number):02d}'
+
+
+#: An issue id as this engine mints it: ``i`` and two digits or more. An id is
+#: the one thing a later round matches against, so a reader of a prior round's
+#: file checks the form rather than taking whatever the field holds.
+ISSUE_ID_PATTERN = r'i\d{2,}'
+
+
+def is_issue_id(value) -> bool:
+    """True where *value* is an issue id in this engine's own form.
+
+    Text, and :data:`ISSUE_ID_PATTERN`. ``5``, ``True`` and ``'7'`` are not
+    ids: a round that read them as ids would mint an id an earlier round had
+    already reported under, which is the one thing a stable id is for.
+    """
+    return isinstance(value, str) and re.fullmatch(ISSUE_ID_PATTERN, value) is not None
 
 
 def issue_batch_limit(findings) -> int:
@@ -312,7 +330,19 @@ def category_for(finding) -> str:
     return TRACK_CATEGORY.get(str(finding.get('track')), 'claims-and-conclusions')
 
 
-def synthesize(findings, reason=None) -> list:
+def last_rank(prior):
+    """The last rank a prior row actually held, closed or live.
+
+    A closed row has no ``rank`` — it would collide with this round's 1..N — so
+    the rank it held before closing is in ``prior_rank``. Reading only ``rank``
+    reported null for every issue that had been closed once already.
+    """
+    if not isinstance(prior, dict):
+        return None
+    return prior.get('rank') if prior.get('rank') is not None else prior.get('prior_rank')
+
+
+def synthesize(findings, reason=None, prior=(), spent=(), surviving=None) -> list:
     """One issue per finding, for a run no editor grouped.
 
     Every arm writes an ``issues.json``, because every consumer reads one — the
@@ -326,18 +356,37 @@ def synthesize(findings, reason=None) -> list:
     the ways here — a ledger past the editor's stated limit and an editor that
     never closed are the others — so the caller says which rather than this
     function assuming the first.
+
+    ``prior`` is the prior round's carried rows and ``spent`` every id this line
+    of rounds has used. This path numbered from ``i01`` regardless of either, so
+    a degraded second round handed i01 to a new finding while i01 was still the
+    id of a prior issue, and published a file in which the prior issues had
+    vanished — neither resolved nor open, simply gone. The new issues are minted
+    above every spent id, and each prior issue nobody continued is carried as
+    ``unverified``: no editor ruled on it, so the honest answer is that it still
+    stands unchecked. ``surviving`` maps a prior id to the quotes of its
+    evidence the caller could still find in the manuscript.
     """
     order = {name: index for index, name in enumerate(ISSUE_SEVERITIES)}
     rows = sorted(findings or [], key=lambda f: order.get(str(f.get('severity')), len(order)))
-    out = []
-    for number, finding in enumerate(rows, 1):
+    prior_rows = [row for row in prior or () if isinstance(row, dict) and row.get('id')]
+    taken = {str(row['id']) for row in prior_rows} | {str(name) for name in spent or ()}
+    surviving = surviving or {}
+    out, number = [], 0
+    for rank, finding in enumerate(rows, 1):
         severity = str(finding.get('severity'))
+        number += 1
+        identifier = issue_id(number)
+        while identifier in taken:
+            number += 1
+            identifier = issue_id(number)
+        taken.add(identifier)
         out.append({
-            'id': issue_id(number),
+            'id': identifier,
             'name': str(finding.get('title') or 'Untitled finding')[:120],
             'severity': severity if severity in ISSUE_SEVERITIES else 'minor',
             'category': category_for(finding),
-            'rank': number,
+            'rank': rank,
             'statement': str(finding.get('comment') or ''),
             'members': [member_of(finding)],
             'raised_by': 1,
@@ -351,6 +400,36 @@ def synthesize(findings, reason=None) -> list:
                              'No editor pooled this run, so each finding is its own issue.',
             'text_unchanged_reason': None,
             'surviving_quotes': [],
+            'audits': [],
+        })
+    # The prior issues, carried. Nobody ruled on them: there was no editor to
+    # read the revision against them, and a row this round cannot speak to is
+    # `unverified` — not resolved, which would tell the authors a problem was
+    # fixed on no evidence, and not dropped, which would tell them nothing at
+    # all. They keep no rank; the renderer lists closed rows after the live ones.
+    for prior_row in prior_rows:
+        identifier = str(prior_row['id'])
+        out.append({
+            'id': identifier,
+            'name': prior_row.get('name'),
+            'severity': prior_row.get('severity'),
+            'category': prior_row.get('category'),
+            'rank': None,
+            'statement': prior_row.get('statement'),
+            'members': [],
+            'raised_by': 0,
+            'rebuttal_block_id': None,
+            'rebuttal_quote': None,
+            'prior_id': identifier,
+            'prior_rank': last_rank(prior_row),
+            'status': 'unverified',
+            'status_reason': ('No editor ruled on this issue from the prior round: '
+                              + str(reason).rstrip('.') + '. It stands as it was filed.')
+                             if reason else
+                             ('No editor ruled on this issue from the prior round, so it stands '
+                              'as it was filed.'),
+            'text_unchanged_reason': None,
+            'surviving_quotes': list(surviving.get(identifier) or []),
             'audits': [],
         })
     return out

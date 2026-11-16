@@ -168,5 +168,11 @@ closed document is dropped, your issues are still held, and you close it again
 with `submit_editor`. That is there so a retry is never stuck — not an invitation
 to close twice. Once you have called `submit_report`, you are done.
 
+`submit_report` is refused until `submit_editor` has accepted a review, and it
+says what is still open; it closes your stage, so filing it early would close
+you out with your issues unstored. Once the recorder has written the files,
+`submit_editor` and `submit_report` are both refused: the review has been handed
+on and is not a draft any more.
+
 Then call `submit_report` with a short note on how you grouped the findings and
 `model` set to the model you are running as. The recorder writes the files.

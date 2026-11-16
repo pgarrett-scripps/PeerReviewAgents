@@ -241,6 +241,53 @@ and the overlap experiment.
   lists; and `editor_trace['log']`, `issue_ids_used` and `issues_source_reason`
   are documented in `docs/INTEGRATIONS.md`, with a test that every published
   top-level key of `issues.json` is named there.
+- **A written review could be rewritten.** `submit_issues` had the two guards
+  and `submit_editor` had neither, so after `write_review` had published a run
+  the editor's own token could submit a different summary and a different
+  verdict, file a second report, and a second `write_review` republished
+  `issues.json` and `REVIEW.md` under it. `submit_editor`, `submit_report`,
+  `write_review`, `claim_agent` and `reissue_claim_code` all refuse once a run
+  is complete, and say so with its status; a re-claim no longer moves the
+  editor trace of a published review. A further round of review is a new run,
+  not a re-claim of a finished one.
+- **The editor could close its stage before its review was accepted.** A
+  `submit_report` filed first was accepted, the stage read as done over a review
+  nobody had submitted, and every `submit_issues` afterwards was refused because
+  the report was in — the issues in the editor's context could not be stored by
+  any call. The closure is refused until `submit_editor` has accepted a review
+  and names what is still open.
+- **A degraded second round lost the prior round.** The no-editor path numbered
+  from `i01` regardless of the ids the earlier rounds had spent, so a round that
+  degraded after it opened handed `i01` to a new finding while `i01` was still
+  the id of a prior issue — and wrote no row at all for the prior issues, which
+  appeared in the review as neither resolved nor open. It now mints above every
+  spent id and carries each prior issue as `unverified`, with a `status_reason`
+  saying no editor ruled on it and why there was none.
+- **A prior-round file was read on trust past the first two checks.**
+  `issue_ids_used` was iterated as given — `5` raised a bare `'int' object is
+  not iterable`, a string was iterated into one-character ids, a dict
+  contributed its keys — and the field is now required and validated as a list
+  of this engine's own ids. The duplicate-id check ran over the carried rows
+  alone, so a live row and a resolved row under one id passed; ids were accepted
+  as numbers (`7` and `"7"` both passed); and a `members` or `surviving_quotes`
+  that was not a list was accepted here and raised a `TypeError` out of every
+  `submit_editor` call afterwards. Every row is validated at ingest and the file
+  is refused by name.
+- **A refused closure was invisible to the editor's own trace.** Wrong-typed
+  `submit_report` arguments were logged to `closures.jsonl` and nowhere else,
+  and `none_found: "abc"` was refused by the schema layer before the function
+  ran, logging nothing at all — so a run whose editor died closing its stage
+  reported that no submission call had reached the server. `none_found` is
+  checked in the function like every other argument, and every editor refusal,
+  closures included, is in `editor-log.jsonl`.
+- **`REVIEW.md` printed a closed issue's surviving quote unlabelled.** A bare
+  blockquote under "Why it is closed" left the authors unable to tell whether
+  they were being quoted their own revision or the prior round's complaint; the
+  quotes are now labelled as the prior round's evidence still in the manuscript,
+  and an `unverified` row says that no ruling was made and the passage standing
+  is all the round can say. The header's `Run folder | review` — the name of the
+  directory the renderer is handed, for every run ever written — now names the
+  run folder.
 
 ## [0.9.1] — 2026-11-14
 

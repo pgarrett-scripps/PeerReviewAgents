@@ -394,6 +394,24 @@ manuscript. A reader that writes its own `issues.json` for a later round to
 match against must carry the list forward, or that round will mint an id an
 earlier one already reported.
 
+A prior-round file handed to `--prior-issues` is validated before the run opens
+and refused by name, with the path, if it cannot be matched against: the
+schema stamp must be a known one, every row must be an object with a **string**
+`id` (`7` and `"7"` are not the same id), no id may appear twice **across all
+rows** — open and closed alike — every `members` and `surviving_quotes` must be
+a list, and `issue_ids_used` must be present and a list of ids in this engine's
+own form (`i01` upwards). Every `issues.json` this version writes satisfies
+that; a hand-written or edited file that drops `issue_ids_used` is refused
+rather than read with the ids unreserved.
+
+A run that degrades **after** it opened — a ledger that passed the editor's
+maximum, an editor slot nobody claimed, an editor that never closed — still
+accounts for the prior round in the file it writes: its own issues are minted
+above every id in `issue_ids_used`, and each prior issue is carried as
+`unverified` with a `status_reason` saying no editor ruled on it and why there
+was no editor. Nothing is reported as `resolved` by a round that had no editor
+to rule it so.
+
 `prior_round` is `None` for a first round, and for a later one it is
 `{'file': 'issues.json', 'digest': '<16 hex>', 'issues': N, 'tally': {...}}`:
 the prior file's **name**, a digest of its contents, how many of its issues were

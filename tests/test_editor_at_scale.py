@@ -318,7 +318,11 @@ def test_a_run_whose_editor_never_closed_says_why_and_keeps_the_trace(tmp_path):
     # run that ran out of turns with its issues still in its context.
     refused = srv.submit_issues(editor, grouped(uids))
     assert 'request_rejected' in refused
-    srv.submit_report(editor, 'I ran out of room.', model=run.models.get('editor'))
+    # The editor cannot close its stage on the way out either: a report filed
+    # before an accepted submit_editor used to be accepted, and the stage then
+    # read as done over a review nobody had submitted.
+    giving_up = srv.submit_report(editor, 'I ran out of room.', model=run.models.get('editor'))
+    assert 'submit_editor has not accepted a review yet' in giving_up['request_rejected']
 
     blocked = srv.write_review(token_for('recorder'))
 
@@ -330,7 +334,11 @@ def test_a_run_whose_editor_never_closed_says_why_and_keeps_the_trace(tmp_path):
     # and never as a path on the machine that happened to run the review.
     assert 'review/editor-log.jsonl' in blocked['request_rejected']
     assert str(run.root) not in blocked['request_rejected']
-    assert blocked['editor_trace']['refused'] == 1
+    # Both refusals, the batch and the closure: every editor refusal is in the
+    # editor log, which is the one record a blocked run is read from.
+    assert blocked['editor_trace']['refused'] == 2
+    assert [row['tool'] for row in blocked['editor_trace']['last_refusals']] == [
+        'submit_issues', 'submit_report']
 
     reading = read_run(run.review)
     assert reading['status'] == 'blocked'

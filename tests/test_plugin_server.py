@@ -757,7 +757,11 @@ def test_every_closure_is_on_disk_whether_it_was_taken_or_refused(tmp_path):
 
 def test_write_review_refuses_without_an_accepted_editor_package(tmp_path):
     run, _ = two_track_run(tmp_path)
-    close(claim('editor')['agent_token'], model='claude-sonnet-5-5')
+    # The editor cannot close its stage before its review is accepted either,
+    # so the run reaches write_review with no package and no closure.
+    premature = srv.submit_report(claim('editor')['agent_token'], 'Nothing further.',
+                                  model='claude-sonnet-5-5')
+    assert 'submit_editor has not accepted a review yet' in premature['request_rejected']
     refusal = srv.write_review(claim('recorder')['agent_token'])
     assert 'never submitted an accepted pooled review' in refusal['request_rejected']
 
