@@ -467,55 +467,114 @@ def test_a_table_the_converter_called_a_paragraph_is_re_read_as_what_the_page_pr
     assert manifest['ai_read']['actions']['reread'] == 3
 
 
-def test_a_paragraph_re_read_may_only_lose_what_the_converter_read(tmp_path):
-    """Debris of a displayed equation comes out; the authors' prose cannot be rewritten.
+def test_a_paragraph_re_read_names_the_debris_and_the_engine_cuts_it(tmp_path):
+    """Debris of a displayed equation comes out; nothing a model types goes in.
 
     The converter half-swallows a displayed equation and leaves the rest of it
     inside the paragraph beside it, so the paragraph cannot be left as it is —
     and a model that may retype a paragraph is a model that may write the
-    paper. The line between those is that every character kept has to be one
-    the converter read, in that order.
+    paper. So prose is not typed here at all: the reader names the span and the
+    engine cuts it, and every character that comes out is a character of the
+    converter's reading because it is a slice of it.
     """
     opened, token = garbled(tmp_path)
     marks = ids_of(token)
     prose = paragraph_ids(token)
     assert 'request_rejected' not in srv.view_page(token, 1)
 
-    invented = srv.reread_piece(token, prose['debris'], 1, [
+    typed = srv.reread_piece(token, prose['debris'], 1, [
         {'kind': 'equation', 'latex': 'R = \\log_{2}(1 + \\mathrm{SNR})', 'number': '(9)'},
         {'kind': 'paragraph', 'text': 'At high signal-to-noise the logarithm is well '
-                                      'approximated by a linear function of the bandwidth, '
-                                      'as we show below.'}])
-    assert 'may only lose words' in invented['request_rejected']
-    assert DEBRIS_PARAGRAPH in invented['request_rejected'], \
+                                      'approximated by a linear function of the bandwidth.'}])
+    assert 'not typed here' in typed['request_rejected']
+    assert DEBRIS_PARAGRAPH in typed['request_rejected'], \
         'the refusal carries the whole reading, which the listing truncates'
     assert prose['debris'] in listed(token), 'and nothing was replaced'
 
-    kept = ('At high signal-to-noise the logarithm is well approximated by a linear function of '
-            'the bandwidth. In that regime the gain is linear in the bandwidth and nothing else.')
+    nowhere = srv.reread_piece(token, prose['debris'], 1, [
+        {'kind': 'paragraph', 'remove': ['We have SNR divided by ln 2']}])
+    assert 'reads nowhere in this piece' in nowhere['request_rejected']
+    twice = srv.reread_piece(token, prose['debris'], 1,
+                             [{'kind': 'paragraph', 'remove': ['the bandwidth']}])
+    assert 'reads 2 times' in twice['request_rejected']
+    too_much = srv.reread_piece(token, prose['debris'], 1, [
+        {'kind': 'paragraph',
+         'remove': ['At high signal-to-noise the logarithm is well approximated by a linear '
+                    'function of the bandwidth.']}])
+    assert '% of what the converter read' in too_much['request_rejected']
+    crowded = srv.reread_piece(token, prose['debris'], 1, [
+        {'kind': 'paragraph', 'remove': ['We have', 'SNR', 'ln 2', 'nothing else']}])
+    assert '4 spans is more than the 3' in crowded['request_rejected']
+
     answer = srv.reread_piece(token, prose['debris'], 1, [
         {'kind': 'equation', 'latex': 'R = \\log_{2}(1 + \\mathrm{SNR})', 'number': '(9)'},
-        {'kind': 'paragraph', 'text': kept}])
+        {'kind': 'paragraph', 'remove': ['We have SNR ln 2']}])
     assert 'request_rejected' not in answer, answer
     assert answer['kinds'] == ['equation', 'paragraph']
 
-    # And prose is not what a re-read writes from nothing: the converter's
-    # reading of a paragraph is the only text a paragraph may hold.
+    # `keep` is the other way round: most of the block was a table, and one run
+    # of prose is left over.
     held = srv.reread_piece(token, prose['garbled'], 1, [
-        {'kind': 'paragraph', 'text': 'The current rose with the hour.'}])
-    assert 'may only lose words' in held['request_rejected']
+        {'kind': 'table', 'rows': [['Hour', 'Current (mA)'], ['1', '4.5']]},
+        {'kind': 'paragraph', 'keep': '2 9.0'}])
+    assert 'request_rejected' not in held, held
 
     account_for_everything(token, marks)
     assert 'request_rejected' not in srv.seal_manuscript(token)
     text, sealed, _ = base_of(srv.current())
     assert 'SNR ln 2' not in text, 'the equation\'s debris left the paragraph'
-    assert 'In that regime the gain is linear' in text, 'and the authors\' sentence stayed'
+    assert ('At high signal-to-noise the logarithm is well approximated by a linear function of '
+            'the bandwidth. In that regime the gain is linear in the bandwidth and nothing '
+            'else.') in text, 'and the authors\' own characters are what is left'
     assert '$$ R = \\log_{2}(1 + \\mathrm{SNR}) \\tag{(9)} $$' in text.splitlines()
     trimmed = next(row for row in sealed
                    if row.get('original', {}).get('piece') == prose['debris']
                    and row['kind'] == 'paragraph')
     assert trimmed['source'] == 'ai-reconstructed'
     assert trimmed['original']['text'] == DEBRIS_PARAGRAPH
+
+
+def test_a_sentence_a_model_invents_cannot_reach_a_paragraph(tmp_path):
+    """The lead's probe of the first design, which that design accepted.
+
+    A character-subsequence test was the first guard, and almost any short
+    sentence is a character subsequence of a long paragraph: re-reading the
+    exosome abstract as its own text plus "This result is highly significant."
+    passed, and the sentence reached the sealed line. The same probe also
+    retyped a truncated preview of a long paragraph and silently dropped most
+    of it. Both are refused here because prose is never typed.
+    """
+    opened, token = garbled(tmp_path)
+    marks = ids_of(token)
+    prose = paragraph_ids(token)
+    assert 'request_rejected' not in srv.view_page(token, 1)
+    whole = DEBRIS_PARAGRAPH
+
+    for written in (whole + ' This result is highly significant.',
+                    'This result is highly significant.',
+                    whole[:60],
+                    whole.replace('linear', 'lineer')):
+        answer = srv.reread_piece(token, prose['debris'], 1,
+                                  [{'kind': 'paragraph', 'text': written}])
+        assert 'request_rejected' in answer, written
+        assert 'not typed here' in answer['request_rejected']
+
+    # The page's own pieces come back whole, so naming a span does not depend
+    # on a preview that is cut off at CONTEXT_CHARACTERS. A page is an image
+    # and a JSON payload beside it, which is where the pieces are.
+    page = srv.view_page(token, 1)
+    payload = json.loads(page[1]) if isinstance(page, list) else page
+    shown = {row['piece']: row['text'] for row in payload['pieces']}
+    assert shown[prose['debris']] == whole
+    assert '…' not in shown[prose['debris']]
+
+    assert 'request_rejected' not in srv.reread_piece(
+        token, prose['debris'], 1, [{'kind': 'paragraph', 'remove': ['We have SNR ln 2']}])
+    account_for_everything(token, marks)
+    assert 'request_rejected' not in srv.seal_manuscript(token)
+    text, _, _ = base_of(srv.current())
+    assert 'highly significant' not in text
+    assert 'SNR ln 2' not in text
 
 
 def test_an_empty_piece_is_refused_and_one_the_stage_added_can_be_withdrawn(tmp_path):

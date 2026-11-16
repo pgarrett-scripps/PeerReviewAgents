@@ -123,12 +123,20 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   rest in no file and nothing in the manifest saying so. So the kind gate is
   gone from `replace_equation` and `replace_table`, and `reread_piece`
   replaces one piece with several, in printed order, each keeping the
-  converter's whole reading in `original` with `part` and `of`. Prose is held
-  to deletion: a `paragraph`, `footnote`, `heading` or `title` a re-read writes
-  must be the converter's own characters with some removed and none added,
-  checked as a subsequence after normalising and dropping whitespace, so a
-  displayed piece's debris can leave a paragraph and a model still cannot write
-  one. A caption is never written over by a single replacement, because the
+  converter's whole reading in `original` with `part` and `of`. **Prose the
+  stage never types**: a `paragraph`, `footnote`, `heading` or `title` part of
+  a re-read carries no text, only `remove` — the spans to cut, at most three
+  and together at most a fifth of the piece — or `keep`, the one run of it that
+  piece is, and the engine cuts them, so what comes out is a slice of the
+  converter's own characters. A span is matched on the normal form a citation's
+  quote is matched on and has to read there exactly once, and `view_page` now
+  returns that page's pieces whole, since a span cannot be named inside a
+  preview the listing cut off. The first attempt at this let a re-read retype
+  prose as long as every character kept was one the converter read, in order,
+  and that does not hold: almost any short sentence is a character subsequence
+  of a long paragraph, so an abstract re-read as its own text plus "This result
+  is highly significant." was accepted and reached the sealed line. A caption
+  is never written over by a single replacement, because the
   piece it names would be left without one. `withdraw_piece` takes out a piece
   the stage added and refuses the converter's — a caption added with its text
   in the wrong argument had rendered as `Caption:`, passed a check that was on

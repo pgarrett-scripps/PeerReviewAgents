@@ -2080,7 +2080,12 @@ def save_note(agent_token: str, text: str, evidence_lines: list) -> dict:
 
 
 def view_page(agent_token: str, page: int) -> dict:
-    """Inspect one original PDF page, including its figures."""
+    """Inspect one original PDF page, including its figures.
+
+    Before the manuscript is sealed it also returns the converter's pieces for
+    that page, whole — which is what a span named in `reread_piece` is matched
+    against, and longer than the listing shows.
+    """
     return _call(agent_token, 'view_page', {'page': page})
 
 
@@ -2176,15 +2181,24 @@ def reread_piece(agent_token: str, piece: str, page: int, pieces: list) -> dict:
       table — where replacing it with one piece would drop the rest;
     - a paragraph left holding the debris of a displayed equation beside it.
 
-    `pieces` is a list, in printed order, of `{"kind": ..., ...}` with the same
-    fields the other tools take: `latex` and `number` for an equation, `rows`
-    for a table, `text` for a caption, a paragraph, a footnote or a heading.
+    `pieces` is a list, in printed order, of `{"kind": ..., ...}`. An equation
+    (`latex`, `number`), a table (`rows`) or a caption (`text`) you transcribe
+    from the page image, as with the other tools.
 
-    An equation, a table and a caption you transcribe from the page image. A
-    paragraph you may only *shorten*: every character you keep has to be one
-    the converter read, in that order, so a displayed piece's debris can come
-    out of a paragraph and the authors' prose cannot be rewritten. Refused if
-    you have not viewed the page.
+    **Prose you never type here.** For a paragraph, footnote, heading or title,
+    name what to take out and the engine cuts it:
+
+    - `{"kind": "paragraph", "remove": ["We have SNR ln 2"]}` keeps the piece
+      and cuts the spans you name — each one an exact run of the converter's
+      text, as `view_page` shows it, found there exactly once. At most three
+      spans, and together a fifth of the piece at most: this is for a displayed
+      piece's debris, not for rewriting a paragraph.
+    - `{"kind": "paragraph", "keep": "In that regime, you can hardly"}` takes
+      the one run you name and drops the rest — the prose left over when most
+      of a block turns out to be a table.
+
+    If the prose is right as the converter read it, leave it out of `pieces`
+    altogether. Refused if you have not viewed the page.
     """
     return _call(agent_token, 'reread_piece',
                  {'piece': piece, 'page': page, 'pieces': list(pieces)})

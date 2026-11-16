@@ -123,14 +123,27 @@ actually prints, and the converter's whole reading is kept on every piece that
 comes out of it.** `reread_piece` replaces one piece with several, in printed
 order, each carrying `original` = the converter's reading plus `part` and `of`;
 `replace_equation` and `replace_table` take a piece of any kind and change it.
-Two things hold that to transcription. A `paragraph`, `footnote`, `heading` or
-`title` written by a re-read must be the converter's own characters with some
-**removed** and none added — checked, after normalising and dropping
-whitespace, as a subsequence — so a displayed piece's debris can leave a
-paragraph and the authors' prose cannot be rewritten; and a caption is never
-written over by a single replacement, because the piece it names would be left
-with none. `withdraw_piece` takes out a piece the stage itself added, and
-refuses the converter's.
+Two things hold that to transcription. **Prose the stage never types**: a
+`paragraph`, `footnote`, `heading` or `title` part of a re-read carries no
+text, only `remove` — the spans to cut, at most three of them and together at
+most a fifth of the piece — or `keep`, the one run of it this piece is, and the
+engine does the cutting. So what comes out is a slice of the converter's own
+characters: a displayed piece's debris can leave a paragraph and nothing a
+model writes can get into one. (A span is matched on the same normal form a
+citation's quote is matched on and has to read there exactly once, and
+`view_page` returns that page's pieces whole, because the listing cuts a long
+paragraph off at `CONTEXT_CHARACTERS` and a span cannot be named inside what
+is not shown.) And a caption is never written over by a single replacement,
+because the piece it names would be left with none. `withdraw_piece` takes out
+a piece the stage itself added, and refuses the converter's.
+
+The first design let a re-read *retype* prose, with a check that every
+character kept was one the converter read, in order. It does not hold: almost
+any short sentence is a character subsequence of a long paragraph, so
+re-reading an abstract as its own text plus "This result is highly
+significant." was accepted and that sentence reached the sealed line. A
+deletion the engine performs cannot have that failure, which is why the reader
+names spans instead of writing text.
 
 The stage is one slot, `reader`, planned with every other: `--reader-model`
 (default `claude-sonnet-5-5`, because the job is reading pictures),

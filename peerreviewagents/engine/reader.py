@@ -49,10 +49,21 @@ ADDABLE = ('equation', 'table', 'caption', 'figure-description')
 #: it would be writing the paper.
 ADDABLE_ON_LOST_PAGE = ('paragraph',)
 
-#: The authors' running text. A piece of one of these kinds may be re-read only
-#: by *removing* characters from what the converter had — see :func:`kept_words`
-#: — because the stage transcribes what is printed and does not write prose.
+#: The authors' running text. A piece of one of these kinds is never typed by
+#: this stage: a re-read of one names the spans to take out, or the one span to
+#: keep, and the engine cuts them — see :func:`prose_from`.
 PROSE_KINDS = ('paragraph', 'footnote', 'heading', 'title')
+
+#: How many spans one prose re-read may cut, and how much of the piece they may
+#: come to between them. The case they are for is the antenna paragraph that
+#: swallowed equation 10: ``"We have SNR ln 2 "``, 17 characters of a
+#: 700-character paragraph, 2.4% of it, in one span. Three is room for a
+#: paragraph that caught the debris of two displayed pieces and a stray
+#: equation number, and a fifth of a paragraph is already far more than any
+#: debris — a model asking to cut that much is asking to rewrite, which is the
+#: thing this stage must not do.
+MOST_SPANS = 3
+MOST_REMOVED = 0.2
 
 #: What is printed as a block of its own rather than as running text. The
 #: reader writes these from the page image: an equation, a table and a caption
@@ -153,33 +164,107 @@ def converter_reading(piece):
     return ' '.join(part for part in found if part.strip())
 
 
-def squeezed(text):
-    """One string's characters, normalised, with every space and case dropped."""
-    from . import paper_text
-    return ''.join(paper_text.normalised(str(text or '')).split()).casefold()
+def span(held, wanted, where, named):
+    """``(start, end)`` in *held*, for the one place it reads *wanted*.
 
+    The reader names a span of prose; the engine finds it and cuts it. Matching
+    is on the normal form, the same one a citation's quote is matched on, so a
+    span typed with a hyphen for a minus or without the line break the
+    converter left in the middle of it is still the span the page prints; the
+    offsets take the match back to the characters, so what comes out is the
+    converter's own text and not a normalised copy of it.
 
-def kept_words(written, held):
-    """Whether *written* is *held* with characters taken out and none put in.
-
-    The rule that lets a reader touch a paragraph at all. A displayed equation
-    the converter half-swallowed leaves its debris in the paragraph beside it —
-    "the logarithm in (9) is well approximated by a linear function. We have
-    SNR ln 2 In that regime…" — and the paragraph cannot be left like that; but
-    a model allowed to retype it is a model writing the paper. So the reader
-    may only *delete*: every character it keeps is one the converter read, in
-    the order the converter read it.
-
-    The comparison is over the normal form with the spaces removed, so joining
-    a word the converter broke across a line or a cell is a deletion too, and
-    an en dash retyped as a hyphen is not a difference.
+    A span that reads nowhere is refused with the whole of what the converter
+    read, because the model is working from a page image and the converter's
+    line may not be the page's. A span that reads twice is refused for being
+    two places at once: the engine will not pick.
     """
-    small, large = squeezed(written), squeezed(held)
-    at = 0
-    for character in large:
-        if at < len(small) and small[at] == character:
-            at += 1
-    return at == len(small)
+    from . import paper_text
+    normal, offsets = paper_text.normalise(held)
+    needle = paper_text.normalised(wanted)
+    if not needle:
+        raise ValueError(where + ': ' + named + ' is empty. Give the words to take out, as they '
+                         'stand in the converter\'s reading.')
+    found = [at for at in range(len(normal) - len(needle) + 1) if normal.startswith(needle, at)]
+    if not found:
+        raise ValueError(where + ': ' + named + ' reads nowhere in this piece, so there is '
+                         'nothing to cut. Give it as the converter has it — it read: ' + held)
+    if len(found) > 1:
+        raise ValueError(where + ': ' + named + ' reads ' + str(len(found)) + ' times in this '
+                         'piece, and the engine will not choose which. Give a longer span, one '
+                         'that reads once.')
+    at = found[0]
+    start, last = offsets[at], offsets[at + len(needle) - 1]
+    end = last + 1
+    # A cluster the normal form expanded — a ligature, a compatibility form —
+    # is several normal characters at one offset, and cutting half of one would
+    # leave the other half in the prose. The cut takes the whole character.
+    while end < len(held) and (at + len(needle)) < len(offsets) \
+            and offsets[at + len(needle)] == last:
+        end += 1
+    return start, end
+
+
+def prose_from(held, part, where):
+    """The text of a prose part of a re-read: a cut of *held*, never typed.
+
+    A model asked to retype a paragraph minus some debris retypes the paragraph
+    too, and a character-by-character comparison does not catch it — almost any
+    invented sentence is a subsequence of a long paragraph, which is how
+    "This result is highly significant." was accepted onto the end of an
+    abstract. So prose is not written here at all. The reader says what to take
+    out, in ``remove``, or which single run of it to keep, in ``keep``, and the
+    engine does the cutting: every character that comes out is one the
+    converter read, in the order it read it, because it is a slice of it.
+    """
+    if str(part.get('text') or '').strip():
+        raise ValueError(where + ': the running text is the authors\', so a paragraph, footnote, '
+                         'heading or title is not typed here. Name the debris to take out of what '
+                         'the converter read, in `remove` — ["We have SNR ln 2"] — or the one run '
+                         'of it this piece is, in `keep`. It read: ' + held)
+    cuts = [str(one) for one in (part.get('remove') or []) if str(one).strip()]
+    keep = str(part.get('keep') or '')
+    if cuts and keep.strip():
+        raise ValueError(where + ': give `remove` or `keep`, not both. `remove` keeps the piece '
+                         'and cuts the spans you name; `keep` takes the one span you name and '
+                         'drops the rest.')
+    if keep.strip():
+        start, end = span(held, keep, where, '`keep`')
+        return held[start:end]
+    if not cuts:
+        raise ValueError(where + ': name the debris to take out, in `remove`, or the one run of '
+                         'the converter\'s reading this piece is, in `keep`. To leave the prose '
+                         'exactly as the converter read it, leave this part out of `pieces` — the '
+                         'piece it comes from is what is being replaced.')
+    if len(cuts) > MOST_SPANS:
+        raise ValueError(where + ': ' + str(len(cuts)) + ' spans is more than the ' +
+                         str(MOST_SPANS) + ' this is for. `remove` takes a displayed piece\'s '
+                         'debris out of a paragraph; a paragraph that needs more cuts than that '
+                         'is one you are rewriting, and this stage does not rewrite prose.')
+    places = sorted(span(held, one, where, '`remove[' + str(number) + ']`')
+                    for number, one in enumerate(cuts))
+    for (_, ends), (begins, _) in zip(places, places[1:]):
+        if begins < ends:
+            raise ValueError(where + ': those spans overlap, so one of them is part of another. '
+                             'Name each run of debris once.')
+    from . import paper_text
+    whole = len(paper_text.normalised(held))
+    cut = sum(len(paper_text.normalised(held[start:end])) for start, end in places)
+    if whole and cut > whole * MOST_REMOVED:
+        raise ValueError(where + ': that takes out ' + str(round(100 * cut / whole)) + '% of what '
+                         'the converter read here, and `remove` is for a displayed piece\'s '
+                         'debris, which is a few words. If most of this piece is not prose, '
+                         're-read it as the table or equation it is and leave no paragraph part.')
+    rest, kept = 0, []
+    for start, end in places:
+        kept.append(held[rest:start])
+        rest = end
+    kept.append(held[rest:])
+    written = ' '.join(''.join(kept).split())
+    if not written:
+        raise ValueError(where + ': those spans are the whole piece, so no prose is left. Leave '
+                         'the paragraph part out of `pieces` instead.')
+    return written
 
 
 def original_of(piece):
@@ -517,13 +602,34 @@ class Desk:
         return answer
 
     def view_page(self, page):
-        """One page of the original PDF, as the image a repair is read from."""
+        """One page of the original PDF, as the image a repair is read from.
+
+        With it, every piece the converter put on that page, whole. The listing
+        shows a long paragraph cut off at :data:`CONTEXT_CHARACTERS`, which is
+        enough to recognise a piece by and not enough to name a span inside it:
+        a reader asked to cut the debris out of a 700-character paragraph could
+        not see the end of the paragraph it was cutting. A page is a bounded
+        amount of text, and this is the call made while looking at it.
+        """
         target = pages.page_image(self.workspace, page, self.out,
                                   int(self.draft.get('page_count') or 0))
         self.pages_seen.add(int(page))
         record_view(self.draft, page)
         self.save()
+        here = []
+        for name, pieces in (self.draft.get('documents') or {}).items():
+            for piece in pieces:
+                if int(piece.get('page') or 0) != int(page):
+                    continue
+                here.append({'piece': piece.get('piece_id'),
+                             'kind': str(piece.get('kind') or 'paragraph'),
+                             'document': name, 'source': piece.get('source') or 'text',
+                             'text': rendered(piece)})
         return {'label': 'Original PDF page ' + str(page), 'page': int(page),
+                'pieces': here,
+                'reading': ('Those are the converter\'s pieces for this page, whole, with the '
+                            'text it read. A span you name in `remove` or `keep` is matched '
+                            'against this, not against the page.'),
                 'image': base64.b64encode(target.read_bytes()).decode()}
 
     def replace_equation(self, piece_id, latex, number, page):
@@ -637,9 +743,10 @@ class Desk:
         Two rules hold it to transcription. A part of one of the
         :data:`DISPLAY_KINDS` is written freely, because it is a transcription
         of something printed as a block and the converter's reading of it is
-        kept. A part that is prose must be the converter's own characters with
-        some taken out — see :func:`kept_words` — so debris of a displayed
-        piece can leave a paragraph and a model still cannot write one.
+        kept beside it. A part that is prose is not written at all: it names
+        the spans to cut, or the one span to keep, and the engine cuts them —
+        see :func:`prose_from` — so a displayed piece's debris can leave a
+        paragraph and nothing a model types can get into one.
         """
         page = self.off_page(page)
         parts = [dict(part or {}) for part in parts]
@@ -664,15 +771,19 @@ class Desk:
                 raise ValueError(where + ': a piece is re-read as one of '
                                  + ', '.join(REREADABLE) + ', and not as ' + (kind or 'nothing')
                                  + '. A figure\'s image is describe_figure\'s.')
+            if kind in PROSE_KINDS:
+                text = prose_from(held, part, where)
+            else:
+                text = str(part.get('text') or '')
+                if part.get('remove') or part.get('keep'):
+                    raise ValueError(where + ': `remove` and `keep` are for prose, which this '
+                                     'stage cuts rather than writes. A ' + kind + ' is '
+                                     'transcribed from the page image, in `' +
+                                     ('rows' if kind == 'table' else
+                                      'latex' if kind == 'equation' else 'text') + '`.')
             made = shaped(kind, page, document, piece.get('section'), where,
-                          text=part.get('text') or '', latex=part.get('latex') or '',
+                          text=text, latex=part.get('latex') or '',
                           number=part.get('number') or '', rows=part.get('rows') or [])
-            if kind in PROSE_KINDS and not kept_words(made['text'], held):
-                raise ValueError(
-                    where + ': a ' + kind + ' may only lose words here, never gain them, because '
-                    'the running text is the authors\'. Take the displayed piece\'s debris out of '
-                    'what the converter read and give the rest back unchanged. It read: '
-                    + held)
             made['source'] = 'ai-reconstructed'
             made['original'] = {**original_of(piece), 'piece': piece_id,
                                 'part': at, 'of': len(parts)}

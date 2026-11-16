@@ -43,7 +43,8 @@ nothing you do after it can change a line.
 
 ## The tools, and what each one is for
 
-- `view_page` — the page as an image. **A repair is refused unless you have
+- `view_page` — the page as an image, and the converter's pieces for that page
+  whole, which the listing shortens. **A repair is refused unless you have
   viewed that page in this attempt**: a transcription is a transcription of
   something. View the page, then do everything on that page.
 - `replace_equation` — the LaTeX the page prints, and its number as printed.
@@ -92,14 +93,29 @@ equation. Then `reread_piece` it as the pieces the page prints, in order:
 {"kind": "table", "rows": [...]}]`. The converter's whole reading is kept on
 every one of them, so your re-read can be compared with what it replaced.
 
-**When you may touch a paragraph, and how far.** A paragraph of the authors'
-running prose is their words and you do not rewrite it: not for grammar, not
-for clarity, not to join a word the converter broke. The one thing you may do
-is **delete** — take a displayed piece's debris out of a paragraph that is
-holding it, and leave the rest exactly as the converter read it. The tool
-enforces that: every character you keep has to be one it already had, in that
-order, or your call is refused. Where a paragraph's text is simply the authors'
-prose, leave it alone.
+**You never type prose.** A paragraph, footnote, heading or title is the
+authors' words: you do not rewrite one, not for grammar, not for clarity, not
+to join a word the converter broke. The one thing you may do is take a
+displayed piece's debris out of one, and you do it by **naming the span**, not
+by retyping the piece around it:
+
+```
+reread_piece(piece="p211", page=4, pieces=[
+  {"kind": "equation", "latex": "R = \\log_2(1 + \\mathrm{SNR})", "number": "9"},
+  {"kind": "paragraph", "remove": ["We have SNR ln 2"]},
+])
+```
+
+The engine finds that span in what the converter read and cuts it, so what
+comes out is the converter's own characters and nothing of yours. Each span has
+to read there exactly once — `view_page` gives you the page's pieces whole,
+which is what the span is matched against, and the listing's `…` cuts a long
+paragraph off. At most three spans, and a fifth of the piece at most: this is
+for debris, and a paragraph that needs more than that is one you are rewriting.
+Where most of a block is really a table and a sentence of prose is left over,
+`{"kind": "paragraph", "keep": "the one run it is"}` takes that run and drops
+the rest. If the prose is right as the converter read it, leave it out of
+`pieces` and it is untouched.
 
 ## A page the converter returned nothing from
 
