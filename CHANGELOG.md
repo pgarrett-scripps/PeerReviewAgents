@@ -47,6 +47,52 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **One model reads the paper's pages before any reviewer reads its text.** A
+  Read stage sits between the import and the review, one slot (`reader`,
+  `--reader-model`, default `claude-sonnet-5-5`), and the import no longer
+  writes the manuscript: it writes a draft, `draft.json`, which has no line
+  numbers and which no reviewer, specialist, citation worker or editor can
+  claim a slot against. The reader works through the draft against the page
+  images — for every equation, table and figure it either repairs the piece
+  (`replace_equation`, `replace_table`, `describe_figure`, `merge_equations`
+  for an equation the converter split, `add_piece` for one it dropped) or
+  confirms it as printed, and it must open every page — and a repair is refused
+  unless that page has been viewed. Then `seal_manuscript` writes `paper.md`,
+  `map.json` and the manifest, once, and line numbers never move again; the
+  seal is refused, naming what is left, while a single piece or page is
+  unaccounted for. Its allowance is `10 + pages + 2 × pieces` rather than a
+  constant, because a four-page letter and a forty-page paper with sixty
+  figures are not the same job.
+  The converter is the reason: on the antenna manuscript it produced eleven
+  equations and about half were wrong, two of them with its own confidence at
+  `1.0`, so the confidence cannot say which to trust; and it produces no figure
+  image at the pinned version, so every figure reached every reviewer as a
+  caption and nothing else, which is also why most reviewers in seven saved
+  runs opened no page at all.
+  What a reviewer now reads is marked: a repaired equation says it was read
+  from the page image by that model, with the page, and a figure's description
+  is its own line under the caption, marked as an AI description of the image
+  rather than the authors' words. The `view_page` gate on equation findings
+  stays as it is until there is a measurement that says it can go.
+  Provenance is per row in `map.json`: `text` is the converter's own reading,
+  `ai-reconstructed` an equation or table rewritten from the image — with the
+  converter's reading kept beside it in `original`, so a repair can be audited
+  — and `ai` a description or a piece the converter missed.
+  `manifest['ai_read']` names the reader model and counts the pages viewed, the
+  pieces settled and the calls spent, `manifest['pieces_per_source']` counts
+  the rows per source, and the base schema is `paper-base-v2`:
+  `paper-base-v1` is refused by name, since nothing in it says which pieces
+  were the converter's own. Supplements go through the same stage under the same
+  rules, as documents of their own.
+  **Running without a reader is one setting, not a fallback path**:
+  `--no-ai-read`, `PEERREVIEW_AI_READ=0` or `ai_read=false` on `ingest` seals
+  the draft as converted, with today's garbled-equation markers and no figure
+  described, and `manifest['ai_read']` is `{"read": false, "reason": …}`. A
+  reader that fails twice ends the same way, through the recorder's new
+  `seal_as_converted`; one code path writes the base either way, so a run never
+  holds a half-written manuscript. `write_manuscript` from an app needs no
+  reader and seals at once, as it did before — an app that parses its own Typst
+  source already has the equation.
 - **A citation says where the quote is inside its line, everywhere a consumer
   reads one.** An issue's members now carry `start`, `end` and `anchor_text`
   beside the line, and a citation ledger use row carries `start`, `end` and

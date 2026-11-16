@@ -93,6 +93,71 @@ records; `citation_workers` and `citation_worker_model` go the same way.
 `PEERREVIEW_CITATION_WORKER_MODEL` do the same for a session the starter
 launched, and an explicit `ingest` argument wins over the environment.
 
+### The Read stage
+
+A PDF converter is good at prose and bad at everything else. On one twelve-page
+paper it produced eleven equations and about half of them were wrong, two of
+them with its own confidence at `1.0`, and it produces no figure image at all —
+so a figure reached a reviewer as a caption and nothing else. The Read stage is
+one model that looks at the page images before any reviewer starts.
+
+What `import_paper` writes first is a **draft**: `draft.json`, the converted
+pieces with no line numbers. Nothing can cite a draft, and the server refuses
+every slot claim but the reader's while one is in the folder. The reader works
+through it against the pages — for every equation, table and figure it either
+repairs the piece from the page image or confirms it as printed, and it must
+open every page, because an equation the converter dropped altogether is
+invisible in the text and plain on the page. Then `seal_manuscript` writes
+`paper.md`, `map.json` and the manifest, in one call, once. **Line numbers
+never move after the seal**, which is what lets a finding cite one.
+
+The stage is one slot, `reader`, planned with every other: `--reader-model`
+(default `claude-sonnet-5-5`, because the job is reading pictures),
+`PEERREVIEW_READER_MODEL`, or `reader_model` on `ingest`. Its tool allowance is
+not a constant — it is `10 + pages + 2 × pieces`, capped — since a four-page
+letter and a forty-page paper with sixty figures are not the same job.
+
+**Running without it is one setting, not a fallback.** `--no-ai-read`, or
+`PEERREVIEW_AI_READ=0`, or `ai_read=false` on `ingest`, seals the draft at
+ingest from the converter's own text: the equations keep today's marker telling
+the reviewer to open the page, no figure has a description, and
+`manifest['ai_read']` is `{"read": false, "reason": …}`. The same thing happens
+when a reader fails twice, through the recorder's `seal_as_converted`. One code
+path writes the base either way, so a run never has a half-written manuscript.
+
+`write_manuscript` needs no reader and seals at once: an app that parses its
+own Typst or LaTeX source already has the equation, so there is nothing to read
+off a page image. Its manifest records `{"read": false, "reason": …}` too.
+
+#### What the manifest and the map say about it
+
+`manifest['ai_read']` is the record of the stage:
+
+```json
+"ai_read": {"read": true, "reader_model": "claude-sonnet-5-5",
+            "reader_slot": "reader", "attempt": 1,
+            "pages_viewed": 12, "pages": 12,
+            "actions": 20, "tool_calls": 47}
+```
+
+`manifest['pieces_per_source']` counts the rows by where their text came from —
+`{"text": 184, "ai-reconstructed": 6, "ai": 9}` — and that is the same
+`source` each row in `map.json` carries:
+
+| `source` | What the row's text is |
+| --- | --- |
+| `text` | the converter's own reading, untouched |
+| `ai-reconstructed` | an equation or a table a model rewrote from the page image. The converter's reading is kept on the row, in `original`, so a repair can be audited |
+| `ai` | a figure description, or a piece the converter missed entirely and a model added |
+
+A figure description is its own piece and its own row, of kind
+`figure-description`, on the line under the caption. `read_paper` marks both
+for the reviewer: a repaired equation says it was read from the page image by
+that model, with the page, and a description says it is an AI description of
+the image rather than the authors' words. The `view_page` gate on an equation
+finding stays as it is — a reviewer who disputes an equation sees the same
+rendering the reader worked from, not a second one.
+
 ## Inside a Claude Code session
 
 From a checkout:
