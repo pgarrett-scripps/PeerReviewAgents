@@ -704,20 +704,45 @@ if (hasEditor) {
 }
 
 phase('Record')
-const recorded = await agent(
+const written = status => status === 'complete' || status === 'complete-without-findings'
+let recorded = await agent(
   'Close the run. Call claim_agent with slot="recorder" and claim_code="' + codeFor('recorder')
   + '", then write_review with that token.'
   + ' Report the status, issue_counts.issues as issues, the required_changes and suggestions'
   + ' counts and the escalated count. If it refuses, report the refusal text verbatim in the'
-  + ' refusal field.',
+  + ' refusal field — and where it refuses because the review is already written, report the'
+  + ' status and the counts it returns with that refusal, which are the counts of the review'
+  + ' that was written. Do not call write_review twice.',
   options('recorder', {
     label: 'write review', phase: 'Record', agentType: 'pra:recorder', schema: RECORDED,
   }),
 )
-if (!recorded || !recorded.status) {
-  await block('The run files were never written: the recorder returned nothing')
+// A write that landed and an answer that was lost is not a run that was never
+// written: the files are on disk, write_review refuses a second call over them,
+// and this stage used to return success with the counts undefined or block a
+// folder holding a finished review. The folder is asked what it holds before
+// anything is called twice or blocked, and a complete folder is the success.
+if (!recorded || !written(recorded.status)) {
+  const asFound = await agent(
+    'The review of this run may already be written. Call run_status with recorder_key="'
+    + recorderKey + '" and report its status, issues.issues as issues, issues.required as'
+    + ' required_changes and issues.suggestions as suggestions. Where a count is absent,'
+    + ' report 0. Leave escalated out: this answer does not carry it. Call nothing else.',
+    options('recorder', {
+      label: 'read the run', phase: 'Record', agentType: 'pra:recorder', schema: RECORDED,
+    }),
+  )
+  if (asFound && written(asFound.status)) {
+    log('the recorder did not answer, and the run folder is ' + asFound.status
+      + ': the review was written')
+    recorded = Object.assign({}, asFound, { refusal: (recorded && recorded.refusal) || null })
+  }
 }
-if (recorded.status !== 'complete' && recorded.status !== 'complete-without-findings') {
+if (!recorded || !recorded.status) {
+  await block('The run files were never written: the recorder returned nothing and the run '
+    + 'folder does not say the review was written')
+}
+if (!written(recorded.status)) {
   log('the run is ' + recorded.status + ': ' + (recorded.refusal || 'no reason given'))
 }
 

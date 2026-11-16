@@ -1179,6 +1179,36 @@ def test_a_planned_citations_lane_with_no_table_is_not_read_as_no_lane(tmp_path)
     assert all('citation' not in line for line in silent['problems'])
 
 
+def test_the_ledger_of_a_written_review_takes_no_claim_and_no_verdict(tmp_path):
+    """A worker went on filling the table the published counts were taken from.
+
+    The citation workers are not stages of the review: the recorder writes it
+    without waiting for them, which is the whole point of fanning them out over
+    a long reference list. So a worker still holding a token after
+    ``write_review`` could claim another batch and store another verdict, into
+    a ledger whose counts are already published in issues.json, progress.json
+    and REVIEW.md — and the table no longer said what the review said it said.
+    Both tools are guarded, and the folder does not change.
+    """
+    token, claimed, _ = judged(tmp_path)
+    run = srv.current()
+    finish(run)
+    before = {path.relative_to(run.root).as_posix(): srv.digest(path.read_bytes())
+              for path in sorted(run.root.rglob('*')) if path.is_file()}
+
+    again = srv.claim_citation_batch(token, size=10, model='claude-haiku-5-5')
+    stored = srv.submit_citation_verdict(token, claimed['rows'][0]['row_id'], 'contradicts',
+                                         passage=ABSTRACT.split('. ')[0] + '.')
+
+    for answer in (again, stored):
+        assert 'request_rejected' in answer, answer
+        assert 'complete' in answer['request_rejected'], answer
+        assert 'stored nothing' in answer['request_rejected'], answer
+    assert {path.relative_to(run.root).as_posix(): srv.digest(path.read_bytes())
+            for path in sorted(run.root.rglob('*')) if path.is_file()} == before
+    assert read_run(run.review)['status'] in names.COMPLETE_STATUSES
+
+
 def test_an_unfinished_ledger_is_reported_and_does_not_hold_the_review(tmp_path):
     """The reader is told which references nobody reached. It is not a veto."""
     open_run(tmp_path)

@@ -638,6 +638,21 @@ class Run:
                 before = read(progress)
             except (ValueError, OSError):
                 before = {}
+            # A finished folder is the review, not a place to start one. A new
+            # server process opening this folder used to be accepted and
+            # rewrite progress.json to `running`, so a review that was written
+            # and handed on read back as neither complete nor publishable while
+            # REVIEW.md and issues.json still sat beside it saying otherwise,
+            # and the only way out was a blocked run. A blocked folder is left
+            # open on purpose: re-ingesting into one is the documented recovery.
+            if before.get('status') in COMPLETE_STATUSES:
+                raise ValueError(
+                    'The folder ' + str(self.root) + ' already holds a ' + str(before['status'])
+                    + ' review, written and not a draft. Nothing in it was changed. A further '
+                    'round of review is a fresh out folder with this one as its prior round: '
+                    'pass prior_issues=' + str(self.review / 'issues.json') + ' to that run. '
+                    'Reading what is here takes no run at all: the review is '
+                    + str(self.review / 'REVIEW.md') + '.')
             if before.get('arm') and (before['arm'] != self.arm
                                       or before.get('reviewers') != self.reviewers):
                 raise ValueError(
@@ -1568,6 +1583,18 @@ def _call(token, name, args):
     if name not in agent.allowed:
         return rejection(f'The {agent.slot} agent may not call {name}. Allowed: '
                          + ', '.join(agent.allowed))
+    # A finished folder does not change. These tools look read-only from the
+    # outside, and every one of them writes: the investigation appends to
+    # tool-log.jsonl and save_note appends to notes.jsonl, so a reviewer still
+    # holding a token after the review was written went on adding rows to the
+    # record of a review that was already handed on — rows no document in the
+    # folder counts. The refusal costs no allowance either, because there is
+    # nothing left in this run to spend it on.
+    if run.status in COMPLETE_STATUSES:
+        return rejection('This run is ' + run.status + ' and its review is written. ' + name
+                         + ' reads the manuscript into a record that is closed, so nothing was '
+                         'read and nothing was written. A later look at this paper is a new run '
+                         'with this one as its prior round.', status=run.status)
     if run.calls >= RUN_CALL_BUDGET:
         return rejection('This run has used its whole tool allowance. Finish from existing '
                          'evidence.', budget_exhausted=True)
@@ -1838,7 +1865,15 @@ def _record_closure(run, slot, attempt, refusal):
     than "core-1 has no report" — whether it never called ``submit_report`` or
     called it and was refused over an expired token or a ``none_found``
     contradiction was not in the run folder at all. It is now.
+
+    Nothing is written once the run is complete. The log exists to say what
+    happened to the review being written, and a call refused because the review
+    is already written happened after it: appending there changes a folder that
+    was handed to the authors, so the refusal is answered and the folder left
+    as the review left it.
     """
+    if run.status in COMPLETE_STATUSES:
+        return
     run.append(run.review / 'closures.jsonl',
                {'at': now(), 'tool': 'submit_report', 'slot': slot, 'attempt': attempt,
                 'accepted': refusal is None, 'refusal': refusal})
@@ -1905,7 +1940,15 @@ def _record_editor_call(run, agent, tool, accepted, refusal=None, **extra):
     ``tool-log.jsonl`` records the investigation tools only, and the refusals
     were return values, so they existed nowhere but in a session transcript that
     is gone. Every call now lands here before it is answered.
+
+    Every call while the review is being written, that is. A complete folder is
+    the record of the review that was written, and a row appended to it after
+    the fact belongs to no review in it: the trace published inside issues.json
+    would no longer be the trace that document reports. Refused, and nothing
+    written.
     """
+    if run.status in COMPLETE_STATUSES:
+        return
     run.append(run.review / 'editor-log.jsonl',
                {'at': now(), 'tool': tool,
                 'slot': getattr(agent, 'slot', None),
@@ -2734,6 +2777,15 @@ def _ledger_call(token, name):
     if not run.citations_enabled():
         return None, rejection('This run keeps no citation ledger: the ' + run.arm
                                + ' arm runs no citations specialist.')
+    # The same rule as the investigation tools: a complete folder does not
+    # change. A worker holding a token from before the write could still claim
+    # rows and file verdicts into the ledger of a published review, where the
+    # citation counts in issues.json, progress.json and REVIEW.md no longer
+    # match the table they were taken from.
+    if run.status in COMPLETE_STATUSES:
+        return None, rejection('This run is ' + run.status + ' and its review is written. The '
+                               'citation ledger it was written from is closed, so ' + name
+                               + ' stored nothing.', status=run.status)
     if run.calls >= RUN_CALL_BUDGET:
         return None, rejection('This run has used its whole tool allowance. Finish from existing '
                                'evidence.', budget_exhausted=True)
@@ -3072,11 +3124,23 @@ def write_review(agent_token: str) -> dict:
     # review that was handed on. The paths are named so a recorder whose first
     # answer was lost can find the review rather than call again.
     if run.status in COMPLETE_STATUSES:
+        # The counts come back with the refusal, read from the document that
+        # was published rather than from the run: a recorder whose first answer
+        # was lost has to report what the review says, and without them its
+        # only way to answer was to call this again. Nothing is written here.
+        try:
+            written = read(run.review / 'issues.json')
+        except (OSError, ValueError):
+            written = {}
+        counts = written.get('counts') or {}
         return rejection(
             'This run is ' + run.status + ' and its review is already written. The files are '
-            'where they were written; nothing was rewritten.',
-            status=run.status, review=str(run.review / 'REVIEW.md'),
-            issues=str(run.review / 'issues.json'))
+            'where they were written; nothing was rewritten. The counts of the review that was '
+            'written are in this answer: report them as they are.',
+            status=run.status, run=str(run.root), review=str(run.review / 'REVIEW.md'),
+            issues=str(run.review / 'issues.json'), issue_counts=counts or None,
+            required_changes=counts.get('required'), suggestions=counts.get('suggestions'),
+            escalated=written.get('escalated_count'))
     ledger = run.ledger()
     trace = ledger.get('editor_trace')
     # The editor's cause comes first, and the silent stages are listed beside

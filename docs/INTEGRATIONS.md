@@ -1117,3 +1117,26 @@ the time the session reported, so a blocked run says when it can be retried.
 The review is that process. It is not a background job and there is no server
 holding it; re-run the command. Everything the server had already written
 stays on disk, and `peerreview report` reads it.
+
+### The out folder already holds a review
+
+A folder whose `progress.json` says `complete` or `complete-without-findings`
+is the review, not a place to start one. `ingest` refuses it by name and
+changes nothing in it, so a re-run over a finished folder cannot undo the
+review it holds. Read what is there with `peerreview report <run>` or straight
+from `review/REVIEW.md`; neither takes a run. A further round of review is a
+fresh out folder with this one as its prior round — pass
+`prior_issues=<old run>/review/issues.json` to that run.
+
+A `running` or `blocked` folder is reopened as before: re-ingesting into a
+blocked run is how a run that hit a rate limit or lost a stage is resumed.
+
+Nothing writes in a complete folder either. Every tool a slot could still hold
+a token for — the reviewer read tools, `save_note`, `submit_finding`,
+`submit_issues`, `submit_editor`, `submit_report`, `write_review`,
+`claim_agent`, `reissue_claim_code`, `claim_citation_batch` and
+`submit_citation_verdict` — is refused with the run's status, and the refusal
+is not logged: the logs are the record of the review that was written. A second
+`write_review` answers with the counts of the review already on disk
+(`issue_counts`, `required_changes`, `suggestions`, `escalated`), so a recorder
+whose first answer was lost reports what was written rather than calling again.

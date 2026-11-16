@@ -296,6 +296,35 @@ and the overlap experiment.
   manuscript and refused every run over a scaffold source on Windows. One
   `storage.relative_name` makes every run-relative name POSIX on every OS, and
   the refusal that names the editor log no longer prints an absolute path.
+- **A finished run folder was reopened and undone by the next ingest.** A new
+  server process over a complete out folder — a restarted plugin, a second
+  worktree, a workflow run again over the same path — was accepted, rewrote
+  `progress.json` to `running` and took the folder over, so a review that had
+  been written and handed on read back as neither complete nor publishable
+  while `REVIEW.md` and `issues.json` sat beside it saying otherwise, and the
+  only exit was `mark_blocked`. `ingest` into a complete folder is now refused
+  by name, before anything is written, and the refusal says how a further round
+  runs: a fresh out folder with `prior_issues` pointing at this one. Ingest into
+  a `blocked` folder stays allowed — that is the documented recovery.
+- **Refused calls still wrote into a complete folder.** Every completion guard
+  refused the call and then recorded the refusal, so `closures.jsonl` and
+  `editor-log.jsonl` grew after the review was handed on; and the reviewer read
+  tools and `save_note` were not guarded at all, so a reviewer still holding a
+  token went on appending to `tool-log.jsonl` and `notes.jsonl` — rows no
+  document in the folder counts, and reads that spent allowance in a run with
+  nothing left to spend it on. `claim_citation_batch` and
+  `submit_citation_verdict` are guarded too: a worker could still fill the
+  ledger the published citation counts were taken from. A complete run folder
+  does not change at all now, which the test checks by digesting every file in
+  it before and after a barrage of refused calls.
+- **The Record stage had one attempt at the one call that writes.** A
+  `write_review` that landed and an answer that was lost left the workflow with
+  nothing: it returned success with the counts undefined, or called `block()`
+  and threw "the run files were never written" over a folder holding a finished
+  review. The refusal over an already-complete run now carries the counts of the
+  review on disk — read from `issues.json`, written by nothing — and the stage
+  asks the folder what it holds (`run_status`) before it blocks, treating a
+  complete folder as the success it is.
 
 ## [0.9.1] — 2026-11-14
 
