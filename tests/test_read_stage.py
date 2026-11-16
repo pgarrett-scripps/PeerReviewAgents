@@ -218,8 +218,12 @@ def test_the_seal_is_refused_until_every_piece_and_page_is_accounted_for(tmp_pat
     assert sealed['ai_read']['read'] is True
     assert sealed['ai_read']['pages_viewed'] == 2
     assert sealed['ai_read']['reader_model'] == 'claude-sonnet-5-5'
-    assert sealed['ai_read']['actions']['repaired'] == 1
-    assert sealed['ai_read']['actions']['merged'] == 1
+    # One call of each, counted once each: `added` is `add_piece` and nothing
+    # else. `describe_figure` settled the description it wrote as well as the
+    # figure it read, so a run that described nine figures and added nothing
+    # reported nine added.
+    assert sealed['ai_read']['actions'] == {'repaired': 1, 'merged': 1,
+                                            'described': 1, 'added': 1}
     # What ingest used to hand back and could not while the base did not exist,
     # handed back here instead, so the workflow reads the manuscript's numbers
     # in one place and nothing downstream asks twice.

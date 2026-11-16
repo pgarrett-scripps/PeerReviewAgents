@@ -374,8 +374,11 @@ class Desk:
                        'document': document, 'describes': piece_id,
                        'original': {}, 'piece_id': self.next_id()}
             pieces.insert(index + 1, written)
+        # Only the figure is settled. The description is this call's own work,
+        # not a piece a reader acted on, and settling it as `added` counted it
+        # among the pieces `add_piece` put back: a manifest reported nine
+        # described and nine added on a run where `add_piece` was never called.
         settle(piece, 'described', page)
-        settle(written, 'added', page)
         self.save()
         return {'piece': piece_id, 'description_piece': written['piece_id'], 'source': 'ai',
                 'text': rendered(written), 'outstanding': outstanding(self.draft)}

@@ -167,6 +167,11 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`manifest['ai_read']['actions']['added']` counts `add_piece` and nothing
+  else.** `describe_figure` settled the description it wrote as well as the
+  figure it read, so a run that described nine figures and never called
+  `add_piece` reported `described: 9, added: 9`, and a reader of the manifest
+  could not tell how much of the manuscript the stage had put back.
 - **`write_manuscript` refuses a piece it would write nothing of, by name.**
   A piece that renders to no line — a list whose text sits under an `items`
   key, a paragraph with an empty `text` — was dropped, so an application that
