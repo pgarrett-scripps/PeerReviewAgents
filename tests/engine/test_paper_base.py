@@ -163,6 +163,8 @@ def test_a_table_owns_every_row_it_printed(tmp_path):
         {'kind': 'table', 'text': '', 'section': 'Results', 'page': 3,
          'table': [['Batch', 'Mass'], ['A', '12 g'], ['B', '13 | g']]},
     ]})
+    paper_base.write(tmp_path / 'manifest.json',
+                     {'schema_version': paper_base.BASE_SCHEMA_VERSION})
     base = paper_base.load(tmp_path)
     assert base.text.splitlines()[2:] == [
         '| Batch | Mass |', '| --- | --- |', '| A | 12 g |', '| B | 13 \\| g |']

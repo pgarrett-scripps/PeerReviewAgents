@@ -35,7 +35,11 @@ from .names import (
     COMPLETE,
     COMPLETE_STATUSES,
     COMPLETE_WITHOUT_FINDINGS,
+    MANUSCRIPT_ABSENT,
     MANUSCRIPT_DIRECTORY,
+    MANUSCRIPT_DRAFT,
+    MANUSCRIPT_SEALED_BY_READER,
+    MANUSCRIPT_SEALED_WITHOUT_READ,
     RUN_DIRECTORY,
     RUN_STATUSES,
 )
@@ -549,6 +553,45 @@ def _identity(manifest, protocol, paper, pdf_from_startup=None, problems=None, a
     }
 
 
+def _manuscript(workspace, paper):
+    """What state the run's manuscript workspace is in, from the workspace.
+
+    *paper* is its ``manifest.json`` as far as it could be read. A manifest is
+    written once, at the seal, so its presence is the line between a draft and
+    a manuscript — and ``ai_read`` is the line between a base a model read the
+    pages of and one nothing read. An application asking "did the Read stage
+    stop, or did it never start?" had to look for ``draft.json`` by name,
+    which is this package's own working file and not part of the folder a
+    consumer is promised.
+    """
+    read = (paper.get('ai_read') or {}) if isinstance(paper, dict) else {}
+    read = read if isinstance(read, dict) else {}
+    if paper:
+        state = MANUSCRIPT_SEALED_BY_READER if read.get('read') else MANUSCRIPT_SEALED_WITHOUT_READ
+    elif (workspace / 'draft.json').is_file():
+        state = MANUSCRIPT_DRAFT
+    else:
+        state = MANUSCRIPT_ABSENT
+    return {
+        'state': state,
+        'sealed': state in (MANUSCRIPT_SEALED_BY_READER, MANUSCRIPT_SEALED_WITHOUT_READ),
+        # Why no model read the pages, in the words of whatever wrote the
+        # manifest: the Read stage was off, a reader failed twice and the run
+        # sealed as converted, or the pieces are an application's own source.
+        'reason': str(read.get('reason') or '') if not read.get('read') else '',
+        # The model that read the pages, or that wrote the pieces an
+        # application composed with a model. Empty for a manuscript that is
+        # the converter's reading throughout.
+        'reader_model': str(read.get('reader_model') or read.get('ai_model') or ''),
+        # Each page the converter returned nothing from, with the document and
+        # lines its transcription became. Empty for a manuscript that lost no
+        # page, and for one sealed before this was recorded.
+        'lost_pages': list(read.get('lost_pages') or []),
+        'documents': list(paper.get('documents') or []) if isinstance(paper, dict) else [],
+        'folder': str(workspace) if state != MANUSCRIPT_ABSENT else None,
+    }
+
+
 def cause_of(runtime=None, progress=None, startup=None):
     """Why the run is not a written review, in one sentence, or ``None``.
 
@@ -868,6 +911,21 @@ def read_run(path):
         plan is all there is. A slot that ran a *different* model family is a
         different matter and is in ``problems`` and
         ``not_publishable_reasons``.
+    ``manuscript``
+        What state the run's manuscript workspace is in, which is a different
+        question from the run's status: ``state`` is one of
+        :data:`peerreviewagents.MANUSCRIPT_STATES` — ``absent`` for a run that
+        stopped before the import, ``draft`` for a converted paper the Read
+        stage never sealed, so it has no line numbers and nothing can cite it,
+        ``sealed-by-reader`` for a base a model read the pages of, and
+        ``sealed-without-read`` for one written with no page read at all.
+        ``sealed`` is that question already answered. ``reason`` says why
+        nothing read the pages, in the words of whatever wrote the manifest,
+        and is empty when one did. ``reader_model`` is the model that read
+        them, or that wrote an application's own ``ai`` pieces.
+        ``lost_pages`` is each page the converter returned nothing from, with
+        the document and lines its transcription became, and ``documents`` is
+        the file names the base holds.
     ``startup``
         The start-up probe: ``probe`` is the harness's own init event, the
         plugins, MCP servers, agents and commands the session reported, or
@@ -1045,6 +1103,7 @@ def read_run(path):
         'limitations': document.get('limitations') or [],
         'identity': _identity(manifest, protocol, paper,
                               (probe or {}).get('pdf'), problems, agents),
+        'manuscript': _manuscript(workspace, paper),
         'stages': progress.get('stages') or (runtime.get('stages') if runtime else None),
         'runtime': {'wall_seconds': runtime.get('wall_seconds'),
                     'tokens_total': runtime.get('tokens_total'),

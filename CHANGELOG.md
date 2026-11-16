@@ -184,9 +184,58 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   `rows_of`, `objects_in`, `members_of`, `quotes_of`, `block_ids_of`,
   `audits_of` — and `field_problems`, the malformed fields `read_run` reports a
   damaged document through.
+- **`read_run` says what state the manuscript is in**, under a new
+  `manuscript` key: `state` is one of `MANUSCRIPT_STATES` — `absent`, `draft`,
+  `sealed-by-reader`, `sealed-without-read` — beside `sealed`, `reason`,
+  `reader_model`, `lost_pages` and `documents`. An application could not tell a
+  run whose Read stage stopped partway from one that never imported a paper
+  without looking for `draft.json`, which is this package's working file and
+  not part of the folder a consumer is promised. `sealed-without-read` is the
+  one state that covers three roads to the same folder — `--no-ai-read`, a
+  reader that failed and sealed as converted, and an application's own source
+  through `write_manuscript` — and `reason` is the manifest's own words for
+  which of them it was.
 
 ### Fixed
 
+- **Every served line whose source is not the converter's text carries a
+  marker.** The marker was written for equations, tables and figure
+  descriptions — the pieces a reader repairs — so a paragraph or a caption the
+  reader transcribed off a page the converter returned nothing from reached the
+  reviewer looking exactly like the authors' own converted text, which is the
+  one case where the text is a model's reading of an image and nothing on the
+  line said so. Any row whose `source` is `ai` or `ai-reconstructed` is now
+  marked, whatever its kind. In a manuscript no page of which was read — an
+  application's pieces through `write_manuscript` — the marker reads `[written
+  by <model>]` and the header says no stage read the pages, rather than sending
+  a reviewer to a page image that was never opened.
+- **`ai_read['lost_pages']` carries the lines, and is written on every seal.**
+  Each entry's `added` held draft piece ids, which name nothing once the base is
+  sealed: `map.json` has no piece ids, so an application reading the manifest
+  for where a lost page's text ended up had no way to ask. It now holds
+  `{piece, document, lines}` — the same anchor a citation uses — and
+  `known_gaps['converter_pages']` names those lines in its sentence. The key is
+  also written when no page was lost, as an empty list, so its absence is no
+  longer ambiguous between "nothing was lost" and "nothing counted".
+- **`write_manuscript` refuses a manuscript that cannot say who wrote its
+  model-written pieces.** It accepted `ai` and `ai-reconstructed` pieces and
+  stamped `ai_read` `{"read": false}` regardless, so a manifest said the
+  manuscript needed no reading while the base held a model's sentences with
+  nothing to attribute them to, and a reviewer was served them unmarked. A
+  caller passing such a piece now names the model in `ai_model=`, which the
+  manifest records as `ai_model` and `ai_pieces` and the served marker names on
+  the line; without it the write is refused by the piece's index and kind. An
+  `ai-reconstructed` piece with no `original` is refused too: that source means
+  a model rewrote text the document printed, and the row is where the reading
+  it replaced is kept, so one without an original promised an audit the folder
+  could not give.
+- **An unstamped manifest is refused by name.** `read_manuscript` and
+  `verify_workspace` refused a `paper-base-v1` folder and said nothing about a
+  manifest carrying no `schema_version` at all, which was then read as the
+  current shape on the strength of having no opinion — and its rows trusted to
+  carry fields they may never have had. Both now refuse an unstamped manifest,
+  naming `BASE_SCHEMA_VERSION`, and a manuscript folder with no `manifest.json`
+  beside the base.
 - **`manifest['ai_read']['actions']['added']` counts `add_piece` and nothing
   else.** `describe_figure` settled the description it wrote as well as the
   figure it read, so a run that described nine figures and never called

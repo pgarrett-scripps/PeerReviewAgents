@@ -359,6 +359,34 @@ class PaperBase:
         return (piece or {}).get('section')
 
 
+def check_stamp(manifest, folder):
+    """Refuse a manuscript that does not say what shape it is, by name.
+
+    The stamp is the one field a reader can act on before it has read
+    anything else: it says which columns a row has and what the manifest
+    promises. A ``paper-base-v1`` workspace is refused because its rows cannot
+    say whether a model wrote a piece — and a manifest carrying *no*
+    ``schema_version`` is refused for the same reason, rather than being read
+    as the current shape on the strength of having no opinion. An unstamped
+    folder is either older than the stamp or written by something that is not
+    this format, and in both cases what its rows mean is a guess.
+    """
+    stamp = (manifest or {}).get('schema_version')
+    if stamp is None:
+        raise ValueError(
+            'This manuscript folder has no schema_version in its manifest, so it does not say '
+            'which shape it is: ' + str(folder) + '. This version reads ' + BASE_SCHEMA_VERSION
+            + ' only, and an unstamped folder read as one would have its rows trusted to carry '
+              'fields they may not have. Re-import the manuscript into a new folder, or write it '
+              'with peerreviewagents.write_manuscript, which stamps it.')
+    if stamp != BASE_SCHEMA_VERSION:
+        raise ValueError(
+            'This manuscript folder is ' + str(stamp) + ' and this version reads '
+            + BASE_SCHEMA_VERSION + ' only. A ' + str(stamp) + ' map says where every piece sits '
+            'but not whether a model wrote it, so a review over it could not say which equations '
+            'and figures were read off the page. Re-import the manuscript into a new folder.')
+
+
 def load(folder) -> PaperBase:
     """Read a base from a manuscript folder.
 
@@ -367,7 +395,9 @@ def load(folder) -> PaperBase:
     rather than half-read. Reading is forward only: ``v1`` has no ``original``
     on a row and no ``ai_read`` in its manifest, so a consumer cannot tell a
     piece the converter produced from one a model wrote, and there is no way to
-    infer the difference from what the folder holds.
+    infer the difference from what the folder holds. A folder with no manifest,
+    or one whose manifest carries no ``schema_version``, is refused the same
+    way by :func:`check_stamp`: it is three files or it is not a manuscript.
     """
     folder = Path(folder)
     if not (folder / 'map.json').is_file() or not (folder / MAIN_DOCUMENT).is_file():
@@ -379,14 +409,13 @@ def load(folder) -> PaperBase:
                 'new folder.')
         raise ValueError('Not a manuscript folder: ' + str(folder)
                          + ' holds neither map.json nor ' + MAIN_DOCUMENT)
-    stamp = (read(folder / 'manifest.json') if (folder / 'manifest.json').is_file()
-             else {}).get('schema_version')
-    if stamp is not None and stamp != BASE_SCHEMA_VERSION:
-        raise ValueError(
-            'This manuscript folder is ' + str(stamp) + ' and this version reads '
-            + BASE_SCHEMA_VERSION + ' only. A ' + str(stamp) + ' map says where every piece sits '
-            'but not whether a model wrote it, so a review over it could not say which equations '
-            'and figures were read off the page. Re-import the manuscript into a new folder.')
+    if not (folder / 'manifest.json').is_file():
+        raise ValueError('Not a manuscript folder: ' + str(folder) + ' holds map.json and '
+                         + MAIN_DOCUMENT + ' but no manifest.json, which is where the shape of '
+                         'the rows, the paper\'s identity and the account of what read it are '
+                         'kept. A manuscript is those three files; a folder with two of them is '
+                         'a half-written one.')
+    check_stamp(read(folder / 'manifest.json'), folder)
     rows = read(folder / 'map.json')
     if not isinstance(rows, list):
         raise ValueError('map.json holds no list of pieces')
@@ -396,9 +425,9 @@ def load(folder) -> PaperBase:
         if not re.fullmatch(r'[A-Za-z0-9._-]+\.md', name) or not path.is_file():
             raise ValueError('map.json names a document this folder does not hold: ' + str(name))
         documents[name] = path.read_text(encoding='utf-8')
-    manifest = read(folder / 'manifest.json') if (folder / 'manifest.json').is_file() else {}
-    return PaperBase(folder, documents, rows, manifest)
+    return PaperBase(folder, documents, rows, read(folder / 'manifest.json'))
 
 
-__all__ = ['BASE_SCHEMA_VERSION', 'MAIN_DOCUMENT', 'SOURCES', 'PaperBase', 'compose', 'load',
+__all__ = ['BASE_SCHEMA_VERSION', 'MAIN_DOCUMENT', 'SOURCES', 'PaperBase', 'check_stamp',
+           'compose', 'load',
            'merge_boxes', 'piece_lines', 'table_lines', 'write_base', 'box_list']

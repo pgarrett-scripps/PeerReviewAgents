@@ -196,11 +196,18 @@ def test_what_the_reader_adds_off_a_lost_page_is_the_page_in_the_manuscript(read
     # A reader of the base is told which pages are the model's transcription
     # rather than the converter's reading, and which pieces came off them.
     account = manifest['ai_read']['lost_pages']
+    # And where the transcription landed, because a draft piece id is a name
+    # nothing downstream can use: map.json has no ids and a citation is a
+    # document and a line.
     assert account == [{'page': 2, 'words': account[0]['words'], 'rotation': 90,
-                        'added': [added['piece']]}]
+                        'added': [{'piece': added['piece'], 'document': names.MAIN_DOCUMENT,
+                                   'lines': account[0]['added'][0]['lines']}]}]
+    start, end = account[0]['added'][0]['lines']
+    lines = paper.split('\n')[start - 1:end]
+    assert any('the measurements the result rests upon' in line for line in lines)
     gap = manifest['known_gaps']['converter_pages']
     assert 'page(s) 2' in gap and 'rotated 90°' in gap
-    assert 'page 2 → ' + added['piece'] in gap
+    assert 'page 2 → paper.md lines ' + str(start) + '-' + str(end) in gap
     assert manifest['ai_read']['actions']['added'] == 1
 
 

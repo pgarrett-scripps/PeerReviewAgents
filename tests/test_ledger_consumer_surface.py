@@ -86,6 +86,8 @@ def test_the_fixture_row_is_the_row_the_writer_writes(tmp_path):
         {'kind': 'heading', 'text': 'Introduction', 'level': 1, 'section': 'Introduction'},
         {'kind': 'paragraph', 'section': 'Introduction', 'text': SENTENCE},
     ]})
+    paper_base.write(folder / 'manifest.json',
+                     {'schema_version': paper_base.BASE_SCHEMA_VERSION})
     written, = cl.use_rows(paper_base.load(folder),
                            [{'id': 'r1', 'label': '1', 'raw': 'A. Author. A title. 2020.'}])
 

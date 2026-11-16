@@ -19,10 +19,22 @@ def verify_workspace(root):
     finding is anchored against. Every file the manifest lists is re-digested
     first, so a folder whose Markdown was edited after import is refused by
     name instead of producing line numbers that no longer mean anything.
+
+    A folder with no manifest, or whose manifest carries no
+    ``schema_version``, is refused before any of that: there is nothing to
+    check the files against, and a folder that does not say which shape it is
+    cannot be read as the current one.
     """
     root=Path(root)
+    if not (root/'manifest.json').is_file():
+        raise ValueError('Not a manuscript folder: '+str(root)+' holds no manifest.json, so '
+                         'there is nothing to re-check the files against.')
     manifest=read(root/'manifest.json')
-    for name, expected in manifest['files'].items():
+    # Before the digests, because the stamp says what the manifest's own
+    # fields mean: an unstamped or older folder is refused by name here
+    # rather than through a KeyError on a field it never had.
+    paper_base.check_stamp(manifest, root)
+    for name, expected in (manifest.get('files') or {}).items():
         path=(root/name).resolve()
         if not path.is_relative_to(root.resolve()) or digest(path.read_bytes())!=expected:
             raise ValueError('Manuscript source changed: '+name)

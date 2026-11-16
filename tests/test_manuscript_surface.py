@@ -205,6 +205,34 @@ def test_the_source_tree_beside_the_base_is_part_of_the_manuscript(tmp_path):
         peerreviewagents.verify_workspace(folder)
 
 
+def test_a_manuscript_that_does_not_say_which_shape_it_is_is_refused(tmp_path):
+    """An unstamped manifest was read as the current shape on no evidence.
+
+    ``paper-base-v1`` is refused by name, but a manifest with no
+    ``schema_version`` at all — an older folder, or one written by something
+    that is not this format — passed straight through, and its rows were
+    trusted to carry fields they may never have had. Both readers refuse it,
+    and so does a folder with no manifest beside the base.
+    """
+    folder = tmp_path / 'manuscript'
+    workspace(folder)
+    unstamped = workspace_tools.read_json(folder / 'manifest.json')
+    unstamped.pop('schema_version')
+    workspace_tools.write_json(folder / 'manifest.json', unstamped)
+    for read in (peerreviewagents.read_manuscript, peerreviewagents.verify_workspace):
+        with pytest.raises(ValueError, match='no schema_version') as refusal:
+            read(folder)
+        assert peerreviewagents.BASE_SCHEMA_VERSION in str(refusal.value)
+
+    # And the manifest is one of the three files a manuscript is, so a folder
+    # holding only the other two is not one — it is a half-written workspace,
+    # and reading it would produce line numbers nothing can be checked against.
+    (folder / 'manifest.json').unlink()
+    for read in (peerreviewagents.read_manuscript, peerreviewagents.verify_workspace):
+        with pytest.raises(ValueError, match='no manifest.json'):
+            read(folder)
+
+
 def test_a_scaffold_that_holds_its_own_manifest_is_covered_like_any_file(tmp_path):
     """Only the workspace's own manifest is outside the digests.
 
@@ -296,8 +324,16 @@ def test_a_field_the_format_has_no_column_for_is_refused_by_name(tmp_path):
          'source': 'ai-reconstructed', 'original': {'text': 'Rates r0se.'},
          'citations': ['r1'], 'page_mapping': 'typst', 'page': 1,
          'bbox': [72.0, 100.0, 540.0, 120.0]},
-    ], pages=[{'page': 1, 'width': 612.0, 'height': 792.0}])
+    ], pages=[{'page': 1, 'width': 612.0, 'height': 792.0}],
+        ai_model='claude-sonnet-5-5')
     assert manifest['counts']['pieces'] == 6
+    # The one reconstructed piece is counted and its author named, so a
+    # reviewer served the line and an app reading the manifest are told the
+    # same thing: a model wrote it, and which one.
+    assert manifest['ai_read']['read'] is False
+    assert manifest['ai_read']['ai_model'] == 'claude-sonnet-5-5'
+    assert manifest['ai_read']['ai_pieces'] == 1
+    assert 'claude-sonnet-5-5' in manifest['ai_read']['reason']
 
 
 def test_every_piece_the_caller_gave_has_a_row(tmp_path):
@@ -323,6 +359,23 @@ def test_what_the_writer_refuses(tmp_path):
                                           title='Nothing at all')
     with pytest.raises(ValueError, match='rendered to a line'):
         peerreviewagents.write_manuscript(tmp_path / 'none', [], title='Nothing at all')
+    # A model wrote the line and nothing says which model. The reviewer is
+    # served a marker naming the writer, so the name has to exist.
+    with pytest.raises(ValueError, match='ai_model') as unnamed:
+        peerreviewagents.write_manuscript(tmp_path / 'unnamed', [
+            {'kind': 'title', 'text': 'Replay during quiet rest'},
+            {'kind': 'paragraph', 'text': 'Rates rose.', 'source': 'ai'},
+        ])
+    assert 'Piece 2' in str(unnamed.value) and '"ai"' in str(unnamed.value)
+    # And a reconstruction is a repair of something: without the original
+    # there is nothing to compare the model's reading against, which is the
+    # whole difference between `ai-reconstructed` and `ai`.
+    with pytest.raises(ValueError, match='original') as bare:
+        peerreviewagents.write_manuscript(tmp_path / 'bare', [
+            {'kind': 'title', 'text': 'Replay during quiet rest'},
+            {'kind': 'paragraph', 'text': 'Rates rose.', 'source': 'ai-reconstructed'},
+        ], ai_model='claude-sonnet-5-5')
+    assert 'ai-reconstructed' in str(bare.value) and 'source "ai"' in str(bare.value)
     # A workspace is written once: the second write would renumber every line a
     # saved review cites.
     folder = tmp_path / 'twice'

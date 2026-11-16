@@ -42,6 +42,27 @@ DRAFT_SCHEMA_VERSION = 'paper-draft-v1'
 #: ``supplement-<name>.md`` beside it, and every citation names its document.
 MAIN_DOCUMENT = 'paper.md'
 
+#: What state a run's manuscript workspace is in, which is not the same
+#: question as what state the run is in: ``draft`` is a converted paper the
+#: Read stage has not sealed, so it has no line numbers and nothing can cite
+#: it; ``sealed-by-reader`` is a base a model read the pages of;
+#: ``sealed-without-read`` is a base written with no page read at all — an
+#: import with the Read stage off, a reader that failed and sealed as
+#: converted, or an application's own source through
+#: :func:`peerreviewagents.write_manuscript`; and ``absent`` is a run
+#: that stopped before the manuscript was imported. Without this an
+#: application had to look for ``draft.json`` by name — a private file of this
+#: package — to tell a run whose read stopped from one that never started.
+MANUSCRIPT_DRAFT = 'draft'
+MANUSCRIPT_SEALED_BY_READER = 'sealed-by-reader'
+MANUSCRIPT_SEALED_WITHOUT_READ = 'sealed-without-read'
+MANUSCRIPT_ABSENT = 'absent'
+
+#: Every state a manuscript workspace can be read as, in the order one passes
+#: through them.
+MANUSCRIPT_STATES = (MANUSCRIPT_ABSENT, MANUSCRIPT_DRAFT, MANUSCRIPT_SEALED_BY_READER,
+                     MANUSCRIPT_SEALED_WITHOUT_READ)
+
 #: ``running`` while the session is alive, ``blocked`` for any outcome that is
 #: not a written review, and the two ``complete`` statuses for one that is.
 RUNNING = 'running'
@@ -66,5 +87,7 @@ CLI_COMMANDS = ('review', 'report')
 
 __all__ = ['RUN_DIRECTORY', 'MANUSCRIPT_DIRECTORY', 'FINDING_SCHEMA_VERSION',
            'BASE_SCHEMA_VERSION', 'DRAFT_SCHEMA_VERSION',
-           'MAIN_DOCUMENT', 'RUN_STATUSES', 'COMPLETE_STATUSES',
+           'MAIN_DOCUMENT', 'RUN_STATUSES', 'COMPLETE_STATUSES', 'MANUSCRIPT_STATES',
+           'MANUSCRIPT_DRAFT', 'MANUSCRIPT_SEALED_BY_READER', 'MANUSCRIPT_SEALED_WITHOUT_READ',
+           'MANUSCRIPT_ABSENT',
            'RUNNING', 'BLOCKED', 'COMPLETE', 'COMPLETE_WITHOUT_FINDINGS', 'CLI_COMMANDS']

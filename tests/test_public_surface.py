@@ -213,6 +213,51 @@ def test_read_run_reads_a_complete_run(tmp_path):
     assert run['reports']['issues'] == str(review / 'issues.json')
 
 
+def test_read_run_says_what_state_the_manuscript_is_in(tmp_path):
+    """Four folders, four answers, none of them needing draft.json by name.
+
+    An app showing a stopped run could not tell one whose Read stage died —
+    the paper is converted, in a draft, with no line numbers — from one that
+    stopped before the import, without opening this package's own working
+    file. The state is the public answer to that.
+    """
+    review = complete_run(tmp_path)
+    workspace = review.parent / names.MANUSCRIPT_DIRECTORY
+    assert read_run(review)['manuscript'] == {
+        'state': 'absent', 'sealed': False, 'reason': '', 'reader_model': '',
+        'lost_pages': [], 'documents': [], 'folder': None}
+
+    # The draft the converter writes, before anything sealed it.
+    workspace.mkdir(parents=True)
+    _write(workspace / 'draft.json', {'schema_version': names.DRAFT_SCHEMA_VERSION})
+    drafted = read_run(review)['manuscript']
+    assert (drafted['state'], drafted['sealed']) == ('draft', False)
+    assert drafted['folder'] == str(workspace)
+
+    # The base an import writes with no reader: the draft is gone, and the
+    # manifest says in its own words why nothing read the pages.
+    (workspace / 'draft.json').unlink()
+    build_base(workspace, [{'kind': 'title', 'text': 'A manuscript', 'section': 'Title'},
+                           {'kind': 'paragraph', 'text': 'One sentence.', 'section': 'Body'}])
+    converted = read_run(review)['manuscript']
+    assert (converted['state'], converted['sealed']) == ('sealed-without-read', True)
+    assert converted['documents'] == [names.MAIN_DOCUMENT]
+    assert converted['reason'] and converted['reader_model'] == ''
+
+    # And the base the Read stage seals, which names the model that read it.
+    build_base(workspace, [{'kind': 'title', 'text': 'A manuscript', 'section': 'Title'}],
+               manifest={'ai_read': {'read': True, 'reader_model': 'claude-sonnet-5-5',
+                                     'lost_pages': [{'page': 2, 'words': 36, 'rotation': 0,
+                                                     'added': [{'piece': 'p3',
+                                                                'document': names.MAIN_DOCUMENT,
+                                                                'lines': [3, 4]}]}]}})
+    read = read_run(review)['manuscript']
+    assert (read['state'], read['sealed']) == ('sealed-by-reader', True)
+    assert read['reader_model'] == 'claude-sonnet-5-5' and read['reason'] == ''
+    assert read['lost_pages'][0]['added'][0]['lines'] == [3, 4]
+    assert read['state'] in names.MANUSCRIPT_STATES
+
+
 def test_read_run_reports_the_runtime_of_each_agent(tmp_path):
     review = complete_run(tmp_path)
 
