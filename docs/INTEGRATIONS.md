@@ -159,8 +159,19 @@ off a page image. Its manifest records `{"read": false, "reason": …}` too.
                         "described": 9, "added": 4},
             "tool_calls": 47,
             "lost_pages": [{"page": 8, "words": 266, "rotation": 0,
-                            "added": ["p0211"]}]}
+                            "added": [{"piece": "p0211", "document": "paper.md",
+                                       "lines": [120, 126]}]}]}
 ```
+
+**`ai_read['lost_pages']` is written on every seal**, empty list included, so
+a folder that lost no page says so rather than leaving a consumer to guess
+whether the key is missing because nothing was lost or because the manifest
+predates the count. Each entry's `added` carries the lines the transcription
+became — document and `[first, last]`, the same anchor a citation uses — and
+not only the draft piece id, which names nothing after the seal: `map.json`
+has no piece ids, and a base reader asking "where did that page end up" has
+only lines to ask with. `known_gaps['converter_pages']` is the same fact as a
+sentence for a reviewer, with those lines in it; the data is here.
 
 `manifest['pieces_per_source']` counts the rows by where their text came from —
 `{"text": 184, "ai-reconstructed": 6, "ai": 9}` — and that is the same
@@ -173,10 +184,16 @@ off a page image. Its manifest records `{"read": false, "reason": …}` too.
 | `ai` | a figure description, or a piece the converter missed entirely and a model added |
 
 A figure description is its own piece and its own row, of kind
-`figure-description`, on the line under the caption. `read_paper` marks both
-for the reviewer: a repaired equation says it was read from the page image by
-that model, with the page, and a description says it is an AI description of
-the image rather than the authors' words. The `view_page` gate on an equation
+`figure-description`, on the line under the caption. **Every served line whose
+`source` is not `text` carries a marker, whatever kind it is** — the marker
+used to be written for equations, tables and descriptions only, so a paragraph
+or a caption transcribed off a lost page reached the reviewer looking like the
+converter's own text. A repaired equation says it was read from the page image
+by that model, with the page; a piece the converter missed says so too; a
+description says it is an AI description of the image rather than the authors'
+words. In a manuscript no model read the pages of — an app's own pieces
+through `write_manuscript` — the marker reads `[written by <model>]` instead,
+because there is no page image to send the reviewer to. The `view_page` gate on an equation
 finding stays as it is — a reviewer who disputes an equation sees the same
 rendering the reader worked from, not a second one.
 
@@ -357,10 +374,30 @@ Keys: `status`, `complete`, `publishable`, `not_publishable_reasons`, `blocked`,
 `cause`, `note`, `stage`, `findings`, `issues`, `issues_source`, `prior_round`,
 `findings_source`, `counts`, `quarantined`, `citations`, `guard_status`,
 `escalations`, `escalation_rulings`, `summary`, `verdict`, `limitations`,
-`identity`, `stages`, `runtime`, `agents`, `usage`, `reports`, `startup`,
-`startup_problems`, `problems`, `files`, `run`, `review`. The same 34 keys come
-back for every folder, in every state, so a consumer never has to test whether a
-key is there.
+`identity`, `manuscript`, `stages`, `runtime`, `agents`, `usage`, `reports`,
+`startup`, `startup_problems`, `problems`, `files`, `run`, `review`. The same
+35 keys come back for every folder, in every state, so a consumer never has to
+test whether a key is there.
+
+#### What state the manuscript is in
+
+`run["manuscript"]["state"]` is one of `MANUSCRIPT_STATES`, and it is a
+different question from the run's status — a run can be blocked with a sealed
+manuscript, or complete with none to show.
+
+| `state` | What the workspace holds |
+| --- | --- |
+| `absent` | nothing: the run stopped before the manuscript was imported |
+| `draft` | the converted pieces, unsealed. No line numbers, nothing can cite it — the Read stage started and did not finish |
+| `sealed-by-reader` | the base, with a model's reading of the pages behind it. `reader_model` names it |
+| `sealed-without-read` | the base, with no page read at all: `--no-ai-read`, a reader that failed and sealed as converted, or an app's own source through `write_manuscript`. `reason` is the manifest's own words for which |
+
+Beside it: `sealed` (that question already answered), `reason`,
+`reader_model`, `lost_pages` — each page the converter returned nothing from,
+with the document and lines its transcription became — and `documents`. Before
+this, telling a run whose read stopped from one that never started meant
+looking for `draft.json` by name, which is this package's working file and not
+part of the folder a consumer is promised.
 
 #### Highlighting a citation
 
@@ -1290,10 +1327,46 @@ supplements are conventionally `supplement-<name>.md`. `BASE_SCHEMA_VERSION` is
 what lands in `manifest['schema_version']`, and a reader checks it before
 trusting the rows.
 
+**A workspace is three files, and it says which shape it is.**
+`read_manuscript` and `verify_workspace` refuse, by name, a folder with no
+`manifest.json` beside the base and a manifest carrying no `schema_version` —
+not only one stamped with an older version. An unstamped folder was being read
+as the current shape on the strength of having no opinion, and its rows were
+then trusted to carry fields they may never have had. If you write a workspace
+with `write_manuscript` this is already true of it.
+
 A workspace is written **once**. A second `write_manuscript` over the same
 folder is a `ValueError`, because rewriting the base renumbers every line a
 saved review cites. A redraft is a new folder — and a new `paper_id`, which is
 what makes `export_draft` refuse a review of the version before it.
+
+**Pieces a model wrote need `ai_model=`.** If any piece carries `source` `ai`
+or `ai-reconstructed`, name the model that wrote it:
+
+```python
+manifest = write_manuscript(folder, pieces, title='Replay during quiet rest',
+                            ai_model='claude-sonnet-5-5')
+```
+
+Without it the write is refused by the piece's index and kind. The reviewer is
+served a marker saying who wrote each such line, and a manifest that said the
+manuscript needed no reading while holding a model's sentences would be saying
+something untrue about the paper under review. What lands in the manifest is
+authorship, not a read:
+
+```json
+"ai_read": {"read": false,
+            "reason": "written from an application's own source, which needs no reading: no stage here read the pages. 3 of its 184 pieces were written by claude-sonnet-5-5, which the caller named, and carry source \"ai\" or \"ai-reconstructed\"",
+            "ai_model": "claude-sonnet-5-5", "ai_pieces": 3, "lost_pages": []}
+```
+
+`read` stays `false` because no page image was opened here, and the served
+marker on those lines says `[written by claude-sonnet-5-5]` rather than
+claiming a page was read. An `ai-reconstructed` piece must also carry the
+`original` it replaced — that source means a model rewrote text the document
+printed, and the map row is where the reading it replaced is kept, so without
+one it would promise an audit the folder cannot give. Use `ai` for a piece
+nothing had before.
 
 #### What a piece is on the way in
 

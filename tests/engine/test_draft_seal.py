@@ -76,7 +76,10 @@ def test_a_sealed_read_names_the_model_and_counts_what_it_did(tmp_path):
         'pieces_repaired': 3, 'pieces_confirmed': 4, 'pieces_added': 1})
     assert manifest['ai_read'] == {
         'read': True, 'reader_model': 'claude-sonnet-5-5', 'pages_viewed': 2,
-        'pieces_repaired': 3, 'pieces_confirmed': 4, 'pieces_added': 1}
+        'pieces_repaired': 3, 'pieces_confirmed': 4, 'pieces_added': 1,
+        # Written on every seal, empty included: a manifest that only carries
+        # the key when a page was lost cannot say that none was.
+        'lost_pages': []}
     # The two gaps the Read stage closes are rewritten rather than left saying
     # the figures have no descriptions and the equations were never checked.
     assert 'written by claude-sonnet-5-5' in manifest['known_gaps']['figures']

@@ -43,6 +43,10 @@ SOURCE_VALUES = {
                          '`original`'),
 }
 
+#: What a repaired piece's ``original`` holds the converter's reading under,
+#: by kind: the field the repair replaced, and ``text`` for everything else.
+ORIGINAL_FIELD = {'equation': 'latex', 'table': 'rows'}
+
 #: How every piece's ``fingerprint`` in ``map.json`` was computed. It is in the
 #: manifest because a consumer comparing two versions of a manuscript needs the
 #: rule, not only the digests.
@@ -194,19 +198,24 @@ def file_digests(folder):
             if path.is_file() and path != own}
 
 
-def check_pieces(documents):
+def check_pieces(documents, ai_model=''):
     """Refuse a piece this format would write nothing of, by name.
 
-    Two silences are what this is for. A piece that renders to no line — a
+    Three silences are what this is for. A piece that renders to no line — a
     ``list`` with its items under ``items``, a paragraph with an empty
     ``text`` — was dropped by :func:`~peerreviewagents.engine.paper_base.compose`
     and left no row, so an application that composed twelve pieces got a
     manuscript of eleven and a count that agreed with itself. And a field the
     renderer does not know was dropped between the caller's dict and the map
-    row, so an app's own ``anchor_id`` was gone with nothing to say so.
+    row, so an app's own ``anchor_id`` was gone with nothing to say so. And a
+    piece whose ``source`` is not ``text`` was written by a model rather than
+    by the authors: an ``ai-reconstructed`` piece with no ``original`` claims a
+    converter reading it cannot show, and a manuscript holding either kind
+    needs *ai_model* — the name of the model that wrote them, which the served
+    marker puts beside the line and the manifest records.
 
-    Both are refused here rather than at the row, because the caller still has
-    the piece in hand and the index of the piece is the only name it has.
+    All three are refused here rather than at the row, because the caller still
+    has the piece in hand and the index of the piece is the only name it has.
     """
     for name, pieces in documents.items():
         for index, piece in enumerate(pieces, start=1):
@@ -230,11 +239,28 @@ def check_pieces(documents):
                     'no line, so it would be dropped and the manuscript would be short of it '
                     'with nothing to say so. A piece is its text: give it text, give a table '
                     'its rows, and leave out what the manuscript does not print.')
+            source = str(piece.get('source') or 'text')
+            if source == 'ai-reconstructed' and not (piece.get('original') or {}):
+                raise ValueError(
+                    'Piece ' + str(index) + ' of ' + name + ' (kind "' + kind + '") has source '
+                    '"ai-reconstructed" and no original. That source says the text was printed '
+                    'in the paper and a model rewrote it from the page, and the map row is where '
+                    'the reading it replaced is kept — written without one it would promise an '
+                    'audit the folder cannot give. Pass original={"' + ORIGINAL_FIELD.get(
+                        kind, 'text') + '": …} with what the piece replaced, or use source "ai" '
+                    'for a piece the converter never had.')
+            if source != 'text' and not ai_model:
+                raise ValueError(
+                    'Piece ' + str(index) + ' of ' + name + ' (kind "' + kind + '") has source "'
+                    + source + '", so a model wrote it rather than the authors. Name that model '
+                    'in ai_model=: a reviewer is served a marker saying who wrote the line, and '
+                    'the manifest records it, so a manuscript cannot carry a model\'s words '
+                    'with nothing to say whose they are.')
 
 
 def write_manuscript(folder, documents, title=None, paper_id=None, source=None, parser=None,
                      source_url=None, references=None, assets=None, warnings=None,
-                     known_gaps=None, pages=None):
+                     known_gaps=None, pages=None, ai_model=''):
     """Write a manuscript workspace from pieces an application composed itself.
 
     This is :func:`import_paper`'s other end: the same workspace, written from
@@ -260,6 +286,17 @@ def write_manuscript(folder, documents, title=None, paper_id=None, source=None, 
     page whose size is unknown. :data:`BOX_CONVENTION` is the unit and the
     origin, and it is written into the manifest so the folder says it too.
 
+    A piece whose ``source`` is ``ai`` or ``ai-reconstructed`` was written by a
+    model, not by the authors, and *ai_model* is that model's name. It is
+    required as soon as one such piece is passed and refused with the piece
+    otherwise: the marker a reviewer is served says who wrote the line, and a
+    manifest that said a manuscript needed no reading while holding a model's
+    sentences would be saying something untrue about the paper under review.
+    An ``ai-reconstructed`` piece must also carry the ``original`` it replaced.
+    No page-reading stage runs here either way — ``ai_read['read']`` stays
+    false and says that the pieces were composed by the caller — so what the
+    manifest records is authorship, not a read.
+
     The digests are taken over the folder as it stands, so any source tree the
     caller keeps beside the base — ``scaffold/``, ``original/`` — must be
     written **before** this call, and is then covered by
@@ -280,7 +317,8 @@ def write_manuscript(folder, documents, title=None, paper_id=None, source=None, 
                              'and ends in .md: ' + name)
     if (folder / 'map.json').exists():
         raise ValueError('Workspace already contains an immutable manuscript')
-    check_pieces(documents)
+    ai_model = ' '.join(str(ai_model or '').split())
+    check_pieces(documents, ai_model)
     rows = paper_base.write_base(folder, documents)
     if len(rows) != sum(len(pieces) for pieces in documents.values()):
         # Unreachable while `check_pieces` holds, and worth saying out loud if
@@ -314,6 +352,7 @@ def write_manuscript(folder, documents, title=None, paper_id=None, source=None, 
                          'pass title=, or give the main document a piece of kind "title".')
     stats = statistics_of(folder, documents, rows, references, page_count)
     uncaptioned, captioned = missing_figures(documents[paper_base.MAIN_DOCUMENT])
+    ai_pieces = sum(1 for row in rows if row['source'] != 'text')
     gaps = dict(known_gaps or {})
     if uncaptioned:
         gaps.setdefault('figure_captions', (
@@ -347,10 +386,21 @@ def write_manuscript(folder, documents, title=None, paper_id=None, source=None, 
         # An application's own source needs no reader: its equations and
         # tables are the ones the author wrote, not a converter's reading of a
         # picture of them, so there is nothing for a model to repair and
-        # nothing it would be repairing against.
+        # nothing it would be repairing against. Where some of its pieces were
+        # written by a model anyway — a description of a figure, an equation
+        # the app's own pipeline rebuilt — no read happened here either, and
+        # what the manifest records is who wrote them.
         'ai_read': {'read': False,
-                    'reason': 'written from an application\'s own source, which needs no '
-                              'reading: every piece is the text the caller composed'},
+                    'reason': ('written from an application\'s own source, which needs no '
+                               'reading: every piece is the text the caller composed'
+                               if not ai_pieces else
+                               'written from an application\'s own source, which needs no '
+                               'reading: no stage here read the pages. ' + str(ai_pieces)
+                               + ' of its ' + str(len(rows)) + ' pieces were written by '
+                               + ai_model + ', which the caller named, and carry source "ai" '
+                                            'or "ai-reconstructed"'),
+                    **({'ai_model': ai_model, 'ai_pieces': ai_pieces} if ai_pieces else {}),
+                    'lost_pages': []},
         'assets': list(assets or []), 'statistics': stats,
         'warnings': list(warnings or []), 'known_gaps': gaps,
         'fingerprint_rule': FINGERPRINT_RULE,
@@ -418,6 +468,40 @@ def lost_page_names(lost):
         str(page['page']) + ' (' + str(page['words']) + ' words'
         + (', rotated ' + str(page['rotation']) + '°' if page.get('rotation') else '') + ')'
         for page in lost)
+
+
+def sealed_lost_pages(lost, documents, rows):
+    """Each lost page with the lines its added pieces became, for the manifest.
+
+    The draft names an added piece by its draft ``piece_id``, which is the only
+    name it has before the seal — and which is a name nothing downstream can
+    use: ``map.json`` has no ids, a citation is a document and a line, and an
+    application told that page 8 was put back by ``p-141`` could not find a
+    word of it. So the manifest's copy carries where each one landed: its
+    document and its line range in the sealed base.
+    """
+    placed = {}
+    for name, pieces in documents.items():
+        document_rows = [row for row in rows if (row.get('document') or name) == name]
+        rendered = [piece for piece in pieces
+                    if any(line.strip() for line in paper_base.piece_lines(piece))]
+        for piece, row in zip(rendered, document_rows):
+            placed[piece.get('piece_id')] = {'document': name, 'lines': list(row['lines'])}
+    found = []
+    for page in lost:
+        found.append({**page,
+                      'added': [{'piece': piece_id, **placed.get(piece_id, {})}
+                                for piece_id in page.get('added') or []]})
+    return found
+
+
+def lost_page_lines(page):
+    """``paper.md lines 120-126`` for every piece added off one lost page."""
+    return ', '.join(
+        str(one.get('document') or '?') + ' lines '
+        + '-'.join(str(number) for number in one.get('lines') or ['?'])
+        if one.get('lines') else str(one.get('piece'))
+        for one in page.get('added') or [])
 
 
 def text_of(element):
@@ -771,21 +855,27 @@ def seal_draft(output, draft=None, ai_read=None):
             'rewritten from that image and keeps the converter\'s LaTeX in `original`, and one '
             'whose source is "text" was confirmed as the converter had it. The confidence is the '
             'converter\'s and was not updated.')
+    # A page nothing was converted from is in the manuscript only because a
+    # model transcribed it off the image. A reader of the base is told which
+    # pages those are, and which lines of which document they became, rather
+    # than meeting ordinary-looking lines whose source happens to be "ai". The
+    # list is written on every seal, empty included, so an application reading
+    # a manifest can tell a manuscript that lost no page from one written
+    # before anything counted them.
+    sealed = sealed_lost_pages(lost, documents, rows)
+    read_account['lost_pages'] = sealed
     if lost:
-        # A page nothing was converted from is in the manuscript only because a
-        # model transcribed it off the image. A reader of the base is told
-        # which pages those are rather than meeting ordinary-looking lines
-        # whose source happens to be "ai".
-        read_account['lost_pages'] = lost
         gaps['converter_pages'] = (
             parser + ' returned no text from page(s) ' + lost_page_names(lost)
             + ', which the text layer reads whole sentences from. What those pages contribute to '
               'this manuscript was transcribed from the page image by '
             + str(read_account.get('reader_model') or 'a model')
             + ' and its pieces carry source "ai": '
-            + '; '.join('page ' + str(page['page']) + ' → ' + ', '.join(page['added'])
-                        for page in lost)
-            + '. They are not the converter\'s reading of the text layer, because there was none.')
+            + '; '.join('page ' + str(page['page']) + ' → ' + lost_page_lines(page)
+                        for page in sealed)
+            + '. They are not the converter\'s reading of the text layer, because there was none. '
+              'The same pages are in ai_read.lost_pages as data, each with the lines its '
+              'transcription became.')
     if uncaptioned:
         gaps['figure_captions'] = (
             'The text points at ' + ', '.join('Figure ' + str(n) for n in uncaptioned)

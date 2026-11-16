@@ -31,8 +31,21 @@ FIXTURE = Path(__file__).resolve().parents[1] / 'fixtures' / 'single-column.pdf'
 NEVER_TRUNCATED = 50000
 
 
+def stamped(folder, **manifest):
+    """The manifest the seal writes beside the base.
+
+    A workspace is three files, and the stamp is the one a reader acts on
+    before anything else, so a folder written without it is refused rather
+    than read as the current shape — which is what these fixtures were
+    relying on.
+    """
+    paper_base.write(Path(folder) / 'manifest.json',
+                     {'schema_version': paper_base.BASE_SCHEMA_VERSION, **manifest})
+
+
 def base_with(pieces, folder, document=paper_base.MAIN_DOCUMENT):
     paper_base.write_base(folder, {document: pieces})
+    stamped(folder)
     return paper_base.load(folder)
 
 
@@ -118,8 +131,7 @@ def test_an_equation_with_no_page_still_carries_the_warning(tmp_path):
 def read_base(pieces, folder, model='claude-sonnet-5-5'):
     """A base whose manifest says a model read the pages, as the seal writes it."""
     paper_base.write_base(folder, {paper_base.MAIN_DOCUMENT: pieces})
-    paper_base.write(Path(folder) / 'manifest.json',
-                     {'title': 'Widgets', 'ai_read': {'read': True, 'reader_model': model}})
+    stamped(folder, title='Widgets', ai_read={'read': True, 'reader_model': model})
     return paper_base.load(folder)
 
 
@@ -172,6 +184,62 @@ def test_a_table_the_reader_added_is_marked_once_and_not_on_every_row(tmp_path):
     assert 'Day' in marked[0]
 
 
+def test_a_paragraph_off_a_lost_page_is_marked_like_everything_else(tmp_path):
+    """The marker was served for equations, tables and descriptions only.
+
+    A page the converter returned no text from is transcribed by the reader as
+    paragraphs, captions and headings — ``add_piece`` writes exactly those —
+    and those reached the reviewer looking like the converter's own text. The
+    line a reviewer is least able to check is the one that said nothing about
+    where it came from.
+    """
+    base = read_base([
+        {'kind': 'heading', 'text': 'Discussion', 'level': 1, 'section': 'Discussion',
+         'page': 7, 'source': 'ai', 'original': {}},
+        {'kind': 'paragraph', 'text': 'The gain holds across the band.', 'section': 'Discussion',
+         'page': 7, 'source': 'ai', 'original': {}},
+        {'kind': 'caption', 'text': 'Figure 3: Gain against angle.', 'section': 'Discussion',
+         'page': 7, 'source': 'ai', 'original': {}},
+        {'kind': 'paragraph', 'text': 'The converter read this one.', 'section': 'Discussion',
+         'page': 8},
+    ], tmp_path)
+    served = [line for line in paper_view.render(base).splitlines()
+              if line[:5].strip().isdigit() and line[7:].strip()]
+    transcribed, converted = served[:3], served[3]
+    for line in transcribed:
+        assert line.endswith('[read from the page image of page 7 by claude-sonnet-5-5;'
+                             ' the converter missed it]'), line
+    assert converted.endswith('The converter read this one.'), 'the authors\' text is unmarked'
+
+
+def test_a_base_an_application_composed_with_a_model_says_so_in_its_header(tmp_path):
+    """No stage here read a page, so the header cannot claim one did.
+
+    ``write_manuscript`` takes pieces a model wrote and names the model. The
+    reviewer still needs the marker and the header, but the Read stage's
+    header would say a model looked at every page of this paper, which is
+    false for a base composed from a source file nobody rendered.
+    """
+    paper_base.write_base(tmp_path, {paper_base.MAIN_DOCUMENT: [
+        {'kind': 'paragraph', 'text': 'The authors wrote this.', 'section': 'Results'},
+        {'kind': 'paragraph', 'text': 'A model wrote this one.', 'section': 'Results',
+         'source': 'ai', 'original': {}},
+    ]})
+    stamped(tmp_path, title='Widgets',
+            ai_read={'read': False, 'reason': 'composed by the caller',
+                     'ai_model': 'claude-sonnet-5-5', 'ai_pieces': 1})
+    base = paper_base.load(tmp_path)
+    served = paper_view.render(base)
+    assert 'No stage of this review read the pages' in served
+    assert 'written by a model' in served
+    marked = [line for line in served.splitlines() if 'claude-sonnet-5-5' in line]
+    # Named, and no claim of a page image: nothing here opened one, so the
+    # Read stage's wording would be telling the reviewer to go and compare
+    # the line against a page that does not exist.
+    assert len(marked) == 1 and marked[0].endswith('[written by claude-sonnet-5-5]'), marked
+    assert 'page image' not in served.split('\n\n')[-1]
+
+
 def test_a_part_is_measured_with_the_markers_it_will_be_served_with(tmp_path):
     pieces = [{'kind': 'equation', 'latex': 'a_{' + str(n) + '} = b', 'number': str(n),
                'section': 'Methods', 'page': 1, 'source': 'ai-reconstructed',
@@ -213,6 +281,7 @@ def test_a_supplement_is_served_by_name_and_the_main_paper_says_so(tmp_path):
                                     'section': 'Results'}],
         'supplement-s1.md': [{'kind': 'paragraph', 'text': 'Widgets were weighed on the bench.',
                               'section': 'S1'}]})
+    stamped(tmp_path)
     base = paper_base.load(tmp_path)
     assert 'Also in this manuscript: supplement-s1.md' in paper_view.render(base)
     supplement = paper_view.render(base, 'supplement-s1.md')
