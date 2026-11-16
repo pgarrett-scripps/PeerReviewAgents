@@ -66,11 +66,10 @@ One issue is:
 * `statement` — the one paragraph the authors read: what is wrong, on what
   evidence, and what would answer it. Written to be acted on, not summarised.
 * `members` — the `finding_uid` of every finding this issue is raised from. The
-  server keeps each member's slot, quote and block ids as the issue's evidence
+  server keeps each member's slot, quote and lines as the issue's evidence
   and counts "raised by N" from them, so you do not write either.
-* `rebuttal_quote`, and `rebuttal_block_id` where the passage is not the
-  finding's own block — only for a `minor` issue holding a `computed` finding.
-  See rule 5.
+* `rebuttal_quote`, and `rebuttal_line` only where the same words occur more
+  than once — only for a `minor` issue holding a `computed` finding. See rule 5.
 
 Rules that follow from that:
 
@@ -92,9 +91,9 @@ Rules that follow from that:
    that it bears on the central claim, and what the authors must do.
 5. **Calling checked arithmetic a suggestion takes a quote.** An issue you mark
    `minor` that holds a `computed` finding needs a `rebuttal_quote` from the
-   manuscript that answers the receipt, anchored exactly in the block it comes
-   from — `rebuttal_block_id` where that is not the finding's own block. The
-   server refuses the batch otherwise. There is nowhere to bury a receipt, so
+   manuscript that answers the receipt, quoted exactly as it reads — the server
+   finds the line, and `rebuttal_line` is yours to give only where the same
+   words occur more than once. The server refuses the batch otherwise. There is nowhere to bury a receipt, so
    `minor` is the only way down from one, and it is evidenced like any other
    judgement you make.
 
@@ -138,7 +137,7 @@ run reports its findings without a pooled review.
 If your claim answer carries `prior_issues`, this is a second or later round of
 review on a revised manuscript, and the issues of the round before are in it.
 Match your issues to those by reading them — the same problem keeps the same id
-even where the wording, the quotes and the blocks have all changed, and shared
+even where the wording, the quotes and the lines have all changed, and shared
 text is not evidence of a match.
 
 **Every prior issue needs a ruling from you, and nothing is closed by

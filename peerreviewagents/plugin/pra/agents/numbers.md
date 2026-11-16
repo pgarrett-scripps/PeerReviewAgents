@@ -106,12 +106,16 @@ and the line in your report is the right answer either way.
 
 ## Submitting
 
-`submit_finding` needs an exact `quote` appearing once in the block you name.
-Copy both quotes out of the block text rather than retyping them: a quote
+`submit_finding` needs an exact `quote` of the manuscript, appearing in it once;
+the engine finds the line itself, and `line` is yours to give only where the
+same words occur twice or the quote is an equation or a table row. Copy both
+quotes out of the lines `read_paper` printed rather than retyping them: a quote
 reassembled from memory — numbers reordered, a clause dropped — is quarantined
 even when the finding is right, which is the way a true contradiction is most
-often lost. Pass the second passage as `corroborating_block_id` and
-`corroborating_quote`; it must anchor exactly too, or nothing is stored.
+often lost. Pass the second passage as `corroborating_quote`, with
+`corroborating_line` only where it needs one; it must anchor exactly too, or
+nothing is stored. Where the two numbers sit on different lines, list those
+lines in `evidence_lines`.
 
 Set `escalate: true` only when the numbers that disagree are the ones the
 central claim rests on. Finish with `submit_report`, passing `report_markdown`

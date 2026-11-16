@@ -26,27 +26,31 @@ from peerreviewagents.engine.storage import write
 TABLE_WIDTH = 104
 
 EDIT = {'title': 'Soften the prerequisite claim', 'severity': 'major', 'kind': 'edit',
-        'block_id': 'b1', 'placement': 'anchored', 'quote': 'These results confirm the model.',
+        'document': 'paper.md', 'line': 118, 'end_line': None,
+        'placement': 'anchored', 'quote': 'These results confirm the model.',
         'comment': 'The curves are consistent with the model but do not confirm it. ' * 3,
         'replacement': 'These results are consistent with the model.',
         'counterevidence': 'The mutant stays inactive.'}
 QUESTION = {'title': 'Report biological replicates', 'severity': 'moderate', 'kind': 'question',
-            'block_id': 'b2', 'placement': 'anchored', 'quote': 'n = 3', 'replacement': '',
+            'document': 'paper.md', 'line': 64, 'end_line': 65,
+            'placement': 'anchored', 'quote': 'n = 3', 'replacement': '',
             'comment': 'How many biological replicates were used?'}
 
 # The run's issues document, which is the only thing the review is rendered
 # from. Each issue carries the findings it was raised from as members, and a
-# member keeps the quotation and the block the finding was anchored to, so the
-# page can show the passage under the issue that pools it.
+# member keeps the quotation and the lines the finding was anchored to, so the
+# page can show the passage under the issue that pools it and name where in
+# the manuscript to read it.
 def _member(finding, slot, uid):
     return {'finding_uid': uid, 'slot': slot, 'track': 'core',
             'severity': finding['severity'], 'kind': finding['kind'],
-            'title': finding['title'], 'block_id': finding['block_id'],
+            'title': finding['title'], 'document': finding['document'],
+            'line': finding['line'], 'end_line': finding['end_line'],
             'placement': 'anchored', 'quote': finding['quote']}
 
 
 ISSUES = {
-    'schema_version': 'review-issues-v1', 'issues_source': 'editor',
+    'schema_version': 'review-issues-v2', 'issues_source': 'editor',
     'summary': 'Two issues remain.',
     'verdict': {'significance': 'incremental', 'strength_of_evidence': 'moderate',
                 'reasoning': 'The central claim outruns the data by one step.'},
@@ -332,7 +336,7 @@ def test_the_review_comes_before_each_independent_reviewer(run):
                      '**Strongest counterpoint:** The mutant stays inactive.',
                      '- Supplementary data were unavailable.', NOTICE):
         assert expected in markdown
-    assert 'Severity: major | Type: edit | Location: block b1' in text
+    assert 'Severity: major | Type: edit | Location: line 118' in text
 
 
 def test_the_text_report_is_plain_text_within_the_width(run):

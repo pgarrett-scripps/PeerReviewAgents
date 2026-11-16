@@ -39,8 +39,8 @@ import anyio.from_thread
 import anyio.to_thread
 
 from .. import issues as issue_model
-from ..engine import citation_ledger, paper_base, paper_view
-from ..engine.annotations import normalize_review, quarantine_findings
+from ..engine import citation_ledger, paper_base, paper_view, quotes
+from ..engine.annotations import line_finding, quarantine_findings
 from ..engine.domain_registry import context as domain_context
 from ..engine.domain_registry import route as domain_route
 from ..engine.ingest import import_paper
@@ -78,10 +78,12 @@ NUMERIC = r'(?<![\w.])[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?(?![\w.])'
 # `b - a` and `b * -a` are arithmetic on the two printed values, not on a
 # negative number nobody printed.
 NUMERIC_UNSIGNED = r'(?<![\w.])\d+(?:\.\d+)?(?:[eE][-+]?\d+)?(?![\w.])'
-# A finding may point at a handful of blocks, not at the whole manuscript. With
-# no cap, citing every block makes every number in the paper available to a
-# receipt, which turns `computed` into a label an agent can arrange.
-MAX_EVIDENCE_BLOCKS = 6
+# A finding may point at a handful of lines, not at the whole manuscript. With
+# no cap, citing every line makes every number in the paper available to a
+# receipt, which turns `computed` into a label an agent can arrange. A line is
+# a finer thing than a block was — a table row rather than the whole table — so
+# the cap is twice the six blocks it replaces and still far short of a page.
+MAX_EVIDENCE_LINES = 12
 
 OFFLINE_TOOLS = ('read_paper', 'search', 'calculate', 'save_note', 'inspect_results',
                  'record_comparison')
@@ -321,6 +323,12 @@ class Agent:
     # over. It belongs to the holder and not to the slot, so a reissued claim
     # code starts a reader who has read nothing.
     served: dict = field(default_factory=dict)
+    # The original pages this holder has opened with `view_page`. An equation
+    # in paper.md was machine-read off such a page and may be garbled, so a
+    # finding that cites an equation line is refused until the page it came
+    # from has been looked at. Like `served`, it belongs to the holder: a
+    # reissued claim code starts a reader that has seen nothing.
+    pages_seen: set = field(default_factory=set)
     receipts: dict = field(default_factory=dict)
     report: dict = None
     editor_package: dict = None
@@ -870,34 +878,40 @@ class Run:
         in the key so that agreement between reviewers stays visible as two
         rows for the editor to merge, rather than being merged here.
         """
-        handles = sorted(set(issue_model.block_ids_of(raw)))
+        handles = [str(number) for number in issue_model.lines_of(raw)]
         key = ':'.join([self.paper['id'], agent.slot,
                         ' '.join(str(raw.get('quote', '')).split()).casefold(),
                         '|'.join(handles)])
         return digest(key)[:16]
 
-    def cited_blocks(self, stored, corroborating):
-        """Every block a finding points at: its anchor, its evidence, its corroboration."""
-        ids = issue_model.block_ids_of(stored)
+    def cited_lines(self, stored, corroborating):
+        """Every line a finding points at: its anchor, its evidence, its corroboration.
+
+        One document: a finding is about one passage, and its evidence is read
+        alongside that passage. The corroborating quote is anchored in the same
+        document before it is stored, so its line belongs in the same list.
+        """
+        lines = issue_model.lines_of(stored)
         if isinstance(corroborating, dict):
-            ids.append(corroborating.get('block_id'))
-        elif corroborating:
-            ids.append(corroborating)
-        return [block_id for block_id in ids if block_id]
+            lines += issue_model.lines_of(corroborating)
+        return [number for number in lines if number]
 
     def printed_numbers(self, stored, corroborating):
-        """Every number the manuscript prints in the blocks this finding cites.
+        """Every number the manuscript prints on the lines this finding cites.
 
-        The quoted sentence is one sentence of its block, and a reviewer
-        quoting a claim rarely quotes every number the claim combines: the
+        The quoted sentence rarely holds every number the claim combines: the
         other half is usually two rows up in the same table. What a receipt has
         to answer for is that its numbers come from the paper, not that they sit
-        inside the quotation marks, so the whole text of every cited block
-        counts — and no text that the finding does not cite.
+        inside the quotation marks, so every line the finding cites counts —
+        and no line that it does not. A block used to answer for this, and a
+        block was the whole table: the reviewer now names the rows it read, and
+        the number that is nowhere near them no longer makes a receipt
+        ``computed``.
         """
         texts = [stored.get('quote', '')]
-        for block_id in self.cited_blocks(stored, corroborating):
-            texts.append(self.blocks.get(block_id, {}).get('text', ''))
+        document = stored.get('document') or paper_base.MAIN_DOCUMENT
+        for number in self.cited_lines(stored, corroborating):
+            texts.append(self.base.line_text(number, document))
         printed = set()
         for text in texts:
             for token in re.findall(NUMERIC, text or ''):
@@ -911,16 +925,15 @@ class Run:
     def basis(self, agent, stored, receipt_id, corroborating):
         """``computed``, ``two-quotes`` or ``judgement``, decided here from receipts.
 
-        A receipt is ``computed`` when every number it works on is printed in
-        the blocks the finding cites. A number that appears in none of them came
+        A receipt is ``computed`` when every number it works on is printed on
+        the lines the finding cites. A number that appears on none of them came
         from somewhere the server cannot check — the agent's own prose, or a
         figure read by eye — and that is judgement however the arithmetic looks.
 
         A figure reading is judgement whatever else it carries: a number read off
         pixels is not a guard-checked number, so it can never be ``computed``.
         """
-        block = self.blocks.get(stored.get('block_id'), {})
-        if str(block.get('kind', '')).startswith('figure'):
+        if str(stored.get('piece_kind') or '').startswith('figure'):
             return 'judgement', 'A reading taken from a figure is judgement.'
         receipt = agent.receipts.get(receipt_id) if receipt_id else None
         if receipt:
@@ -934,11 +947,11 @@ class Run:
                                if not is_power_of_ten(value)
                                and not any(same_number(value, other) for other in printed))
             if inputs and not unmatched:
-                return 'computed', ('Arithmetic receipt over numbers printed in the blocks this '
+                return 'computed', ('Arithmetic receipt over numbers printed on the lines this '
                                     'finding cites, matched by value.')
             if inputs:
                 return ('judgement',
-                        'The receipt uses numbers that none of the cited blocks print: '
+                        'The receipt uses numbers that none of the cited lines print: '
                         + ', '.join(unmatched))
             return 'judgement', 'The receipt works on no numbers at all.'
         if corroborating:
@@ -946,35 +959,47 @@ class Run:
                                   'prove they conflict.')
         return 'judgement', 'No arithmetic receipt and no second anchored passage.'
 
-    def anchor(self, block_id, quote):
-        """One exact, unique position for a quote, or ``None``. The editor's rebuttal test."""
-        block = self.blocks.get(block_id)
-        if not block or not quote:
+    def locate(self, quote, line=None, document=None):
+        """One exact, unique placement for a quote, or ``None``. The editor's rebuttal test.
+
+        The line is optional here as everywhere: a quote that occurs once needs
+        no number, and one that occurs twice is rejected until it is given one.
+        """
+        if not str(quote or '').strip():
             return None
-        found = [m.start() for m in re.finditer('(?=' + re.escape(quote) + ')', block['text'])]
-        return found[0] if len(found) == 1 else None
+        return quotes.anchor(self.base, quote, line, None, document).get('placement')
 
-    def quote_present(self, quote):
-        """The block of *this* manuscript holding this passage verbatim, or ``None``.
+    def quote_line(self, quote):
+        """The line of *this* manuscript holding this passage, or ``None``.
 
-        Block ids are minted per import, so a prior round's ids mean nothing
-        here: the passage is looked for in the manuscript as a whole. A quote
-        too short to identify a passage is not evidence either way and is
-        reported as not checkable, by returning ``None`` for a different
+        A prior round's line numbers mean nothing here — the file is rewritten
+        at every import — so the passage is looked for in the manuscript as a
+        whole, and a quote that survived into two places answers with the first
+        of them: the question is whether the authors still say it, not where.
+        A quote too short to identify a passage is not evidence either way and
+        is reported as not checkable, by returning ``None`` for a different
         reason than "the text changed" — the caller counts only what it finds.
         """
         text = str(quote or '').strip()
         if len(text) < MIN_SURVIVING_QUOTE:
             return None
-        for block in self.paper['blocks']:
-            if text in block['text']:
-                return block['id']
-        return None
+        found = quotes.placements(self.base, text)
+        return found[0]['line'] if found else None
 
-    def store_finding(self, agent, raw, escalate, receipt_id, corroborating):
-        response = {'summary': '', 'findings': [raw], 'limitations': []}
-        normalized = normalize_review(self.paper, response, f'{agent.slot}-{agent.attempt}')
-        kept, quarantined = quarantine_findings(normalized['findings'])
+    def store_finding(self, agent, raw, escalate, receipt_id, corroborating, found):
+        """One submitted finding on the ledger, or ``(None, reason)`` for a quarantine.
+
+        *found* is what :func:`peerreviewagents.engine.quotes.anchor` said about
+        the quote. A finding whose quote has no one place in the manuscript is
+        quarantined with the refusal as its reason, rather than being dropped on
+        the way in: the row is the evidence that this reviewer quoted something
+        the paper does not say, and the counts of what a run could publish are
+        read off these rows.
+        """
+        row = line_finding(raw, f'{agent.slot}-{agent.attempt}', 1, found.get('placement'))
+        if 'placement' not in found:
+            row['placement_reason'] = found.get('refused') or row.get('placement_reason')
+        kept, quarantined = quarantine_findings([row])
         if quarantined:
             record = {**quarantined[0], 'track': agent.track, 'slot': agent.slot,
                       'schema_version': FINDING_SCHEMA_VERSION}
@@ -1642,6 +1667,10 @@ def _call(token, name, args, free=False):
                                              'result': result.get('result')}
     if name == 'read_paper' and 'part' in result:
         agent.served.setdefault(result['document'], set()).add(int(result['part']))
+    # Only a page the server actually rendered counts: a refused page number
+    # teaches the reader nothing about the equation printed on it.
+    if name == 'view_page' and 'image' in result:
+        agent.pages_seen.add(int(args['page']))
     result['calls_left'] = agent.call_budget - agent.calls
     if 'image' in result:
         return _image(result, agent, name)
@@ -1689,10 +1718,10 @@ def calculate(agent_token: str, expression: str) -> dict:
     return _call(agent_token, 'calculate', {'expression': expression})
 
 
-def save_note(agent_token: str, text: str, evidence_blocks: list) -> dict:
-    """Save a source-linked hypothesis or a check you discarded."""
+def save_note(agent_token: str, text: str, evidence_lines: list) -> dict:
+    """Save a hypothesis or a discarded check, against the manuscript lines it is about."""
     return _call(agent_token, 'save_note',
-                 {'text': text, 'evidence_blocks': list(evidence_blocks)})
+                 {'text': text, 'evidence_lines': list(evidence_lines)})
 
 
 def view_page(agent_token: str, page: int) -> dict:
@@ -1765,15 +1794,75 @@ def _unread_refusal(run, agent, stored):
           'every line, and submit again.', unread_parts=unread)
 
 
-def submit_finding(agent_token: str, title: str, block_id: str, quote: str, comment: str,
-                   severity: str, kind: str = 'question', replacement: str = '',
-                   evidence_blocks: list = None, counterevidence: str = '',
-                   source_urls: list = None, escalate: bool = False,
-                   calculate_receipt: str = '', corroborating_block_id: str = '',
-                   corroborating_quote: str = '') -> dict:
-    """Store one finding. The guard anchors your quote; the server sets track and basis.
+def _line_argument(name, value, limit):
+    """The refusal for a line argument that is not a line of the document, or ``None``."""
+    if type(value) is not int or isinstance(value, bool):
+        return rejection(name + ' is a line number: a whole number, as read_paper printed it '
+                         'beside the line. Leave it out where the quote occurs only once.')
+    if value and not 1 <= value <= limit:
+        return rejection(name + ' is ' + str(value) + ', and the document has ' + str(limit)
+                         + ' lines.')
+    return None
 
-    A quote that is absent or appears twice in the block you name is quarantined
+
+def _equation_refusal(run, agent, lines, document):
+    """The refusal for citing an equation nobody looked at, or ``None``.
+
+    An equation in ``paper.md`` is what the converter made of a formula it read
+    off a page image: a sum with its subscripts flattened, a symbol dropped, the
+    word after it swallowed. A finding about algebra the authors never wrote is
+    the worst thing this engine can produce, and the one check the server can
+    make is whether this holder has opened the page the equation came from. So a
+    cited equation line costs a ``view_page``, and the refusal names the page.
+
+    A lane with no ``view_page`` at all cannot satisfy that and is told so:
+    its finding belongs on the sentence that states the result, which is prose
+    the converter read from the text layer.
+    """
+    pages, seen = [], agent.pages_seen
+    for number in lines:
+        piece = run.base.piece_at(number, document) or {}
+        page = piece.get('page')
+        if piece.get('kind') == 'equation' and page is not None and page not in seen:
+            if page not in pages:
+                pages.append(page)
+    if not pages:
+        return None
+    where = ', '.join(str(page) for page in pages)
+    if 'view_page' not in agent.allowed:
+        return rejection('Nothing was stored: this finding cites an equation, machine-read from '
+                         'page ' + where + ', and your lane has no view_page to check it with. '
+                         'Cite the sentence that states the result instead — that is prose the '
+                         'converter read from the text layer — or leave the algebra to a lane '
+                         'that can open the page.', equation_pages=pages)
+    return rejection('Nothing was stored: this finding cites an equation of paper.md, and an '
+                     'equation there is what a converter made of a formula on the page — it may '
+                     'be garbled. Call view_page on page ' + where + ', read the formula as it is '
+                     'printed, and submit again.', equation_pages=pages)
+
+
+def submit_finding(agent_token: str, title: str, quote: str, comment: str,
+                   severity: str, kind: str = 'question', line: int = 0, end_line: int = 0,
+                   document: str = '', replacement: str = '',
+                   evidence_lines: list = None, counterevidence: str = '',
+                   source_urls: list = None, escalate: bool = False,
+                   calculate_receipt: str = '', corroborating_quote: str = '',
+                   corroborating_line: int = 0) -> dict:
+    """Store one finding, quoting the manuscript exactly. The server places the quote.
+
+    ``quote`` is the manuscript's own words. The engine finds them, records the
+    line and the offsets within it, and sets track and basis. How a dash, a
+    quotation mark or a line break is typed does not matter; the words do.
+
+    ``line`` is needed only where the quote occurs more than once, or to cite an
+    equation, a table row or a figure as itself — ``read_paper`` prints the
+    number beside every line. ``end_line`` goes with it for a quote that runs
+    over several lines, and ``document`` names a supplement instead of the
+    manuscript. ``evidence_lines`` are further lines the finding rests on, and a
+    receipt is only checked against the lines you cite.
+
+    A quote that is not in the manuscript is refused with the nearest lines, and
+    one that occurs twice with the lines it occurs on; the finding is quarantined
     with its reason and nothing is stored, so fix the quote and submit again.
     """
     run = current()
@@ -1799,23 +1888,66 @@ def submit_finding(agent_token: str, title: str, block_id: str, quote: str, comm
     editor = run.agents.get('editor')
     if editor is not None and editor.editor_package:
         return rejection('The pooled review has already been ruled on. Nothing was stored.')
-    if len(list(evidence_blocks or [])) > MAX_EVIDENCE_BLOCKS:
-        return rejection(f'Cite at most {MAX_EVIDENCE_BLOCKS} evidence blocks: name the blocks the '
-                         'finding rests on, not every block that holds a number.')
+    document = str(document or '').strip() or paper_base.MAIN_DOCUMENT
+    if document not in run.base.documents:
+        return rejection('This manuscript has no document named ' + document + '. It holds: '
+                         + ', '.join(run.base.document_names()) + '.',
+                         documents=run.base.document_names())
+    limit = run.base.line_count(document)
+    for name, value in (('line', line), ('end_line', end_line),
+                        ('corroborating_line', corroborating_line)):
+        refusal = _line_argument(name, value, limit)
+        if refusal is not None:
+            return refusal
+    if end_line and not line:
+        return rejection('end_line is the last line of a quote that runs over several, so it '
+                         'goes with line. Give both or neither.')
+    if end_line and end_line < line:
+        return rejection('end_line is ' + str(end_line) + ', before line ' + str(line) + '.')
+    evidence = list(evidence_lines or [])
+    if len(evidence) > MAX_EVIDENCE_LINES:
+        return rejection(f'Cite at most {MAX_EVIDENCE_LINES} evidence lines: name the lines the '
+                         'finding rests on, not every line that holds a number.')
+    for value in evidence:
+        refusal = _line_argument('every evidence line', value, limit)
+        if refusal is not None:
+            return refusal
+    if not all(evidence):
+        return rejection('every evidence line is a line of ' + document + ', 1 to ' + str(limit)
+                         + '.')
     corroborating = None
-    if corroborating_block_id and corroborating_quote:
-        if run.anchor(corroborating_block_id, corroborating_quote) is None:
-            return rejection('The corroborating quote is absent or ambiguous in '
-                             + corroborating_block_id + '. Nothing was stored.')
-        corroborating = {'block_id': corroborating_block_id, 'quote': corroborating_quote}
-    raw = {'title': title, 'block_id': block_id, 'quote': quote, 'comment': comment,
+    if corroborating_line and not corroborating_quote:
+        return rejection('corroborating_line is the line of corroborating_quote, so it goes with '
+                         'it. A second passage is cited by quoting it.')
+    if corroborating_quote:
+        placement = run.locate(corroborating_quote, corroborating_line or None, document)
+        if placement is None:
+            found = quotes.anchor(run.base, corroborating_quote, corroborating_line or None,
+                                  None, document)
+            return rejection('Nothing was stored. The corroborating quote: '
+                             + str(found.get('refused') or 'it is not one passage of ' + document),
+                             **{key: found[key] for key in ('nearest', 'lines') if key in found})
+        corroborating = {'quote': corroborating_quote, 'document': document,
+                         'line': placement['line'], 'end_line': placement['end_line']}
+    raw = {'title': title, 'quote': quote, 'comment': comment,
            'severity': severity, 'kind': kind if kind in KINDS else 'question',
-           'replacement': replacement, 'evidence_blocks': list(evidence_blocks or []),
+           'replacement': replacement, 'evidence_lines': evidence,
            'counterevidence': counterevidence, 'source_urls': list(source_urls or [])}
-    stored, reason = run.store_finding(agent, raw, escalate, calculate_receipt, corroborating)
+    found = quotes.anchor(run.base, quote, line or None, end_line or None, document)
+    if 'placement' in found:
+        cited = issue_model.lines_of({**raw, 'line': found['placement']['line'],
+                                      'end_line': found['placement']['end_line']})
+        cited += issue_model.lines_of(corroborating or {})
+        equations = _equation_refusal(run, agent, cited, document)
+        if equations is not None:
+            return equations
+    stored, reason = run.store_finding(agent, raw, escalate, calculate_receipt, corroborating,
+                                       found)
     run.write_progress()
     if stored is None:
-        return rejection(reason, quarantined=True)
+        return rejection(reason, quarantined=True,
+                         **{key: found[key] for key in ('nearest', 'lines', 'documents')
+                            if key in found})
     return {'stored': True, 'finding_uid': stored['finding_uid'], 'id': stored['id'],
             'track': stored['track'], 'basis': stored['basis'],
             'basis_reason': stored['basis_reason'], 'escalate': stored['escalate'],
@@ -1950,12 +2082,31 @@ def _record_closure(run, slot, attempt, refusal):
                 'accepted': refusal is None, 'refusal': refusal})
 
 
+def _where(finding):
+    """Where a finding is, for a human reader: ``Line 42`` or ``Lines 42-44``.
+
+    A supplement is named, the manuscript is not: a reader of a review opens
+    ``paper.md`` at the line, and saying so on every line of every report would
+    be noise. Nothing is printed for a finding that was never placed, which
+    cannot reach a report but can reach the quarantine file.
+    """
+    if not finding.get('line'):
+        return 'Not located'
+    document = str(finding.get('document') or '')
+    where = str(finding['line'])
+    if finding.get('end_line') and int(finding['end_line']) > int(finding['line']):
+        return (f'{document} lines ' if document and document != paper_base.MAIN_DOCUMENT
+                else 'Lines ') + where + '-' + str(finding['end_line'])
+    return (f'{document} line ' if document and document != paper_base.MAIN_DOCUMENT
+            else 'Line ') + where
+
+
 def _audit_markdown(agent, findings):
     lines = [agent.report['summary'] or '(no summary)', '']
     for finding in findings:
         lines.append(f"## {finding['title']} ({finding['severity']}, {finding['basis']}"
                      + (', escalated' if finding['escalate'] else '') + ')')
-        lines.append(f"Block {finding['block_id']}: “{finding['quote']}”")
+        lines.append(_where(finding) + f": “{finding['quote']}”")
         lines.append('')
         lines.append(finding['comment'])
         lines.append('')
@@ -1977,8 +2128,8 @@ def list_findings(agent_token: str, track: str = '', include_comment: bool = Tru
         # Randomised once per run, so no reviewer or track is systematically read first.
         rows = sorted(rows, key=lambda f: digest(run.salt + f['finding_uid']))
     fields = ('finding_uid', 'id', 'track', 'slot', 'title', 'severity', 'kind', 'basis',
-              'basis_reason', 'escalate', 'block_id', 'quote', 'evidence_blocks',
-              'counterevidence', 'corroborating', 'calculate_receipt')
+              'basis_reason', 'escalate', 'document', 'line', 'end_line', 'section', 'quote',
+              'evidence_lines', 'counterevidence', 'corroborating', 'calculate_receipt')
     out = []
     for finding in rows:
         row = {key: finding.get(key) for key in fields}
@@ -2099,8 +2250,7 @@ def _issue_problems(run, agent, batch, retiring=()):
         # number that had become a string nobody wrote.
         wrong = _wrong_types([(field, row.get(field)) for field in
                               ('name', 'severity', 'category', 'statement', 'status',
-                               'status_reason', 'prior_id', 'rebuttal_block_id',
-                               'rebuttal_quote')])
+                               'status_reason', 'prior_id', 'rebuttal_quote')])
         if wrong:
             problems.append(f'issue {index}: ' + '; '.join(wrong))
             continue
@@ -2143,6 +2293,14 @@ def _issue_problems(run, agent, batch, retiring=()):
             problems.append(f'issue {index} ({name}): statement is the one paragraph the authors '
                             'read — what is wrong and what would answer it. Yours is '
                             f'{len(statement)} characters.')
+            continue
+        rebuttal_line = row.get('rebuttal_line')
+        if rebuttal_line is not None and (type(rebuttal_line) is not int
+                                          or isinstance(rebuttal_line, bool)
+                                          or rebuttal_line < 1):
+            problems.append(f'issue {index} ({name}): rebuttal_line is the line rebuttal_quote is '
+                            'on, a positive whole number, and is needed only where the quote '
+                            'occurs more than once')
             continue
         raw_members = row.get('members')
         if raw_members is None:
@@ -2196,25 +2354,28 @@ def _issue_problems(run, agent, batch, retiring=()):
         # `minor`, and the way out is the same one — quote the passage of the
         # manuscript that answers it, anchored exactly.
         computed = [uid for uid in members if by_uid[uid]['basis'] == 'computed']
+        rebuttal = None
         if severity == 'minor' and computed:
             quote = _text(row.get('rebuttal_quote'))
-            block = _text(row.get('rebuttal_block_id')) or str(by_uid[computed[0]]['block_id'])
-            if run.anchor(block, quote) is None:
+            document = by_uid[computed[0]].get('document') or paper_base.MAIN_DOCUMENT
+            rebuttal = run.locate(quote, rebuttal_line, document)
+            if rebuttal is None:
                 problems.append(f'issue {index} ({name}): it holds the computed finding(s) '
                                 + ', '.join(computed[:5])
                                 + ', whose arithmetic was checked against the manuscript, so '
-                                  'calling it a suggestion needs a rebuttal_quote that anchors '
-                                  'exactly in the block it cites.')
+                                  'calling it a suggestion needs a rebuttal_quote of the '
+                                  'manuscript itself, in one place in it — with rebuttal_line '
+                                  'where those words occur more than once.')
                 continue
-        elif _text(row.get('rebuttal_quote')) or _text(row.get('rebuttal_block_id')).strip():
+        elif _text(row.get('rebuttal_quote')) or rebuttal_line:
             # The field is one thing only: the answer to a checked receipt that
             # is being called a suggestion. Stored anywhere else it is a quote
             # of the manuscript that nothing anchored — it was accepted on a
-            # major issue, with an invented block id, and printed in REVIEW.md
-            # as if a reviewer had read it there.
+            # major issue, pointed at a line nobody checked, and printed in
+            # REVIEW.md as if a reviewer had read it there.
             why = ('a suggestion over a checked receipt' if severity != 'minor'
                    else 'a checked receipt, and this issue holds none')
-            problems.append(f'issue {index} ({name}): rebuttal_quote and rebuttal_block_id '
+            problems.append(f'issue {index} ({name}): rebuttal_quote and rebuttal_line '
                             'answer ' + why + '. Leave both out: a quote that is not a rebuttal '
                             'goes in the member finding that anchored it, and a '
                             f'{severity} issue has nothing to rebut.')
@@ -2247,7 +2408,7 @@ def _issue_problems(run, agent, batch, retiring=()):
             prior_held[prior_id] = name
         staged.append({'key': key, 'name': name, 'severity': severity, 'category': category,
                        'rank': rank, 'statement': statement, 'member_uids': members,
-                       'rebuttal_block_id': _text(row.get('rebuttal_block_id')).strip() or None,
+                       'rebuttal_line': (rebuttal or {}).get('line'),
                        'rebuttal_quote': _text(row.get('rebuttal_quote')) or None,
                        'prior_id': prior_id, 'status': status,
                        'status_reason': _text(row.get('status_reason')).strip() or None,
@@ -2292,9 +2453,8 @@ def submit_issues(agent_token: str, issues=None, retire=None) -> dict:
 
     A ``minor`` issue holding a ``computed`` finding — one whose arithmetic was
     checked against the manuscript — needs a ``rebuttal_quote`` that anchors
-    exactly in the block it cites, with ``rebuttal_block_id`` where that is not
-    the finding's own block. Nothing else may be called a suggestion over a
-    receipt.
+    exactly in the manuscript, with ``rebuttal_line`` where those words occur in
+    more than one place. Nothing else may be called a suggestion over a receipt.
 
     The batch limit is in your claim answer as ``batch_limit`` and grows with
     the ledger, so the number of submission calls stays bounded however large
@@ -2471,7 +2631,8 @@ def _surviving_quotes(run, prior):
     touch is not evidence of a fix, and the saved pilots show findings
     disappearing from text nobody edited — a reviewer simply not raising it
     again. What the server can check, it checks here, by the text and not by
-    the block id, because ids are minted per import.
+    where the words were, because the file is written afresh at every import
+    and a prior round's line numbers point into a manuscript that is gone.
     """
     found, seen = [], set()
     # A closed row has no members — the findings were this round's, not the
@@ -2485,9 +2646,9 @@ def _surviving_quotes(run, prior):
         if not quote or quote in seen:
             continue
         seen.add(quote)
-        block = run.quote_present(quote)
-        if block:
-            found.append({'finding_uid': member.get('finding_uid'), 'block_id': block,
+        line = run.quote_line(quote)
+        if line:
+            found.append({'finding_uid': member.get('finding_uid'), 'line': line,
                           'quote': quote[:200]})
     return found
 
@@ -2565,7 +2726,7 @@ def _prior_ruling_problems(run, rulings, matched):
             problems.append(
                 f'prior ruling {index} ({identifier}): you ruled it resolved, and '
                 f'{len(surviving)} of its quote(s) are still in the manuscript word for word — '
-                + '; '.join(f"{row['block_id']}: {row['quote'][:80]!r}" for row in surviving[:3])
+                + '; '.join(f"line {row['line']}: {row['quote'][:80]!r}" for row in surviving[:3])
                 + '. Not being raised again is not a fix. Either rule it `unverified`, or say in '
                   'text_unchanged_reason (40 characters or more) why it is fixed although that '
                   'passage is unchanged.')
@@ -2623,7 +2784,7 @@ def _finalize_issues(run, agent, ruled=None):
             'statement': issue['statement'],
             'members': members,
             'raised_by': 0,
-            'rebuttal_block_id': issue.get('rebuttal_block_id'),
+            'rebuttal_line': issue.get('rebuttal_line'),
             'rebuttal_quote': issue.get('rebuttal_quote'),
             'prior_id': issue['prior_id'],
             # Every issue row carries every key, live or closed, so a consumer
@@ -2672,7 +2833,7 @@ def _finalize_issues(run, agent, ruled=None):
             'raised_by': 0,
             # A closed row has no rebuttal to carry; the keys are here all the
             # same, because a reader of issues.json reads fields, not shapes.
-            'rebuttal_block_id': None,
+            'rebuttal_line': None,
             'rebuttal_quote': None,
             'prior_id': identifier,
             'status': ruling['status'],
@@ -3375,10 +3536,12 @@ def write_review(agent_token: str) -> dict:
 
 def _public(finding):
     """One finding as a consumer reads it: the 0.8 fields plus the new ones."""
-    keys = ('id', 'finding_uid', 'review_id', 'slot', 'track', 'role', 'title', 'block_id',
-            'quote', 'kind', 'category', 'severity', 'comment', 'replacement',
-            'evidence_blocks', 'counterevidence', 'source_urls', 'basis', 'basis_reason',
-            'escalate', 'corroborating', 'calculate_receipt', 'start', 'end', 'block_sha256',
+    keys = ('id', 'finding_uid', 'review_id', 'slot', 'track', 'role', 'title', 'document',
+            'line', 'end_line', 'quote', 'kind', 'category', 'severity', 'comment', 'replacement',
+            'evidence_lines', 'counterevidence', 'source_urls', 'basis', 'basis_reason',
+            'escalate', 'corroborating', 'calculate_receipt', 'start', 'end', 'anchor_text',
+            'quoted_exactly', 'section', 'page', 'bbox', 'piece_kind', 'piece_lines',
+            'fingerprint',
             'placement', 'issue_status', 'edit_decision', 'edit_withheld', 'schema_version')
     return {key: finding.get(key) for key in keys if key in finding}
 
@@ -3557,7 +3720,7 @@ def _fallback_issue(issue):
              issue.get('statement') or '', '']
     members = issue_model.members_of(issue)
     for member in members:
-        lines += [f"- {member.get('slot')} on block {member.get('block_id')}: "
+        lines += [f"- {member.get('slot')} on {_where(member).lower()}: "
                   f"“{member.get('quote')}”"]
     return lines + ([''] if members else [])
 

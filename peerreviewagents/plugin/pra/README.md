@@ -136,11 +136,12 @@ the settings files Claude Code reads, managed settings first.
 - **Budgets.** Per-agent and per-run tool-call ceilings, plus a separate
   external-request ceiling, all enforced in the server. The starter enforces
   token ceilings from the stream on top.
-- **Findings.** `review-finding-v3`: `finding_uid` (stable across re-reviews of
-  the same paper), `track`, `escalate` (specialists only), and a `basis` the
-  server assigns — `computed` when a `calculate` receipt covers the numbers
-  quoted, `two-quotes` when a second anchored quotation corroborates,
-  `judgement` otherwise. An unanchored quotation is quarantined, not stored.
+- **Findings.** `review-finding-v4`: `finding_uid` (stable across re-reviews of
+  the same paper), the `document`, `line` and `end_line` the engine anchored the
+  quote on, `track`, `escalate` (specialists only), and a `basis` the server
+  assigns — `computed` when a `calculate` receipt covers the numbers quoted,
+  `two-quotes` when a second anchored quotation corroborates, `judgement`
+  otherwise. An unanchored quotation is quarantined, not stored.
 - **Isolation.** Core reviewers never see each other's findings and are not
   told specialists exist. The editor sees the pool in an order seeded by the
   run salt, so slot order carries no weight.

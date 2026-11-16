@@ -83,7 +83,7 @@ class SourceIntegrity(unittest.TestCase):
                                           'section':'Results','page':1}]})
             write(root/'manifest.json',{'files':{'paper.json':digest((root/'paper.json').read_bytes())}})
             server=Investigation({'paper':d,'output':str(root/'out'),'cache':str(root/'cache'),'tool_limit':1})
-            self.assertTrue(server.call('save_note',{'text':'A hypothesis','evidence_blocks':['b1']})['saved'])
+            self.assertTrue(server.call('save_note',{'text':'A hypothesis','evidence_lines':[1]})['saved'])
             self.assertIn('notice',server.call('search',{'query':'samples'}))
             self.assertEqual(len((root/'out/notes.jsonl').read_text(encoding='utf-8').splitlines()),1)
 

@@ -203,6 +203,36 @@ def test_a_reference_keeps_the_box_it_was_printed_in(tmp_path, monkeypatch):
     assert reference['page'] == 1
 
 
+def test_every_figure_caption_is_written_the_same_way():
+    """The converter's two kinds for one thing do not reach the page.
+
+    A figure's caption arrives as a ``figure`` piece or as a ``caption`` piece
+    depending on what the converter saw around it — this paper's nine figures
+    arrive eight one way and one the other — and a reader scanning for figures,
+    or a search for one, should see nine alike. A caption that is not a
+    figure's keeps its own word.
+    """
+    markdown, rows = paper_base.compose([
+        {'kind': 'figure', 'text': 'Fig. 1: The array.', 'section': 'Results'},
+        {'kind': 'caption', 'text': 'Fig. 2: The spectrum.', 'section': 'Results'},
+        {'kind': 'caption', 'text': '(Figure 3) The mask.', 'section': 'Results'},
+        {'kind': 'caption', 'text': 'Table 2: Measured gain by subcarrier.',
+         'section': 'Results'},
+        {'kind': 'figure', 'text': 'Fig. 4: The window.', 'section': 'Results',
+         'image': 'figures/fig4.png', 'label': 'Figure 4'},
+    ])
+    assert [line for line in markdown.splitlines() if line] == [
+        'Figure: Fig. 1: The array.',
+        'Figure: Fig. 2: The spectrum.',
+        'Figure: (Figure 3) The mask.',
+        'Caption: Table 2: Measured gain by subcarrier.',
+        '![Figure 4](figures/fig4.png)',
+        'Figure: Fig. 4: The window.']
+    # The kind the converter chose is still on the row, for a consumer that
+    # needs it; what changed is only how the line reads.
+    assert [row['kind'] for row in rows] == ['figure', 'caption', 'caption', 'caption', 'figure']
+
+
 def test_a_figure_the_text_cites_with_no_caption_is_a_named_gap():
     captions = [{'kind': 'figure', 'text': 'Fig. 1: The array.'},
                 {'kind': 'caption', 'text': 'Figure 2. The spectrum.'}]

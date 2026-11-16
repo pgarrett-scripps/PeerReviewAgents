@@ -81,16 +81,18 @@ and the line in your report is the right answer either way.
 
 ## A reading from a figure is judgement
 
-The server records any finding anchored in a figure block as `judgement`, never
+The server records any finding anchored in a figure or its caption as `judgement`, never
 `computed`, however carefully you read the pixels. Write the finding so it
 stands as a reviewer's reading: say what you see, what you expected, and what
 would settle it.
 
 ## Submitting
 
-`submit_finding` needs an exact `quote` appearing once in the `block_id` you
-name — for a figure, that is usually a phrase from the caption or from the
-sentence that cites it. Copy it out of the block text rather than retyping it:
+`submit_finding` needs an exact `quote` of the manuscript, appearing in it once
+— for a figure, that is usually a phrase from the caption or from the sentence
+that cites it. The engine finds the line itself; give `line`, and `end_line` for
+a range, where the quote is a row of a table or where the same words occur
+twice. Copy it out of the lines `read_paper` printed rather than retyping it:
 a quote reassembled from memory — a number reordered, a clause dropped — is
 quarantined even when the finding is right. Quarantined findings are not
 stored; fix and resubmit.

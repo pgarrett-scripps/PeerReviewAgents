@@ -60,6 +60,69 @@ def normalize_review(paper, response, review_id):
             'annotation_counts':{'total':len(notes),'anchored':sum(a['placement']=='anchored' for a in notes)}}
 
 
+#: Where a finding sits in the manuscript, as a placement from
+#: :func:`peerreviewagents.engine.quotes.anchor` gives it. ``line`` through
+#: ``end_line`` are the numbered lines of the document a reader was served,
+#: ``start`` and ``end`` are offsets within the first and last of those lines —
+#: enough to highlight the quote — and ``anchor_text`` is the file's own text
+#: for the span, which differs from the quote where the reviewer retyped a dash
+#: or lowered a capital. ``piece_kind``, ``page``, ``bbox``, ``section`` and
+#: ``piece_lines`` are the piece the line belongs to: what it is, where it was
+#: on the page it came from, and the whole of its line span.
+LINE_FIELDS = ('document', 'line', 'end_line', 'start', 'end', 'anchor_text', 'quoted_exactly',
+               'page', 'bbox', 'section', 'piece_kind', 'piece_lines', 'fingerprint')
+
+#: The placement keys that are spelled differently on a finding, because the
+#: finding already uses the shorter name for something of its own: a finding's
+#: ``kind`` is ``edit`` or ``question``, and its ``text`` would be the paper's.
+_RENAMED = {'kind': 'piece_kind', 'lines': 'piece_lines', 'text': 'anchor_text'}
+
+
+def line_finding(raw, review_id, index, placement):
+    """One submitted finding as the ledger keeps it, anchored to lines.
+
+    The anchoring itself is :mod:`peerreviewagents.engine.quotes`, which has
+    already said yes or no by the time this is called: *placement* is the one
+    position it found, or ``None`` where the caller is recording a refusal.
+    What is left is the finding's own shape — its kind, its category, and the
+    two rules that withhold an edit — and those are the same rules the block
+    era applied, for the same reasons.
+
+    An edit is withheld unless it is anchored and carries a replacement, and
+    again where the replacement prints a number the quote does not: a model
+    rewriting a sentence to read well does not get to change what it reports,
+    and a withheld edit becomes an author question rather than being dropped.
+    """
+    out = {**raw, 'id': f'{review_id}-{index}', 'review_id': review_id,
+           'issue_status': 'open', 'edit_decision': 'proposed'}
+    out['kind'] = raw.get('kind') if raw.get('kind') in ('edit', 'question',
+                                                         'literature') else 'question'
+    out['category'] = raw.get('category') if raw.get('category') in ('scientific',
+                                                                     'copyedit') else 'scientific'
+    out.update({field: None for field in LINE_FIELDS})
+    if placement:
+        out.update({_RENAMED.get(key, key): value for key, value in placement.items()})
+        out['placement'] = 'anchored'
+    else:
+        out['placement'] = 'unplaced'
+        out['placement_reason'] = ('The quote is not in the manuscript, or occurs in more than '
+                                   'one place and was cited with no line')
+    quote = str(raw.get('quote') or '')
+    replacement = raw.get('replacement', '')
+    if out['kind'] == 'edit' and (not isinstance(replacement, str) or not replacement.strip()
+                                  or out['placement'] != 'anchored'):
+        out['kind'] = 'question'
+        out['edit_withheld'] = 'A valid anchored replacement was not supplied'
+    numeric = r'(?<![\w])[-+]?\d+(?:\.\d+)?(?![\w])'
+    if out['kind'] == 'edit' and not set(re.findall(numeric, replacement)) <= set(
+            re.findall(numeric, quote)):
+        out['kind'] = 'question'
+        out['edit_withheld'] = ('Replacement introduces a numerical literal. Keep it as an '
+                                'author question until checked.')
+    out['replacement'] = replacement if out['kind'] == 'edit' else None
+    return out
+
+
 def quarantine_findings(findings):
     """Split normalized findings into the ones that passed evidence validation and the ones that did not.
 

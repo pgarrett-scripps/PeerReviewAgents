@@ -121,6 +121,30 @@ def test_an_empty_quote_and_an_unknown_document_are_each_named():
     assert 'no document named supplement-a.md' in missing['refused']
 
 
+def test_a_citation_marker_is_quotable_as_printed_and_as_written():
+    """The link markup under a marker is not words, and is not quoted either way.
+
+    ``rustypaper`` rewrites a citation as a Markdown link to the entry it ties
+    to, so the manuscript file prints ``readings [2](#ref-2).`` where the page
+    shows ``readings [2].``. A reviewer quoting the file and the citation
+    ledger quoting the page are quoting the same sentence, so both anchor, and
+    the span is over the printed characters of the file.
+    """
+    written = 'The readings were consistent[2](#ref-2). The runs [[1](#ref-1)] agreed.'
+    base = base_from([written])
+    # A superscript marker prints as its digits, and the brackets of a
+    # bracketed run are printed characters of the line, so they stay.
+    off_the_page = quotes.anchor(base, 'The readings were consistent2.')
+    assert 'refused' not in off_the_page, off_the_page.get('refused')
+    place = off_the_page['placement']
+    assert written[place['start']:place['end']] == 'The readings were consistent[2](#ref-2).'
+    from_the_file = quotes.anchor(base, 'The readings were consistent[2](#ref-2).')
+    assert (from_the_file['placement']['start'], from_the_file['placement']['end']) == (
+        place['start'], place['end'])
+    run = quotes.anchor(base, 'The runs [1] agreed.')['placement']
+    assert written[run['start']:run['end']] == 'The runs [[1](#ref-1)] agreed.'
+
+
 def test_a_quote_inside_a_table_or_an_equation_carries_that_piece():
     lines = ['| Method | Recall |', '| --- | --- |', '| ours | 0.91 |', '',
              '$$ E = mc^2 \\tag{1} $$']

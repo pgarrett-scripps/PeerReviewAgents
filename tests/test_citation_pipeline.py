@@ -36,6 +36,7 @@ from mcp.shared.memory import create_connected_server_and_client_session
 from peerreviewagents import names
 from peerreviewagents.cli.main import report_main
 from peerreviewagents.engine import citation_ledger as cl
+from peerreviewagents.engine import paper_text
 from peerreviewagents.engine.run_report import report_blocks
 from peerreviewagents.plugin import server as srv
 from peerreviewagents.runs import read_run
@@ -157,25 +158,48 @@ class FakeClock:
         self.now += seconds
 
 
+def cite_in(text, marker):
+    """``text`` with ``marker`` added to the end of its first sentence."""
+    first, rest = text.split('. ', 1)
+    return first + ' ' + marker + '. ' + rest
+
+
 def citing_workspace(tmp_path):
     """The fixture manuscript, with three of its sentences citing its references.
 
     ``ingest`` keeps a manuscript it finds in the run folder, so writing the
     marked-up paper there is how a test hands the server a draft that cites
-    something. The workspace manifest is re-stamped with it, because the
+    something. The marker goes into the manuscript file, which is what the
+    reviewers read and quote, and into ``paper.json``, which is what the
+    ledger reads; ``map.json`` is re-fingerprinted over the lines as they now
+    read, and the manifest re-stamped over every file touched, because the
     manuscript is immutable once a run starts and every tool call checks that.
     """
     root = tmp_path / 'run'
     workspace = root / names.MANUSCRIPT_DIRECTORY
     paper = srv.import_paper(str(FIXTURE), workspace)
+    rows = srv.read(workspace / 'map.json')
+    touched = set()
     for block in paper['blocks']:
         marker = MARKERS.get(block['id'])
-        if marker:
-            first, rest = block['text'].split('. ', 1)
-            block['text'] = first + ' ' + marker + '. ' + rest
+        if not marker:
+            continue
+        block['text'] = cite_in(block['text'], marker)
+        name = block['document_file']
+        path = workspace / name
+        lines = path.read_text(encoding='utf-8').split('\n')
+        start, end = block['lines']
+        lines[start - 1] = cite_in(lines[start - 1], marker)
+        path.write_text('\n'.join(lines), encoding='utf-8', newline='\n')
+        touched.add(name)
+        for row in rows:
+            if row['document'] == name and row['lines'] == [start, end]:
+                row['fingerprint'] = paper_text.fingerprint('\n'.join(lines[start - 1:end]))
     srv.write(workspace / 'paper.json', paper)
+    srv.write(workspace / 'map.json', rows)
     manifest = srv.read(workspace / 'manifest.json')
-    manifest['files']['paper.json'] = srv.digest((workspace / 'paper.json').read_bytes())
+    for name in {'paper.json', 'map.json'} | touched:
+        manifest['files'][name] = srv.digest((workspace / name).read_bytes())
     srv.write(workspace / 'manifest.json', manifest)
     return root
 
@@ -344,7 +368,7 @@ def test_a_reference_neither_index_lists_is_not_located_and_still_a_row_to_re_ch
     sentence = next(one['sentence'] for one in srv.citation_rows(token, kind='unverified')['uses']
                     if one['reference_id'] == row['reference_id'])
     stored = srv.submit_finding(token, title='Reference 2 is in neither index',
-                                block_id='b0010', quote=sentence,
+                                quote=sentence,
                                 comment='Neither Crossref nor Europe PMC lists a work with '
                                         'this title, and the reference prints no DOI, so I '
                                         'could not verify it either way.',
@@ -1069,7 +1093,7 @@ def test_a_worker_verdict_alone_never_becomes_a_finding(tmp_path):
     agent = run.agent_for(token)
     assert set(agent.allowed) == {'claim_citation_batch', 'submit_citation_verdict'}
     assert 'submit_finding' not in agent.allowed
-    refused = srv.submit_finding(token, title='The source says otherwise', block_id='b0006',
+    refused = srv.submit_finding(token, title='The source says otherwise',
                                 quote='unused', comment='...', severity='major')
     assert 'Only a reviewer or a specialist submits findings' in refused['request_rejected']
 
@@ -1537,7 +1561,7 @@ def test_no_registered_tool_writes_in_a_complete_folder(tmp_path):
     reviewer, editor, recorder = token_for('core-1'), token_for('editor'), token_for('recorder')
     key = CODES['recorder_key']
     block = run.paper['blocks'][0]
-    quote = block['text'].split('. ')[0]
+    quote = run.base.line_text(1)
     calls = {
         'ingest': lambda: srv.ingest(str(FIXTURE), str(run.root)),
         'claim_agent': lambda: srv.claim_agent('core-2', 'whatever-code-it-holds'),
@@ -1545,7 +1569,7 @@ def test_no_registered_tool_writes_in_a_complete_folder(tmp_path):
         'read_paper': lambda: srv.read_paper(reviewer),
         'search': lambda: srv.search(reviewer, 'widget'),
         'calculate': lambda: srv.calculate(reviewer, '2 + 2'),
-        'save_note': lambda: srv.save_note(reviewer, 'A late thought.', [block['id']]),
+        'save_note': lambda: srv.save_note(reviewer, 'A late thought.', [1]),
         'view_page': lambda: srv.view_page(reviewer, 1),
         'view_supplement': lambda: srv.view_supplement(reviewer, 'S1'),
         'check_citation': lambda: srv.check_citation(reviewer, 'b0006'),
@@ -1558,7 +1582,7 @@ def test_no_registered_tool_writes_in_a_complete_folder(tmp_path):
         'record_comparison': lambda: srv.record_comparison(reviewer, []),
         'validate_synthesis': lambda: srv.validate_synthesis(reviewer, '{}'),
         'submit_finding': lambda: srv.submit_finding(
-            reviewer, title='A late reading', block_id=block['id'], quote=quote,
+            reviewer, title='A late reading', line=1, quote=quote,
             comment='Raised after the review was written.', severity='minor'),
         'submit_report': lambda: srv.submit_report(reviewer, 'A second report.',
                                                    model=run.models.get('core-1')),

@@ -112,8 +112,9 @@ class Investigation:
             return result
         if name=='save_note':
             if len(args['text'])>4000:raise ValueError('Note exceeds 4000 characters')
-            ids=args['evidence_blocks']
-            if any(i not in self.by for i in ids):raise ValueError('Unknown evidence block')
+            total=self.base.line_count()
+            if any(type(n) is not int or not 1<=n<=total for n in args['evidence_lines']):
+                raise ValueError('Evidence lines are line numbers of paper.md, 1 to '+str(total))
             with (self.out/'notes.jsonl').open('a',encoding='utf-8') as stream:
                 stream.write(json.dumps(args,ensure_ascii=False)+'\n')
             return {'saved':True,'limitation':'A saved hypothesis is not a verified finding.'}

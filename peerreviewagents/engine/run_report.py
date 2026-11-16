@@ -18,7 +18,7 @@ from pathlib import Path
 from .. import issues as issue_model
 from ..names import RUN_DIRECTORY
 from ..plugin import models as model_plan
-from . import citation_ledger
+from . import citation_ledger, paper_base
 from .storage import read, relative_name
 from .usage import agent_rows, observed_usage, runtime_usage
 
@@ -241,7 +241,17 @@ def _citation_blocks(run):
 def _location(finding):
     if finding.get('placement') not in (None, 'anchored'):
         return f"unplaced ({finding['placement']})"
-    return f"block {finding['block_id']}" if finding.get('block_id') else 'not located'
+    if not finding.get('line'):
+        return 'not located'
+    where = str(finding['line'])
+    if finding.get('end_line') and int(finding['end_line']) > int(finding['line']):
+        where += '–' + str(finding['end_line'])
+    # The main document is not named: a reader of the review opens `paper.md`
+    # at the line, and printing its name on every finding of every report is
+    # noise. A supplement is named, because there the reader needs the file.
+    document = str(finding.get('document') or '')
+    named = document and document != paper_base.MAIN_DOCUMENT
+    return (f"{document} line " if named else 'line ') + where
 
 
 def _finding(number, finding):
@@ -296,8 +306,8 @@ def _issue(issue):
     if issue.get('status_reason'):
         blocks.append(('labeled', 'Against the prior round', issue['status_reason']))
     if issue.get('rebuttal_quote'):
-        where = (f" in block {issue['rebuttal_block_id']}"
-                 if issue.get('rebuttal_block_id') else '')
+        where = (f" on line {issue['rebuttal_line']}"
+                 if issue.get('rebuttal_line') else '')
         blocks += [('paragraph', 'Ruled a suggestion rather than a required change because '
                                  'the manuscript already carries its own qualification'
                                  + where + ':'),
