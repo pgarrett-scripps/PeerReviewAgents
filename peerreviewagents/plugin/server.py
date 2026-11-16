@@ -414,89 +414,40 @@ def load_prior_issues(path):
     except (ValueError, OSError, UnicodeDecodeError) as exc:
         raise ValueError('The prior-round issues at ' + str(source) + ' could not be read: '
                          + str(exc)) from None
-    stamp = issue_model.schema_problem(document, label='The prior-round file ' + source.name)
-    if stamp:
-        raise ValueError(stamp + ', so this round cannot match its ids against yours.')
-    rows = document.get('issues')
-    if not isinstance(rows, list):
-        raise ValueError('The prior-round file at ' + str(source) + ' holds no issues list, so it '
-                         'is not an issues.json this version can match against.')
-    # A row that is not an object used to raise an AttributeError out of the
-    # status test, which named neither the file nor the row. The prior round is
-    # the authors' own record of what was asked of them: a file whose rows this
-    # version cannot read is refused by name, never read past.
-    strange = [type(row).__name__ for row in rows if not isinstance(row, dict)]
-    if strange:
-        raise ValueError('The prior-round file at ' + str(source) + ' holds ' + str(len(strange))
-                         + ' issue row(s) that are not objects (' + ', '.join(sorted(set(strange)))
-                         + '), so it is not an issues.json this version can match against.')
-    # Every row, live or closed, and every field this round reads off one. A
-    # row was validated as far as the carry needed it and no further, so a
-    # `members` or `surviving_quotes` that was not a list passed ingest and
-    # raised a TypeError out of `submit_editor` an hour later, in a call that
-    # named neither the file nor the row.
-    for index, row in enumerate(rows, 1):
-        identifier = row.get('id')
-        if not isinstance(identifier, str) or not identifier.strip():
-            raise ValueError(
-                'The prior-round file at ' + str(source) + ' holds an issue row (row '
-                + str(index) + ') whose id is '
-                + ('a ' + type(identifier).__name__ if identifier is not None else 'absent')
-                + '. An id is text in this engine\'s own form, i01 upwards: a row without one '
-                  'cannot be matched, and 7 and "7" are not the same id.')
-        for listed in ('members', 'surviving_quotes'):
-            if listed in row and not isinstance(row[listed], list):
-                raise ValueError(
-                    'The prior-round file at ' + str(source) + ' holds issue ' + identifier
-                    + ' whose ' + listed + ' is a ' + type(row[listed]).__name__
-                    + ' where a list belongs. This round reads that field to match and to rule '
-                      'on the issue, so the file is refused rather than read past.')
-    # One id is one problem across rounds, counted over every row the file
-    # holds. The check ran over the carried rows alone, so a live row and a
-    # resolved row sharing an id passed: the id of the problem the authors were
-    # told was fixed was also the id of one they were told was still open.
-    everything = [row['id'] for row in rows]
-    duplicates = sorted({name for name in everything if everything.count(name) > 1})
-    if duplicates:
-        raise ValueError('The prior-round file at ' + str(source) + ' holds the issue id(s) '
-                         + ', '.join(duplicates) + ' more than once. One id is one issue across '
-                         'rounds, so this round cannot match against it.')
-    kept = [row for row in issue_model.carried_forward(rows) if row.get('id')]
-    if not kept:
-        raise ValueError('The prior-round issues at ' + str(source) + ' hold no open issue with an '
-                         'id, so there is nothing for this round to match. An issues.json whose '
-                         'every issue was resolved is a round that ended with nothing left over.')
+    # Every check this file is held to is :func:`issues.validate_prior_issues`,
+    # which is the same function a consumer calls on a file it is about to
+    # publish: a round that cannot read a prior file and a consumer that cannot
+    # publish one are the same list of problems, and neither can drift from the
+    # other. The refusal names the file and the first problem, and says how many
+    # more there are so a reader of one line knows the file needs a pass rather
+    # than a patch.
+    #
+    # A prior file is read, never trusted: a row that was not an object raised
+    # an AttributeError out of the status test, a `members` that was not a list
+    # raised a TypeError out of `submit_editor` an hour later, and an
+    # `issue_ids_used` of `5` raised a bare "'int' object is not iterable" — each
+    # of them in a call that named neither the file nor the row.
+    problems = issue_model.validate_prior_issues(
+        document, label='The prior-round file at ' + str(source))
+    if problems:
+        raise ValueError(problems[0] + '. This round matches its ids against the issues it '
+                         'raises, so the file is refused rather than read past.'
+                         + (' (' + str(len(problems) - 1) + ' further problem(s) in the same '
+                            'file.)' if len(problems) > 1 else ''))
+    rows = issue_model.rows_of(document)
+    kept = issue_model.carried_forward(rows)
     provenance = {'file': source.name, 'digest': digest(raw)[:16]}
     # Every id that round accounted for, live or closed, plus the ids its own
     # prior rounds spent. A resolved row is dropped from the carry, so without
     # this the id it held would be minted again for a different problem two
     # rounds later — the one thing an id is for is that it does not happen.
-    #
-    # The field is read, never trusted: `5` raised a bare "'int' object is not
-    # iterable" out of this line, a string was iterated one character at a time
-    # into ids like `i`, and a dict quietly contributed its keys. Every
-    # issues.json this version writes carries the list, so a file without one
-    # is a file this round cannot mint against.
-    used = document.get('issue_ids_used')
-    if not isinstance(used, list):
-        raise ValueError(
-            'The prior-round file at ' + str(source) + ' holds '
-            + ('no issue_ids_used list' if used is None
-               else 'an issue_ids_used that is a ' + type(used).__name__)
-            + '. Every issues.json this version writes carries that list — every id the round '
-              'and its own prior rounds spent — and this round mints its new ids above it. '
-              'Without it a resolved issue\'s id would be handed to a different problem, so the '
-              'file is refused rather than read past.')
-    odd = sorted({str(identifier) for identifier in used
-                  if not issue_model.is_issue_id(identifier)})
-    if odd:
-        raise ValueError(
-            'The prior-round file at ' + str(source) + ' holds ' + str(len(odd))
-            + ' entr(ies) in issue_ids_used that are not issue ids of this engine ('
-            + ', '.join(odd[:5]) + '). An id is text of the form i01 upwards; a round cannot '
-            'mint above a list it cannot read.')
-    spent = {row['id'] for row in rows}
-    spent |= set(used)
+    # Read off the document, never indexed into it: every requirement of this
+    # loader is a problem `validate_prior_issues` returns, so a document that
+    # got this far holds the list — and a `document['issue_ids_used']` here
+    # would be a second, silent check, which is how a file the validator passed
+    # came to be refused by a bare KeyError instead.
+    spent = {str(row['id']) for row in rows if row.get('id')}
+    spent |= {str(value) for value in document.get('issue_ids_used') or []}
     return str(source.resolve()), kept, {**provenance, 'ids_used': sorted(spent)}
 
 
@@ -906,8 +857,7 @@ class Run:
         in the key so that agreement between reviewers stays visible as two
         rows for the editor to merge, rather than being merged here.
         """
-        handles = sorted({str(handle) for handle
-                          in [raw.get('block_id'), *(raw.get('evidence_blocks') or [])] if handle})
+        handles = sorted(set(issue_model.block_ids_of(raw)))
         key = ':'.join([self.paper['id'], agent.slot,
                         ' '.join(str(raw.get('quote', '')).split()).casefold(),
                         '|'.join(handles)])
@@ -915,7 +865,7 @@ class Run:
 
     def cited_blocks(self, stored, corroborating):
         """Every block a finding points at: its anchor, its evidence, its corroboration."""
-        ids = [stored.get('block_id'), *(stored.get('evidence_blocks') or [])]
+        ids = issue_model.block_ids_of(stored)
         if isinstance(corroborating, dict):
             ids.append(corroborating.get('block_id'))
         elif corroborating:
@@ -2425,10 +2375,8 @@ def _surviving_quotes(run, prior):
     # issue ruled `unverified` in round two and `resolved` in round three used
     # to skip this check entirely for want of anything to test.
     carried = [{'quote': row.get('quote'), 'finding_uid': row.get('finding_uid')}
-               for row in prior.get('surviving_quotes') or [] if isinstance(row, dict)]
-    for member in [*(prior.get('members') or []), *carried]:
-        if not isinstance(member, dict):
-            continue
+               for row in issue_model.quotes_of(prior)]
+    for member in [*issue_model.members_of(prior), *carried]:
         quote = _text(member.get('quote')).strip()
         if not quote or quote in seen:
             continue
@@ -2920,17 +2868,53 @@ async def resolve_citations(recorder_key: str, limit: int = 15) -> dict:
                                         tick=heartbeat)
     lookups = run.citation_lookups()
     run.resolving = True
+    failed = None
     try:
         progress = await anyio.to_thread.run_sync(
             functools.partial(citation_ledger.resolve, run.citations, lookups, limit=limit,
                               patience=patience))
     except (OSError, ValueError) as exc:
-        return rejection('The citation ledger could not be resolved: ' + str(exc))
+        # Held, not answered yet. A pass that raised is still a pass that ran:
+        # it wrote ledger rows and receipts before it failed, and the rejection
+        # has to go out below the checkpoint with every other answer this call
+        # can give. Returning it from here was an exit path out of a cancelled
+        # call that reached no checkpoint, so the rejection was sent over a
+        # request the cancellation had already answered — the same crash the
+        # checkpoint was added for, by the one path that skipped it.
+        progress, failed = None, str(exc)
     finally:
         # In a `finally` so a raised pass, or a cancelled one, cannot wedge the
         # stage shut for the rest of the run.
         run.resolving = False
-    run.write_progress()
+    # The folder is brought up to what the pass actually left on both paths,
+    # and a failed pass leaves the run `running` with the stage open: nothing
+    # about it is final, and the next call takes the remaining references up
+    # where this one stopped.
+    try:
+        run.write_progress()
+    except (OSError, ValueError) as exc:
+        # Reported with the rest, below the checkpoint. Raising from here is one
+        # more exit path that answers a cancelled request a second time.
+        failed = (failed + '; ' if failed else '') + 'progress.json: ' + str(exc)
+    # A client that cancels this request mid-pass used to crash the session.
+    # `anyio.to_thread.run_sync` does not abandon its thread on cancel, so the
+    # cancellation is held until the pass ends and there is no checkpoint
+    # between the thread finishing and the server answering: the handler
+    # returned normally, the lowlevel server answered a request whose responder
+    # the cancellation had already completed, and the assertion behind
+    # `RequestResponder.respond` ("Request already responded to") took the
+    # session down with the run left at `running`. Asking for a checkpoint here
+    # raises the pending cancellation inside the handler, which mcp already
+    # handles by answering nothing, and the pass keeps everything it wrote:
+    # the ledger and the lookup receipts are on disk and `progress.json` has
+    # just been written. No other tool is exposed to this: a sync tool runs
+    # inline on the loop, so the cancellation notification is not even read
+    # until after its response has been sent.
+    await anyio.lowlevel.checkpoint_if_cancelled()
+    if failed is not None:
+        return rejection('The citation ledger could not be resolved: ' + failed
+                         + '. The stage is open and the run is still running, so the references '
+                           'this pass did not reach are owed another call, not written off.')
     remaining, wait = progress['remaining'], progress.get('retry_after') or 0
     if remaining and wait and progress.get('budget_spent'):
         nxt = (str(remaining) + ' reference(s) are owed another lookup and are still waiting out '
@@ -3467,10 +3451,11 @@ def _fallback_issue(issue):
     lines = [f"#### {issue.get('rank')}. {issue.get('name')} "
              f"({issue.get('severity')}, {issue.get('category')}, raised by {raised})", '',
              issue.get('statement') or '', '']
-    for member in issue.get('members') or []:
+    members = issue_model.members_of(issue)
+    for member in members:
         lines += [f"- {member.get('slot')} on block {member.get('block_id')}: "
                   f"“{member.get('quote')}”"]
-    return lines + ([''] if issue.get('members') else [])
+    return lines + ([''] if members else [])
 
 
 TOOLS = (ingest, claim_agent, reissue_claim_code, read_blocks, search, calculate, save_note,

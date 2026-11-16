@@ -33,6 +33,17 @@ Reading a run
     for each, with the fetched abstract and full text left out unless asked
     for — for a consumer that shows which reference resolved to which record.
 
+Checking a file before publishing it
+    :func:`validate_prior_issues` is every problem that would stop an issues
+    document being read as the prior round of a later review, in words; an
+    empty list means ``peerreview review --prior-issues`` will load it. It is
+    the check that loader runs rather than a copy of it, so a consumer holds a
+    file it is about to publish against the code that will read it next round.
+    :mod:`peerreviewagents.issues` also holds the tolerant readers a consumer
+    of a document it did not write needs — ``rows_of``, ``members_of``,
+    ``quotes_of`` — and ``field_problems``, which is the list of malformed
+    fields :func:`read_run` reports a damaged document through.
+
 Checking an installation
     :func:`plugin_directory` is the ``pra`` plugin that ships inside this
     package — package data, not a checkout — which is what a wrapper passes to
@@ -116,6 +127,7 @@ __all__ = [
     "report_main",
     "read_run",
     "read_citation_ledger",
+    "validate_prior_issues",
     "locate_run",
     "NotARunFolder",
     "import_paper",
@@ -146,6 +158,9 @@ _LAZY = {
     # The ledger rows themselves, for the consumers that were re-implementing
     # "the last row for a row_id is the row" against the engine module.
     "read_citation_ledger": (".runs", "read_citation_ledger"),
+    # The check `--prior-issues` runs, for a consumer holding a file it is about
+    # to publish against the code that will read it next round.
+    "validate_prior_issues": (".issues", "validate_prior_issues"),
     # The run-folder resolution and the error both of those raise, so an app
     # that lists folders never imports `runs` for them.
     "locate_run": (".runs", "locate"),

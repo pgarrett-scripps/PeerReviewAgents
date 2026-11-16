@@ -912,10 +912,15 @@ def read_run(path):
     # a finding reaches the review through the issue that holds it, and the two
     # readings never disagree about how much was found.
     findings = dedupe(_rows(review / 'findings.jsonl', problems))
-    if document.get('issues') is not None and not isinstance(document.get('issues'), list):
-        problems.append("issues.json's issues is not a list, so the issues in it could not be "
-                        'read')
-    issue_rows = [row for row in document.get('issues') or [] if isinstance(row, dict)]
+    # Every field of the document whose type this version cannot read, named
+    # one by one. A reader that took the shape on trust crashed instead of
+    # reporting it: a `members` held as a string was iterated one character at
+    # a time into `str.get` and raised an AttributeError out of this function,
+    # over a file that was merely malformed. The readers below skip what they
+    # cannot read, these lines say what was skipped, and a run with a damaged
+    # document reads as not publishable with the field named.
+    problems += issue_model.field_problems(document)
+    issue_rows = issue_model.rows_of(document)
     if issue_rows:
         source = 'issues'
     elif document and not document_problems:
@@ -930,9 +935,12 @@ def read_run(path):
     if not findings:
         # A run whose ledger is gone still has the issues' own member rows, and
         # they carry the uid, the slot, the quote and the blocks.
+        # Through the same guard as every other reader of this document: a
+        # `members` held as a number was iterated here and raised a TypeError
+        # out of `read_run` on the one path that had no ledger to fall back on.
         findings = dedupe([dict(member) for row in issue_rows
-                           for member in row.get('members') or [] if isinstance(member, dict)])
-    rulings = [r for r in document.get('escalation_rulings') or [] if isinstance(r, dict)]
+                           for member in issue_model.members_of(row)])
+    rulings = issue_model.objects_in(document.get('escalation_rulings'))
     quarantined = _rows(review / 'quarantined.jsonl', problems)
     guard = document.get('review_guard_status') or progress.get('review_guard_status')
     issue_counts = issue_model.counts(issue_rows)

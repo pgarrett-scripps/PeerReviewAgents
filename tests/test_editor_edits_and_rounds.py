@@ -22,6 +22,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 
+import peerreviewagents
 from peerreviewagents import issues as issue_model
 from peerreviewagents.engine.storage import relative_name
 from peerreviewagents.plugin import server as srv
@@ -1483,6 +1484,12 @@ def test_the_record_stage_treats_an_already_written_review_as_the_run_it_is():
     assert 'Where a count is absent' not in record, 'a count nobody read is not a count of none'
     assert 'never report 0 for a count that is absent' in record
     assert 'counts_unknown' in record, 'and the result says which counts those were'
+    # And the refusal that is not final is retried rather than read as a run
+    # that will not be written: a resolve pass holds the writing stage for as
+    # long as its lookups take, and it writes nothing while it does.
+    assert 'resolve_citations pass is still' in record, 'the stage knows that refusal'
+    assert 'write_review once more' in record, 'and writes after the pass it waited for'
+    assert 'not calling write_review twice' in record, 'a refused write is not a write'
 
 
 # -- the editor closes after its review, not before ------------------------
@@ -1681,6 +1688,105 @@ def test_a_prior_row_this_round_cannot_read_is_refused_at_ingest(tmp_path):
         refusal = refused_ingest(tmp_path, name, candidate)
         assert said in refusal, (name, refusal)
         assert str(tmp_path / name / 'issues.json') in refusal, 'the file is named'
+
+
+def test_the_public_validator_runs_the_checks_the_loader_runs(tmp_path):
+    """A consumer holds the file it is about to publish against this code.
+
+    A consumer publishes an issues.json for a later round to read, and the only
+    way to ask whether that round could read it was to start a review: the
+    rules lived inside the loader behind ``--prior-issues``. They are one
+    function now, so the problems a consumer sees before publishing are the
+    problems the loader would raise, by construction rather than by a copy of
+    the rules kept in step by hand.
+    """
+    assert peerreviewagents.validate_prior_issues is issue_model.validate_prior_issues
+
+    live = prior_issue('i01', 1, 'Still open')
+    published = json.loads(prior_file(tmp_path / 'good' / 'issues.json',
+                                      [live]).read_text(encoding='utf-8'))
+    # The shape this version publishes is the shape the next round reads.
+    assert issue_model.validate_prior_issues(published) == []
+
+    broken = {
+        'closed-duplicate': [live, prior_issue('i01', 2, 'Fixed', status='resolved')],
+        'int-id': [{**live, 'id': 7}],
+        'members-dict': [{**live, 'members': {'finding_uid': 'a' * 16}}],
+        'quotes-string': [{**live, 'surviving_quotes': 'the passage'}],
+        'not-an-object': [live, 'i02'],
+        'all-resolved': [prior_issue('i01', 1, 'Fixed', status='resolved')],
+    }
+    for name, rows in broken.items():
+        document = {**published, 'issues': rows}
+        # Named as the consumer's own file, which is what it is holding.
+        problems = issue_model.validate_prior_issues(document, label='issues.json')
+        assert problems, name
+        # And the round that reads it refuses it, with the validator's first
+        # problem as the refusal: one check, read twice.
+        refusal = refused_ingest(tmp_path / 'published', name, document)
+        first = issue_model.validate_prior_issues(
+            document, label='The prior-round file at '
+            + str(tmp_path / 'published' / name / 'issues.json'))[0]
+        assert refusal.startswith(first), (name, refusal, first)
+        assert problems[0].split('issues.json', 1)[1] in refusal, 'the same problem, named twice'
+
+    # An issue_ids_used a round cannot mint above is the same answer, and the
+    # consumer hears it before publishing rather than from the next round.
+    assert 'issue_ids_used' in issue_model.validate_prior_issues(
+        {**published, 'issue_ids_used': 5})[0]
+    assert 'issue_ids_used' in issue_model.validate_prior_issues(
+        {k: v for k, v in published.items() if k != 'issue_ids_used'})[0]
+    # And a stamp this version does not read is the first thing it says, with
+    # nothing read past it.
+    stamped = issue_model.validate_prior_issues({**published,
+                                                 'schema_version': 'review-issues-v9'})
+    assert len(stamped) == 1 and 'review-issues-v9' in stamped[0]
+
+
+def test_a_file_the_validator_passes_is_a_file_the_loader_opens(tmp_path):
+    """The validator said nothing about the fields the loader required anyway.
+
+    A document with no ``issues`` list returned no problems at all, so a
+    consumer was told its file was loadable and the round then opened on a prior
+    round of nothing; with only a stamp the loader refused it with a bare
+    ``'issue_ids_used'`` — a KeyError, from a requirement that lived outside the
+    check a consumer can run. Every requirement of the loader is a problem this
+    function returns, and a list field held as ``null`` is one of them: every
+    list in this document is a list in what the engine writes, ``[]`` where it
+    does not apply.
+    """
+    live = prior_issue('i01', 1, 'Still open')
+    published = json.loads(prior_file(tmp_path / 'good' / 'issues.json',
+                                      [live]).read_text(encoding='utf-8'))
+    stamp_only = {'schema_version': issue_model.ISSUES_SCHEMA_VERSION}
+    cases = {
+        'stamp-only': (stamp_only, 'holds no issues list'),
+        'stamp-and-ids': ({**stamp_only, 'issue_ids_used': ['i01']}, 'holds no issues list'),
+        'issues-null': ({**published, 'issues': None}, 'holds no issues list'),
+        'members-null': ({**published, 'issues': [{**live, 'members': None}]},
+                         'whose members is null'),
+        'quotes-null': ({**published, 'issues': [{**live, 'surviving_quotes': None}]},
+                        'whose surviving_quotes is null'),
+    }
+    for name, (document, said) in cases.items():
+        problems = issue_model.validate_prior_issues(document)
+        assert problems, name
+        assert said in problems[0], (name, problems)
+        # And the round refuses it with that same first problem — not with a
+        # KeyError out of a check the consumer had no way to run.
+        refusal = refused_ingest(tmp_path / 'opened', name, document)
+        assert said in refusal, (name, refusal)
+        assert refusal.startswith(issue_model.validate_prior_issues(
+            document, label='The prior-round file at '
+            + str(tmp_path / 'opened' / name / 'issues.json'))[0]), (name, refusal)
+
+    # A stamp-only file is refused for its issues *and* its spent ids: the
+    # checks run on, rather than stopping at the first field that is not there.
+    assert any('issue_ids_used' in problem
+               for problem in issue_model.validate_prior_issues(stamp_only))
+    # The file this version publishes still opens, with every requirement
+    # listed: nothing above tightened the shape the engine writes.
+    assert issue_model.validate_prior_issues(published) == []
 
 
 # -- what REVIEW.md says about a closed row --------------------------------
