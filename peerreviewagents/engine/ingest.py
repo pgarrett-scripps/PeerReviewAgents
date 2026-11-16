@@ -194,6 +194,44 @@ def file_digests(folder):
             if path.is_file() and path != own}
 
 
+def check_pieces(documents):
+    """Refuse a piece this format would write nothing of, by name.
+
+    Two silences are what this is for. A piece that renders to no line — a
+    ``list`` with its items under ``items``, a paragraph with an empty
+    ``text`` — was dropped by :func:`~peerreviewagents.engine.paper_base.compose`
+    and left no row, so an application that composed twelve pieces got a
+    manuscript of eleven and a count that agreed with itself. And a field the
+    renderer does not know was dropped between the caller's dict and the map
+    row, so an app's own ``anchor_id`` was gone with nothing to say so.
+
+    Both are refused here rather than at the row, because the caller still has
+    the piece in hand and the index of the piece is the only name it has.
+    """
+    for name, pieces in documents.items():
+        for index, piece in enumerate(pieces, start=1):
+            if not isinstance(piece, dict):
+                raise ValueError('Piece ' + str(index) + ' of ' + name + ' is a '
+                                 + type(piece).__name__ + ': a piece is a mapping of a kind, '
+                                 'its text, and whatever that kind renders from.')
+            kind = str(piece.get('kind') or 'paragraph')
+            unknown = sorted(str(field) for field in piece if field not in paper_base.PIECE_FIELDS)
+            if unknown:
+                raise ValueError(
+                    'Piece ' + str(index) + ' of ' + name + ' (kind "' + kind + '") carries '
+                    + 'field(s) this format has no column for: ' + ', '.join(unknown)
+                    + '. They would be dropped between here and map.json without a word, so '
+                      'the write is refused instead. The fields a piece may carry are '
+                    + ', '.join(sorted(paper_base.PIECE_FIELDS))
+                    + ', and docs/INTEGRATIONS.md says what each kind renders from.')
+            if not [line for line in paper_base.piece_lines(piece) if line.strip()]:
+                raise ValueError(
+                    'Piece ' + str(index) + ' of ' + name + ' (kind "' + kind + '") renders to '
+                    'no line, so it would be dropped and the manuscript would be short of it '
+                    'with nothing to say so. A piece is its text: give it text, give a table '
+                    'its rows, and leave out what the manuscript does not print.')
+
+
 def write_manuscript(folder, documents, title=None, paper_id=None, source=None, parser=None,
                      source_url=None, references=None, assets=None, warnings=None,
                      known_gaps=None, pages=None):
@@ -242,7 +280,15 @@ def write_manuscript(folder, documents, title=None, paper_id=None, source=None, 
                              'and ends in .md: ' + name)
     if (folder / 'map.json').exists():
         raise ValueError('Workspace already contains an immutable manuscript')
+    check_pieces(documents)
     rows = paper_base.write_base(folder, documents)
+    if len(rows) != sum(len(pieces) for pieces in documents.values()):
+        # Unreachable while `check_pieces` holds, and worth saying out loud if
+        # it ever stops holding: the map is the manuscript's index, and an
+        # index missing a piece is wrong in a way nothing downstream can see.
+        raise ValueError('The map holds ' + str(len(rows)) + ' rows for '
+                         + str(sum(len(pieces) for pieces in documents.values()))
+                         + ' pieces: a piece reached the writer and left no row.')
     if not any(row['document'] == paper_base.MAIN_DOCUMENT for row in rows):
         raise ValueError('No piece of ' + paper_base.MAIN_DOCUMENT + ' rendered to a line: a '
                          'manuscript with no text is not one, and a workspace holding an empty '

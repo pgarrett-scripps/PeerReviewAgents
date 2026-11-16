@@ -1241,7 +1241,7 @@ than a guess.
 | Field | Required | What it is |
 | --- | --- | --- |
 | `kind` | no, defaults to `paragraph` | `title`, `heading`, `paragraph`, `equation`, `figure`, `caption`, `table`, `reference`, `supplement` — or any other word, which renders as a paragraph and is reported under that name in the counts |
-| `text` | for every kind but `table` | the piece as a reader reads it. Newlines are folded to spaces: one piece is one paragraph, and a piece that renders to nothing gets no line and no row |
+| `text` | for every kind but `table` | the piece as a reader reads it. Newlines are folded to spaces: one piece is one paragraph. A piece that would render to nothing is refused by its index and kind rather than dropped |
 | `section` | no | the section the piece sits in, as printed (`'Results'`). It is what a finding reports as its location, so an app that knows its sections should pass them |
 | `page` | no | the printed page, numbered from **1**. Absent for a manuscript that has no pages |
 | `bbox` | no | where the piece is printed on that page, as `{'x0', 'y0', 'x1', 'y1'}` or `[x0, y0, x1, y1]`. See the next section for the unit |
@@ -1252,6 +1252,17 @@ than a guess.
 | `table` | for `table` | the rows as a list of lists of cells, header row first |
 | `confidence` | no | the converter's own confidence in this piece, `0.0`–`1.0`. It travels into the map row, which is what tells a reviewer whether to open the page |
 | `citations` | no | the reference ids this piece cites, for citations that are markup rather than text (a JATS `<xref>`). The citation ledger reads them |
+
+That table is the whole vocabulary — with `original` and `page_mapping`, which
+a repair and a page-numbering app pass through. **A field outside it is
+refused by name**, because the format has no column for it: it would be
+dropped between your dict and `map.json` with nothing to say so, and an app
+that kept its own `anchor_id` on a piece lost it that way. Keep your own ids
+beside the pieces, not on them, and anchor against the line range the map
+gives back. A piece that renders to no line — a list whose text is under an
+`items` key, an empty paragraph — is refused the same way, by its index and
+its kind: the count in the manifest is then over the pieces you passed, not
+over the ones that happened to survive rendering.
 
 A manuscript with no PDF — a Typst source before it is built — carries no
 `page` and no `bbox`:

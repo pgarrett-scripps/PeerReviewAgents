@@ -54,6 +54,20 @@ from .storage import read, write
 #: converter had, so a repair can be audited against what it replaced.
 SOURCES = ('text', 'ai', 'ai-reconstructed')
 
+#: Every field a piece may carry: what :func:`piece_lines` renders from, what
+#: :func:`compose` copies into the map row, and nothing else. A field outside
+#: it is one this format has no column for, so it would be dropped between the
+#: caller's dict and ``map.json`` without a word — an application that kept its
+#: own ``anchor_id`` on a piece found it gone and nothing to say so.
+#: :func:`peerreviewagents.write_manuscript` refuses one by name instead. The
+#: engine's own pieces carry working fields as well (``piece_id``, ``read``,
+#: ``after``), which is why this is checked at the writer rather than here.
+PIECE_FIELDS = frozenset({
+    'kind', 'text', 'section', 'page', 'bbox', 'source', 'original',
+    'level', 'latex', 'number', 'image', 'label', 'table',
+    'confidence', 'page_mapping', 'citations', 'document',
+})
+
 #: ``Figure 3``, ``Fig. 3`` at the start of a caption. Whether a figure's
 #: caption reaches the base as a ``figure`` piece or a ``caption`` piece depends
 #: on what the converter saw around it, and this paper's nine figures arrive

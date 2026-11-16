@@ -167,6 +167,17 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`write_manuscript` refuses a piece it would write nothing of, by name.**
+  A piece that renders to no line — a list whose text sits under an `items`
+  key, a paragraph with an empty `text` — was dropped, so an application that
+  composed twelve pieces got a manuscript of eleven and counts that agreed
+  with themselves because they were taken over the rows. A field the format
+  has no column for was dropped the same way, between the caller's dict and
+  `map.json`, so an app's own `anchor_id` on a piece was gone with nothing to
+  say so. Both are now a `ValueError` naming the document, the index of the
+  piece and its kind, before anything is written, and the writer checks that
+  every piece it was given left a row. `paper_base.PIECE_FIELDS` is the
+  vocabulary, and `docs/INTEGRATIONS.md` documents it as the whole of it.
 - **Only the workspace's own `manifest.json` is outside the digests.** The
   file list skipped every file called `manifest.json` at any depth, so a
   source tree that keeps a manifest of its own — a figure inventory, a build
