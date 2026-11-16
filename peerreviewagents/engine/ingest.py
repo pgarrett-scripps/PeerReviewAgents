@@ -388,20 +388,36 @@ def page_text(pdf):
 LOST_PAGE_WORDS = 25
 
 
-def unconverted_pages(blocks, pages):
+def unconverted_pages(blocks, pages, geometry=()):
     """Every page the PDF has text on that the converter returned no block from.
 
-    The pinned converter returns nothing at all for a page whose ``/Rotate`` is
-    not zero: the landscape table page of a paper comes back empty while every
-    upright page around it converts, and the loss is per page rather than per
-    document. Poppler's text layer, which the import already reads for its page
-    anchors, is the second opinion — a page it reads whole sentences off and
-    the converter returned nothing from is a page the conversion lost, and a
+    One entry per lost page: its number, how many words the text layer reads
+    off it, and the rotation a viewer applies to it. The pinned converter
+    returns nothing at all for a page whose ``/Rotate`` is not zero — the
+    landscape table page comes back empty while every upright page around it
+    converts — and nothing for some upright full-page tables either, so the
+    rotation is a symptom rather than the rule. The loss is per page either
+    way. Poppler's text layer, which the import already reads for its page
+    anchors, is the second opinion: a page it reads whole sentences off and the
+    converter returned nothing from is a page the conversion lost, and a
     manuscript written from it would be missing a page with nothing to say so.
     """
     seen = {int(block.get('page') or 0) + 1 for block in blocks}
-    return [number for number, text in enumerate(pages, start=1)
-            if number not in seen and len(words(text)) >= LOST_PAGE_WORDS]
+    turned = {int(page['page']): int(page.get('rotation') or 0) for page in geometry or ()}
+    found = []
+    for number, text in enumerate(pages, start=1):
+        count = len(words(text))
+        if number not in seen and count >= LOST_PAGE_WORDS:
+            found.append({'page': number, 'words': count, 'rotation': turned.get(number, 0)})
+    return found
+
+
+def lost_page_names(lost):
+    """``2 (330 words, rotated 90°)`` for each lost page, for a refusal to name."""
+    return ', '.join(
+        str(page['page']) + ' (' + str(page['words']) + ' words'
+        + (', rotated ' + str(page['rotation']) + '°' if page.get('rotation') else '') + ')'
+        for page in lost)
 
 
 def text_of(element):
@@ -460,24 +476,16 @@ def convert_paper(pdf, output, xml=None, title=None, source_url='', supplements=
     normalized_pages = [norm(page) for page in raw_pages]
     geometry = page_geometry(pdf, len(raw_pages))
     parser = 'rustypaper ' + getattr(rustypaper, '__version__', 'unknown')
-    if not xml:
-        # With publisher XML the pieces are the publisher's and the PDF is only
-        # consulted for page anchors, so a page the converter dropped costs an
-        # anchor rather than the text. Without it, the converter is the only
-        # reading of the paper there is.
-        lost = unconverted_pages(doc.get('blocks') or [], raw_pages)
-        if lost:
-            turned = {int(page['page']): int(page.get('rotation') or 0) for page in geometry}
-            raise ValueError(
-                parser + ' returned no text from page(s) '
-                + ', '.join(str(page) + ('(rotated ' + str(turned[page]) + '°)'
-                                         if turned.get(page) else '')
-                            for page in lost)
-                + ' of this PDF, which the text layer reads whole sentences from. The import is '
-                  'refused: a manuscript written from this conversion would be missing those '
-                  'pages, and nothing downstream could tell. This is the converter rather than '
-                  'the import — report it against ' + parser + ' and import again once it reads '
-                  'them.')
+    # With publisher XML the pieces are the publisher's and the PDF is only
+    # consulted for page anchors, so a page the converter dropped costs an
+    # anchor rather than the text. Without it, the converter is the only
+    # reading of the paper there is, and a page it returned nothing from is a
+    # page of the paper that would be absent from the manuscript. It is
+    # recorded here and carried on the draft rather than refused: the Read
+    # stage looks at every page anyway, and putting back what the converter
+    # dropped is the reader's work. :func:`seal_draft` is where it is refused,
+    # and only for a manuscript no reader is going to read.
+    lost = [] if xml else unconverted_pages(doc.get('blocks') or [], raw_pages, geometry)
     pieces, references, assets, warnings = [], [], [], []
     supplement_pieces = collections.OrderedDict()
 
@@ -681,6 +689,10 @@ def convert_paper(pdf, output, xml=None, title=None, source_url='', supplements=
         # and origin those four numbers are in.
         'pages': geometry,
         'page_count': len(raw_pages),
+        # The pages the converter returned nothing from, each with the words
+        # the text layer reads off it. They are the reader's to put back, and
+        # nothing seals over one that is still empty.
+        'lost_pages': lost,
         'diagnostics': ['converter.json'],
     }
     write(output / DRAFT_FILE, draft)
@@ -707,10 +719,33 @@ def seal_draft(output, draft=None, ai_read=None):
     if draft.get('schema_version') != DRAFT_SCHEMA_VERSION:
         raise ValueError('Not a ' + DRAFT_SCHEMA_VERSION + ' draft: '
                          + str(draft.get('schema_version')))
+    from . import reader as read_stage
     documents = collections.OrderedDict(
         (str(name), list(pieces)) for name, pieces in draft['documents'].items())
     references = list(draft.get('references') or [])
     page_count = int(draft.get('page_count') or 0)
+    parser = draft.get('parser') or 'unknown'
+    lost = read_stage.lost_pages(draft)
+    empty = [page for page in lost if not page['added']]
+    if empty and not (ai_read or {}).get('read'):
+        # No reader is going to put these pages back, and sealing would write a
+        # manuscript the paper's own pages are missing from with nothing
+        # downstream able to tell. With the Read stage on, the same pages are
+        # outstanding items the reader adds the text of off the page image.
+        raise ValueError(
+            parser + ' returned no text from page(s) ' + lost_page_names(empty)
+            + ' of this PDF, which the text layer reads whole sentences from. Sealing as '
+              'converted is refused: the manuscript would be missing those pages and nothing '
+              'downstream could tell. Import with the Read stage on, which hands those pages to '
+              'the reader to transcribe, or report the pages against ' + parser + '.')
+    if empty:
+        # The reader ran and left a page the converter returned nothing from
+        # with nothing on it. `seal_manuscript` refuses this before it gets
+        # here; this is the same refusal at the one place that writes lines.
+        raise ValueError(
+            'Page(s) ' + lost_page_names(empty) + ' are pages ' + parser + ' returned no text '
+            'from, and the read added nothing off them, so the manuscript would be missing them. '
+            'View each page and add what it prints with add_piece before sealing.')
     rows = paper_base.write_base(output, documents)
     stats = statistics_of(output, documents, rows, references, page_count)
     uncaptioned, captioned = missing_figures(documents[paper_base.MAIN_DOCUMENT])
@@ -736,6 +771,21 @@ def seal_draft(output, draft=None, ai_read=None):
             'rewritten from that image and keeps the converter\'s LaTeX in `original`, and one '
             'whose source is "text" was confirmed as the converter had it. The confidence is the '
             'converter\'s and was not updated.')
+    if lost:
+        # A page nothing was converted from is in the manuscript only because a
+        # model transcribed it off the image. A reader of the base is told
+        # which pages those are rather than meeting ordinary-looking lines
+        # whose source happens to be "ai".
+        read_account['lost_pages'] = lost
+        gaps['converter_pages'] = (
+            parser + ' returned no text from page(s) ' + lost_page_names(lost)
+            + ', which the text layer reads whole sentences from. What those pages contribute to '
+              'this manuscript was transcribed from the page image by '
+            + str(read_account.get('reader_model') or 'a model')
+            + ' and its pieces carry source "ai": '
+            + '; '.join('page ' + str(page['page']) + ' → ' + ', '.join(page['added'])
+                        for page in lost)
+            + '. They are not the converter\'s reading of the text layer, because there was none.')
     if uncaptioned:
         gaps['figure_captions'] = (
             'The text points at ' + ', '.join('Figure ' + str(n) for n in uncaptioned)

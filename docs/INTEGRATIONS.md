@@ -125,6 +125,24 @@ the reviewer to open the page, no figure has a description, and
 when a reader fails twice, through the recorder's `seal_as_converted`. One code
 path writes the base either way, so a run never has a half-written manuscript.
 
+**A page the converter returned nothing from is the reader's work.** The
+pinned converter returns no block at all for a page whose `/Rotate` is not
+zero, and none for some upright full-page tables, so a paper can convert to a
+manuscript with a page missing and nothing to say so. The import holds the
+pages it got blocks from against Poppler's text layer and records every page
+that reads 25 words or more and converted to nothing. With the Read stage on
+those pages are outstanding items of their own: `read_draft` names them under
+`unconverted_pages`, the reader views each one and transcribes what it prints
+with `add_piece` — which may add a `paragraph` or a `caption` there, and only
+there — and `seal_manuscript` is refused while one of them still has nothing
+on it. The manifest then names the pages and the pieces added off them, in
+`ai_read['lost_pages']` and in `known_gaps['converter_pages']`, because that
+text is a model's transcription and not the converter's reading of anything.
+With no reader — `--no-ai-read`, or `seal_as_converted` after a reader failed
+— nothing is going to put those pages back, so the seal is **refused**, by
+page, naming the converter to report them against. (`write_manuscript` never
+meets this: its pieces are the app's, and no PDF was converted.)
+
 `write_manuscript` needs no reader and seals at once: an app that parses its
 own Typst or LaTeX source already has the equation, so there is nothing to read
 off a page image. Its manifest records `{"read": false, "reason": …}` too.
@@ -137,7 +155,11 @@ off a page image. Its manifest records `{"read": false, "reason": …}` too.
 "ai_read": {"read": true, "reader_model": "claude-sonnet-5-5",
             "reader_slot": "reader", "attempt": 1,
             "pages_viewed": 12, "pages": 12,
-            "actions": 20, "tool_calls": 47}
+            "actions": {"repaired": 6, "confirmed": 5, "merged": 1,
+                        "described": 9, "added": 4},
+            "tool_calls": 47,
+            "lost_pages": [{"page": 8, "words": 266, "rotation": 0,
+                            "added": ["p0211"]}]}
 ```
 
 `manifest['pieces_per_source']` counts the rows by where their text came from —

@@ -33,6 +33,10 @@ every page.** For each piece, one of two things:
 - **repair** it from the page image, or
 - **confirm** it, having looked at the page, as what the page prints.
 
+If `read_draft` lists **`unconverted_pages`**, those pages are yours as well:
+the converter returned nothing at all from them, so not one word of them is in
+the draft. See below.
+
 `seal_manuscript` is refused while anything is unaccounted for and it names
 what is left. That is the end of your stage: call it when nothing is left, and
 nothing you do after it can change a line.
@@ -51,12 +55,29 @@ nothing you do after it can change a line.
   is not a transcription.
 - `add_piece` — an equation, a table or a figure description the converter
   never produced. This is why every page has to be looked at: a dropped
-  equation is invisible in the text and obvious on the page.
+  equation is invisible in the text and obvious on the page. On one of the
+  `unconverted_pages` it also takes a `paragraph` or a `caption`, which it
+  takes nowhere else.
 - `merge_equations` — one equation the converter split into two or more pieces,
   joined back into one line.
 - `confirm_piece` — an equation or a table that is already what the page
   prints. A figure is never confirmed: a figure with no description is not
   accounted for, so describe it.
+
+## A page the converter returned nothing from
+
+`read_draft` names these under `unconverted_pages`: pages the text layer reads
+whole sentences off and the converter produced no piece from at all, usually a
+page turned ninety degrees or a full-page table. Nothing of that page is in the
+listing, because nothing of it reached the draft. The manuscript gets that page
+from you or not at all, and `seal_manuscript` is refused while one of them has
+nothing on it.
+
+For each one: view the page, then `add_piece` what it prints, in the order it
+prints it, after the piece it follows — the table as a `table`, its caption as
+a `caption`, body text as a `paragraph`, an equation as an `equation`. Nothing
+else changes: transcribe what is there, do not summarise it, and do not write a
+note about the page instead of the page.
 
 ## Reproduce the page. Do not improve it
 
@@ -103,4 +124,6 @@ from its response: the pages viewed, the pages, the pieces repaired or
 confirmed, the tool calls, the line count, and the reference and in-text-use
 counts. If you cannot seal, say so and quote the last refusal exactly: the run
 then seals the manuscript as converted and the reviewers read the converter's
-text, which is worse but is not nothing.
+text, which is worse but is not nothing — except where a page was left
+unconverted, which that fallback refuses, because a manuscript missing a page
+is not one anybody can review.
