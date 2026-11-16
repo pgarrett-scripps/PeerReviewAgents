@@ -222,7 +222,7 @@ def marker_shapes(run: Path, reading: dict) -> dict:
     the preceding word.
     """
     text = ''
-    source = Path(run) / 'manuscript' / 'manuscript.md'
+    source = Path(run) / 'manuscript' / 'paper.md'
     if source.is_file():
         text = source.read_text(encoding='utf-8', errors='replace')
     uses = (reading.get('citations') or {}).get('counts', {}).get('uses')
