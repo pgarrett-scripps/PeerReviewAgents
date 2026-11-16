@@ -26,6 +26,49 @@ KNOWN_GAPS = {
                             'means read the page, not that the equation is absent.'),
 }
 
+#: What each value of a piece's ``source`` means, written into every manifest so
+#: a reader of the folder never has to find this module to interpret the map.
+SOURCE_VALUES = {
+    'text': "the document's own text layer, as the converter read it",
+    'ai': 'read from a page image by a model: no piece carries this yet',
+    'ai-reconstructed': 'not printed in the source, rebuilt from context: none yet',
+}
+
+#: How every piece's ``fingerprint`` in ``map.json`` was computed. It is in the
+#: manifest because a consumer comparing two versions of a manuscript needs the
+#: rule, not only the digests.
+FINGERPRINT_RULE = ('sha256 of the piece\'s lines in their document, NFKC-normalised, whitespace '
+                    'runs collapsed, dash and quote variants folded, soft hyphens and zero-width '
+                    'characters dropped, case kept')
+
+#: What the four numbers of a ``bbox`` in ``map.json`` are. A box with no unit
+#: and no origin cannot be drawn: an application placing a highlight on a page
+#: image has to know whether 26.8 is millimetres from the bottom or points from
+#: the top, and guessing puts the box at the other end of the page. The
+#: converter's boxes were checked against ``pdftotext -bbox`` over the same
+#: file, word for word, which is where this wording comes from.
+BOX_CONVENTION = ('PDF points, 1/72 inch, in the coordinates of the page as the converter read '
+                  'it: the origin is the top-left corner of the page, x grows right and y grows '
+                  'down, so x0,y0 is the top-left corner of the box and x1,y1 the bottom-right. '
+                  'The page a box belongs to is the piece\'s own `page`, numbered from 1, and '
+                  'that page\'s size in the same points is in `pages`. Boxes are not rotated: a '
+                  'page whose `rotation` is not 0 is printed turned, and an application placing '
+                  'a box on a rendered image of it applies that rotation itself.')
+
+#: ``Page    1 size:  612 x 792 pts (letter)`` and ``Page    1 rot:   0``, as
+#: ``pdfinfo`` prints them for every page of a document.
+PAGE_SIZE = re.compile(r'^Page\s+(\d+) size:\s+([\d.]+) x ([\d.]+) pts', re.M)
+PAGE_ROTATION = re.compile(r'^Page\s+(\d+) rot:\s+(-?\d+)', re.M)
+
+#: What a word count here counts, recorded beside the counts themselves.
+WORD_CONVENTION = ('Unicode words with internal apostrophes and hyphens. Includes captions, '
+                   'tables and equations. References reported separately. No quality inference '
+                   'from counts.')
+
+#: A document of the base is a Markdown file whose name survives being written
+#: into JSON and read back on another machine.
+DOCUMENT_NAME = re.compile(r'[A-Za-z0-9._-]+\.md')
+
 
 #: ``Figure 3``, ``Fig. 3`` — at the start of a caption, and anywhere in a
 #: sentence that points at one.
@@ -53,6 +96,203 @@ def missing_figures(pieces):
         else:
             cited.update(int(number) for number in FIGURE_CITED.findall(text))
     return sorted(cited - captioned), sorted(captioned)
+
+
+def page_geometry(pdf, pages):
+    """Every page's width and height in points, with the rotation a viewer applies.
+
+    A box in ``map.json`` is a rectangle on a page, and a rectangle is only
+    placeable against the size of the page it is on: an app rendering page 3 at
+    1500 pixels wide scales by ``1500 / width``, and without the width it is
+    scaling by a guess. The numbers come from ``pdfinfo``, which ships with the
+    ``pdftotext`` the import already needs. A machine without it loses the page
+    sizes rather than the import: the boxes are still in the map, and the
+    manifest says ``pages: []`` so a reader can tell that they were not
+    recorded rather than that the paper has no pages.
+    """
+    try:
+        printed = subprocess.run(['pdfinfo', '-f', '1', '-l', str(max(pages, 1)), str(pdf)],
+                                 check=True, capture_output=True, text=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    rotations = {int(number): int(degrees) for number, degrees in PAGE_ROTATION.findall(printed)}
+    return [{'page': int(number), 'width': float(width), 'height': float(height),
+             'rotation': rotations.get(int(number), 0)}
+            for number, width, height in PAGE_SIZE.findall(printed)]
+
+
+def statistics_of(folder, documents, rows, references=(), pdf_pages=0):
+    """The ``statistics`` block of a manuscript manifest.
+
+    Every count is taken on the text that actually went into the written files,
+    read back out of them, rather than on the text the pieces were built from:
+    the Markdown is the manuscript, and a count of anything else would be a
+    count of something no reviewer sees. *documents* is the document names,
+    *rows* the map rows :func:`paper_base.write_base` returned.
+    """
+    folder = Path(folder)
+    by_document = collections.defaultdict(list)
+    for row in rows:
+        by_document[row['document']].append(row)
+    written = []
+    for name in documents:
+        lines = (folder / name).read_text(encoding='utf-8').split('\n')
+        for row in by_document[name]:
+            start, end = row['lines']
+            written.append((row, '\n'.join(lines[start - 1:end])))
+    main = [(row, text) for row, text in written
+            if row['document'] == paper_base.MAIN_DOCUMENT]
+    sections = collections.OrderedDict()
+    for row, _ in main:
+        sections.setdefault(row['section'], []).append(row['lines'][0])
+    return {
+        'total_words': sum(len(words(text)) for row, text in written
+                           if row['kind'] != 'heading'),
+        'main_words': sum(len(words(text)) for row, text in main
+                          if row['kind'] not in ('heading', 'reference', 'title')),
+        'reference_words': sum(len(words(text)) for row, text in written
+                               if row['kind'] == 'reference'),
+        'reference_entries': len(references), 'pieces': len(rows),
+        'pdf_pages': pdf_pages,
+        'lines': {name: len((folder / name).read_text(encoding='utf-8').splitlines())
+                  for name in documents},
+        # A section is counted by the lines its pieces start on, because a line
+        # is what a reader of this manuscript can point at.
+        'sections': {name: {'pieces': len(starts),
+                            'words': sum(len(text.split()) for row, text in main
+                                         if row['lines'][0] in starts
+                                         and row['kind'] != 'heading')}
+                     for name, starts in sections.items()},
+        'convention': WORD_CONVENTION}
+
+
+def file_digests(folder):
+    """Every file in a workspace against its digest, the way the manifest holds it.
+
+    POSIX keys: the scaffold inventory check builds its names with ``as_posix``,
+    so a manifest keyed with the OS separator read as a changed inventory on
+    Windows and refused every run over a scaffold manuscript.
+    ``manifest.json`` itself is not in it, because it is what holds the map.
+    """
+    folder = Path(folder)
+    return {relative_name(path, folder): digest(path.read_bytes())
+            for path in sorted(folder.rglob('*'))
+            if path.is_file() and path.name != 'manifest.json'}
+
+
+def write_manuscript(folder, documents, title=None, paper_id=None, source=None, parser=None,
+                     source_url=None, references=None, assets=None, warnings=None,
+                     known_gaps=None, pages=None):
+    """Write a manuscript workspace from pieces an application composed itself.
+
+    This is :func:`import_paper`'s other end: the same workspace, written from
+    pieces a caller already has — a Typst or LaTeX source it parsed, a database
+    row, an editor's own document — rather than from a PDF this package
+    converts. An application that writes one by hand would be a second copy of
+    the format, so it writes it with this instead, and what comes back is the
+    manifest, the same object :func:`import_paper` returns.
+
+    *documents* is a mapping of file name to that document's pieces, the main
+    document first, or just the main document's pieces as a list. A piece is a
+    ``kind``, its ``text``, and whatever that kind renders from;
+    :mod:`peerreviewagents.engine.paper_base` renders them and
+    ``docs/INTEGRATIONS.md`` documents the shape. ``page`` and ``bbox`` are
+    optional, because a manuscript built from a source file has no pages: a
+    piece without them gets ``null`` in both columns of ``map.json``, and
+    nothing that highlights a page region has anything to highlight. Lines are
+    the citation either way.
+
+    A caller whose pieces *do* carry boxes passes *pages* as well — one
+    ``{'page': n, 'width': w, 'height': h, 'rotation': d}`` per page, in the
+    same points the boxes are in, since a box cannot be placed on an image of a
+    page whose size is unknown. :data:`BOX_CONVENTION` is the unit and the
+    origin, and it is written into the manifest so the folder says it too.
+
+    The digests are taken over the folder as it stands, so any source tree the
+    caller keeps beside the base — ``scaffold/``, ``original/`` — must be
+    written **before** this call, and is then covered by
+    :func:`peerreviewagents.verify_workspace` like every other file.
+    """
+    folder = Path(folder)
+    if not isinstance(documents, dict):
+        documents = {paper_base.MAIN_DOCUMENT: list(documents or [])}
+    documents = collections.OrderedDict((str(name), list(pieces))
+                                        for name, pieces in documents.items())
+    if paper_base.MAIN_DOCUMENT not in documents:
+        raise ValueError('A manuscript is ' + paper_base.MAIN_DOCUMENT + ' and the documents '
+                         'beside it: pass that document\'s pieces under its name, or pass them '
+                         'as a list on their own.')
+    for name in documents:
+        if not DOCUMENT_NAME.fullmatch(name):
+            raise ValueError('A document name is letters, digits, dots, dashes and underscores '
+                             'and ends in .md: ' + name)
+    if (folder / 'map.json').exists():
+        raise ValueError('Workspace already contains an immutable manuscript')
+    rows = paper_base.write_base(folder, documents)
+    if not any(row['document'] == paper_base.MAIN_DOCUMENT for row in rows):
+        raise ValueError('No piece of ' + paper_base.MAIN_DOCUMENT + ' rendered to a line: a '
+                         'manuscript with no text is not one, and a workspace holding an empty '
+                         'document would anchor every finding at nothing.')
+    references = list(references or [])
+    # A page number is the caller's, not this function's: pages are what the
+    # pieces say they are, and a manuscript with none has none.
+    geometry = [{'page': int(page['page']), 'width': float(page['width']),
+                 'height': float(page['height']), 'rotation': int(page.get('rotation') or 0)}
+                for page in pages or []]
+    given = dict(source or {})
+    page_count = given.get('pages')
+    if page_count is None:
+        page_count = max([len(geometry)]
+                         + [row['page'] for row in rows if isinstance(row.get('page'), int)])
+    text = (folder / paper_base.MAIN_DOCUMENT).read_text(encoding='utf-8').split('\n')
+    if not title:
+        head = next((row for row in rows if row['kind'] == 'title'
+                     and row['document'] == paper_base.MAIN_DOCUMENT), None)
+        title = text[head['lines'][0] - 1].lstrip('#').strip() if head else None
+    if not title:
+        raise ValueError('A manuscript needs a title a reviewer can be told it is reviewing: '
+                         'pass title=, or give the main document a piece of kind "title".')
+    stats = statistics_of(folder, documents, rows, references, page_count)
+    uncaptioned, captioned = missing_figures(documents[paper_base.MAIN_DOCUMENT])
+    gaps = dict(known_gaps or {})
+    if uncaptioned:
+        gaps.setdefault('figure_captions', (
+            'The text points at ' + ', '.join('Figure ' + str(n) for n in uncaptioned)
+            + ', which no caption in this manuscript carries. Captions were found for '
+            + (', '.join(str(n) for n in captioned) or 'no figures')
+            + '. Read the figure itself before reporting it as undescribed.'))
+    manifest = {
+        'schema_version': paper_base.BASE_SCHEMA_VERSION,
+        # The identity a review is bound to. Taken over the written documents
+        # when the caller does not give one, so the same text written twice is
+        # the same manuscript and a redraft is a different one — which is what
+        # makes `export_draft` refuse a review of the version before it.
+        'paper_id': paper_id or digest(json.dumps(
+            {name: digest((folder / name).read_bytes()) for name in documents},
+            sort_keys=True))[:16],
+        'title': title, 'source_url': source_url,
+        'source': {'file': None, 'sha256': None, 'xml': None, 'xml_sha256': None, **given,
+                   'pages': page_count},
+        'parser': parser or 'unknown',
+        'documents': list(documents),
+        # The geometry a box is drawn against, and the unit it is written in.
+        # An empty list is a manuscript with no pages to draw on.
+        'pages': geometry,
+        'box_convention': BOX_CONVENTION,
+        'counts': {'pieces': len(rows), 'references': len(references),
+                   'figure_captions': len(captioned),
+                   **collections.Counter(row['kind'] for row in rows)},
+        'pieces_per_source': dict(collections.Counter(row['source'] for row in rows)),
+        'source_values': dict(SOURCE_VALUES),
+        'assets': list(assets or []), 'statistics': stats,
+        'warnings': list(warnings or []), 'known_gaps': gaps,
+        'fingerprint_rule': FINGERPRINT_RULE,
+    }
+    write(folder / 'references.json', references)
+    write(folder / 'statistics.json', stats)
+    manifest['files'] = file_digests(folder)
+    write(folder / 'manifest.json', manifest)
+    return manifest
 
 
 class PopplerMissing(OSError):
@@ -287,46 +527,7 @@ def import_paper(pdf, output, xml=None, title=None, source_url='', supplements=N
     documents = collections.OrderedDict([(paper_base.MAIN_DOCUMENT, pieces)])
     documents.update(supplement_pieces)
     rows = paper_base.write_base(output, documents)
-    by_document = collections.defaultdict(list)
-    for row in rows:
-        by_document[row['document']].append(row)
-    # Every piece in these lists rendered — `add` drops the ones that do not —
-    # so a document's pieces and its rows are the same sequence, and every row
-    # can be counted on the text that actually went into the file rather than
-    # the text it was built from. That text is read back out of the written
-    # document and kept nowhere else: the Markdown is the manuscript.
-    written = []
-    for name, document_pieces in documents.items():
-        lines = (output / name).read_text(encoding='utf-8').split('\n')
-        for row in by_document[name]:
-            start, end = row['lines']
-            written.append((row, '\n'.join(lines[start - 1:end])))
-    main = [(row, text) for row, text in written
-            if row['document'] == paper_base.MAIN_DOCUMENT]
-    sections = collections.OrderedDict()
-    for row, _ in main:
-        sections.setdefault(row['section'], []).append(row['lines'][0])
-    stats = {
-        'total_words': sum(len(words(text)) for row, text in written
-                           if row['kind'] != 'heading'),
-        'main_words': sum(len(words(text)) for row, text in main
-                          if row['kind'] not in ('heading', 'reference', 'title')),
-        'reference_words': sum(len(words(text)) for row, text in written
-                               if row['kind'] == 'reference'),
-        'reference_entries': len(references), 'pieces': len(rows),
-        'pdf_pages': len(raw_pages),
-        'lines': {name: len((output / name).read_text(encoding='utf-8').splitlines())
-                  for name in documents},
-        # A section is counted by the lines its pieces start on, because a line
-        # is what a reader of this manuscript can point at.
-        'sections': {name: {'pieces': len(starts),
-                            'words': sum(len(text.split()) for row, text in main
-                                         if row['lines'][0] in starts
-                                         and row['kind'] != 'heading')}
-                     for name, starts in sections.items()},
-        'convention': ('Unicode words with internal apostrophes and hyphens. Includes captions, '
-                       'tables and equations. References reported separately. No quality '
-                       'inference from counts.')}
+    stats = statistics_of(output, documents, rows, references, len(raw_pages))
     uncaptioned, captioned = missing_figures(pieces)
     gaps = {}
     if uncaptioned:
@@ -348,6 +549,11 @@ def import_paper(pdf, output, xml=None, title=None, source_url='', supplements=N
                    'xml_sha256': digest(Path(xml).read_bytes()) if xml else None},
         'parser': 'rustypaper ' + getattr(rustypaper, '__version__', 'unknown'),
         'documents': list(documents),
+        # Every page's size in the points the boxes are written in, so a viewer
+        # can scale a box to the image it rendered of that page, and the unit
+        # and origin those four numbers are in.
+        'pages': page_geometry(pdf, len(raw_pages)),
+        'box_convention': BOX_CONVENTION,
         # The captioned figures are counted on their own because the kinds do
         # not answer the question: a caption arrives as a `figure` piece or as
         # a `caption` piece depending on what the converter saw around it, so
@@ -356,25 +562,15 @@ def import_paper(pdf, output, xml=None, title=None, source_url='', supplements=N
                    'figure_captions': len(captioned),
                    **collections.Counter(row['kind'] for row in rows)},
         'pieces_per_source': dict(collections.Counter(row['source'] for row in rows)),
-        'source_values': {
-            'text': "the document's own text layer, as the converter read it",
-            'ai': 'read from a page image by a model: no piece carries this yet',
-            'ai-reconstructed': 'not printed in the source, rebuilt from context: none yet'},
+        'source_values': dict(SOURCE_VALUES),
         'assets': assets, 'statistics': stats, 'warnings': warnings,
         'known_gaps': dict(KNOWN_GAPS, **gaps),
         'diagnostics': ['converter.json'],
-        'fingerprint_rule': ('sha256 of the piece\'s lines in their document, NFKC-normalised, '
-                             'whitespace runs collapsed, dash and quote variants folded, soft '
-                             'hyphens and zero-width characters dropped, case kept'),
+        'fingerprint_rule': FINGERPRINT_RULE,
     }
     write(output / 'references.json', references)
     write(output / 'statistics.json', stats)
-    # POSIX keys: the scaffold inventory check builds its names with as_posix,
-    # so a manifest keyed with the OS separator read as a changed inventory on
-    # Windows and refused every run over a scaffold manuscript.
-    manifest['files'] = {relative_name(p, output): digest(p.read_bytes())
-                         for p in sorted(output.rglob('*'))
-                         if p.is_file() and p.name != 'manifest.json'}
+    manifest['files'] = file_digests(output)
     write(output / 'manifest.json', manifest)
     # The manifest, which is the import's own account of what it wrote: the
     # manuscript itself is `paper.md` and its map, and a caller that wants the

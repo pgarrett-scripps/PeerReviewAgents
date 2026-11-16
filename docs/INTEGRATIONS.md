@@ -152,9 +152,12 @@ from peerreviewagents import (
     validate_prior_issues,                 # check an issues file before publishing it
     locate_run, NotARunFolder,             # resolve a run folder, and the error
     import_paper, verify_workspace, export_draft,
+    write_manuscript,                      # write a workspace from your own pieces
+    read_manuscript, PaperBase,            # read one back, and the type both reads return
     plugin_directory, claude_code_version,  # check an installation
     review_parser, report_parser,           # the real parsers behind the commands
     RUN_DIRECTORY, MANUSCRIPT_DIRECTORY,   # "review" and "manuscript"
+    BASE_SCHEMA_VERSION, MAIN_DOCUMENT,    # a workspace's schema, and "paper.md"
     RUN_STATUSES, COMPLETE_STATUSES, CLI_COMMANDS, FINDING_SCHEMA_VERSION,
     ISSUES_SCHEMA_VERSION,                 # the stamp on issues.json
     ISSUE_SEVERITIES, ISSUE_CATEGORIES, ISSUE_STATUSES,  # an issue's vocabularies
@@ -1078,6 +1081,173 @@ A blocked run is the code `1` and a full run folder to read, not an exception.
 `write_reports(run)` re-renders `REVIEW.md` and `REVIEW.txt` from a run folder
 with no model call. The workspace path is optional: a run folder holds its own
 manuscript, so pass one only when the manuscript lives somewhere else.
+
+### Writing a manuscript from your own pieces
+
+`import_paper(pdf, folder)` is for a PDF. An app that already holds the
+structure — a Typst or LaTeX source it parses itself, its own editor's
+document — writes the same workspace from the pieces it has, with
+`write_manuscript`. It is one call, and it is the only supported way to produce
+a workspace: the base is a Markdown file plus a `map.json` of line ranges, and
+a second implementation of that format in an app is a workspace the engine
+either refuses or, worse, accepts as something it is not.
+
+```python
+from peerreviewagents import write_manuscript, read_manuscript, verify_workspace
+
+manifest = write_manuscript(
+    folder,                 # the workspace folder; it must not already hold a manuscript
+    pieces,                 # the main document's pieces in order, or {name: pieces}
+    title='Replay during quiet rest',
+    parser='paper-workbench 1.0',
+    source={'file': 'scaffold/main.typ'},
+    references=[{'id': 'r1', 'raw': 'Wilson MA, McNaughton BL. Science. 1994.'}],
+    pages=[{'page': 1, 'width': 595.276, 'height': 841.89}],   # only if your pieces have boxes
+)
+```
+
+It writes the documents, `map.json`, `references.json`, `statistics.json` and
+`manifest.json`, and returns the manifest it wrote. `MAIN_DOCUMENT` is the name
+of the main document — `paper.md` — and every other name must end in `.md`;
+supplements are conventionally `supplement-<name>.md`. `BASE_SCHEMA_VERSION` is
+what lands in `manifest['schema_version']`, and a reader checks it before
+trusting the rows.
+
+A workspace is written **once**. A second `write_manuscript` over the same
+folder is a `ValueError`, because rewriting the base renumbers every line a
+saved review cites. A redraft is a new folder — and a new `paper_id`, which is
+what makes `export_draft` refuse a review of the version before it.
+
+#### What a piece is on the way in
+
+A piece is a dict. Only `kind` and the text that kind renders from are needed;
+everything else is optional, and what is absent is `null` in the map rather
+than a guess.
+
+| Field | Required | What it is |
+| --- | --- | --- |
+| `kind` | no, defaults to `paragraph` | `title`, `heading`, `paragraph`, `equation`, `figure`, `caption`, `table`, `reference`, `supplement` — or any other word, which renders as a paragraph and is reported under that name in the counts |
+| `text` | for every kind but `table` | the piece as a reader reads it. Newlines are folded to spaces: one piece is one paragraph, and a piece that renders to nothing gets no line and no row |
+| `section` | no | the section the piece sits in, as printed (`'Results'`). It is what a finding reports as its location, so an app that knows its sections should pass them |
+| `page` | no | the printed page, numbered from **1**. Absent for a manuscript that has no pages |
+| `bbox` | no | where the piece is printed on that page, as `{'x0', 'y0', 'x1', 'y1'}` or `[x0, y0, x1, y1]`. See the next section for the unit |
+| `source` | no, defaults to `text` | `text` for what the document says, `ai` for something a model produced, `ai-reconstructed` for text a model rebuilt from a damaged original. A reviewer is told which it is reading |
+| `level` | for `heading` | 1 for a section under the title, 2 for a subsection, and so on |
+| `latex` | for `equation` | the equation's LaTeX. `number` is its printed number, if it has one |
+| `image`, `label` | no, for `figure` | a path to the figure image relative to the workspace, and its label |
+| `table` | for `table` | the rows as a list of lists of cells, header row first |
+| `confidence` | no | the converter's own confidence in this piece, `0.0`–`1.0`. It travels into the map row, which is what tells a reviewer whether to open the page |
+| `citations` | no | the reference ids this piece cites, for citations that are markup rather than text (a JATS `<xref>`). The citation ledger reads them |
+
+A manuscript with no PDF — a Typst source before it is built — carries no
+`page` and no `bbox`:
+
+```python
+pieces = [
+    {'kind': 'title', 'text': 'Replay during quiet rest', 'section': 'Title'},
+    {'kind': 'heading', 'level': 1, 'text': 'Results', 'section': 'Results'},
+    {'kind': 'paragraph', 'section': 'Results',
+     'text': 'Sequences recurred in 12 of 14 sessions (86%).'},
+    {'kind': 'equation', 'section': 'Results', 'latex': 'r = \\frac{a}{b}', 'number': 1},
+    {'kind': 'table', 'section': 'Results',
+     'table': [['Session', 'Events'], ['1', '12'], ['2', '14']]},
+]
+manifest = write_manuscript(folder, pieces, title='Replay during quiet rest',
+                            parser='paper-workbench 1.0')
+```
+
+That is a complete manuscript. What it costs is the page: `map.json` holds
+`"page": null` and `"bbox": null` for every row, `manifest['pages']` is `[]`
+and `statistics.pdf_pages` is `0`. In consequence
+
+* the reviewer's `view_page` tool refuses with `Unknown page` rather than
+  showing anything, and nothing in the review depends on it;
+* a finding's `page` and `bbox` are `null` too, so there is no region to draw
+  on a page image;
+* **the citation is the line.** Every finding carries `document`, `line`,
+  `end_line` and a `start`/`end` offset pair into that line, and
+  `anchor_text` is exactly `line_text(line)[start:end]`. A viewer highlights
+  that span in the text it is showing. This is the same anchoring a
+  PDF-imported manuscript gets; the box is the extra a PDF has, not the
+  mechanism.
+
+#### Where a box is, and how big the page is
+
+The four numbers of a `bbox`, in `map.json` and in a finding, are
+
+> PDF points — 1/72 inch — in the coordinates of the page as the converter
+> read it. The origin is the **top-left** corner of the page, `x` grows right
+> and `y` grows **down**, so `x0, y0` is the top-left corner of the box and
+> `x1, y1` the bottom-right.
+
+That is checked rather than assumed: the converter's boxes line up word for
+word with `pdftotext -bbox` over the same file, which prints the same
+coordinates from the same corner. The manifest says it too, in
+`manifest['box_convention']`, so the folder does not need this page to be read
+correctly.
+
+A box is only placeable against the page it is on, so `manifest['pages']` is
+one record per page, in the same points:
+
+```json
+"pages": [{"page": 1, "width": 612.0, "height": 792.0, "rotation": 0},
+          {"page": 2, "width": 612.0, "height": 792.0, "rotation": 0}]
+```
+
+`page` is numbered from 1, as a piece's own `page` is, so a row indexes this
+list by its number. To draw a box on an image you rendered of that page at
+`image_width` pixels, scale by `image_width / width` — there is nothing else to
+know, and nothing to guess. `rotation` is the degrees a viewer applies to the
+printed page; boxes are **not** rotated, so a page whose `rotation` is not `0`
+is one an app rotates the box for itself.
+
+`import_paper` fills `pages` from the PDF. `write_manuscript` fills it from the
+`pages=` argument, and an app whose pieces carry boxes should pass it; the page
+count in `manifest['source']['pages']` follows from it when you do not set one.
+`"pages": []` means the sizes were not recorded — either the manuscript has no
+pages, or `pdfinfo` was missing from the machine that imported it. It never
+means the page is a default size.
+
+#### What `verify_workspace` returns
+
+`read_manuscript(folder)` and `verify_workspace(folder)` both return a
+`PaperBase`: the documents' text (`text`, `documents`, `line_text(line)`,
+`line_count()`), the map rows (`rows`, `piece_at(line)`, `section_at(line)`),
+and the manifest (`manifest`, `paper_id`, `title`). The difference is the
+check, not the result:
+
+* `read_manuscript` reads the folder as it stands. That is what a viewer wants,
+  since it is showing the folder rather than reviewing it.
+* `verify_workspace` first re-digests every file `manifest['files']` lists and
+  walks the source tree beside the base, then returns that same `PaperBase`. An
+  edited document is a `ValueError` naming the file — `Manuscript source
+  changed: paper.md` — because a line number is only worth having while the
+  line is still there. A path in the manifest that points outside the folder,
+  and a symlink in the source tree, are refused the same way.
+
+#### What a scaffold workspace must contain
+
+A scaffold workspace is a manuscript whose source — a Typst tree, a LaTeX
+project — is kept beside the base, under `scaffold/`. The inventory is part of
+the manuscript: `verify_workspace` walks `scaffold/` and requires the file
+names it finds to be exactly the `scaffold/`-prefixed keys in
+`manifest['files']`, so a source file *added* after the write is refused
+(`Manuscript source inventory changed`) even though no listed file was touched.
+
+So a scaffold workspace holds, at minimum:
+
+1. `paper.md` and `map.json` — the base, written by `write_manuscript`;
+2. `manifest.json`, whose `files` digests every file in the folder, the
+   `scaffold/` tree included;
+3. the source tree itself, **written before** `write_manuscript` is called,
+   since that call digests the folder as it stands. A file added afterwards
+   needs the workspace rewritten, not patched;
+4. `references.json` and `statistics.json`, which the same call writes.
+
+`source={'file': 'scaffold/main.typ'}` is how the manifest names the root of
+that tree. Nothing in the engine builds the source or reads it: the reviewer
+reads `paper.md`, and the tree is there so the workspace is the whole
+manuscript and a later build can be checked against what was reviewed.
 
 ### Writing files the engine reads: `peerreviewagents.workspace`
 

@@ -163,6 +163,42 @@ def test_import_writes_a_markdown_base_over_the_fixture(tmp_path):
     assert all(row['lines'][0] == row['lines'][1] for row in references)
 
 
+def test_the_page_geometry_is_recorded_so_a_box_can_be_placed(tmp_path):
+    """A box is four numbers, and four numbers without a page are unplaceable.
+
+    An application showing a page image draws a highlight by scaling the box to
+    the image, which it cannot do without the page's own size, and it has to
+    know which corner the numbers are measured from. Both were missing from the
+    manifest, so an app had to guess; the numbers asserted here were checked
+    against ``pdftotext -bbox`` over this same file, which prints the page size
+    and every word's box in the same points from the same corner.
+    """
+    folder = tmp_path / 'manuscript'
+    ingest.import_paper(str(FIXTURE), folder)
+    manifest = paper_base.load(folder).manifest
+    assert manifest['pages'] == [
+        {'page': 1, 'width': 612.0, 'height': 792.0, 'rotation': 0},
+        {'page': 2, 'width': 612.0, 'height': 792.0, 'rotation': 0}]
+    # One page record per page of the source, numbered as a piece numbers its
+    # page, so a row's `page` indexes this list by its own number.
+    assert len(manifest['pages']) == manifest['source']['pages']
+    sizes = {page['page']: page for page in manifest['pages']}
+    boxed = [row for row in paper_base.load(folder).rows if row['bbox']]
+    assert boxed
+    for row in boxed:
+        page = sizes[row['page']]
+        x0, y0, x1, y1 = row['bbox']
+        assert 0 <= x0 < x1 <= page['width']
+        assert 0 <= y0 < y1 <= page['height']
+    # And the origin is the top-left corner: the title is printed above the
+    # abstract, so its box is the one with the smaller y.
+    first_page = [row for row in boxed if row['page'] == 1]
+    title = next(row for row in first_page if row['kind'] == 'title')
+    below = next(row for row in first_page if row['kind'] == 'heading')
+    assert title['bbox'][1] < below['bbox'][1]
+    assert 'top-left' in manifest['box_convention'] and 'points' in manifest['box_convention']
+
+
 def test_an_equation_reaches_the_markdown_with_its_latex(tmp_path, monkeypatch):
     rustypaper = pytest.importorskip('rustypaper')
     monkeypatch.setattr(rustypaper, 'convert', lambda path, *a, **k: fake_conversion())
