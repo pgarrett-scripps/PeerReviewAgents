@@ -24,9 +24,10 @@ through the ordinary `peerreview review` path like any other manuscript.
   disagrees with the other place that still states the original.
 * `fake-doi` — a DOI in the references, altered so it resolves to nothing.
 
-**How a target is chosen.** Candidates are found in the *imported* paper, so a
-target is a block, a table cell or a reference rather than a byte offset, and
-the answer key can name a location the scorer can match against a finding.
+**How a target is chosen.** Candidates are found in the *imported* manuscript,
+so a target is a line of ``paper.md``, a cell of a table on one, or a reference
+printed on one, rather than a byte offset — and the answer key names the place
+a reviewer can point at, which is what the scorer matches a finding against.
 The edit itself is then located in the page's content stream by its
 surrounding text, and refused when two places match it equally well. Finally
 the altered PDF is imported again and the key records the planted text as the
@@ -116,9 +117,62 @@ def core(value: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Choosing what to plant. These functions read the imported paper only, so
-# they are testable without a PDF and without pikepdf.
+# Choosing what to plant. These functions read the imported manuscript only,
+# so they are testable without a PDF and without pikepdf.
 # ---------------------------------------------------------------------------
+
+
+def table_rows(text: str) -> list:
+    """A table's cells, read back out of the Markdown rows it is printed as.
+
+    ``paper.md`` is the only copy of a table: the map says which lines the
+    table occupies and nothing says what is in them. The delimiter row Markdown
+    needs is not a row of the table — the paper never printed it — so it is
+    dropped, and an escaped pipe inside a cell becomes the pipe it stands for.
+    """
+    rows = []
+    for line in text.split('\n'):
+        stripped = line.strip()
+        if not (stripped.startswith('|') and stripped.endswith('|')):
+            continue
+        cells = [cell.replace('\\|', '|').strip()
+                 for cell in re.split(r'(?<!\\)\|', stripped[1:-1])]
+        if cells and all(cell and set(cell) <= set('-:') for cell in cells):
+            continue
+        rows.append(cells)
+    return rows
+
+
+def pieces_of(base) -> list:
+    """Every piece of the manuscript, in the shape a planner reads one.
+
+    A planner needs three things about a piece: where it is, so the key can
+    name a place a reviewer can point at; what it says, so a target can be
+    found in it; and, for a table, its cells. The map holds the first and the
+    document holds the rest, so the text is read out of the lines a reviewer
+    reads rather than out of any copy the import kept.
+    """
+    pieces = []
+    for row in base.rows:
+        document, (start, end) = row['document'], row['lines']
+        text = base.range_text(start, end, document)
+        piece = {'document': document, 'line': start, 'end_line': end,
+                 'kind': row.get('kind'), 'section': row.get('section'),
+                 'page': row.get('page'), 'text': text}
+        if row.get('kind') == 'table':
+            piece['table'] = table_rows(text)
+        pieces.append(piece)
+    return pieces
+
+
+def place_of(piece: dict) -> dict:
+    """Where a piece is, as the key and the scorer name a place."""
+    return {'document': piece['document'], 'line': piece['line']}
+
+
+def named(places) -> str:
+    """A list of places, in words, for the reason a key carries."""
+    return ', '.join(f'line {place["line"]} of {place["document"]}' for place in places)
 
 
 def context_of(text: str, start: int, end: int) -> str:
@@ -175,9 +229,9 @@ def counts_something(sentence: str, match) -> bool:
     return bool(FOLLOWED_BY_NOUN.match(sentence[match.end():match.end() + 40]))
 
 
-def plan_percentage_of_its_own_count(block: dict) -> list:
+def plan_percentage_of_its_own_count(piece: dict) -> list:
     """`24 of 48 (50%)`, with the percentage made wrong: every input is in the sentence."""
-    text = block.get('text') or ''
+    text = piece.get('text') or ''
     found = []
     for match in PERCENT.finditer(text):
         count, total, printed = match.group(1), match.group(2), match.group(3)
@@ -192,7 +246,8 @@ def plan_percentage_of_its_own_count(block: dict) -> list:
         start, end = match.start(3), match.end(3)
         found.append({
             'kind': 'statistic', 'rule': 'percentage-against-its-own-count',
-            'block_id': block['id'], 'page': block.get('page'),
+            'document': piece['document'], 'line': piece['line'],
+            'page': piece.get('page'),
             'edits': [{'original': printed, 'altered': altered,
                        'context': context_of(text, start, end),
                        'offset_in_context': min(start, CONTEXT)}],
@@ -207,7 +262,7 @@ def plan_percentage_of_its_own_count(block: dict) -> list:
     return found
 
 
-def plan_parts_of_a_total(block: dict) -> list:
+def plan_parts_of_a_total(piece: dict) -> list:
     """`Of the 3063 participants, 1327 were men and 1736 women`, with a part made wrong.
 
     The parts stop adding up to the total the same sentence states, which is
@@ -216,9 +271,9 @@ def plan_parts_of_a_total(block: dict) -> list:
     parts, every number has to be counting something, and the sentence has to
     offer exactly one sum, or the key could not say which number was altered.
     """
-    if block.get('kind') != 'paragraph':
+    if piece.get('kind') != 'paragraph':
         return []
-    text = block.get('text') or ''
+    text = piece.get('text') or ''
     found = []
     for sentence, offset in sentences(text):
         if not TOTALLING.search(sentence) or CITING.search(sentence):
@@ -245,7 +300,8 @@ def plan_parts_of_a_total(block: dict) -> list:
         start = offset + part.start(1)
         found.append({
             'kind': 'statistic', 'rule': 'parts-against-their-stated-total',
-            'block_id': block['id'], 'page': block.get('page'),
+            'document': piece['document'], 'line': piece['line'],
+            'page': piece.get('page'),
             'edits': [{'original': printed, 'altered': altered,
                        'context': context_of(text, start, start + len(printed)),
                        'offset_in_context': min(start, CONTEXT)}],
@@ -260,9 +316,9 @@ def plan_parts_of_a_total(block: dict) -> list:
     return found
 
 
-def plan_percentage_of_a_stated_n(block: dict) -> list:
-    """`2808 (57.9%)` with the group's `n = 4850` in the same block, percentage made wrong."""
-    text = block.get('text') or ''
+def plan_percentage_of_a_stated_n(piece: dict) -> list:
+    """`2808 (57.9%)` with the group's `n = 4850` on the same line, percentage made wrong."""
+    text = piece.get('text') or ''
     denominators = sorted({int(match.group(1)) for match in SAMPLE.finditer(text)})
     if not denominators:
         return []
@@ -281,7 +337,8 @@ def plan_percentage_of_a_stated_n(block: dict) -> list:
         start, end = match.start(2), match.end(2)
         found.append({
             'kind': 'statistic', 'rule': 'percentage-against-the-stated-n',
-            'block_id': block['id'], 'page': block.get('page'),
+            'document': piece['document'], 'line': piece['line'],
+            'page': piece.get('page'),
             'edits': [{'original': printed, 'altered': altered,
                        'context': context_of(text, start, end),
                        'offset_in_context': min(start, CONTEXT)}],
@@ -296,9 +353,9 @@ def plan_percentage_of_a_stated_n(block: dict) -> list:
     return found
 
 
-def plan_p_value(block: dict) -> list:
+def plan_p_value(piece: dict) -> list:
     """A p-value raised above 0.05 in a sentence that still calls the result significant."""
-    text = block.get('text') or ''
+    text = piece.get('text') or ''
     found = []
     for match in PVALUE.finditer(text):
         printed = match.group(3)
@@ -315,7 +372,8 @@ def plan_p_value(block: dict) -> list:
         start, end = match.start(3), match.end(3)
         found.append({
             'kind': 'statistic', 'rule': 'p-value-against-its-own-claim',
-            'block_id': block['id'], 'page': block.get('page'),
+            'document': piece['document'], 'line': piece['line'],
+            'page': piece.get('page'),
             'edits': [{'original': printed, 'altered': altered,
                        'context': context_of(text, start, end),
                        'offset_in_context': min(start, CONTEXT)}],
@@ -325,7 +383,7 @@ def plan_p_value(block: dict) -> list:
                       'threshold': 0.05},
             # The printed value alone. A p-value squashes to two or three
             # digits, which another number could contain by accident, but the
-            # scorer only counts a mention inside the altered block, and
+            # scorer only counts a mention of the altered line, and
             # demanding the 0.05 threshold as well would reject a reviewer who
             # simply writes that .72 is not significant.
             'must_mention': [altered],
@@ -335,26 +393,26 @@ def plan_p_value(block: dict) -> list:
 
 
 # Best first: the rules whose inputs are all in one sentence, then the one
-# whose denominator is elsewhere in the block, then the one that rests on a
+# whose denominator is elsewhere on the line, then the one that rests on a
 # claim rather than arithmetic.
 STATISTIC_RULES = ('percentage-against-its-own-count', 'parts-against-their-stated-total',
                    'percentage-against-the-stated-n', 'p-value-against-its-own-claim')
 
 
-def plan_statistic(blocks: list) -> list:
+def plan_statistic(pieces: list) -> list:
     """A printed number that stops following from the numbers printed with it."""
     found = []
-    for block in blocks:
-        if block.get('kind') in ('heading', 'reference', 'title'):
+    for piece in pieces:
+        if piece.get('kind') in ('heading', 'reference', 'title'):
             continue
         for planner in (plan_percentage_of_its_own_count, plan_parts_of_a_total,
                         plan_percentage_of_a_stated_n, plan_p_value):
-            found.extend(planner(block))
+            found.extend(planner(piece))
     return sorted(found, key=lambda plan: (STATISTIC_RULES.index(plan['rule']),
                                            -len(plan['edits'][0]['original'])))
 
 
-def plan_table_cell(blocks: list) -> list:
+def plan_table_cell(pieces: list) -> list:
     """Two numeric cells of one table column, swapped.
 
     Same column and different rows, so the swap is the kind of transcription
@@ -367,14 +425,14 @@ def plan_table_cell(blocks: list) -> list:
     swap then disagrees with the text, and a count is preferred over a small
     decimal, because a column of counts has a total.
     """
-    prose = ' '.join(block.get('text') or '' for block in blocks
-                     if block.get('kind') in ('paragraph', 'caption', 'list_item'))
+    prose = ' '.join(piece.get('text') or '' for piece in pieces
+                     if piece.get('kind') in ('paragraph', 'caption', 'list_item'))
     found = []
-    for block in blocks:
-        rows = block.get('table') or []
+    for piece in pieces:
+        rows = piece.get('table') or []
         if len(rows) < 3:
             continue
-        text = block.get('text') or ''
+        text = piece.get('text') or ''
         columns = {}
         for row_index, row in enumerate(rows):
             for column_index, cell in enumerate(row):
@@ -392,7 +450,8 @@ def plan_table_cell(blocks: list) -> list:
                     starts = (text.index(one[1]), text.index(other[1]))
                     found.append({
                         'kind': 'table-cell', 'rule': 'two-cells-of-one-column-swapped',
-                        'block_id': block['id'], 'page': block.get('page'),
+                        'document': piece['document'], 'line': piece['line'],
+                        'page': piece.get('page'),
                         'edits': [
                             {'original': one[1], 'altered': other[1],
                              'context': context_of(text, starts[0], starts[0] + len(one[1])),
@@ -425,61 +484,70 @@ def plan_table_cell(blocks: list) -> list:
         -len(plan['edits'][0]['original'])))
 
 
-def sample_sizes(blocks: list) -> dict:
-    """Every place a sample size is stated, as ``{value: [(block, span, text)]}``."""
+def sample_sizes(pieces: list) -> dict:
+    """Every place a sample size is stated, as ``{value: [(piece, span, text)]}``."""
     places = {}
-    for block in blocks:
-        if block.get('kind') in ('heading', 'reference'):
+    for piece in pieces:
+        if piece.get('kind') in ('heading', 'reference'):
             continue
-        text = block.get('text') or ''
+        text = piece.get('text') or ''
         for pattern, group in ((SAMPLE, 1), (COUNTED_BY_NOUN, 1)):
             for match in pattern.finditer(text):
                 value = match.group(group)
-                places.setdefault(value, []).append((block, match.span(group), text))
+                places.setdefault(value, []).append((piece, match.span(group), text))
     return places
 
 
-def plan_sample_size(blocks: list) -> list:
+def plan_sample_size(pieces: list) -> list:
     """One statement of the sample size changed, so it disagrees with another.
 
     The error needs two places to exist: the altered one and the one left
     alone. A number stated once can be wrong but cannot contradict anything,
     and a reviewer would have nothing to check it against.
     """
-    places = sample_sizes(blocks)
+    places = sample_sizes(pieces)
     taken = set(places)
     found = []
     for value, occurrences in places.items():
-        if len({block['id'] for block, _, _ in occurrences}) < 2:
+        if len({place_of(piece)['line'] for piece, _, _ in occurrences}) < 2:
             continue
         altered = next((candidate for candidate in
                         (str(int(value) + delta) for delta in (18, 27, 36, 9, 45, 54))
                         if len(candidate) == len(value) and candidate not in taken), '')
         if not altered:
             continue
-        for block, (start, end), text in occurrences:
+        for piece, (start, end), text in occurrences:
             if text.count(value) != 1:
-                continue  # One occurrence per block, or the key cannot name which.
-            others = [other['id'] for other, _, _ in occurrences if other['id'] != block['id']]
+                continue  # One occurrence per line, or the key cannot name which.
+            # One entry per place, because a line that states the number twice
+            # — once as `n = 189` and once as `189 enrolled` — is still one
+            # place that agrees, and the reason reads as a list of places.
+            here = place_of(piece)
+            others = []
+            for other, _, _ in occurrences:
+                place = place_of(other)
+                if place != here and place not in others:
+                    others.append(place)
             found.append({
                 'kind': 'sample-size', 'rule': 'one-statement-of-n-against-another',
-                'block_id': block['id'], 'page': block.get('page'),
+                'document': piece['document'], 'line': piece['line'],
+                'page': piece.get('page'),
                 'edits': [{'original': value, 'altered': altered,
                            'context': context_of(text, start, end),
                            'offset_in_context': min(start, CONTEXT)}],
-                'reason': (f'This place now says {altered} where {", ".join(others)} still '
+                'reason': (f'This place now says {altered} where {named(others)} still '
                            f'say {value}.'),
                 'check': {'original_n': int(value), 'printed_n': int(altered),
-                          'agreeing_blocks': others},
+                          'agreeing_lines': others},
                 'must_mention': [altered, value],
                 'sentence': tidy(context_of(text, start, end)),
-                'other_blocks': others,
+                'other_lines': others,
             })
-    return sorted(found, key=lambda plan: -len(plan['check']['agreeing_blocks']))
+    return sorted(found, key=lambda plan: -len(plan['check']['agreeing_lines']))
 
 
-def dois_in(blocks: list, references: list) -> list:
-    """Every DOI the paper prints once, as ``[(doi, block)]``, references first.
+def dois_in(pieces: list, references: list) -> list:
+    """Every DOI the paper prints once, as ``[(doi, piece)]``, references first.
 
     The importer parses a reference list when it can find one, and plenty of
     papers give it nothing to parse, so the DOIs are taken from the text as
@@ -487,21 +555,21 @@ def dois_in(blocks: list, references: list) -> list:
     """
     reference_dois = {tidy(reference.get('doi') or '') for reference in references}
     out, seen = [], set()
-    for block in sorted(blocks, key=lambda block: block.get('kind') != 'reference'):
-        text = block.get('text') or ''
+    for piece in sorted(pieces, key=lambda piece: piece.get('kind') != 'reference'):
+        text = piece.get('text') or ''
         for match in DOI.finditer(text):
             doi = match.group(0).rstrip('.,;')
             if doi in seen:
                 continue
             seen.add(doi)
-            printed = sum((block.get('text') or '').count(doi) for block in blocks)
+            printed = sum((other.get('text') or '').count(doi) for other in pieces)
             if printed != 1:
                 continue
-            out.append((doi, block, doi in reference_dois))
+            out.append((doi, piece, doi in reference_dois))
     return out
 
 
-def plan_fake_doi(blocks: list, references: list) -> list:
+def plan_fake_doi(pieces: list, references: list) -> list:
     """A DOI in the references, altered so that it resolves to nothing.
 
     The registrant prefix is left alone and the suffix's digits are changed, so
@@ -509,8 +577,8 @@ def plan_fake_doi(blocks: list, references: list) -> list:
     a lookup rather than a format test.
     """
     found = []
-    for doi, block, in_references in dois_in(blocks, references):
-        holder, text = block['id'], block.get('text') or ''
+    for doi, piece, in_references in dois_in(pieces, references):
+        text = piece.get('text') or ''
         prefix, _, suffix = doi.partition('/')
         digits = [index for index, character in enumerate(suffix) if character.isdigit()]
         if len(digits) < 3:
@@ -524,14 +592,15 @@ def plan_fake_doi(blocks: list, references: list) -> list:
         start = text.index(doi)
         found.append({
             'kind': 'fake-doi', 'rule': 'doi-digits-changed-in-one-reference',
-            'block_id': holder, 'page': block.get('page'),
+            'document': piece['document'], 'line': piece['line'],
+            'page': piece.get('page'),
             'edits': [{'original': doi, 'altered': altered,
                        'context': context_of(text, start, start + len(doi)),
                        'offset_in_context': min(start, CONTEXT)}],
             'reason': f'The reference now cites {altered}, which is not a registered DOI.',
             'check': {'original_doi': doi, 'printed_doi': altered,
                       'in_parsed_reference_list': in_references,
-                      'block_kind': block.get('kind')},
+                      'line_kind': piece.get('kind')},
             # Either suffix shows the reviewer resolved this DOI: the printed
             # one, which is the value that does not exist, or the real one,
             # which is nowhere in the altered paper and can only come from a
@@ -550,23 +619,35 @@ def plan_fake_doi(blocks: list, references: list) -> list:
                                            -len(plan['edits'][0]['original'])))
 
 
-def plans_for(paper: dict, kind: str) -> list:
-    """Every plantable error of one kind in an imported paper, best first."""
-    blocks = paper.get('blocks') or []
+def references_of(base) -> list:
+    """The reference list the import parsed, or nothing if it parsed none."""
+    path = base.folder / 'references.json'
+    if not path.is_file():
+        return []
+    try:
+        parsed = json.loads(path.read_text(encoding='utf-8'))
+    except (ValueError, OSError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def plans_for(base, kind: str) -> list:
+    """Every plantable error of one kind in an imported manuscript, best first."""
+    pieces = pieces_of(base)
     if kind == 'statistic':
-        return plan_statistic(blocks)
+        return plan_statistic(pieces)
     if kind == 'table-cell':
-        return plan_table_cell(blocks)
+        return plan_table_cell(pieces)
     if kind == 'sample-size':
-        return plan_sample_size(blocks)
+        return plan_sample_size(pieces)
     if kind == 'fake-doi':
-        return plan_fake_doi(blocks, paper.get('references') or [])
+        return plan_fake_doi(pieces, references_of(base))
     raise ValueError('kind is one of ' + ', '.join(KINDS))
 
 
-def plantable(paper: dict) -> dict:
-    """Which kinds this paper can carry, as ``{kind: how many candidates}``."""
-    return {kind: len(plans_for(paper, kind)) for kind in KINDS}
+def plantable(base) -> dict:
+    """Which kinds this manuscript can carry, as ``{kind: how many candidates}``."""
+    return {kind: len(plans_for(base, kind)) for kind in KINDS}
 
 
 # ---------------------------------------------------------------------------
@@ -728,40 +809,58 @@ def apply_plan(source: Path, target: Path, plan: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def import_into(pdf: Path, workspace: Path) -> dict:
-    """Import a paper the way a review does, and return the imported document."""
+def import_into(pdf: Path, workspace: Path):
+    """Import a paper the way a review does, and return the manuscript it wrote."""
+    from peerreviewagents.engine import paper_base
     from peerreviewagents.engine.ingest import import_paper
 
-    if (workspace / 'paper.json').is_file():
-        return json.loads((workspace / 'paper.json').read_text(encoding='utf-8'))
-    return import_paper(str(pdf), str(workspace))
+    if not (workspace / 'map.json').is_file():
+        import_paper(str(pdf), str(workspace))
+    return paper_base.load(workspace)
 
 
-def where_altered(paper: dict, plan: dict) -> list:
-    """The blocks of the altered paper that now show each planted string."""
+def where_altered(base, plan: dict) -> list:
+    """The lines of the altered manuscript that now show each planted string."""
+    pieces = pieces_of(base)
     out = []
     for edit in plan['edits']:
-        holders = [block for block in paper['blocks'] if edit['altered'] in (block.get('text') or '')]
+        holders = [piece for piece in pieces if edit['altered'] in (piece.get('text') or '')]
         best = None
         if holders:
             wanted = squash(edit['context'])
-            best = max(holders, key=lambda block: sum(
+            best = max(holders, key=lambda piece: sum(
                 1 for size in range(6, min(len(wanted), 240), 6)
-                if wanted[size - 6:size] in squash(block.get('text') or '')))
-        out.append({**edit, 'block_id_after': best['id'] if best else '',
+                if wanted[size - 6:size] in squash(piece.get('text') or '')))
+        out.append({**edit,
+                    'document_after': best['document'] if best else '',
+                    'line_after': best['line'] if best else 0,
+                    'end_line_after': best['end_line'] if best else 0,
                     'page_after': best.get('page') if best else None,
                     'quote_after': tidy((best.get('text') or '')[:600]) if best else ''})
     return out
 
 
-def answer_key(slug: str, kind: str, original: Path, altered: Path, before: dict, after: dict,
+def answer_key(slug: str, kind: str, original: Path, altered: Path, before, after,
                plan: dict) -> dict:
     """Everything the scorer needs, including the rule it is allowed to use."""
     from peerreviewagents.engine.storage import digest
 
     edits = where_altered(after, plan)
-    blocks = sorted({edit['block_id_after'] for edit in edits if edit['block_id_after']}
-                    | {plan['block_id']})
+    # Every line of the altered piece, not only the line it starts on: a table
+    # occupies a row per line and a reviewer citing the row that holds the
+    # swapped cell is pointing at the error, not near it. The place the plan
+    # aimed at is listed as well as the places it landed, because a piece can
+    # move a line between the two imports.
+    places = set()
+    for edit in edits:
+        if not edit['line_after']:
+            continue
+        places |= {(edit['document_after'], number)
+                   for number in range(edit['line_after'], edit['end_line_after'] + 1)}
+    aimed = before.piece_at(plan['line'], plan['document'])
+    first, last = aimed['lines'] if aimed else (plan['line'], plan['line'])
+    places |= {(plan['document'], number) for number in range(int(first), int(last) + 1)}
+    lines = sorted(places)
     return {
         'paper': slug,
         'kind': kind,
@@ -771,18 +870,19 @@ def answer_key(slug: str, kind: str, original: Path, altered: Path, before: dict
         'altered_pdf': str(altered),
         'original_pdf_sha256': digest(original.read_bytes()),
         'altered_pdf_sha256': digest(altered.read_bytes()),
-        'original_paper_id': before['id'],
-        'altered_paper_id': after['id'],
-        'title': after.get('title'),
-        'block_id_before': plan['block_id'],
+        'original_paper_id': before.paper_id,
+        'altered_paper_id': after.paper_id,
+        'title': after.title,
+        'document_before': plan['document'],
+        'line_before': plan['line'],
         'edits': edits,
         'check': plan['check'],
         'sentence': plan['sentence'],
         # The scoring rule, written down with the key rather than decided later:
-        # a finding catches this error when it points at one of these blocks (or
+        # a finding catches this error when it points at one of these lines (or
         # quotes the planted text) and its words name the planted values.
         'detect': {
-            'blocks': blocks,
+            'lines': [{'document': document, 'line': line} for document, line in lines],
             'quotes': [edit['quote_after'] for edit in edits if edit['quote_after']],
             'must_mention': list(dict.fromkeys(plan['must_mention'])),
             # Every planted value by default, not any of them: the numeric
@@ -814,7 +914,7 @@ def plant(pdf: Path, slug: str, kind: str, out_dir: Path, keys_dir: Path,
         key = answer_key(slug, kind, pdf, altered, before, after, landed)
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
-    missing = [edit for edit in key['edits'] if not edit['block_id_after']]
+    missing = [edit for edit in key['edits'] if not edit['line_after']]
     if missing:
         altered.unlink(missing_ok=True)
         raise LookupError(f'{slug}: the planted {kind} does not survive its own import')
@@ -851,10 +951,10 @@ def main(argv=None) -> int:
         print(missing, file=sys.stderr)
         return 2
     if args.survey:
-        paper = import_into(pdf, root / 'imports' / slug)
-        print(json.dumps({'paper': slug, 'title': paper.get('title'),
-                          'pages': paper['statistics']['pdf_pages'],
-                          'plantable': plantable(paper)}, indent=2))
+        base = import_into(pdf, root / 'imports' / slug)
+        print(json.dumps({'paper': slug, 'title': base.title,
+                          'pages': base.manifest.get('statistics', {}).get('pdf_pages'),
+                          'plantable': plantable(base)}, indent=2))
         return 0
     if not args.kind:
         raise SystemExit('--kind is required unless --survey is given')

@@ -4,14 +4,15 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Evidence-linked peer review of a manuscript PDF, on a Claude Code
-subscription. One command imports the PDF into immutable source blocks and runs
-the `pra` plugin over them: several core reviewers and six specialist tracks
+subscription. One command imports the PDF into an immutable Markdown manuscript
+and runs the `pra` plugin over it: several core reviewers and six specialist tracks
 work the paper in parallel and in isolation, then an editor pools what they
 found into one package with a decision and a reason for every finding. There is
 no API key — the models run on your signed-in Claude Code login.
 
-Every finding carries the block it is anchored to and the exact quotation it
-rests on. A finding whose quote does not match the manuscript does not ship.
+Every finding carries the exact quotation it rests on and the line of the
+manuscript that quotation is on. A finding whose quote does not match the
+manuscript does not ship.
 
 ```bash
 peerreview review manuscript.pdf manuscript-review
@@ -61,7 +62,7 @@ uv venv && source .venv/bin/activate
 uv pip install -e .
 ```
 
-Dependencies are `rustypaper` (PDF → source blocks), Pillow, and the MCP SDK.
+Dependencies are `rustypaper` (PDF → manuscript pieces), Pillow, and the MCP SDK.
 The SDK is a dependency rather than an extra in 0.9: the plugin's server *is*
 the review, so a review cannot start without it. No OCR, no provider SDK, and
 no paid service beyond the subscription you already have.
@@ -149,8 +150,8 @@ on them.
 ### What a run writes
 
 ```
-<run>/manuscript/             the immutable import: original.pdf, paper.json
-                              source blocks, page images, the manifest
+<run>/manuscript/             the immutable import: original.pdf, paper.md and
+                              map.json, page images, the manifest
 <run>/review/REVIEW.md        the review, and REVIEW.txt beside it
 <run>/review/issues.json      the review itself: the issues the editor grouped
                               the findings into, ranked, with their members
@@ -181,10 +182,10 @@ leaves the run `blocked`: that is an outcome recorded in `runtime.json` and
 
 ### What the review guarantees
 
-- **Anchored or quarantined.** A finding's quotation must match a source block
+- **Anchored or quarantined.** A finding's quotation must match the manuscript
   exactly. One that does not is quarantined by the server, not reported.
 - **A basis the agent cannot assert.** The server labels each finding
-  `computed` when a `calculate` receipt covers the numbers the cited blocks
+  `computed` when a `calculate` receipt covers the numbers the cited lines
   print, `two-quotes` when a second anchored quotation corroborates it, and
   `judgement` otherwise.
 - **Isolation.** Core reviewers never see each other's findings and are not
@@ -270,7 +271,7 @@ the arms.
 
 ## Manuscript ingest
 
-PDFs are converted to source blocks by [rustypaper][rustypaper], which keeps
+PDFs are converted to manuscript pieces by [rustypaper][rustypaper], which keeps
 headings, tables and display mathematics, and reads a two-column page in
 reading order. It is a compiled Rust extension shipped as a per-platform wheel,
 and a required dependency: `pip install -e .` pulls it in.
@@ -285,7 +286,7 @@ silent fallback arranges for that to happen on exactly the runs nobody is
 watching. A missing or failing converter is an error.
 
 Every import records how the manuscript was read — converter and version,
-block and page counts, and the manifest hash the review is anchored to. Publish
+piece, line and page counts, and the manifest hash the review is anchored to. Publish
 it. A reader checking a quoted sentence against the PDF needs to know which
 conversion was reviewed.
 
@@ -351,8 +352,8 @@ launcher.
 | `locate_run(path)`, `NotARunFolder` | `(run folder, review folder)` from either spelling, and the error both it and `read_run` raise for a folder that is not a run |
 | `write_reports(run, workspace=None, output_dir=None)` | re-render `REVIEW.md` and `REVIEW.txt`, offline |
 | `import_paper(pdf, workspace)` | import a PDF into a manuscript workspace, no model call |
-| `verify_workspace(workspace)` | re-check an import against its own manifest, returns the paper |
-| `export_draft(paper, review, decisions)` | apply the accepted anchored edits to a copy of the blocks |
+| `verify_workspace(workspace)` | re-check an import against its own manifest, returns its manuscript and the map over it |
+| `export_draft(paper, review, decisions)` | apply the accepted anchored edits to a copy of `paper.md` |
 | `peerreviewagents.workspace` | the workspace tools an app needs to write files the engine reads back: `digest`, `read_json`, `write_json`, `normalize_review`, `save_review`, `words`, `text_of` |
 | `plugin_directory()` | the `pra` plugin that ships inside this package, for `claude --plugin-dir` |
 | `claude_code_version()` | what `claude --version` prints, or `None` when Claude Code is not on this PATH |
@@ -456,7 +457,7 @@ no editor is never publishable and that is not a fault: its `issues_source` is
 `server`, one issue per finding, and a reason says so.
 
 A quarantined finding is not one of those reasons. The guard exists to throw out
-a finding whose quote it could not match to the block it names; a guard that did
+a finding whose quote it could not match to the line it names; a guard that did
 that has done its job, and the review that is left is publishable. `quarantined`
 says what was thrown out, and whether that mattered is a judgement for a person.
 

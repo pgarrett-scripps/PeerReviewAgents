@@ -45,9 +45,10 @@ def reference(row_id='ref:r1', exists='yes', **resolution):
     return row
 
 
-def use(row_id='use:b1:1:r1', reference_id='r1', verdict='supports'):
+def use(row_id='use:11:1:r1', reference_id='r1', verdict='supports'):
     """One in-text use row, judged by a worker."""
-    row = {'kind': 'use', 'row_id': row_id, 'reference_id': reference_id, 'block_id': 'b1',
+    row = {'kind': 'use', 'row_id': row_id, 'reference_id': reference_id,
+           'document': 'paper.md', 'line': 11,
            'section': 'Introduction', 'sentence_index': 1, 'marker': '[1]',
            'sentence': 'The method was first described elsewhere [1].', 'stage': 'fill'}
     if verdict:
@@ -227,7 +228,7 @@ def test_reading_a_run_leaves_every_file_and_folder_in_it_as_it_was(tmp_path):
     # And all of that was a real reading, not an empty one that wrote nothing
     # because it did nothing.
     assert [row['row_id'] for row in rows['references']] == ['ref:r1']
-    assert [row['row_id'] for row in rows['uses']] == ['use:b1:1:r1']
+    assert [row['row_id'] for row in rows['uses']] == ['use:11:1:r1']
     assert reading['citations']['counts']['references'] == 1
     assert totals['references'] == 1 and totals['uses_judged'] == 1
     assert state['resolve']['done'] is True
@@ -573,7 +574,7 @@ def test_the_two_readers_never_disagree_about_one_run_folder(tmp_path, monkeypat
     docstring promises cannot happen. Both now read it through the same
     function, so the five shapes a run folder comes in agree row for row.
     """
-    torn = [json.dumps(reference()), '{"kind": "use", "row_id": "use:b1:1']
+    torn = [json.dumps(reference()), '{"kind": "use", "row_id": "use:11:1']
 
     def folders():
         yield 'planned, no ledger', run_folder(tmp_path / 'planned')
@@ -625,7 +626,7 @@ def test_a_row_id_the_table_cannot_be_keyed_on_reaches_no_consumer(tmp_path):
 
     reading, citations = read_citation_ledger(root), read_run(root)['citations']
     assert [row['row_id'] for row in reading['references']] == ['ref:r1']
-    assert [row['row_id'] for row in reading['uses']] == ['use:b1:1:r1']
+    assert [row['row_id'] for row in reading['uses']] == ['use:11:1:r1']
     assert reading['counts']['unreadable_rows'] == 4
     assert reading['problems'] == citations['problems']
     assert any('could not be read and were skipped' in line for line in reading['problems'])
@@ -644,7 +645,7 @@ DAMAGED = {
     'kind is a number': {**use(), 'kind': 3},
     'row_id is 5000 digits': {**use(), 'row_id': 'use:' + '9' * 5000},
     'row_id is a list': {**use(), 'row_id': ['use', 'b1']},
-    'row_id is an object': {**use(), 'row_id': {'id': 'use:b1:1:r1'}},
+    'row_id is an object': {**use(), 'row_id': {'id': 'use:11:1:r1'}},
     'row_id is a number': {**use(), 'row_id': 4},
     'reference_id is a list': {**use(), 'reference_id': ['r1']},
     'reference_id is an object': {**reference(), 'reference_id': {'id': 'r1'}},

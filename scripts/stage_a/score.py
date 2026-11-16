@@ -9,9 +9,10 @@ sessions, which is exactly the comparison Stage A is for.
 **The rule.** A finding catches the planted error when it is in the right place
 *and* about the right thing:
 
-* **Place** — the finding names one of the blocks the key lists (its
-  `block_id`, or one of its `evidence_blocks` or its corroborating block), or
-  the text it quotes is inside one of the key's altered blocks.
+* **Place** — the finding cites one of the lines the key lists: its own line
+  through `end_line`, one of its `evidence_lines`, or the line of its
+  corroborating quote. Failing that, the text it quotes is inside one of the
+  passages the key records as altered.
 * **Content** — the finding's own words, not the passage it quotes, name every
   value the key lists: the altered number together with the number it now
   contradicts. Naming one of the two is not enough, because the number that was
@@ -54,6 +55,8 @@ import re
 import sys
 from pathlib import Path
 
+from peerreviewagents.engine.paper_base import MAIN_DOCUMENT
+from peerreviewagents.issues import lines_of
 from peerreviewagents.runs import NotARunFolder, read_run
 
 ALLEGATION = re.compile(
@@ -126,19 +129,27 @@ def own_words_of(finding: dict) -> str:
     return ' '.join(str(part) for part in parts)
 
 
-def blocks_of(finding: dict) -> set:
-    """Every block the finding points at."""
-    named = {finding.get('block_id') or '', finding.get('corroborating_block_id') or ''}
-    evidence = finding.get('evidence_blocks') or []
-    if isinstance(evidence, str):
-        evidence = [evidence]
-    return {str(block) for block in named | set(evidence) if block}
+def places_of(finding: dict) -> set:
+    """Every place in the manuscript the finding points at, as ``(document, line)``.
+
+    The anchor and its evidence lines sit in the finding's own document, and a
+    corroborating passage carries the document it was anchored in, which is the
+    same one.
+    """
+    document = str(finding.get('document') or MAIN_DOCUMENT)
+    places = {(document, number) for number in lines_of(finding)}
+    corroborating = finding.get('corroborating')
+    if isinstance(corroborating, dict):
+        second = str(corroborating.get('document') or document)
+        places |= {(second, number) for number in lines_of(corroborating)}
+    return places
 
 
 def in_place(finding: dict, key: dict) -> bool:
     """Does the finding point at the altered text?"""
-    wanted = set(key['detect']['blocks'])
-    if blocks_of(finding) & wanted:
+    wanted = {(str(place.get('document') or MAIN_DOCUMENT), int(place['line']))
+              for place in key['detect']['lines'] if place.get('line')}
+    if places_of(finding) & wanted:
         return True
     quote = squash(finding.get('quote') or '')
     if len(quote) < 12:
@@ -220,7 +231,7 @@ def brief(finding: dict) -> dict:
     """The part of a finding worth putting in a results table."""
     return {field: finding.get(field) for field in
             ('finding_uid', 'title', 'slot', 'role', 'track', 'severity', 'kind', 'basis',
-             'block_id', 'quote', 'escalate')}
+             'document', 'line', 'quote', 'escalate')}
 
 
 def score(run: Path, key: dict, reading: dict | None = None) -> dict:
@@ -243,8 +254,8 @@ def score(run: Path, key: dict, reading: dict | None = None) -> dict:
     # A catch the review guard threw out is a catch the arm made and the run did
     # not deliver, which is a different number from a miss and has to be counted
     # separately: it says the brief needs fixing, not that the reviewers failed.
-    # The place rule reaches a quarantined row through its block id, which the
-    # guard leaves in place even when it rejects the quote.
+    # The place rule reaches a quarantined row through the line it cites, which
+    # the guard leaves in place even when it rejects the quote.
     held = [brief(finding) for finding in (reading.get('quarantined') or [])
             if in_place(finding, key) and about_it(finding, key)]
     return {

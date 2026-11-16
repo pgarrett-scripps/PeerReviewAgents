@@ -36,7 +36,7 @@ from mcp.shared.memory import create_connected_server_and_client_session
 from peerreviewagents import names
 from peerreviewagents.cli.main import report_main
 from peerreviewagents.engine import citation_ledger as cl
-from peerreviewagents.engine import paper_text
+from peerreviewagents.engine import paper_base, paper_text
 from peerreviewagents.engine.run_report import report_blocks
 from peerreviewagents.plugin import server as srv
 from peerreviewagents.runs import read_run
@@ -48,8 +48,10 @@ FIXTURE = Path(__file__).parent / 'fixtures' / 'single-column.pdf'
 ABSTRACT = ('We placed widgets at a fixed position on a level bench and read the width of '
             'each one. Fixed placement gave repeatable readings across days. The green '
             'widgets drifted between the first and the final reading.')
-#: Which fixture paragraph cites which reference, once the markers are added.
-MARKERS = {'b0006': '[1]', 'b0010': '[2]', 'b0012': '[3]'}
+#: Which line of the fixture cites which reference, once the markers are added.
+#: The introduction, the results and the discussion, each a paragraph of its
+#: own on one line of ``paper.md``.
+MARKERS = {11: '[1]', 19: '[2]', 23: '[3]'}
 CODES = {}
 TOKENS = {}
 
@@ -169,37 +171,30 @@ def citing_workspace(tmp_path):
 
     ``ingest`` keeps a manuscript it finds in the run folder, so writing the
     marked-up paper there is how a test hands the server a draft that cites
-    something. The marker goes into the manuscript file, which is what the
-    reviewers read and quote, and into ``paper.json``, which is what the
-    ledger reads; ``map.json`` is re-fingerprinted over the lines as they now
-    read, and the manifest re-stamped over every file touched, because the
-    manuscript is immutable once a run starts and every tool call checks that.
+    something. The marker goes into ``paper.md``, which is the manuscript the
+    reviewers read, the ledger reads and the workers quote; ``map.json`` is
+    re-fingerprinted over the lines as they now read, and the manifest
+    re-stamped over every file touched, because the manuscript is immutable
+    once a run starts and every tool call checks that.
     """
     root = tmp_path / 'run'
     workspace = root / names.MANUSCRIPT_DIRECTORY
-    paper = srv.import_paper(str(FIXTURE), workspace)
+    srv.import_paper(str(FIXTURE), workspace)
+    name = paper_base.MAIN_DOCUMENT
+    path = workspace / name
+    lines = path.read_text(encoding='utf-8').split('\n')
+    for number, marker in MARKERS.items():
+        lines[number - 1] = cite_in(lines[number - 1], marker)
+    path.write_text('\n'.join(lines), encoding='utf-8', newline='\n')
     rows = srv.read(workspace / 'map.json')
-    touched = set()
-    for block in paper['blocks']:
-        marker = MARKERS.get(block['id'])
-        if not marker:
-            continue
-        block['text'] = cite_in(block['text'], marker)
-        name = block['document_file']
-        path = workspace / name
-        lines = path.read_text(encoding='utf-8').split('\n')
-        start, end = block['lines']
-        lines[start - 1] = cite_in(lines[start - 1], marker)
-        path.write_text('\n'.join(lines), encoding='utf-8', newline='\n')
-        touched.add(name)
-        for row in rows:
-            if row['document'] == name and row['lines'] == [start, end]:
-                row['fingerprint'] = paper_text.fingerprint('\n'.join(lines[start - 1:end]))
-    srv.write(workspace / 'paper.json', paper)
+    for row in rows:
+        start, end = row['lines']
+        if row['document'] == name and start in MARKERS:
+            row['fingerprint'] = paper_text.fingerprint('\n'.join(lines[start - 1:end]))
     srv.write(workspace / 'map.json', rows)
     manifest = srv.read(workspace / 'manifest.json')
-    for name in {'paper.json', 'map.json'} | touched:
-        manifest['files'][name] = srv.digest((workspace / name).read_bytes())
+    for touched in (name, 'map.json'):
+        manifest['files'][touched] = srv.digest((workspace / touched).read_bytes())
     srv.write(workspace / 'manifest.json', manifest)
     return root
 

@@ -49,7 +49,7 @@ def _rows(path: Path, records) -> Path:
 
 def _finding(uid, title, **extra):
     return {'finding_uid': uid, 'title': title, 'slot': 'core-1', 'track': 'core',
-            'severity': 'major', 'kind': 'question', 'block_id': 'b0003',
+            'severity': 'major', 'kind': 'question', 'document': 'paper.md', 'line': 7,
             'quote': 'the reported total', 'escalate': False,
             'schema_version': names.FINDING_SCHEMA_VERSION, **extra}
 

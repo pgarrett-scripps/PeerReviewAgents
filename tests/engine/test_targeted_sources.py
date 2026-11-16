@@ -49,7 +49,7 @@ class TargetedSourceTests(unittest.TestCase):
         self.assertTrue(hit['abstract_truncated'])
         self.assertEqual(hit['abstract_omitted_characters'],500)
         card = self.client.store_card({'provider':'test','identifier':'large',
-            'manuscript_block_id':'b1','cutoff':None,
+            'manuscript_anchor':{'document':'paper.md','line':11},'cutoff':None,
             'record_version':None,'status':'ok','fields':{'large':'x' * 15000},
             'evidence_text':'x' * 15000,'eligible':True,'limitation':'Bounded test.'})
         self.assertEqual(card['status'],'normalized_record_too_large')
