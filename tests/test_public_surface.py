@@ -28,6 +28,7 @@ import peerreviewagents
 from peerreviewagents import issues as issue_model
 from peerreviewagents import names, runs
 from peerreviewagents.cli.main import report_main
+from peerreviewagents.engine import citation_ledger
 from peerreviewagents.plugin import server as srv
 from peerreviewagents.plugin import starter
 from peerreviewagents.runs import NotARunFolder, read_run
@@ -56,7 +57,8 @@ def _finding(uid, title, **extra):
 
 def _issue_row(**fields):
     """One issue row in the shape the server writes: every field, null where it does not apply."""
-    row = {'rank': None, 'members': [], 'raised_by': 0, 'rebuttal_line': None,
+    row = {'rank': None, 'members': [], 'raised_by': 0, 'rebuttal_document': None,
+           'rebuttal_line': None,
            'rebuttal_quote': None, 'prior_id': None, 'prior_rank': None, 'status': 'new',
            'status_reason': None, 'text_unchanged_reason': None, 'surviving_quotes': [],
            'audits': []}
@@ -1193,6 +1195,54 @@ def test_every_citation_a_consumer_reads_locates_the_quote_inside_its_line(tmp_p
                                                                    for row in raised]
     assert [cited_text(base, row) for row in without['findings']] == [row['anchor_text']
                                                                       for row in raised]
+
+
+def test_citation_uses_is_the_anchor_rule_an_app_would_otherwise_rewrite(tmp_path):
+    """The rows an app builds its own ledger from, built by the engine itself.
+
+    ``cited_text`` reads an anchor back and ``docs/INTEGRATIONS.md`` documents
+    a use row's fields, so everything about a row was public except the rule
+    that *makes* one: where a sentence ends, how one that crosses a line break
+    is spanned, and that ``row_id`` carries the piece's first line rather than
+    the sentence's. This holds the public call against the engine's own writer
+    and against the characters of the file.
+    """
+    from peerreviewagents import citation_uses, cited_text
+
+    base = build_base(tmp_path / 'workspace', [
+        {'kind': 'heading', 'text': 'Introduction', 'level': 1, 'section': 'Introduction'},
+        {'kind': 'paragraph', 'section': 'Introduction',
+         'text': 'The assay is standard [1]. We repeated it in three cohorts [2].'}])
+    references = [{'id': 'r1', 'label': '1', 'raw': 'A. Author. An assay. 2019.'},
+                  {'id': 'r2', 'label': '2', 'raw': 'B. Author. Three cohorts. 2021.'}]
+
+    rows = citation_uses(base, references)
+
+    # The engine's own rows, by the same call: an app and the ledger cannot
+    # disagree about which sentence a row is. `filled_at` is the only field
+    # that is the moment rather than the manuscript.
+    def anchored(row):
+        return {key: value for key, value in row.items() if key != 'filled_at'}
+
+    assert [anchored(row) for row in rows] == [anchored(row) for row in
+                                               citation_ledger.use_rows(base, references)]
+    assert [row['reference_id'] for row in rows] == ['r1', 'r2']
+    assert [row['sentence_index'] for row in rows] == [1, 2]
+    # Both sentences come off one piece, so both ids carry that piece's first
+    # line — the part a second implementation takes from the sentence instead.
+    assert [row['row_id'] for row in rows] == ['use:paper.md:3:1:r1', 'use:paper.md:3:2:r2']
+    assert {row['piece_lines'][0] for row in rows} == {3}
+    for row in rows:
+        assert cited_text(base, row) == row['sentence']
+        assert set(row) >= {'kind', 'row_id', 'reference_id', 'document', 'line', 'end_line',
+                            'start', 'end', 'piece_lines', 'section', 'sentence_index',
+                            'sentence', 'marker', 'derivation', 'stage'}
+
+    # A reference list it has none of is not an error: the bracketed markers
+    # the paper prints are still uses, and unmatched is what they are.
+    unmatched = citation_uses(base, [])
+    assert [row['marker'] for row in unmatched] == ['[1]', '[2]']
+    assert all(row['reference_id'] is None for row in unmatched)
 
 
 def test_the_two_text_helpers_read_text_the_way_the_import_does():

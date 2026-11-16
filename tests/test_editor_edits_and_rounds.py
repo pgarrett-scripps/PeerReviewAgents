@@ -1785,6 +1785,14 @@ def test_the_public_validator_runs_the_checks_the_loader_runs(tmp_path):
     stamped = issue_model.validate_prior_issues({**published,
                                                  'schema_version': 'review-issues-v9'})
     assert len(stamped) == 1 and 'review-issues-v9' in stamped[0]
+    # The stamp an earlier release of this engine wrote is refused the same
+    # way, by name. A `v3` row carries a `rebuttal_line` with no document
+    # beside it, so reading it as this version's shape would anchor a
+    # supplement's rebuttal at a line of paper.md that says something else.
+    assert issue_model.ISSUES_SCHEMA_VERSION == 'review-issues-v4'
+    superseded = issue_model.validate_prior_issues({**published,
+                                                    'schema_version': 'review-issues-v3'})
+    assert len(superseded) == 1 and 'review-issues-v3' in superseded[0]
 
 
 def test_a_file_the_validator_passes_is_a_file_the_loader_opens(tmp_path):

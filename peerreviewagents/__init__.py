@@ -81,7 +81,13 @@ Manuscripts and workspaces
     ``end_line``, ``start`` and ``end``, and this reads that span off a
     :class:`PaperBase`, including the case of a quote that crosses a line
     break, so an app highlights the words without searching the line for them
-    again.
+    again. :func:`citation_uses` is the other half of that: it reads a
+    :class:`PaperBase` and a reference list and answers one row per in-text use
+    of a reference, anchored the same way, for an app building a citation
+    ledger of its own. It is the engine's own anchoring rule — where a sentence
+    ends, how one that crosses a line break is spanned, how a ``row_id`` is
+    built — rather than a second implementation of it that would disagree with
+    the engine by a line somewhere.
     :mod:`peerreviewagents.workspace` holds the smaller tools those are built
     from, for an app that writes files the engine reads back: the manifest
     digest, the atomic JSON read and write, the review normalisation and save,
@@ -135,6 +141,7 @@ from .names import (
 if TYPE_CHECKING:  # Static tooling sees the real objects, not the fallback.
     from .cli.main import report_parser
     from .engine.annotations import export_draft, verify_workspace
+    from .engine.citation_ledger import citation_uses
     from .engine.ingest import import_paper, write_manuscript
     from .engine.paper_base import PaperBase
     from .engine.paper_base import load as read_manuscript
@@ -161,6 +168,7 @@ __all__ = [
     "read_manuscript",
     "PaperBase",
     "cited_text",
+    "citation_uses",
     "write_reports",
     "verify_workspace",
     "export_draft",
@@ -217,6 +225,10 @@ _LAZY = {
     # about to write this loop itself, and the line-crossing case is the one it
     # would get wrong.
     "cited_text": (".engine.quotes", "cited_text"),
+    # And the rule that produces what `cited_text` reads back. An app writing
+    # its own ledger had every part but this one: the sentence spanning and the
+    # row_id are the half a second implementation gets wrong by a line.
+    "citation_uses": (".engine.citation_ledger", "citation_uses"),
     "write_reports": (".engine.run_report", "write_reports"),
     "verify_workspace": (".engine.annotations", "verify_workspace"),
     "export_draft": (".engine.annotations", "export_draft"),

@@ -2753,7 +2753,8 @@ def _issue_problems(run, agent, batch, retiring=()):
         # number that had become a string nobody wrote.
         wrong = _wrong_types([(field, row.get(field)) for field in
                               ('name', 'severity', 'category', 'statement', 'status',
-                               'status_reason', 'prior_id', 'rebuttal_quote')])
+                               'status_reason', 'prior_id', 'rebuttal_quote',
+                               'rebuttal_document')])
         if wrong:
             problems.append(f'issue {index}: ' + '; '.join(wrong))
             continue
@@ -2804,6 +2805,19 @@ def _issue_problems(run, agent, batch, retiring=()):
             problems.append(f'issue {index} ({name}): rebuttal_line is the line rebuttal_quote is '
                             'on, a positive whole number, and is needed only where the quote '
                             'occurs more than once')
+            continue
+        # Which document the rebuttal is quoted from. A supplement's passage
+        # used to be looked for in `paper.md`, where it is not, so a rebuttal
+        # the editor really had was refused as unanchorable; and the member's
+        # own document stood in for it, which is a different thing — an issue
+        # holds members from several documents at once.
+        rebuttal_document = _text(row.get('rebuttal_document')).strip()
+        if rebuttal_document and rebuttal_document not in run.base.documents:
+            problems.append(f'issue {index} ({name}): this manuscript has no document named '
+                            + rebuttal_document + '. rebuttal_document is the document '
+                            'rebuttal_quote is quoted from, as a member carries it — leave it '
+                            'out for ' + paper_base.MAIN_DOCUMENT + '. It holds: '
+                            + ', '.join(run.base.document_names()) + '.')
             continue
         raw_members = row.get('members')
         if raw_members is None:
@@ -2858,19 +2872,22 @@ def _issue_problems(run, agent, batch, retiring=()):
         # manuscript that answers it, anchored exactly.
         computed = [uid for uid in members if by_uid[uid]['basis'] == 'computed']
         rebuttal = None
+        document = rebuttal_document or paper_base.MAIN_DOCUMENT
         if severity == 'minor' and computed:
             quote = _text(row.get('rebuttal_quote'))
-            document = by_uid[computed[0]].get('document') or paper_base.MAIN_DOCUMENT
             rebuttal = run.locate(quote, rebuttal_line, document)
             if rebuttal is None:
                 problems.append(f'issue {index} ({name}): it holds the computed finding(s) '
                                 + ', '.join(computed[:5])
                                 + ', whose arithmetic was checked against the manuscript, so '
-                                  'calling it a suggestion needs a rebuttal_quote of the '
-                                  'manuscript itself, in one place in it — with rebuttal_line '
-                                  'where those words occur more than once.')
+                                  'calling it a suggestion needs a rebuttal_quote of '
+                                + document + ' itself, in one place in it — with rebuttal_line '
+                                  'where those words occur more than once'
+                                + ('' if rebuttal_document else
+                                   ', and rebuttal_document where you are quoting a supplement')
+                                + '.')
                 continue
-        elif _text(row.get('rebuttal_quote')) or rebuttal_line:
+        elif _text(row.get('rebuttal_quote')) or rebuttal_line or rebuttal_document:
             # The field is one thing only: the answer to a checked receipt that
             # is being called a suggestion. Stored anywhere else it is a quote
             # of the manuscript that nothing anchored — it was accepted on a
@@ -2878,10 +2895,10 @@ def _issue_problems(run, agent, batch, retiring=()):
             # REVIEW.md as if a reviewer had read it there.
             why = ('a suggestion over a checked receipt' if severity != 'minor'
                    else 'a checked receipt, and this issue holds none')
-            problems.append(f'issue {index} ({name}): rebuttal_quote and rebuttal_line '
-                            'answer ' + why + '. Leave both out: a quote that is not a rebuttal '
-                            'goes in the member finding that anchored it, and a '
-                            f'{severity} issue has nothing to rebut.')
+            problems.append(f'issue {index} ({name}): rebuttal_quote, rebuttal_line and '
+                            'rebuttal_document answer ' + why + '. Leave all three out: a quote '
+                            'that is not a rebuttal goes in the member finding that anchored it, '
+                            f'and a {severity} issue has nothing to rebut.')
             continue
         prior_id = _text(row.get('prior_id')).strip() or None
         status = _text(row.get('status')).strip() or ('new' if prior_id is None else '')
@@ -2911,6 +2928,10 @@ def _issue_problems(run, agent, batch, retiring=()):
             prior_held[prior_id] = name
         staged.append({'key': key, 'name': name, 'severity': severity, 'category': category,
                        'rank': rank, 'statement': statement, 'member_uids': members,
+                       # The document the quote was anchored in, as a member
+                       # carries one: null for the manuscript, the supplement's
+                       # name otherwise, and null on a row with no rebuttal.
+                       'rebuttal_document': (rebuttal_document or None) if rebuttal else None,
                        'rebuttal_line': (rebuttal or {}).get('line'),
                        'rebuttal_quote': _text(row.get('rebuttal_quote')) or None,
                        'prior_id': prior_id, 'status': status,
@@ -2957,7 +2978,9 @@ def submit_issues(agent_token: str, issues=None, retire=None) -> dict:
     A ``minor`` issue holding a ``computed`` finding — one whose arithmetic was
     checked against the manuscript — needs a ``rebuttal_quote`` that anchors
     exactly in the manuscript, with ``rebuttal_line`` where those words occur in
-    more than one place. Nothing else may be called a suggestion over a receipt.
+    more than one place and ``rebuttal_document`` where the passage is in a
+    supplement rather than ``paper.md``. Nothing else may be called a
+    suggestion over a receipt.
 
     The batch limit is in your claim answer as ``batch_limit`` and grows with
     the ledger, so the number of submission calls stays bounded however large
@@ -3296,6 +3319,7 @@ def _finalize_issues(run, agent, ruled=None):
             'statement': issue['statement'],
             'members': members,
             'raised_by': 0,
+            'rebuttal_document': issue.get('rebuttal_document'),
             'rebuttal_line': issue.get('rebuttal_line'),
             'rebuttal_quote': issue.get('rebuttal_quote'),
             'prior_id': issue['prior_id'],
@@ -3345,6 +3369,7 @@ def _finalize_issues(run, agent, ruled=None):
             'raised_by': 0,
             # A closed row has no rebuttal to carry; the keys are here all the
             # same, because a reader of issues.json reads fields, not shapes.
+            'rebuttal_document': None,
             'rebuttal_line': None,
             'rebuttal_quote': None,
             'prior_id': identifier,

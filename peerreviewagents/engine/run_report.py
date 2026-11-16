@@ -306,8 +306,12 @@ def _issue(issue):
     if issue.get('status_reason'):
         blocks.append(('labeled', 'Against the prior round', issue['status_reason']))
     if issue.get('rebuttal_quote'):
-        where = (f" on line {issue['rebuttal_line']}"
-                 if issue.get('rebuttal_line') else '')
+        # Where the quote was anchored, and in which document: a rebuttal
+        # quoted from a supplement says so, because a line number on its own
+        # would read as a line of paper.md.
+        where = (f" in {issue['rebuttal_document']}" if issue.get('rebuttal_document') else '')
+        where += (f" on line {issue['rebuttal_line']}"
+                  if issue.get('rebuttal_line') else '')
         blocks += [('paragraph', 'Ruled a suggestion rather than a required change because '
                                  'the manuscript already carries its own qualification'
                                  + where + ':'),

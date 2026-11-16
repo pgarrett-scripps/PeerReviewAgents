@@ -241,6 +241,7 @@ from peerreviewagents import (
     import_paper, verify_workspace, export_draft,
     write_manuscript,                      # write a workspace from your own pieces
     read_manuscript, PaperBase,            # read one back, and the type both reads return
+    cited_text, citation_uses,             # read an anchor back; build the use rows
     plugin_directory, claude_code_version,  # check an installation
     review_parser, report_parser,           # the real parsers behind the commands
     RUN_DIRECTORY, MANUSCRIPT_DIRECTORY,   # "review" and "manuscript"
@@ -412,13 +413,13 @@ row is
               "severity": "major", "kind": "issue", "basis": "two-quotes",
               "escalate": False, "title": "..."}],
  "audits": ["audit_stats.md"],
- "rebuttal_line": None, "rebuttal_quote": None,
+ "rebuttal_document": None, "rebuttal_line": None, "rebuttal_quote": None,
  "prior_id": None, "prior_rank": None,
  "status": "new", "status_reason": None,
  "text_unchanged_reason": None, "surviving_quotes": []}
 ```
 
-**Every one of those seventeen fields is on every row**, live or closed, edited
+**Every one of those eighteen fields is on every row**, live or closed, edited
 or synthesised, and a field that does not apply to a row is `None` — or `[]`
 where the field is a list. `peerreviewagents.issues.ISSUE_FIELDS` is that list
 and `MEMBER_FIELDS` is a member's seventeen, so a consumer reads a field by name
@@ -457,10 +458,14 @@ ones out; 0.10 does not.
   one whose arithmetic the server checked against the manuscript. Calling such
   a finding a suggestion takes a passage of the manuscript that answers the
   receipt, quoted exactly as the manuscript reads; `rebuttal_line` is the line
-  the engine placed it on, and is `None` where the quote was not placed. The
-  server refuses the issue without a quote. Both `rebuttal_quote` and it
-  are `None` on every other issue, and a renderer that shows a suggestion over
-  a receipt should show the rebuttal with it.
+  the engine placed it on, and is `None` where the quote was not placed.
+  `rebuttal_document` is **which document that line is in**, read exactly as a
+  member's `document` is: `None` for `paper.md`, the supplement's file name
+  otherwise. A rebuttal quoted from a supplement used to be looked for in
+  `paper.md` and refused, and a line number with no document beside it is a
+  line of the wrong file. The server refuses the issue without a quote. All
+  three are `None` on every other issue, and a renderer that shows a suggestion
+  over a receipt should show the rebuttal with it.
 
 #### The five statuses
 
@@ -588,11 +593,14 @@ shows `REVIEW.md` are showing the same review.
 `read_run` is the supported way in, and these are the document's own top-level
 keys for anything that reads the file directly. `schema_version` is the one to
 check first: `peerreviewagents.ISSUES_SCHEMA_VERSION` is what this release
-writes (`review-issues-v3`, which added a member's `start`, `end` and
-`anchor_text`), and it is the only one it reads: every earlier stamp —
-`review-issues-v1`, and `review-issues-v2`, which was written and superseded
-inside this release and never shipped in one — is refused by name rather than
-read as far as it happens to parse.
+writes (`review-issues-v4`, which added an issue's `rebuttal_document`), and it
+is the only one it reads: every earlier stamp — `review-issues-v1`, which held
+evidence as block ids, and `review-issues-v2` and `review-issues-v3`, both
+written and superseded inside the unreleased one and never shipped, the latter
+carrying a `rebuttal_line` with no document beside it — is refused by name
+rather than read as far as it happens to parse. A file you published from an
+earlier release is not loadable as a prior round: re-render it from that run's
+folder, or raise its issues again.
 `issues.schema_problem(document)` is the rule the reader, the prior-round loader
 and the renderer all go through, so a consumer can use the same one.
 
@@ -1063,6 +1071,38 @@ it, `citations/stages.json`, is what `complete` and `lookups` are read from:
 `{"fill": {"done": true}, "resolve": {"done": true, "lookups": 2}}`.
 `tests/test_ledger_consumer_surface.py` builds its fixtures exactly this way
 and is the worked example to copy.
+
+**A ledger of your own: `citation_uses`.** Writing the rows by hand is the
+rule above applied by eye, and the part that is easy to get wrong is not the
+JSON — it is the anchor. `citation_uses(base, references)` is the engine's own
+rule, exported:
+
+```python
+from peerreviewagents import citation_uses, cited_text, read_manuscript
+
+base = read_manuscript('out/manuscript')
+rows = citation_uses(base, json.loads(Path('out/manuscript/references.json').read_text()))
+for row in rows:
+    print(row['row_id'], row['reference_id'], cited_text(base, row))
+```
+
+`base` is what `read_manuscript` (or `verify_workspace`) answers with, and
+`references` is the reference list as `references.json` holds it: one object
+per reference with an `id` and a `label`, or the author and year fields the
+markers in the text would name. Pass `[]` and you get the unmatched uses alone.
+The answer is a list of `use` rows in document order, with exactly the fields
+listed above plus `section`, `sentence_index`, `derivation` and `stage` — the
+same rows the engine's own ledger is built from, by the same call. They are
+rows and not a ledger: writing them to a file of your own, answering them, and
+rendering the verdicts stay yours.
+
+It is here because nothing else in this surface produces an anchor. `cited_text`
+reads one back and the row's shape is documented, but where one sentence ends
+and the next begins, how a sentence that crosses a line break is spanned, and
+that `row_id` carries the **piece's** first line rather than the sentence's are
+the rule itself. A second implementation of it differs by a character or a line
+somewhere, and then your rows and the engine's are about different sentences
+with no sign that they are.
 
 #### Problem lines are printed verbatim
 

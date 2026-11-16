@@ -68,8 +68,10 @@ One issue is:
 * `members` — the `finding_uid` of every finding this issue is raised from. The
   server keeps each member's slot, quote and lines as the issue's evidence
   and counts "raised by N" from them, so you do not write either.
-* `rebuttal_quote`, and `rebuttal_line` only where the same words occur more
-  than once — only for a `minor` issue holding a `computed` finding. See rule 5.
+* `rebuttal_quote`, `rebuttal_line` only where the same words occur more than
+  once, and `rebuttal_document` only where you are quoting a supplement rather
+  than the manuscript — only for a `minor` issue holding a `computed` finding.
+  See rule 5.
 
 Rules that follow from that:
 
@@ -93,7 +95,10 @@ Rules that follow from that:
    `minor` that holds a `computed` finding needs a `rebuttal_quote` from the
    manuscript that answers the receipt, quoted exactly as it reads — the server
    finds the line, and `rebuttal_line` is yours to give only where the same
-   words occur more than once. The server refuses the batch otherwise. There is nowhere to bury a receipt, so
+   words occur more than once. A quote from a supplement needs
+   `rebuttal_document`, the file name as `read_draft` and your findings give
+   it; leave it out for the manuscript itself. The server refuses the batch
+   otherwise. There is nowhere to bury a receipt, so
    `minor` is the only way down from one, and it is evidenced like any other
    judgement you make.
 
