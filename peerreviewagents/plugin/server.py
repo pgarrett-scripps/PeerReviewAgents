@@ -1892,6 +1892,49 @@ def claim_agent(slot: str, claim_code: str = '') -> dict:
     return answer
 
 
+def seal_as_converted(recorder_key: str, reason: str = '') -> dict:
+    """Recorder only: write the manuscript from the draft when the Read stage failed.
+
+    A run whose reader never sealed has no manuscript, and with no manuscript
+    there is nothing to review: no reviewer can claim a slot and no line can be
+    cited. So the draft is sealed as the converter read it — today's markers,
+    no figure descriptions — and the manifest says the paper was not AI-read,
+    with this reason. It is the same writer the reader's seal uses; what
+    differs is only the account it records.
+
+    It is refused once the manuscript exists. Sealing is not a way to discard a
+    reading that already happened.
+    """
+    run = current()
+    if not secrets.compare_digest(str(recorder_key or ''), run.recorder_key):
+        return rejection('The manuscript is sealed without a reader by the recorder, with the '
+                         'run key ingest returned.')
+    if run.base is not None:
+        return rejection('This manuscript is already sealed. Its lines are written and a finding '
+                         'may already cite them, so nothing re-seals it.')
+    said = ' '.join(str(reason or '').split())
+    account = {'read': False,
+               'reason': 'the Read stage was planned and did not seal this manuscript, so its '
+                         'equations and tables are the converter\'s reading of the page, mangled '
+                         'where it misread one, and its figures are captions with no description '
+                         'of the image'
+                         + (': ' + said if said else '')}
+    try:
+        manifest = run.seal(ai_read=account)
+    except (ValueError, OSError) as exc:
+        return rejection(str(exc))
+    return {'sealed': True, 'ai_read': manifest.get('ai_read'),
+            'paper_id': run.base.paper_id, 'title': run.base.title,
+            'statistics': run.base.manifest.get('statistics'),
+            'documents': run.documents(), 'sections': run.index(),
+            'pieces_per_source': manifest.get('pieces_per_source'),
+            'citations': run.citation_counts(),
+            'citation_ledger': run.citation_fill,
+            'next': ('The manuscript is written as converted and the reviewers can be claimed. '
+                     'Every equation carries the machine-read warning and no figure has a '
+                     'description: the run records that nothing read the pages.')}
+
+
 def reissue_claim_code(recorder_key: str, slot: str) -> dict:
     """Recorder only: a fresh claim code for one slot, to retry a stage that failed.
 
@@ -4178,7 +4221,7 @@ def _fallback_issue(issue):
 TOOLS = (ingest, claim_agent, reissue_claim_code, read_paper, search, calculate, save_note,
          view_page, view_supplement,
          read_draft, replace_equation, replace_table, describe_figure, add_piece,
-         merge_equations, confirm_piece, seal_manuscript,
+         merge_equations, confirm_piece, seal_manuscript, seal_as_converted,
          check_citation, search_literature, resolve_identifier,
          lookup_source, inspect_results, record_comparison, validate_synthesis, submit_finding,
          submit_report, list_findings, submit_issues, submit_editor, resolve_citations,

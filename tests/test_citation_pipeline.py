@@ -1598,6 +1598,7 @@ def test_no_registered_tool_writes_in_a_complete_folder(tmp_path):
         'merge_equations': lambda: srv.merge_equations(reviewer, ['p1', 'p2'], 1, 'x = 1'),
         'confirm_piece': lambda: srv.confirm_piece(reviewer, 'p1', 1),
         'seal_manuscript': lambda: srv.seal_manuscript(reviewer),
+        'seal_as_converted': lambda: srv.seal_as_converted(key, 'a late change of mind'),
         'resolve_citations': lambda: resolving(key, limit=0),
         'citation_rows': lambda: srv.citation_rows(token_for('spec-citations'), 'counts'),
         'claim_citation_batch': lambda: srv.claim_citation_batch(worker, size=10,
@@ -1622,7 +1623,10 @@ def test_no_registered_tool_writes_in_a_complete_folder(tmp_path):
     # no reader to call them with: whichever of the two refusals comes first —
     # this run is finished, or this slot may not call that tool — the call is
     # refused and the folder is untouched, which is what this test is about.
-    reader_only = set(srv.READER_TOOLS)
+    # The seal refuses for a reason of its own: the manuscript is written, and
+    # a finding may already cite the lines it wrote, so nothing re-seals it
+    # whatever state the rest of the run is in.
+    reader_only = {*srv.READER_TOOLS, 'seal_as_converted'}
     before = folder_digests(run.root)
 
     for name, call in calls.items():
@@ -1636,7 +1640,8 @@ def test_no_registered_tool_writes_in_a_complete_folder(tmp_path):
             continue
         if name in reader_only:
             assert ('complete' in answer['request_rejected']
-                    or 'may not' in answer['request_rejected']), (name, answer)
+                    or 'may not' in answer['request_rejected']
+                    or 'already sealed' in answer['request_rejected']), (name, answer)
             continue
         assert 'complete' in answer['request_rejected'], (name, answer)
     assert read_run(run.review)['status'] in names.COMPLETE_STATUSES

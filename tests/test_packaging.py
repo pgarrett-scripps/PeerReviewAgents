@@ -30,7 +30,7 @@ PLUGIN_FILES = (
     'peerreviewagents/plugin/pra/skills/follow-up/SKILL.md',
 )
 AGENTS = ('citation-worker', 'citations', 'core-reviewer', 'editor', 'field',
-          'figures-tables', 'methods-reporting', 'numbers', 'recorder', 'stats')
+          'figures-tables', 'methods-reporting', 'numbers', 'reader', 'recorder', 'stats')
 
 
 @pytest.fixture(scope='module')

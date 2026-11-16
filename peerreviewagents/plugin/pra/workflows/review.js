@@ -1,9 +1,10 @@
 export const meta = {
   name: 'review',
   description: 'Two-track peer review: ingest, N core reviewers and six specialists in parallel, editor, write the run',
-  whenToUse: 'Reviewing one manuscript PDF with PeerReviewAgents 0.10. Pass {pdf, out, reviewers, arm}, {prior_issues} to match a later round against an earlier run\'s issues.json, and {reviewer_models, specialist_model, editor_model, recorder_model, citation_worker_model} to choose the models.',
+  whenToUse: 'Reviewing one manuscript PDF with PeerReviewAgents 0.10. Pass {pdf, out, reviewers, arm}, {prior_issues} to match a later round against an earlier run\'s issues.json, {ai_read: false} to review the converted text with no Read stage, and {reviewer_models, specialist_model, editor_model, recorder_model, citation_worker_model, reader_model} to choose the models.',
   phases: [
     { title: 'Ingest', detail: 'import the PDF and fix the plan for this arm' },
+    { title: 'Read', detail: 'one model reads the page images, repairs the converted equations and tables, describes the figures, and seals the manuscript' },
     { title: 'Citations', detail: 'resolve every reference, then judge each in-text use against the source' },
     { title: 'Review', detail: 'core reviewers and specialists, in parallel, each isolated' },
     { title: 'Revision', detail: 'single-revision arm only: the reviewer revises its own findings' },
@@ -24,6 +25,11 @@ if (!run.pdf || !run.out) {
 }
 const REVIEWERS = run.reviewers || 3
 const ARM = run.arm || 'full-two-track'
+// One setting, not a fallback: `ai_read: false` reviews the converter's own
+// text, with its garbled equations and its figures left as bare captions, and
+// the run records that nothing read the pages. Anything else runs the Read
+// stage, and the server is the one that decides — this is passed through.
+const AI_READ = run.ai_read === false ? false : null
 
 const OPENED = {
   type: 'object',
@@ -31,7 +37,31 @@ const OPENED = {
     paper_id: { type: 'string' },
     title: { type: 'string' },
     arm: { type: 'string' },
-    line_count: { type: 'integer', description: 'how many lines paper.md holds' },
+    line_count: { type: 'integer', description: 'how many lines paper.md holds; omit it where '
+                                                + 'the response says sealed: false, because the '
+                                                + 'file does not exist yet' },
+    // The Read stage. `sealed: false` is a run whose manuscript is still a
+    // draft and whose reader has to seal it before any reviewer can claim a
+    // slot; `reader: null` is a run that was sealed at ingest as converted.
+    sealed: { type: 'boolean', description: "ingest's sealed, verbatim" },
+    ai_read: { type: 'boolean', description: "ingest's ai_read, verbatim" },
+    reader: {
+      type: 'object',
+      properties: {
+        slot: { type: 'string' },
+        model: { type: 'string' },
+        allowance: { type: 'integer', description: 'the reader\'s tool allowance' },
+      },
+      description: 'the reader entry ingest returned; omit it where it returned reader: null',
+    },
+    draft: {
+      type: 'object',
+      properties: {
+        pages: { type: 'integer', description: 'draft.pages' },
+        pieces: { type: 'integer', description: 'draft.pieces' },
+      },
+      description: 'the pages and pieces from the draft block; omit it where draft is null',
+    },
     slots: {
       type: 'array', items: { type: 'string' },
       description: 'the slot list ingest returned, verbatim',
@@ -89,6 +119,37 @@ const OPENED = {
   // — and `read_run` compares what ran against the plan afterwards, which is
   // the backstop for a relay that swaps two models rather than losing them.
   required: ['paper_id', 'arm', 'slots', 'recorder_key', 'claim_codes', 'models'],
+}
+
+// The seal, which is the Read stage's whole result: the manuscript exists or it
+// does not. The numbers come back here because they cannot exist before it —
+// there is no paper.md to count lines in and no ledger row to cite one — so the
+// citation lane below is sized from this answer rather than from ingest.
+const SEALED = {
+  type: 'object',
+  properties: {
+    sealed: { type: 'boolean', description: 'true only if seal_manuscript answered sealed: true' },
+    pages_viewed: { type: 'integer', description: 'ai_read.pages_viewed from the seal' },
+    pages: { type: 'integer', description: 'ai_read.pages from the seal' },
+    actions: { type: 'integer', description: 'ai_read.actions: pieces repaired or confirmed' },
+    tool_calls: { type: 'integer', description: 'ai_read.tool_calls from the seal' },
+    line_count: {
+      type: 'integer',
+      description: "statistics.lines['paper.md'] from the seal's response",
+    },
+    references: { type: 'integer', description: "the seal's citations.references; omit where "
+                                                + 'citations came back null' },
+    uses: { type: 'integer', description: "the seal's citations.uses; omit where citations came "
+                                          + 'back null' },
+    outstanding: {
+      type: 'integer',
+      description: 'how many pieces the last refusal said were still unaccounted for, where it '
+                   + 'refused; omit it otherwise',
+    },
+    refusal: { type: 'string', description: 'the request_rejected text of the last refusal, '
+                                            + 'verbatim; omit it where nothing refused' },
+  },
+  required: ['sealed'],
 }
 
 // A retry needs a code the first attempt has not spent.
@@ -327,6 +388,8 @@ const opened = await agent(
   + (run.citation_workers !== undefined && run.citation_workers !== null
     ? ', citation_workers=' + run.citation_workers : '')
   + (run.citation_worker_model ? ', citation_worker_model="' + run.citation_worker_model + '"' : '')
+  + (run.reader_model ? ', reader_model="' + run.reader_model + '"' : '')
+  + (AI_READ === false ? ', ai_read=false' : '')
   // A later round of the same paper. The path is passed straight through: the
   // server reads the file, and an issue the authors did not fix keeps the id it
   // was first reported under.
@@ -338,7 +401,12 @@ const opened = await agent(
   + ' citation stages are sized from. Copy'
   + ' the recorder_key, every claim_code and every models entry out of the response verbatim:'
   + ' they are the only copies, and each stage is handed its own code and its own model'
-  + ' from here.',
+  + ' from here.'
+  + ' Report sealed and ai_read as the response gives them, and — where the response holds them'
+  + ' rather than null — the reader entry and the draft\'s pages and pieces. A response with'
+  + ' sealed: false has no line count: leave that field out rather than reporting a zero. Do not'
+  + ' claim the reader slot and do not call any other tool: the Read stage is a separate agent'
+  + ' and the code is handed to it from here.',
   { label: 'ingest', phase: 'Ingest', agentType: 'pra:recorder', schema: OPENED },
 )
 if (!opened || !opened.slots || opened.slots.length === 0) {
@@ -376,7 +444,15 @@ const workerSlots = Object.keys(spawns).filter(slot => /^cite-[0-9]+$/.test(slot
   .concat((opened.citation_workers || []).filter(slot => /^cite-[0-9]+$/.test(slot)))
   .filter((slot, index, all) => all.indexOf(slot) === index)
   .filter(slot => !!codes[slot])
-const unplanned = slots.concat(workerSlots).filter(slot => !spawns[slot])
+// The reader is planned beside the stages and is not one of them: it works
+// before the review, on a draft, and files no report, so it is not in the slot
+// list `write_review` waits for. Its model still has to arrive, for the same
+// reason every other one does — the manuscript every reviewer reads is what it
+// writes, and a reader running a model the run did not record is a manuscript
+// nobody can account for.
+const readerSlot = opened.reader && opened.reader.slot ? opened.reader.slot : ''
+const unplanned = slots.concat(workerSlots).concat(readerSlot ? [readerSlot] : [])
+  .filter(slot => !spawns[slot])
 if (unplanned.length > 0) {
   await block('ingest returned no model for ' + unplanned.join(', ') + ', so '
     + (unplanned.length === 1 ? 'that slot' : 'those slots')
@@ -396,6 +472,109 @@ if (coreSlots.length > 0) {
     .map(s => s + ' ' + (assigned[s] || spawns[s])).join(', '))
 }
 
+// -- the Read stage ---------------------------------------------------------
+//
+// Between ingest and the reviewers. The converter mangles equations and tables
+// and returns no figure images at all, so one model reads the page images and
+// repairs the converted text, then seals it. Nothing else can start: a slot
+// cannot be claimed while the manuscript is a draft, because a finding cites
+// line numbers and before the seal there are none.
+//
+// The seal is also where the run's numbers come from. They are read off
+// paper.md and the ledger's rows cite its lines, so ingest cannot know them.
+
+phase('Read')
+const readerPrompt = code => 'You read this manuscript\'s pages and repair the converted text.'
+  + ' Call claim_agent with slot="' + readerSlot + '" and claim_code="' + code + '" first: it'
+  + ' returns your token, what the draft holds and what you have to account for. The code is'
+  + ' yours alone and works once. Then call read_draft — it costs nothing — and work through'
+  + ' every part of every document it names.'
+  + ' You must account for every equation, every table and every figure, and view every page:'
+  + ' for each piece either repair it from the page image (replace_equation, replace_table,'
+  + ' describe_figure, merge_equations for one equation the converter split, add_piece for one it'
+  + ' missed) or, having looked at the page, confirm_piece that the text is what the page prints.'
+  + ' A repair is refused unless you have viewed that page in this attempt, so view the page'
+  + ' before you touch anything on it. Transcribe and describe: do not judge the science and do'
+  + ' not correct what the authors printed, even an obvious typo.'
+  + ' Then call seal_manuscript. It refuses while anything is unaccounted for and names what is'
+  + ' left; finish those and seal again. Report whether it answered sealed: true, the ai_read'
+  + ' counts and the line count and citation counts from its response. If you cannot seal,'
+  + ' report sealed: false with the last refusal verbatim.'
+
+async function readStage() {
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const code = attempt === 1 ? codeFor(readerSlot) : await reissue(readerSlot, 'Read')
+    if (!code) {
+      log('the reader has no claim code, so the manuscript cannot be read')
+      return null
+    }
+    const result = await agent(readerPrompt(code), options(readerSlot, {
+      label: label(readerSlot, attempt), phase: 'Read', agentType: 'pra:reader', schema: SEALED,
+    }))
+    if (result && result.sealed) return Object.assign({ attempts: attempt }, result)
+    const what = result && result.refusal ? 'was refused the seal (' + result.refusal + ')'
+      : result ? 'reported back without sealing the manuscript' : 'returned nothing'
+    log('the reader ' + what + (attempt === 1 ? '; retrying once' : ''))
+  }
+  return null
+}
+
+// What the rest of the run is sized from, whichever path wrote the manuscript.
+let counts = opened.citations || null
+let lineCount = opened.line_count || 0
+let read = null
+if (opened.sealed) {
+  // `ai_read: false` — the explicit setting. ingest sealed the draft as the
+  // converter read it and there is no Read stage to run.
+  log('no Read stage: the manuscript is the converter\'s text, with garbled equations marked and'
+    + ' no figure described, and the run records that nothing read the pages')
+} else if (!readerSlot) {
+  await block('ingest returned an unsealed manuscript and no reader, so nothing can write the '
+    + 'manuscript and no reviewer can read it')
+} else {
+  log('reading ' + ((opened.draft && opened.draft.pages) || '?') + ' page(s) and '
+    + ((opened.draft && opened.draft.pieces) || '?') + ' piece(s) with '
+    + (assigned[readerSlot] || spawns[readerSlot]) + ', allowance '
+    + ((opened.reader && opened.reader.allowance) || '?') + ' call(s)')
+  read = await readStage()
+  if (read) {
+    log('read: ' + (read.pages_viewed || 0) + ' of ' + (read.pages || 0) + ' page(s) viewed, '
+      + (read.actions || 0) + ' piece(s) repaired or confirmed in ' + (read.tool_calls || 0)
+      + ' call(s)')
+    if (typeof read.references === 'number' || typeof read.uses === 'number') {
+      counts = { references: read.references || 0, uses: read.uses || 0 }
+    }
+    lineCount = read.line_count || lineCount
+  } else {
+    // The failure path, and the reason it is not a blocked run: with no
+    // manuscript there is nothing to review at all, so the draft is sealed as
+    // converted and the review goes ahead over the converter's text. The
+    // manifest says the paper was not AI-read, and every equation carries the
+    // garbled-equation marker it carried before this stage existed.
+    const fallback = await agent(
+      'The Read stage failed twice, so this run has no manuscript and no reviewer can claim a'
+      + ' slot. Seal it as converted: call seal_as_converted with recorder_key="' + recorderKey
+      + '" and reason="the reader stage returned twice without sealing the manuscript". Report'
+      + ' whether it answered sealed: true, statistics.lines[\'paper.md\'] as the line count and'
+      + ' its citations.references and citations.uses. If it refuses, report the refusal verbatim.',
+      options('recorder', {
+        label: 'seal as converted', phase: 'Read', agentType: 'pra:recorder', schema: SEALED,
+      }),
+    )
+    if (!fallback || !fallback.sealed) {
+      await block('the reader did not seal the manuscript and it could not be sealed as '
+        + 'converted' + (fallback && fallback.refusal ? ': ' + fallback.refusal : ''))
+    }
+    log('the manuscript was sealed as converted after the reader failed: the reviewers read the'
+      + ' converter\'s equations and no figure has a description')
+    if (typeof fallback.references === 'number' || typeof fallback.uses === 'number') {
+      counts = { references: fallback.references || 0, uses: fallback.uses || 0 }
+    }
+    lineCount = fallback.line_count || lineCount
+  }
+}
+if (lineCount > 0) log('the manuscript is ' + lineCount + ' line(s)')
+
 // -- the citation ledger ----------------------------------------------------
 //
 // Stage 1 happened inside ingest. Stage 2 is the server's own lookups, which
@@ -414,7 +593,9 @@ const RESOLVE_CALL_CEILING = 26
 // The reference count is the paper's, so the call count is too. A fixed twelve
 // calls covered 220 references and stopped: a 300-reference review left 80
 // unresolved, and the one number that said so was buried in the counts.
-const referenceCount = (opened.citations && opened.citations.references) || 0
+// The counts are the seal's, not ingest's: the ledger's rows cite lines, so it
+// is filled where the lines come into existence.
+const referenceCount = (counts && counts.references) || 0
 // A count the relay dropped asks for the whole allowance rather than the
 // floor: a call too many answers `remaining: 0` and costs one turn, and a call
 // too few leaves part of the reference list unchecked.
@@ -433,8 +614,9 @@ const workerAllowance = opened.citation_worker_allowance || 0
 
 async function resolveReferences() {
   return agent(
-    'This run keeps a citation ledger: ingest already filled one row per reference and one per'
-    + ' in-text use. The reference list holds ' + referenceCount + ' reference(s). Resolve them'
+    'This run keeps a citation ledger: the manuscript was sealed with one row per reference and'
+    + ' one per in-text use. The reference list holds ' + referenceCount + ' reference(s).'
+    + ' Resolve them'
     + ' now. Call resolve_citations with recorder_key="'
     + recorderKey + '" and limit=' + LOOKUP_LIMIT + ', and call it again while it answers'
     + ' remaining above zero and retry_after zero — at most ' + resolveCalls + ' times, which'
@@ -485,7 +667,7 @@ function sayWhatIsReachable(workers) {
       + ' references, ' + resolveReach + ' reachable in ' + resolveCalls + ' call(s), so about '
       + (referenceCount - resolveReach) + ' will be reported as never looked up')
   }
-  const uses = (opened.citations && opened.citations.uses) || 0
+  const uses = (counts && counts.uses) || 0
   // One claim plus one verdict per row of a batch, out of one worker's whole
   // tool allowance. It is what the server will serve, not an estimate of the
   // model's behaviour.
@@ -789,6 +971,18 @@ return {
   status: recorded.status,
   refusal: recorded.refusal || null,
   models: assigned,
+  // The Read stage, said plainly: `null` is a manuscript nothing read, which is
+  // either the explicit setting or a reader that failed, and the manifest in
+  // the run folder says which.
+  read: read && {
+    model: assigned[readerSlot] || spawns[readerSlot] || null,
+    attempts: read.attempts,
+    pages_viewed: read.pages_viewed || 0,
+    pages: read.pages || 0,
+    actions: read.actions || 0,
+    tool_calls: read.tool_calls || 0,
+  },
+  line_count: lineCount || null,
   stages: reported.map(r => ({
     slot: r.slot, attempts: r.attempts, reclosed: r.reclose_attempts || null,
     model: r.model || null,

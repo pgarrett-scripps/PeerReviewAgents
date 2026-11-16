@@ -16,6 +16,7 @@ the reader sees what it would see on a paper that had them.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,10 @@ from peerreviewagents.plugin import models as model_plan
 from peerreviewagents.plugin import server as srv
 
 FIXTURE = Path(__file__).parent / 'fixtures' / 'single-column.pdf'
+
+PLUGIN = Path(srv.__file__).parent / 'pra'
+READER_FILE = PLUGIN / 'agents' / 'reader.md'
+WORKFLOW = PLUGIN / 'workflows' / 'review.js'
 
 #: The converter's reading of equation (1): a brace it never closed, with its
 #: own confidence at 1.0 beside it, which is the case this stage exists for.
@@ -100,6 +105,7 @@ def drafted(tmp_path, pieces=CONVERTED, supplement=None, **kwargs):
     opened = srv.ingest(str(FIXTURE), str(root), **kwargs)
     assert 'request_rejected' not in opened, opened
     CODES.update({row['slot']: row['claim_code'] for row in opened.get('claim_codes', [])})
+    CODES['recorder_key'] = opened.get('recorder_key', '')
     return opened
 
 
@@ -391,6 +397,40 @@ def test_a_run_without_a_reader_is_sealed_as_converted_and_says_so(tmp_path):
     assert not (srv.current().workspace / DRAFT_FILE).exists()
 
 
+def test_a_reader_that_never_sealed_leaves_the_recorder_to_seal_as_converted(tmp_path):
+    """The failure path: no manuscript is no review, so the recorder writes one."""
+    opened, token = reading(tmp_path)
+    # The reader got part way — one repair — and never sealed.
+    marks = ids_of(token)
+    assert 'request_rejected' not in srv.view_page(token, 1)
+    assert 'request_rejected' not in srv.replace_equation(token, marks['mangled'], 1,
+                                                          'E = m c^{2}', '(1)')
+    assert 'request_rejected' in srv.seal_manuscript(token), 'there is work left'
+    # No reviewer can work until there is a manuscript, so the run is not
+    # blocked on the reader: it is sealed as the converter read it.
+    assert 'request_rejected' in srv.claim_agent('core-1', CODES['core-1'])
+    refused = srv.seal_as_converted('not-the-key')
+    assert 'recorder' in refused['request_rejected']
+    sealed = srv.seal_as_converted(CODES['recorder_key'], reason='the reader stopped after one '
+                                   'repair and reported nothing')
+    assert sealed['sealed'] is True and sealed['ai_read']['read'] is False
+    assert 'did not seal' in sealed['ai_read']['reason']
+    assert 'stopped after one repair' in sealed['ai_read']['reason']
+    assert sealed['statistics']['lines'][paper_base.MAIN_DOCUMENT] > 0
+    assert 'citations' in sealed and sealed['sections']
+    # The repair the reader did finish is in the manuscript — it is the draft
+    # that was sealed, not the converter's output a second time — and the run
+    # still says the paper was not AI-read, which is the claim that matters.
+    _, rows, manifest = base_of(srv.current())
+    assert any(row['source'] == 'ai-reconstructed' for row in rows)
+    assert manifest['ai_read']['read'] is False
+    assert 'claude' not in manifest['known_gaps']['figures'], 'no figure was described'
+    # And now the reviewers can work, while the reader cannot.
+    assert 'agent_token' in srv.claim_agent('core-1', CODES['core-1'])
+    assert 'request_rejected' in srv.read_draft(token)
+    assert 'already sealed' in srv.seal_as_converted(CODES['recorder_key'])['request_rejected']
+
+
 def test_a_finding_cites_the_lines_the_seal_wrote(tmp_path):
     """A reviewer quotes a repaired equation, and the line it cites is the sealed one."""
     opened, token = reading(tmp_path)
@@ -497,3 +537,53 @@ def test_a_supplement_is_read_and_accounted_for_as_a_document_of_its_own(tmp_pat
     assert 'supplement-s1.md' in run.base.document_names()
     assert '$$ x = y \\tag{(S1)} $$' in (
         run.workspace / 'supplement-s1.md').read_text(encoding='utf-8')
+
+
+# -- the stage as the plugin ships it --------------------------------------
+#
+# The server holds the rules; these hold the three files that have to agree
+# with it, because a reader whose agent file stops it short of the seal leaves
+# a draft nothing can write, and that is a run with no manuscript at all.
+
+
+def test_the_readers_turn_cap_is_the_one_its_allowance_is_built_on():
+    front = READER_FILE.read_text(encoding='utf-8').split('---')[1]
+    stated = re.search(r'^maxTurns:\s*(\d+)\s*$', front, re.MULTILINE)
+    assert stated, front
+    assert int(stated.group(1)) == srv.READER_MAX_TURNS
+    assert srv.READER_CALL_CEILING == srv.READER_MAX_TURNS - srv.READER_TURN_RESERVE
+    # The allowance for a big paper still fits inside the cap it is spent under.
+    assert srv.reader_call_budget(40, 60) <= srv.READER_CALL_CEILING < srv.READER_MAX_TURNS
+
+
+def test_the_reader_is_given_every_tool_the_stage_needs_and_nothing_else():
+    """A tool the agent file omits is a piece that can never be accounted for."""
+    front = READER_FILE.read_text(encoding='utf-8').split('---')[1]
+    listed = re.search(r'^tools: (.+)$', front, re.MULTILINE).group(1)
+    names_listed = [name.strip().split('__')[-1] for name in listed.split(',')]
+    assert names_listed == ['claim_agent', *srv.READER_TOOLS]
+    # It reads and describes; it files nothing and judges nothing.
+    for forbidden in ('submit_finding', 'write_review', 'view_paper', 'seal_as_converted'):
+        assert forbidden not in listed
+    model = re.search(r'^model: (.+)$', front, re.MULTILINE).group(1).strip()
+    assert model == model_plan.DEFAULT_READER_MODEL
+
+
+def test_the_workflow_runs_the_read_stage_before_anything_claims_a_slot():
+    source = WORKFLOW.read_text(encoding='utf-8')
+    read_at = source.index("phase('Read')")
+    assert read_at < source.index("phase('Review')")
+    # The reader is claimed like every other slot, with its own code and type.
+    assert "agentType: 'pra:reader'" in source
+    assert 'codeFor(readerSlot)' in source and "reissue(readerSlot, 'Read')" in source
+    # Its model has to arrive, the same as every other slot's.
+    assert 'concat(readerSlot ? [readerSlot] : [])' in source
+    # The failure path and the explicit setting, both ending in one writer.
+    assert 'seal_as_converted' in source
+    assert 'ai_read=false' in source
+    # The counts come from the seal, because the ledger's rows cite its lines.
+    assert 'opened.citations &&' not in source
+    for sized in ('const referenceCount = (counts && counts.references)',
+                  'const uses = (counts && counts.uses)'):
+        assert sized in source, sized
+    assert source.index('let counts = ') < source.index('const referenceCount = ')
