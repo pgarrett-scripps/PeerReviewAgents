@@ -109,6 +109,49 @@ def test_composed_lines_are_one_piece_each_and_carry_no_ids():
     assert rows[0]['fingerprint'] == paper_text.fingerprint('# A title')
 
 
+def test_a_repaired_piece_keeps_what_it_replaced(tmp_path):
+    """``source`` says a model wrote this; ``original`` says what it wrote over.
+
+    Without the second there is no way to audit a repair: a reader is told the
+    equation was read off the page and cannot see the reading it replaced, so a
+    model that silently "corrected" the algebra the authors printed would be
+    indistinguishable from one that fixed a conversion fault.
+    """
+    markdown, rows = paper_base.compose([
+        {'kind': 'equation', 'latex': 'T_b = \\sum_i \\phi_i x_i', 'number': '6',
+         'section': 'Methods', 'page': 3, 'source': 'ai-reconstructed',
+         'original': {'latex': 'T_b = i x_i'}},
+        {'kind': 'figure', 'text': 'Figure 1. Measured gain.', 'section': 'Results', 'page': 3},
+        {'kind': 'figure-description', 'text': 'Gain in dBi against angle in degrees;\n'
+                                               'the main lobe peaks at 14 dBi.',
+         'section': 'Results', 'page': 3, 'source': 'ai', 'original': {}},
+        {'kind': 'paragraph', 'text': 'Printed text.', 'section': 'Results', 'page': 3},
+    ])
+    assert markdown.splitlines() == [
+        '$$ T_b = \\sum_i \\phi_i x_i \\tag{6} $$', '',
+        'Figure: Figure 1. Measured gain.', '',
+        'Figure description: Gain in dBi against angle in degrees; the main lobe peaks at 14 dBi.',
+        '', 'Printed text.']
+    assert [row['source'] for row in rows] == ['ai-reconstructed', 'text', 'ai', 'text']
+    assert rows[0]['original'] == {'latex': 'T_b = i x_i'}
+    # A description the converter never produced has nothing to keep, and an
+    # empty mapping says that rather than leaving the field out.
+    assert rows[2]['original'] == {}
+    # A piece the converter did produce carries no `original` at all: there is
+    # nothing it replaced, and a null column on every untouched row would
+    # invite a reader to believe otherwise.
+    assert 'original' not in rows[1] and 'original' not in rows[3]
+
+
+def test_a_workspace_of_the_previous_shape_is_refused_by_name(tmp_path):
+    paper_base.write_base(tmp_path, {paper_base.MAIN_DOCUMENT: [
+        {'kind': 'title', 'text': 'A title', 'section': 'Front matter'}]})
+    (tmp_path / 'manifest.json').write_text('{"schema_version": "paper-base-v1"}',
+                                            encoding='utf-8')
+    with pytest.raises(ValueError, match='paper-base-v1'):
+        paper_base.load(tmp_path)
+
+
 def test_a_table_owns_every_row_it_printed(tmp_path):
     rows = paper_base.write_base(tmp_path, {paper_base.MAIN_DOCUMENT: [
         {'kind': 'paragraph', 'text': 'Before the table.', 'section': 'Results'},

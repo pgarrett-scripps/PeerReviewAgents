@@ -25,8 +25,18 @@ FINDING_SCHEMA_VERSION = 'review-finding-v4'
 
 #: What ``map.json`` and ``manifest.json`` of a manuscript workspace are. The
 #: base is written once and never edited, so a reader checks this before
-#: trusting the rows.
-BASE_SCHEMA_VERSION = 'paper-base-v1'
+#: trusting the rows. ``paper-base-v2`` is the first shape whose rows can carry
+#: a repair: a piece a model read off the page image keeps the converter's
+#: words in ``original``, and the manifest says in ``ai_read`` whether the
+#: manuscript was read at all. ``paper-base-v1`` is refused by name — it has no
+#: field that says which pieces are the converter's own, so a consumer reading
+#: one cannot tell a transcription from a reconstruction.
+BASE_SCHEMA_VERSION = 'paper-base-v2'
+
+#: What ``draft.json`` is: the converted pieces before the base is written.
+#: A draft is this run's working copy, not a manuscript — it has no line
+#: numbers, nothing cites it, and it is replaced by the base at the seal.
+DRAFT_SCHEMA_VERSION = 'paper-draft-v1'
 
 #: The name of the main document of a manuscript workspace. Supplements are
 #: ``supplement-<name>.md`` beside it, and every citation names its document.
@@ -55,5 +65,6 @@ COMPLETE_STATUSES = (COMPLETE, COMPLETE_WITHOUT_FINDINGS)
 CLI_COMMANDS = ('review', 'report')
 
 __all__ = ['RUN_DIRECTORY', 'MANUSCRIPT_DIRECTORY', 'FINDING_SCHEMA_VERSION',
-           'BASE_SCHEMA_VERSION', 'MAIN_DOCUMENT', 'RUN_STATUSES', 'COMPLETE_STATUSES',
+           'BASE_SCHEMA_VERSION', 'DRAFT_SCHEMA_VERSION',
+           'MAIN_DOCUMENT', 'RUN_STATUSES', 'COMPLETE_STATUSES',
            'RUNNING', 'BLOCKED', 'COMPLETE', 'COMPLETE_WITHOUT_FINDINGS', 'CLI_COMMANDS']
