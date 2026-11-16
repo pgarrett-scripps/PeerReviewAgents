@@ -122,14 +122,22 @@ TRACK_TOOLS = {
     # own: everything it may see is already in the ledger row it claimed, so
     # its verdict is about that row and cannot wander into the manuscript.
     'citation-worker': (),
+    # The reader works on the draft, before the manuscript exists, so none of
+    # the manuscript tools apply to it: `read_paper` reads a base it would be
+    # writing, and a finding is not its business. Its tools are granted in
+    # :meth:`Run.claim` beside this list, like the ledger's.
+    'reader': (),
 }
 
 CALL_BUDGET = {'core': 30, 'specialist': 20, 'editor': 12, 'recorder': 2,
                # One claim plus the verdicts for it, three batches over: a
                # worker that has spent this has judged thirty citation uses.
-               'citation-worker': 40}
+               'citation-worker': 40,
+               # Never used: the reader's allowance is the manuscript's size.
+               # Here so that a role is never missing from this table.
+               'reader': 0}
 EXTERNAL_BUDGET = {'core': 24, 'specialist': 16, 'editor': 0, 'recorder': 0,
-                   'citation-worker': 0}
+                   'citation-worker': 0, 'reader': 0}
 # Raised from 600 when the citation ledger arrived: a 60-reference paper has
 # roughly 90 in-text uses, and one verdict is one tool call, so the workers
 # alone can spend a hundred calls that no reviewer used to make. The reviewers'
@@ -190,6 +198,63 @@ def editor_call_budget(findings):
     batches = -(-count // limit) if count else 0
     return min(EDITOR_CALL_CEILING, EDITOR_BASE_CALLS + 2 * batches + count // 4)
 
+
+#: The reader's turn cap, which must equal ``maxTurns`` in ``pra/agents/reader.md``.
+READER_MAX_TURNS = 220
+#: The turns the reader spends on something other than a page or a piece:
+#: claiming the slot, reading the draft (which is paginated), the seal, and
+#: slack for a refused repair it then makes correctly.
+READER_TURN_RESERVE = 14
+#: The most calls a reader may be given, whatever the paper's size.
+READER_CALL_CEILING = READER_MAX_TURNS - READER_TURN_RESERVE
+
+
+def reader_call_budget(pages, pieces):
+    """The reader's tool allowance for a manuscript of *pages* and *pieces*.
+
+    Not a constant, because the work is not: the reader must look at every
+    page and account for every equation, table and figure on it, so a
+    four-page letter and a forty-page paper with sixty figures are not the
+    same job. A fixed allowance would be generous for the first and run out
+    half way down the second — and a reader that runs out half way leaves a
+    draft that cannot be sealed at all, because the seal is refused while
+    anything is unaccounted for.
+
+    One call per page to view it, two per repairable piece (the reader reads
+    it against the page and then repairs or confirms it), and a base for
+    reading the draft itself and sealing at the end.
+    """
+    pages = max(0, int(pages or 0))
+    pieces = max(0, int(pieces or 0))
+    return min(READER_CALL_CEILING, 10 + pages + 2 * pieces)
+
+
+#: How a launcher says this run is to be sealed as converted, with no reader.
+#: One setting, in one place. The values that mean no are the shell's usual
+#: ones; anything else, including the variable being unset, means a reader runs.
+AI_READ_ENVIRONMENT = 'PEERREVIEW_AI_READ'
+NO_VALUES = ('0', 'no', 'off', 'false', 'none')
+
+
+def ai_read_setting(asked=True, environ=None):
+    """Whether this run gets a reader: the caller's answer, and the environment's.
+
+    The environment can only turn the reader *off*. Running without one is the
+    user's choice about their own manuscript — and about what they are willing
+    to pay for — and a workflow that passes nothing must not be able to put a
+    reader back into a run the user said to do without. There is no path the
+    other way: a reader that fails does not quietly become a run without one,
+    it is a seal that says the paper was not AI-read.
+    """
+    environ = os.environ if environ is None else environ
+    value = str(environ.get(AI_READ_ENVIRONMENT) or '').strip().casefold()
+    return bool(asked) and value not in NO_VALUES
+
+
+#: The piece kinds the reader must account for one by one: the three the
+#: converter either garbles (an equation, a table) or cannot represent at all
+#: (a figure, which is an image it only has the caption of).
+READABLE_KINDS = ('equation', 'table', 'figure')
 
 #: How many Haiku workers judge the in-text citations, unless a run says otherwise.
 CITATION_WORKERS = 4
@@ -472,7 +537,7 @@ class Run:
     def __init__(self, pdf, root, reviewers, arm, literature_cutoff, plugin_root, title=None,
                  tracks=None, reviewer_models=None, specialist_model=None, editor_model=None,
                  recorder_model=None, citation_workers=None, citation_worker_model=None,
-                 prior_issues=None, supplements=None):
+                 prior_issues=None, supplements=None, reader_model=None, ai_read=True):
         if arm not in ARMS:
             raise ValueError('Unknown arm: ' + arm + '. Arms: ' + ', '.join(sorted(ARMS)))
         self.arm = arm
@@ -506,7 +571,16 @@ class Run:
             'recorder': model_plan.choice(recorder_model, model_plan.DEFAULT_RECORDER_MODEL),
             'citation_worker': model_plan.choice(
                 citation_worker_model, model_plan.DEFAULT_CITATION_WORKER_MODEL),
+            'reader': model_plan.choice(reader_model, model_plan.DEFAULT_READER_MODEL),
         }
+        # Whether a model reads this manuscript against its own page images
+        # before any reviewer sees it. One setting, decided here and recorded
+        # in the manifest either way: a run without a reader is a run over the
+        # converter's text, with the converter's mangled equations and no
+        # figure descriptions at all, and nothing downstream may have to guess
+        # which of the two it is reading.
+        self.ai_read = bool(ai_read)
+        self.reader_slots = ('reader',) if self.ai_read else ()
         # The citation workers. They are planned here with everything else, so
         # an unavailable Haiku is refused before a lookup is made rather than
         # after the whole reference list has been resolved.
@@ -514,10 +588,10 @@ class Run:
                                       else citation_workers)
         self.citation_workers = citation_slots(arm, self.citation_worker_count, self.tracks)
         self.models = model_plan.refuse(model_plan.assign(
-            (*self.required_slots(), *self.citation_workers, 'recorder'),
+            (*self.reader_slots, *self.required_slots(), *self.citation_workers, 'recorder'),
             reviewers=self.reviewer_models, specialist=specialist_model,
             editor=editor_model, recorder=recorder_model,
-            citation_worker=citation_worker_model))
+            citation_worker=citation_worker_model, reader=reader_model))
         self.root = Path(root).resolve()
         self.workspace = self.root / MANUSCRIPT_DIRECTORY
         self.review = self.root / RUN_DIRECTORY
@@ -585,7 +659,8 @@ class Run:
         # else. Without this a reviewer that knows a slot name is that slot.
         self.recorder_key = secrets.token_hex(16)
         self.claim_codes = {slot: secrets.token_hex(8)
-                            for slot in (*self.required, *self.citation_workers, 'recorder')}
+                            for slot in (*self.reader_slots, *self.required,
+                                         *self.citation_workers, 'recorder')}
         self.write_progress()
         # Identity at ingest, not only at the end. A run that is killed — a
         # token ceiling, the wall clock, a rate limit, a session error — used to
@@ -725,10 +800,14 @@ class Run:
         the specialists exist, and reviewer isolation is one of the things the
         study arms compare.
         """
-        if slot not in (*self.required, *self.citation_workers, 'recorder'):
+        if slot not in (*self.reader_slots, *self.required, *self.citation_workers, 'recorder'):
             raise ValueError('Slot ' + slot + ' is not part of this run.')
         if slot == 'recorder':
             return 'recorder', 'recorder', tuple(self.required)
+        if slot == 'reader':
+            # The reader sees no review stage: it works before there are any,
+            # on a draft no reviewer has read.
+            return 'reader', 'reader', ()
         if slot == 'editor':
             return 'editor', 'editor', tuple(self.required)
         if slot in self.citation_workers:
@@ -738,6 +817,23 @@ class Run:
         if slot == 'revision-1':
             return 'core', 'core', ('core-1', 'revision-1')
         return 'core', 'core', (slot,)
+
+    def reading_size(self):
+        """``(pages, pieces)``: what the reader has to account for, one by one.
+
+        The pages are the PDF's, because the reader must look at every one of
+        them — a piece the converter dropped is only found on the page it was
+        printed on. The pieces are the equations, tables and figures, which
+        are the three kinds it repairs or confirms.
+        """
+        statistics = self.base.manifest.get('statistics') or {}
+        pages = statistics.get('pdf_pages') or 0
+        pieces = sum(1 for row in self.base.rows if row.get('kind') in READABLE_KINDS)
+        return int(pages or 0), pieces
+
+    def reader_allowance(self):
+        """The reader's tool allowance for this manuscript."""
+        return reader_call_budget(*self.reading_size())
 
     def editor_capacity(self):
         """Why this ledger is past what the editor path supports, or ``None``.
@@ -815,8 +911,15 @@ class Run:
         # manuscript however many findings come out of it. The editor's work is
         # the findings themselves, so its allowance is measured from the ledger
         # it is handed — see :func:`editor_call_budget`.
-        budget = (editor_call_budget(len(self.pooled())) if role == 'editor'
-                  else CALL_BUDGET['specialist' if role == 'specialist' else role])
+        # Two slots are measured against the work in front of them rather than
+        # given a constant: the editor against the ledger it is handed, and the
+        # reader against the pages and pieces it must account for.
+        if role == 'editor':
+            budget = editor_call_budget(len(self.pooled()))
+        elif role == 'reader':
+            budget = self.reader_allowance()
+        else:
+            budget = CALL_BUDGET['specialist' if role == 'specialist' else role]
         # The allowance belongs to the slot, not to the claim. A second attempt
         # continues the first one's count, so a re-claim cannot buy more calls.
         used = self.slot_calls.get(slot, 0)
@@ -1310,6 +1413,12 @@ class Run:
             'literature_cutoff': self.cutoff,
             'version': WORKFLOW_VERSION,
             'finding_schema_version': FINDING_SCHEMA_VERSION,
+            # Whether a model read this manuscript against its page images, and
+            # which. A published review is read beside the text it was written
+            # about, and the two runs are not the same evidence.
+            'ai_read': self.ai_read,
+            'reader_model': self.models.get('reader'),
+            'reader_tool_allowance': self.reader_allowance() if self.ai_read else None,
             'independent_tool_allowance': CALL_BUDGET['core'],
             'specialist_tool_allowance': CALL_BUDGET['specialist'],
             'editor_tool_allowance': editor_call_budget(len(self.pooled())),
@@ -1376,7 +1485,7 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
            editor_model: str = '', recorder_model: str = '',
            citation_workers: int = CITATION_WORKERS,
            citation_worker_model: str = '', prior_issues: str = '',
-           supplements: str = '') -> dict:
+           supplements: str = '', reader_model: str = '', ai_read: bool = True) -> dict:
     """Open a run: import the manuscript PDF and fix the plan. Safe to call twice.
 
     ``tracks`` narrows the specialist track to the ones named; the default is
@@ -1401,6 +1510,14 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
     run open. The ledger itself is filled here, from the manuscript, with no
     model and no lookup; ``resolve_citations`` does the lookups next.
 
+    ``reader_model`` is the model that reads the manuscript against its own
+    page images before any reviewer sees it, and ``ai_read`` is whether one
+    does at all. The reader is returned as ``reader``, apart from ``slots``:
+    it is not a stage of the review and files no report. With ``ai_read``
+    false — or ``PEERREVIEW_AI_READ`` set to ``0`` in the session, which turns
+    the reader off whatever this call asks for — the draft is sealed as the
+    converter produced it, and the manifest says the paper was not AI-read.
+
     ``supplements`` is a folder of supplementary files to import beside the
     manuscript. A ``.docx`` becomes a document of its own — its own ``.md``, its
     own lines, read through ``read_paper`` by name and quoted and cited like any
@@ -1420,7 +1537,7 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
         # with PEERREVIEW_* variables set and a workflow that passes no model
         # arguments reach the same answer instead of two.
         settled = model_plan.settle(reviewer_models, specialist_model, editor_model,
-                                    recorder_model, citation_worker_model)
+                                    recorder_model, citation_worker_model, reader_model)
     except ValueError as exc:
         return rejection(str(exc))
     run = STATE['run']
@@ -1451,7 +1568,7 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
         # The claim codes are minted once and go back once. A second caller
         # attaching to a live run is not the recorder: no identities, and not
         # the slot list either — nor the per-slot models, which name the slots.
-        hidden = ('slots', 'models', 'citation_workers')
+        hidden = ('slots', 'models', 'citation_workers', 'reader')
         return {k: v for k, v in summary_of(run).items()
                 if k not in hidden} | {'attached': True}
     if run is not None:
@@ -1466,7 +1583,9 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
                   citation_workers=citation_workers,
                   citation_worker_model=settled.get('citation_worker'),
                   prior_issues=prior_issues or None,
-                  supplements=supplements or None)
+                  supplements=supplements or None,
+                  reader_model=settled.get('reader'),
+                  ai_read=ai_read_setting(ai_read))
     except (ValueError, KeyError, TypeError, OSError) as exc:
         return rejection(str(exc))
     STATE['run'] = run
@@ -1493,6 +1612,13 @@ def summary_of(run):
         'status': run.status,
         'statistics': run.base.manifest.get('statistics'),
         'slots': list(run.required) + ['recorder'],
+        # The Read stage, apart from the review stages on purpose: the reader
+        # works before them, on a draft, and files no report, so it is never
+        # one of the slots `write_review` waits for. `null` is a run that will
+        # be sealed as converted.
+        'reader': ({'slot': 'reader', 'model': run.models.get('reader'),
+                    'allowance': run.reader_allowance()} if run.ai_read else None),
+        'ai_read': run.ai_read,
         # The citation workers, apart from the stages on purpose: they are
         # fanned out over the ledger and none of them is required to report.
         'citation_workers': list(run.citation_workers),

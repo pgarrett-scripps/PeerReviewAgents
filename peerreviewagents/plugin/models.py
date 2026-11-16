@@ -70,6 +70,14 @@ KNOWN = tuple(sorted(ALIASES.values()))
 
 DEFAULT_REVIEWER_MODELS = ('claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5')
 DEFAULT_SPECIALIST_MODEL = 'claude-sonnet-5-5'
+#: The reader that transcribes the manuscript against its own page images
+#: before any reviewer sees it. Sonnet because the whole job is reading
+#: pictures of pages: every equation and table is checked against the image it
+#: was printed on and every figure is described from one, so a model that reads
+#: images poorly would produce a base that is wrong in a way nothing downstream
+#: can detect. It is one pass over one paper, so it is also the one place where
+#: paying for the better reader is cheapest.
+DEFAULT_READER_MODEL = 'claude-sonnet-5-5'
 DEFAULT_EDITOR_MODEL = 'claude-fable-5-2'
 DEFAULT_RECORDER_MODEL = 'claude-haiku-5-5'
 #: The citation workers that judge one in-text citation against its source.
@@ -88,6 +96,7 @@ FLAG = {
     'editor': '--editor-model',
     'recorder': '--recorder-model',
     'citation-worker': '--citation-worker-model',
+    'reader': '--reader-model',
 }
 #: How the starter hands the choice to the session it launches.
 ENVIRONMENT = {
@@ -96,6 +105,7 @@ ENVIRONMENT = {
     'editor': 'PEERREVIEW_EDITOR_MODEL',
     'recorder': 'PEERREVIEW_RECORDER_MODEL',
     'citation-worker': 'PEERREVIEW_CITATION_WORKER_MODEL',
+    'reader': 'PEERREVIEW_READER_MODEL',
 }
 #: Where Claude Code reads ``availableModels`` from, highest precedence first.
 MANAGED_SETTINGS = (
@@ -179,7 +189,8 @@ def from_environment(environ=None):
     if reviewers:
         chosen['reviewers'] = list(reviewers)
     for key, role in (('specialist', 'specialist'), ('editor', 'editor'),
-                      ('recorder', 'recorder'), ('citation_worker', 'citation-worker')):
+                      ('recorder', 'recorder'), ('citation_worker', 'citation-worker'),
+                      ('reader', 'reader')):
         value = str(environ.get(ENVIRONMENT[role]) or '').strip()
         if value:
             chosen[key] = normalize(value)
@@ -187,7 +198,7 @@ def from_environment(environ=None):
 
 
 def settle(reviewers=None, specialist=None, editor=None, recorder=None, citation_worker=None,
-           environ=None):
+           reader=None, environ=None):
     """What a run asked for: the arguments it was given, over the environment.
 
     This is the only merge of the two, so the process that launches a session
@@ -206,7 +217,7 @@ def settle(reviewers=None, specialist=None, editor=None, recorder=None, citation
     if listed:
         chosen['reviewers'] = list(listed)
     for value, key in ((specialist, 'specialist'), (editor, 'editor'), (recorder, 'recorder'),
-                       (citation_worker, 'citation_worker')):
+                       (citation_worker, 'citation_worker'), (reader, 'reader')):
         text = str(value or '').strip()
         if text:
             chosen[key] = normalize(text)
@@ -214,7 +225,7 @@ def settle(reviewers=None, specialist=None, editor=None, recorder=None, citation
 
 
 def to_environment(reviewers=None, specialist=None, editor=None, recorder=None,
-                   citation_worker=None):
+                   citation_worker=None, reader=None):
     """The variables that carry a choice into a launched session, or ``{}``.
 
     Only what the caller actually chose is passed on: an unset variable leaves
@@ -226,7 +237,7 @@ def to_environment(reviewers=None, specialist=None, editor=None, recorder=None,
     if listed:
         chosen[ENVIRONMENT['core']] = ','.join(listed)
     for value, role in ((specialist, 'specialist'), (editor, 'editor'), (recorder, 'recorder'),
-                        (citation_worker, 'citation-worker')):
+                        (citation_worker, 'citation-worker'), (reader, 'reader')):
         text = str(value or '').strip()
         if text:
             chosen[ENVIRONMENT[role]] = normalize(text)
@@ -239,6 +250,8 @@ def role_of(slot):
         return 'editor'
     if slot == 'recorder':
         return 'recorder'
+    if slot == 'reader':
+        return 'reader'
     if str(slot).startswith('spec-'):
         return 'specialist'
     if str(slot).startswith('cite-'):
@@ -257,7 +270,7 @@ def _index(slot):
 
 
 def assign(slots, reviewers=None, specialist=None, editor=None, recorder=None,
-           citation_worker=None):
+           citation_worker=None, reader=None):
     """The model for every slot in ``slots``, as an ordered ``{slot: model}``.
 
     ``reviewers`` is the ordered list; the rest are one model each. Anything
@@ -270,6 +283,7 @@ def assign(slots, reviewers=None, specialist=None, editor=None, recorder=None,
     editor = choice(editor, DEFAULT_EDITOR_MODEL)
     recorder = choice(recorder, DEFAULT_RECORDER_MODEL)
     citation_worker = choice(citation_worker, DEFAULT_CITATION_WORKER_MODEL)
+    reader = choice(reader, DEFAULT_READER_MODEL)
     out = {}
     for slot in slots:
         role = role_of(slot)
@@ -281,6 +295,8 @@ def assign(slots, reviewers=None, specialist=None, editor=None, recorder=None,
             out[slot] = editor
         elif role == 'citation-worker':
             out[slot] = citation_worker
+        elif role == 'reader':
+            out[slot] = reader
         else:
             out[slot] = recorder
     return out
