@@ -24,12 +24,15 @@ from __future__ import annotations
 import re
 
 #: The schema every ``issues.json`` is stamped with, in its ``schema_version``.
-ISSUES_SCHEMA_VERSION = 'review-issues-v1'
+ISSUES_SCHEMA_VERSION = 'review-issues-v2'
 
 #: Every schema this version can read. A stamp is only worth writing if someone
 #: checks it: :func:`schema_problem` is that check, and the reader, the prior-round
 #: loader and the renderer all go through it rather than each deciding for itself.
-KNOWN_ISSUES_SCHEMAS = ('review-issues-v1',)
+#: ``v2`` is where evidence became lines in the manuscript instead of block ids,
+#: and a ``v1`` file is refused rather than read as though its ids meant
+#: something here: nothing in this release can turn one into the other.
+KNOWN_ISSUES_SCHEMAS = ('review-issues-v2',)
 
 #: An issue's severity. The same three words a finding carries, because an
 #: issue's severity is the editor's judgement of the same scale.
@@ -111,11 +114,12 @@ TRACK_CATEGORY = {
     'citations': 'literature-and-citations',
 }
 
-#: The member fields an issue keeps as evidence. The quote and the block ids
-#: are kept on the member, so a reader of ``issues.json`` alone can go to the
-#: manuscript without opening ``findings.jsonl``.
+#: The member fields an issue keeps as evidence. The quote and the lines it was
+#: found on are kept on the member, so a reader of ``issues.json`` alone can
+#: open ``paper.md`` at the line without opening ``findings.jsonl``.
+#: ``document`` is empty for the manuscript and names the supplement otherwise.
 MEMBER_FIELDS = ('finding_uid', 'slot', 'track', 'severity', 'kind', 'basis', 'escalate',
-                 'title', 'block_id', 'quote', 'evidence_blocks')
+                 'title', 'document', 'line', 'end_line', 'quote', 'evidence_lines')
 
 #: Every field on every issue row of ``issues.json``, live or closed, edited or
 #: synthesised. A field that does not apply to a row is ``null``, or ``[]``
@@ -123,7 +127,7 @@ MEMBER_FIELDS = ('finding_uid', 'slot', 'track', 'severity', 'kind', 'basis', 'e
 #: consumer reads a field by name instead of testing for its presence, and
 #: ``docs/INTEGRATIONS.md`` documents this list.
 ISSUE_FIELDS = ('id', 'name', 'severity', 'category', 'rank', 'statement', 'members',
-                'raised_by', 'rebuttal_block_id', 'rebuttal_quote', 'prior_id', 'prior_rank',
+                'raised_by', 'rebuttal_line', 'rebuttal_quote', 'prior_id', 'prior_rank',
                 'status', 'status_reason', 'text_unchanged_reason', 'surviving_quotes',
                 'audits')
 
@@ -323,18 +327,35 @@ def quotes_of(issue) -> list:
                                                                                list) else []
 
 
-def block_ids_of(row) -> list:
-    """Every manuscript block a finding or member points at: anchor, then evidence.
+def lines_of(row) -> list:
+    """Every manuscript line a finding or member points at: anchor, then evidence.
 
-    ``evidence_blocks`` is a list of block ids in everything this engine writes.
-    A reader that spread it into a list crashed on a number and silently took a
-    string apart one character at a time, so the ids come through here instead:
-    text, in order, with the empty ones dropped.
+    The anchor is ``line`` through ``end_line`` — one line where the quote sits
+    on one — and ``evidence_lines`` is a list of further line numbers. A reader
+    that spread either into a list crashed on a number and silently took a
+    string apart one character at a time, so the numbers come through here
+    instead: ints, in order, each once, with anything that is not a positive
+    line number dropped.
     """
     row = row if isinstance(row, dict) else {}
-    evidence = row.get('evidence_blocks')
+    evidence = row.get('evidence_lines')
     evidence = evidence if isinstance(evidence, (list, tuple)) else []
-    return [str(block) for block in [row.get('block_id'), *evidence] if block]
+    first, last = _line(row.get('line')), _line(row.get('end_line'))
+    anchor = list(range(first, max(first, last or first) + 1)) if first else []
+    out = []
+    for number in [*anchor, *[_line(value) for value in evidence]]:
+        if number and number not in out:
+            out.append(number)
+    return out
+
+
+def _line(value):
+    """*value* as a line number, or ``None`` where it is not one."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
 
 
 def audits_of(issue) -> list:
@@ -607,7 +628,7 @@ def synthesize(findings, reason=None, prior=(), spent=(), surviving=None) -> lis
             'statement': str(finding.get('comment') or ''),
             'members': [member_of(finding)],
             'raised_by': 1,
-            'rebuttal_block_id': None,
+            'rebuttal_line': None,
             'rebuttal_quote': None,
             'prior_id': None,
             'prior_rank': None,
@@ -635,7 +656,7 @@ def synthesize(findings, reason=None, prior=(), spent=(), surviving=None) -> lis
             'statement': prior_row.get('statement'),
             'members': [],
             'raised_by': 0,
-            'rebuttal_block_id': None,
+            'rebuttal_line': None,
             'rebuttal_quote': None,
             'prior_id': identifier,
             'prior_rank': last_rank(prior_row),
@@ -663,7 +684,7 @@ __all__ = ['ISSUES_SCHEMA_VERSION', 'KNOWN_ISSUES_SCHEMAS', 'ISSUE_SEVERITIES',
            'MATCHED_STATUSES', 'PRIOR_RULING_STATUSES', 'CLOSED_STATUSES', 'MAX_ISSUE_BATCH',
            'MAX_ISSUE_BATCHES', 'TRACK_CATEGORY', 'MEMBER_FIELDS', 'ISSUE_FIELDS', 'issue_id',
            'issue_batch_limit', 'schema_problem', 'field_problems', 'validate_prior_issues',
-           'rows_of', 'objects_in', 'members_of', 'quotes_of', 'block_ids_of', 'audits_of',
+           'rows_of', 'objects_in', 'members_of', 'quotes_of', 'lines_of', 'audits_of',
            'is_required',
            'is_resolved', 'is_unverified', 'is_closed', 'live', 'required_issues',
            'suggestion_issues', 'resolved_issues', 'unverified_issues', 'closed_issues',

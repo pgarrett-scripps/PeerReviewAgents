@@ -94,13 +94,14 @@ def reclaim(slot):
 
 
 def quote_pool(run, wanted):
+    """``wanted`` passages that each occur once in the paper, with their lines."""
+    whole = run.base.text
     pool = []
-    for block in run.paper['blocks']:
-        text = block.get('text') or ''
-        for piece in text.split('. '):
+    for line in range(1, run.base.line_count() + 1):
+        for piece in run.base.line_text(line).split('. '):
             piece = piece.strip()
-            if 40 < len(piece) < 160 and text.count(piece) == 1:
-                pool.append((block['id'], piece))
+            if 40 < len(piece) < 160 and whole.count(piece) == 1:
+                pool.append((line, piece))
     assert len(pool) >= wanted, f'this fixture holds {len(pool)} anchorable passages'
     return pool[:wanted]
 
@@ -110,10 +111,10 @@ def file_findings(run, count=4, slot='core-1'):
     pool = quote_pool(run, count)
     token = token_for(slot)
     uids = []
-    for index, (block, quote) in enumerate(pool, 1):
+    for index, (line, quote) in enumerate(pool, 1):
         stored = srv.submit_finding(
             token, title=f'Claim {index} is stated more strongly than the passage carries',
-            block_id=block, quote=quote,
+            line=line, quote=quote,
             comment='The sentence asserts more than the measurement behind it shows.',
             severity=('major', 'moderate', 'minor')[index % 3])
         assert stored.get('stored'), stored
@@ -178,8 +179,8 @@ def prior_issue(identifier, rank, name, members=(), status='new'):
             'category': 'claims-and-conclusions', 'status': status,
             'statement': 'The first round said this claim outruns its evidence.',
             'members': [{'finding_uid': 'a' * 16, 'slot': 'core-1', 'track': 'core',
-                         'title': name, 'block_id': block, 'quote': quote}
-                        for block, quote in members]}
+                         'title': name, 'document': 'paper.md', 'line': line, 'quote': quote}
+                        for line, quote in members]}
 
 
 # -- what the editor may change --------------------------------------------
@@ -532,12 +533,12 @@ def test_a_null_name_or_a_null_quote_is_absent_and_not_the_word_none(tmp_path):
     assert 'name is required' in said, said
     assert 'None' not in said, 'a null name is absent, not an issue called None'
     srv.submit_issues(editor, [issue('The right shape', 1, uids) | {
-        'rebuttal_quote': None, 'rebuttal_block_id': None}])
+        'rebuttal_quote': None, 'rebuttal_line': None}])
     assert close_the_review(editor)['accepted'] is True
     assert srv.submit_report(editor, 'Grouped.', model=run.models.get('editor'))['closed']
     srv.write_review(token_for('recorder'))
     stored = json.loads((run.review / 'issues.json').read_text(encoding='utf-8'))['issues'][0]
-    assert stored['rebuttal_quote'] is None and stored['rebuttal_block_id'] is None
+    assert stored['rebuttal_quote'] is None and stored['rebuttal_line'] is None
 
 
 # -- a later round ---------------------------------------------------------
@@ -925,7 +926,7 @@ def test_a_published_path_is_posix_whichever_os_wrote_the_review(tmp_path):
 
 
 def test_a_rebuttal_quote_outside_the_case_it_answers_is_refused(tmp_path):
-    """It was stored on a major issue, with an invented block, and printed."""
+    """It was stored on a major issue, pointed at a line nobody read, and printed."""
     open_run(tmp_path)
     run = srv.current()
     uids = file_findings(run, 2)
@@ -934,7 +935,7 @@ def test_a_rebuttal_quote_outside_the_case_it_answers_is_refused(tmp_path):
 
     major = srv.submit_issues(editor, [issue('The one reading', 1, uids) | {
         'rebuttal_quote': 'The authors address this in a sentence nobody wrote.',
-        'rebuttal_block_id': 'b9999'}])
+        'rebuttal_line': 9999}])
 
     assert 'rebuttal_quote' in refusal_text(major), major
     minor = srv.submit_issues(editor, [issue('The one reading', 1, uids) | {
@@ -948,7 +949,7 @@ def test_a_rebuttal_quote_outside_the_case_it_answers_is_refused(tmp_path):
     assert srv.submit_report(editor, 'Grouped.', model=run.models.get('editor'))['closed']
     srv.write_review(token_for('recorder'))
     stored = json.loads((run.review / 'issues.json').read_text(encoding='utf-8'))['issues'][0]
-    assert stored['rebuttal_quote'] is None and stored['rebuttal_block_id'] is None
+    assert stored['rebuttal_quote'] is None and stored['rebuttal_line'] is None
 
 
 # -- what an unverified row has to carry ------------------------------------
@@ -1357,18 +1358,17 @@ def test_not_one_file_in_a_complete_folder_is_written_again(tmp_path):
     """
     run, editor, recorder = a_written_review(tmp_path)
     reviewer = next(token for token, agent in run.tokens.items() if agent.slot == 'core-1')
-    block = run.paper['blocks'][0]
+    line, quote = quote_pool(run, 1)[0]
     before = folder_state(run.root)
     spent = run.agent_for(reviewer).calls
 
     answers = {
         'read_paper': srv.read_paper(reviewer),
-        'search': srv.search(reviewer, block['text'].split('. ')[0]),
-        'save_note': srv.save_note(reviewer, 'One more thought about the bench.',
-                                   [block['id']]),
+        'search': srv.search(reviewer, quote),
+        'save_note': srv.save_note(reviewer, 'One more thought about the bench.', [line]),
         'submit_finding': srv.submit_finding(
-            reviewer, title='A late reading', block_id=block['id'],
-            quote=block['text'].split('. ')[0], comment='Raised after the review was written.',
+            reviewer, title='A late reading', line=line,
+            quote=quote, comment='Raised after the review was written.',
             severity='minor'),
         'submit_issues': srv.submit_issues(editor, retire=['The one reading the passages carry']),
         'submit_report': srv.submit_report(editor, 'A different closing story.',

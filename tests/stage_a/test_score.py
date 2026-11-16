@@ -191,7 +191,7 @@ def test_a_finding_the_editor_pooled_into_an_issue_is_one_catch(tmp_path):
                      comment='548 in the text against 530 in Table 1.')
     run = write_run(tmp_path / 'run', [caught])
     document = {
-        'schema_version': 'review-issues-v1', 'issues_source': 'editor',
+        'schema_version': 'review-issues-v2', 'issues_source': 'editor',
         'review_guard_status': 'clean', 'summary': 'one issue',
         'verdict': {'significance': 'incremental'},
         'issues': [{'id': 'i01', 'name': 'The randomised total disagrees with itself',

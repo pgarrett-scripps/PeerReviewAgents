@@ -84,8 +84,10 @@ and the line in your report is the right answer either way.
 
 ## Submitting
 
-`submit_finding` needs an exact `quote` from the `block_id` you name, once,
-character for character. Copy it out of the block text rather than retyping it:
+`submit_finding` needs an exact `quote` of the manuscript, appearing in it once,
+character for character. The engine finds the line itself; give `line` only
+where the same words occur twice, or where the quote is an equation or a table
+row. Copy it out of the lines `read_paper` printed rather than retyping it:
 a quote reassembled from memory — numbers reordered, a clause dropped — is
 quarantined even when the finding is right. A quarantined finding is not
 stored: the server tells you why, and you fix the quote and resubmit.

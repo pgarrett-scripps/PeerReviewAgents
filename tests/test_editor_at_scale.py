@@ -82,20 +82,20 @@ def token_for(slot):
 
 
 def quote_pool(run, wanted):
-    """``wanted`` passages that each occur exactly once in the block they are in.
+    """``wanted`` passages that each occur exactly once in the manuscript, with lines.
 
-    The guard anchors a finding by matching its quote inside the block it
-    names, so a test that submits sixty findings needs sixty anchorable
-    passages — or, since a finding's identity is its slot and its evidence and
-    not its title, fewer passages read by more than one slot.
+    The guard anchors a finding by matching its quote against the file, so a
+    test that submits sixty findings needs sixty anchorable passages — or,
+    since a finding's identity is its slot and its evidence and not its title,
+    fewer passages read by more than one slot.
     """
+    whole = run.base.text
     pool = []
-    for block in run.paper['blocks']:
-        text = block.get('text') or ''
-        for piece in text.split('. '):
+    for line in range(1, run.base.line_count() + 1):
+        for piece in run.base.line_text(line).split('. '):
             piece = piece.strip()
-            if 30 < len(piece) < 160 and text.count(piece) == 1:
-                pool.append((block['id'], piece))
+            if 30 < len(piece) < 160 and whole.count(piece) == 1:
+                pool.append((line, piece))
     assert len(pool) >= wanted, f'this fixture holds {len(pool)} anchorable passages'
     return pool[:wanted]
 
@@ -112,11 +112,11 @@ def submit_the_ledger(run, escalate=2):
     for slot, count in SHARE.items():
         token = token_for(slot)
         for index in range(count):
-            block, quote = pool[index]
+            line, quote = pool[index]
             rising = slot == 'spec-stats' and escalated < escalate
             stored = srv.submit_finding(
-                token, title=f'{slot}: the passage at {block} claim {index + 1}',
-                block_id=block, quote=quote,
+                token, title=f'{slot}: the passage on line {line} claim {index + 1}',
+                line=line, quote=quote,
                 comment='The sentence asserts more than the measurement behind it shows.',
                 severity=('major', 'moderate', 'minor')[index % 3],
                 escalate=rising)

@@ -80,8 +80,11 @@ and the line in your report is the right answer either way.
 
 ## Submitting
 
-`submit_finding` needs an exact `quote` appearing once in the block you name.
-Copy it out of the block text rather than retyping it: a quote reassembled from
+`submit_finding` needs an exact `quote` of the manuscript, appearing in it once;
+the engine finds the line itself, and `line` is yours to give only where the
+same words occur twice or the quote is an equation or a table row.
+Copy it out of the lines `read_paper` printed rather than retyping it: a quote
+reassembled from
 memory — a parameter reordered, a clause dropped — is quarantined even when the
 finding is right. Where the problem is an absence, quote the sentence that
 should have carried the parameter and say in the comment what is missing — do not quote text that is

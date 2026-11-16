@@ -55,7 +55,7 @@ def _finding(uid, title, **extra):
 
 def _issue_row(**fields):
     """One issue row in the shape the server writes: every field, null where it does not apply."""
-    row = {'rank': None, 'members': [], 'raised_by': 0, 'rebuttal_block_id': None,
+    row = {'rank': None, 'members': [], 'raised_by': 0, 'rebuttal_line': None,
            'rebuttal_quote': None, 'prior_id': None, 'prior_rank': None, 'status': 'new',
            'status_reason': None, 'text_unchanged_reason': None, 'surviving_quotes': [],
            'audits': []}

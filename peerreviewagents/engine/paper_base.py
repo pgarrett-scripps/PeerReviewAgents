@@ -50,6 +50,14 @@ MAIN_DOCUMENT = 'paper.md'
 #: the field exists from the start.
 SOURCES = ('text', 'ai', 'ai-reconstructed')
 
+#: ``Figure 3``, ``Fig. 3`` at the start of a caption. Whether a figure's
+#: caption reaches the base as a ``figure`` piece or a ``caption`` piece depends
+#: on what the converter saw around it, and this paper's nine figures arrive
+#: eight one way and one the other. A reader and a search should see nine alike,
+#: so a caption that names a figure is written the way a figure is; the kind the
+#: converter chose stays in ``map.json``, where a consumer can still read it.
+FIGURE_CAPTION = re.compile(r'^\s*\(?(?:Figure|Fig)\.?\s*\d{1,3}', re.I)
+
 
 def _one_line(text) -> str:
     """``text`` as a single line: a piece is one line, so its newlines are spaces.
@@ -105,10 +113,11 @@ def piece_lines(piece) -> list:
         image = piece.get('image')
         if image:
             return ['![' + _one_line(piece.get('label') or 'Figure') + '](' + str(image) + ')',
-                    'Caption: ' + _one_line(text)]
+                    'Figure: ' + _one_line(text)]
         return ['Figure: ' + _one_line(text)]
     if kind == 'caption':
-        return ['Caption: ' + _one_line(text)]
+        line = _one_line(text)
+        return [('Figure: ' if FIGURE_CAPTION.match(line) else 'Caption: ') + line]
     return [_one_line(text)]
 
 

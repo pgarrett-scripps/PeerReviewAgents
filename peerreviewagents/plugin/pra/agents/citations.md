@@ -197,9 +197,12 @@ and the line in your report is the right answer either way.
 
 ## Submitting
 
-`submit_finding` needs an exact `quote` appearing once in the block you name —
-usually the sentence carrying the citation. Copy it out of the block text rather
-than retyping it: a quote reassembled from memory — an author name reordered, a
+`submit_finding` needs an exact `quote` of the manuscript, appearing in it once —
+usually the sentence carrying the citation. The engine finds the line itself, so
+leave `line` out unless the same words occur twice. Copy it out of the lines
+`read_paper` printed, or out of the sentence the ledger quoted back to you,
+rather than retyping it: a quote reassembled from memory — an author name
+reordered, a
 clause dropped — is quarantined even when the finding is right. Put the source
 URL the ledger recorded in `source_urls`.
 

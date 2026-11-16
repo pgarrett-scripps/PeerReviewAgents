@@ -90,29 +90,41 @@ def reclaim(slot):
 
 
 def quote_from(run, index=0):
-    """A passage that occurs exactly once in its block, so the guard anchors it."""
-    for block in run.paper['blocks'][index:]:
-        text = (block.get('text') or '').strip()
-        for piece in text.split('. '):
+    """A passage that occurs once in the whole manuscript, and the line it is on.
+
+    ``index`` picks the nth such passage, one per line, so two callers that
+    want two different places in the paper get them. A quote that occurs once
+    needs no line at all to anchor; the line is returned because a test that
+    cites it is testing the line, and because an ambiguity test wants a quote
+    whose line it knows.
+    """
+    text = run.base.text
+    found = []
+    for line in range(1, run.base.line_count() + 1):
+        for piece in run.base.line_text(line).split('. '):
             piece = piece.strip()
-            if 30 < len(piece) < 160 and block['text'].count(piece) == 1:
-                return block['id'], piece
+            if 30 < len(piece) < 160 and text.count(piece) == 1:
+                found.append((line, piece))
+                break
+        if len(found) > index:
+            return found[index]
     raise AssertionError('no uniquely anchorable passage in this fixture')
 
 
 def numeric_quote(run):
-    """A uniquely anchorable passage carrying a number, and that number.
+    """A uniquely anchorable line carrying a number, its line, and that number.
 
     Never a power of ten: 10 and 100 are the unit conversions a receipt may
-    carry without citing a block for them, so a test that used one would pass
+    carry without citing the paper for them, so a test that used one would pass
     whether or not the number was matched against the page at all.
     """
-    for block in run.paper['blocks']:
-        text = (block.get('text') or '').strip()
-        numbers = [n for n in re.findall(srv.NUMERIC, text)
+    text = run.base.text
+    for line in range(1, run.base.line_count() + 1):
+        whole = run.base.line_text(line).strip()
+        numbers = [n for n in re.findall(srv.NUMERIC, whole)
                    if srv.as_number(n) is not None and not srv.is_power_of_ten(srv.as_number(n))]
-        if numbers and len(text) < 200 and block['text'].count(text) == 1:
-            return block['id'], text, numbers[0]
+        if numbers and 30 < len(whole) < 200 and text.count(whole) == 1:
+            return line, whole, numbers[0]
     raise AssertionError('no anchorable passage with a number in this fixture')
 
 
@@ -311,8 +323,8 @@ def test_a_finding_from_a_slot_that_has_not_read_the_paper_stores_nothing(tmp_pa
     taken = srv.claim_agent('core-1', CODES['core-1'])
     token = taken['agent_token']
     assert 'Call read_paper now' in taken['read_first']
-    block, quote = quote_from(run, 0)
-    refused = srv.submit_finding(token, title='Read nothing, found something', block_id=block,
+    line, quote = quote_from(run, 0)
+    refused = srv.submit_finding(token, title='Read nothing, found something', line=line,
                                  quote=quote, comment='Filed before reading.', severity='major')
     assert 'you have not been served the whole manuscript' in refused['request_rejected']
     assert 'costs nothing from your tool allowance' in refused['request_rejected']
@@ -320,14 +332,14 @@ def test_a_finding_from_a_slot_that_has_not_read_the_paper_stores_nothing(tmp_pa
     assert not (run.review / 'findings.jsonl').is_file()
 
     assert isinstance(srv.read_paper(token), str)
-    stored = srv.submit_finding(token, title='Read it, then found it', block_id=block,
+    stored = srv.submit_finding(token, title='Read it, then found it', line=line,
                                 quote=quote, comment='Filed after reading.', severity='major')
     assert 'request_rejected' not in stored, stored
 
     # A reissued code is a new holder, and a new holder has read nothing.
     second = srv.reissue_claim_code(CODES['recorder_key'], 'core-1')
     retried = srv.claim_agent('core-1', second['claim_code'])['agent_token']
-    again = srv.submit_finding(retried, title='A retry that read nothing', block_id=block,
+    again = srv.submit_finding(retried, title='A retry that read nothing', line=line,
                                quote=quote, comment='Filed before reading.', severity='major')
     assert again['unread_parts'] == [1]
 
@@ -335,15 +347,15 @@ def test_a_finding_from_a_slot_that_has_not_read_the_paper_stores_nothing(tmp_pa
 # -- the guard --------------------------------------------------------------
 
 
-def test_a_quote_that_is_not_in_the_block_stores_nothing(tmp_path):
+def test_a_quote_that_is_not_in_the_manuscript_stores_nothing(tmp_path):
     open_run(tmp_path, arm='single')
     token = claim('core-1')['agent_token']
     run = srv.current()
-    block = run.paper['blocks'][0]['id']
-    result = srv.submit_finding(token, title='Invented', block_id=block,
+    result = srv.submit_finding(token, title='Invented',
                                 quote='a sentence this paper does not contain anywhere',
                                 comment='...', severity='major')
     assert result.get('quarantined') is True
+    assert 'nearest' in result, result
     assert run.findings == []
     assert (run.review / 'quarantined.jsonl').is_file()
 
@@ -352,9 +364,9 @@ def test_an_anchored_finding_is_stored_with_its_track_and_a_uid(tmp_path):
     open_run(tmp_path, arm='single')
     token = claim('core-1')['agent_token']
     run = srv.current()
-    block, quote = quote_from(run)
+    line, quote = quote_from(run)
     stored = srv.submit_finding(token, title='The central claim outruns the data',
-                                block_id=block, quote=quote,
+                                line=line, quote=quote,
                                 comment='The result shown does not reach this conclusion.',
                                 severity='major')
     assert stored['stored'] is True
@@ -369,12 +381,12 @@ def test_an_anchored_finding_is_stored_with_its_track_and_a_uid(tmp_path):
 def test_the_uid_is_stable_across_a_re_review_of_the_same_passage(tmp_path):
     open_run(tmp_path, arm='single')
     run = srv.current()
-    block, quote = quote_from(run)
+    line, quote = quote_from(run)
     token = token_for('core-1')
     first = srv.submit_finding(token, title='Same issue',
-                               block_id=block, quote=quote, comment='x', severity='minor')
+                               line=line, quote=quote, comment='x', severity='minor')
     second = srv.submit_finding(reclaim('core-1'), title='Same issue',
-                                block_id=block, quote=quote, comment='x', severity='minor')
+                                line=line, quote=quote, comment='x', severity='minor')
     assert first['finding_uid'] == second['finding_uid']
 
 
@@ -382,56 +394,57 @@ def test_only_a_receipt_over_quoted_numbers_earns_computed(tmp_path):
     open_run(tmp_path, arm='single')
     token = claim('core-1')['agent_token']
     run = srv.current()
-    block, quote, number = numeric_quote(run)
+    line, quote, number = numeric_quote(run)
     receipt = srv.calculate(token, f'{number} + {number}')['receipt']
-    computed = srv.submit_finding(token, title='The arithmetic does not hold', block_id=block,
+    computed = srv.submit_finding(token, title='The arithmetic does not hold', line=line,
                                   quote=quote, comment='The sum is not what is reported.',
                                   severity='moderate', calculate_receipt=receipt)
     assert computed['basis'] == 'computed'
     off_paper = srv.calculate(token, '987654 * 31')['receipt']
-    judged = srv.submit_finding(token, title='Numbers from nowhere', block_id=block, quote=quote,
+    judged = srv.submit_finding(token, title='Numbers from nowhere', line=line, quote=quote,
                                 comment='...', severity='minor', calculate_receipt=off_paper)
     assert judged['basis'] == 'judgement'
-    assert 'none of the cited blocks print' in judged['basis_reason']
+    assert 'none of the cited lines print' in judged['basis_reason']
     assert '987654' in judged['basis_reason']
 
 
 def quote_without(run, number, exclude):
-    """A uniquely anchorable passage whose whole block never prints ``number``."""
-    for index in range(len(run.paper['blocks'])):
-        block, quote = quote_from(run, index)
-        text = run.paper['blocks'][index].get('text') or ''
-        if block != exclude and number not in text:
-            return block, quote
-    raise AssertionError('every block in this fixture prints that number')
+    """A uniquely anchorable passage on a line that does not print ``number``."""
+    index = 0
+    while index < run.base.line_count():
+        line, quote = quote_from(run, index)
+        if line != exclude and number not in run.base.line_text(line):
+            return line, quote
+        index += 1
+    raise AssertionError('every anchorable line in this fixture prints that number')
 
 
-def test_a_receipt_over_numbers_elsewhere_in_a_cited_block_earns_computed(tmp_path):
+def test_a_receipt_over_numbers_on_a_cited_line_earns_computed(tmp_path):
     """The numbers a receipt checks rarely sit in the sentence worth quoting.
 
-    A reviewer quotes the sentence that makes the claim and cites the block
-    that prints the figures behind it — a results paragraph, a table row. That
+    A reviewer quotes the sentence that makes the claim and cites the lines
+    that print the figures behind it — a results paragraph, a table row. That
     receipt is still arithmetic over what the manuscript printed, so it earns
     ``computed``; the narrower rule, which read only the quoted sentence,
     called it judgement and lost the strongest findings in a run. What is not
-    widened is the guarantee: a number that appears in none of the blocks the
+    widened is the guarantee: a number that appears on none of the lines the
     finding cites still earns nothing.
     """
     open_run(tmp_path, arm='single')
     token = claim('core-1')['agent_token']
     run = srv.current()
-    numeric_block, _, number = numeric_quote(run)
-    block, quote = quote_without(run, number, exclude=numeric_block)
+    numeric_line, _, number = numeric_quote(run)
+    line, quote = quote_without(run, number, exclude=numeric_line)
     receipt = srv.calculate(token, f'{number} + {number}')['receipt']
 
-    cited = srv.submit_finding(token, title='The totals do not add up', block_id=block,
+    cited = srv.submit_finding(token, title='The totals do not add up', line=line,
                                quote=quote, comment='The figures it cites sum to something else.',
-                               severity='moderate', evidence_blocks=[numeric_block],
+                               severity='moderate', evidence_lines=[numeric_line],
                                calculate_receipt=receipt)
     assert cited['basis'] == 'computed'
-    assert 'blocks this finding cites' in cited['basis_reason']
+    assert 'lines this finding cites' in cited['basis_reason']
 
-    uncited = srv.submit_finding(token, title='The totals do not add up either', block_id=block,
+    uncited = srv.submit_finding(token, title='The totals do not add up either', line=line,
                                  quote=quote, comment='Same arithmetic, nothing cited for it.',
                                  severity='minor', calculate_receipt=receipt)
     assert uncited['basis'] == 'judgement'
@@ -442,11 +455,11 @@ def test_two_anchored_quotes_earn_two_quotes_and_claim_nothing_more(tmp_path):
     open_run(tmp_path, arm='single')
     token = claim('core-1')['agent_token']
     run = srv.current()
-    first_block, first_quote = quote_from(run, 0)
-    second_block, second_quote = quote_from(run, 1)
-    stored = srv.submit_finding(token, title='Two passages disagree', block_id=first_block,
+    first_line, first_quote = quote_from(run, 0)
+    second_line, second_quote = quote_from(run, 1)
+    stored = srv.submit_finding(token, title='Two passages disagree', line=first_line,
                                 quote=first_quote, comment='...', severity='moderate',
-                                corroborating_block_id=second_block,
+                                corroborating_line=second_line,
                                 corroborating_quote=second_quote)
     assert stored['basis'] == 'two-quotes'
     assert 'does not prove they conflict' in stored['basis_reason']
@@ -456,9 +469,9 @@ def test_a_corroborating_quote_that_does_not_anchor_stores_nothing(tmp_path):
     open_run(tmp_path, arm='single')
     token = claim('core-1')['agent_token']
     run = srv.current()
-    block, quote = quote_from(run)
-    result = srv.submit_finding(token, title='x', block_id=block, quote=quote, comment='...',
-                                severity='minor', corroborating_block_id=block,
+    line, quote = quote_from(run)
+    result = srv.submit_finding(token, title='x', line=line, quote=quote, comment='...',
+                                severity='minor',
                                 corroborating_quote='nowhere in this manuscript at all')
     assert 'request_rejected' in result
     assert run.findings == []
@@ -467,12 +480,12 @@ def test_a_corroborating_quote_that_does_not_anchor_stores_nothing(tmp_path):
 def test_escalate_is_the_specialist_track_only(tmp_path):
     open_run(tmp_path)
     run = srv.current()
-    block, quote = quote_from(run)
+    line, quote = quote_from(run)
     core = srv.submit_finding(claim('core-1')['agent_token'], title='x',
-                              block_id=block, quote=quote, comment='...', severity='major',
+                              line=line, quote=quote, comment='...', severity='major',
                               escalate=True)
     spec = srv.submit_finding(claim('spec-stats')['agent_token'], title='y',
-                              block_id=block, quote=quote, comment='...', severity='major',
+                              line=line, quote=quote, comment='...', severity='major',
                               escalate=True)
     assert core['escalate'] is False
     assert spec['escalate'] is True
@@ -482,8 +495,8 @@ def test_none_found_cannot_contradict_the_ledger(tmp_path):
     open_run(tmp_path, arm='single')
     token = claim('core-1')['agent_token']
     run = srv.current()
-    block, quote = quote_from(run)
-    srv.submit_finding(token, title='x', block_id=block, quote=quote, comment='...',
+    line, quote = quote_from(run)
+    srv.submit_finding(token, title='x', line=line, quote=quote, comment='...',
                        severity='minor')
     assert 'request_rejected' in srv.submit_report(token, 'All clear.', none_found=True)
 
@@ -494,13 +507,13 @@ def test_none_found_cannot_contradict_the_ledger(tmp_path):
 def test_a_reviewer_sees_only_its_own_findings_and_the_editor_sees_all(tmp_path):
     open_run(tmp_path, reviewers=2)
     run = srv.current()
-    block, quote = quote_from(run)
-    other_block, other_quote = quote_from(run, 1)
+    line, quote = quote_from(run)
+    other_line, other_quote = quote_from(run, 1)
     first = claim('core-1')['agent_token']
     second = claim('core-2')['agent_token']
-    srv.submit_finding(first, title='mine', block_id=block, quote=quote, comment='...',
+    srv.submit_finding(first, title='mine', line=line, quote=quote, comment='...',
                        severity='minor')
-    srv.submit_finding(second, title='theirs', block_id=other_block, quote=other_quote,
+    srv.submit_finding(second, title='theirs', line=other_line, quote=other_quote,
                        comment='...', severity='minor')
     assert [f['title'] for f in srv.list_findings(first)['findings']] == ['mine']
     assert [f['title'] for f in srv.list_findings(second)['findings']] == ['theirs']
@@ -517,9 +530,9 @@ def test_a_reviewer_is_never_told_which_other_slots_the_run_has(tmp_path):
     """
     open_run(tmp_path, reviewers=2)
     run = srv.current()
-    block, quote = quote_from(run)
+    line, quote = quote_from(run)
     core = token_for('core-1')
-    srv.submit_finding(core, title='mine', block_id=block, quote=quote, comment='...',
+    srv.submit_finding(core, title='mine', line=line, quote=quote, comment='...',
                        severity='minor')
     listed = srv.list_findings(core)
     closed = close(core, model='claude-sonnet-5-5')
@@ -538,11 +551,11 @@ def test_a_retitled_finding_is_the_same_finding_and_both_rows_are_kept(tmp_path)
     open_run(tmp_path, arm='single')
     run = srv.current()
     token = token_for('core-1')
-    block, quote = quote_from(run)
-    first = srv.submit_finding(token, title='The sample size is unclear', block_id=block,
+    line, quote = quote_from(run)
+    first = srv.submit_finding(token, title='The sample size is unclear', line=line,
                                quote=quote, comment='...', severity='moderate')
     second = srv.submit_finding(token, title='Underpowered: the sample size is never stated',
-                                block_id=block, quote=quote, comment='A clearer account.',
+                                line=line, quote=quote, comment='A clearer account.',
                                 severity='major')
     assert first['finding_uid'] == second['finding_uid']
     assert second['findings_stored_by_you'] == 1
@@ -562,15 +575,15 @@ def test_a_revision_shares_no_finding_uid_with_the_run_it_revises(tmp_path):
     paper's id is a digest of the PDF it came from, so two runs over two files
     never share one — the comparison would have called every finding resolved
     and every finding new, on a revision that changed nothing at all. The same
-    reviewer, the same block and the same quote are used here, so the only
+    reviewer, the same line and the same quote are used here, so the only
     difference is the file.
     """
     revision = tmp_path / 'revision.pdf'
     revision.write_bytes(FIXTURE.read_bytes() + b'\n% a revised manuscript\n')
     open_run(tmp_path / 'first', arm='single')
-    block, quote = quote_from(srv.current())
+    line, quote = quote_from(srv.current())
     before = srv.submit_finding(token_for('core-1'), title='The sample size is unclear',
-                                block_id=block, quote=quote, comment='...', severity='major')
+                                line=line, quote=quote, comment='...', severity='major')
 
     # The re-review is its own server process, as the skill requires: one
     # process serves one run, and it refuses a second.
@@ -581,19 +594,19 @@ def test_a_revision_shares_no_finding_uid_with_the_run_it_revises(tmp_path):
     assert 'request_rejected' not in opened, opened
     CODES.update({row['slot']: row['claim_code'] for row in opened.get('claim_codes', [])})
     again = srv.current()
-    assert quote_from(again) == (block, quote), 'the revision was meant to read the same'
+    assert quote_from(again) == (line, quote), 'the revision was meant to read the same'
     after = srv.submit_finding(token_for('core-1'), title='The sample size is unclear',
-                               block_id=block, quote=quote, comment='...', severity='major')
+                               line=line, quote=quote, comment='...', severity='major')
     assert after['finding_uid'] != before['finding_uid']
 
 
 def test_agreement_between_two_reviewers_is_two_rows_the_editor_merges(tmp_path):
     open_run(tmp_path, reviewers=2, arm='reviewers-only')
     run = srv.current()
-    block, quote = quote_from(run)
-    first = srv.submit_finding(token_for('core-1'), title='Same worry', block_id=block,
+    line, quote = quote_from(run)
+    first = srv.submit_finding(token_for('core-1'), title='Same worry', line=line,
                                quote=quote, comment='...', severity='major')
-    second = srv.submit_finding(token_for('core-2'), title='Same worry', block_id=block,
+    second = srv.submit_finding(token_for('core-2'), title='Same worry', line=line,
                                 quote=quote, comment='...', severity='major')
     assert first['finding_uid'] != second['finding_uid'], 'two reviewers, two rows'
     close(run.agents['core-1'].token, model='claude-sonnet-5-5')
@@ -629,27 +642,27 @@ def test_a_receipt_input_is_matched_by_value_not_by_how_it_is_written(tmp_path):
     open_run(tmp_path, arm='single')
     run = srv.current()
     token = token_for('core-1')
-    block, quote, number = numeric_quote(run)
+    line, quote, number = numeric_quote(run)
     rewritten = number + '0' if '.' in number else number + '.0'
     assert rewritten != number and float(rewritten) == float(number)
     receipt = srv.calculate(token, f'{rewritten} * 100')['receipt']
-    stored = srv.submit_finding(token, title='The percentage does not follow', block_id=block,
+    stored = srv.submit_finding(token, title='The percentage does not follow', line=line,
                                 quote=quote, comment='The conversion is out by a factor.',
                                 severity='moderate', calculate_receipt=receipt)
     assert stored['basis'] == 'computed', stored['basis_reason']
 
 
-def test_a_finding_cites_the_blocks_it_rests_on_and_not_every_block(tmp_path):
+def test_a_finding_cites_the_lines_it_rests_on_and_not_every_line(tmp_path):
     open_run(tmp_path, arm='single')
     run = srv.current()
     token = token_for('core-1')
-    block, quote = quote_from(run)
-    every = [b['id'] for b in run.paper['blocks']][:srv.MAX_EVIDENCE_BLOCKS + 1]
-    assert len(every) == srv.MAX_EVIDENCE_BLOCKS + 1, 'this fixture is too short to test the cap'
-    refused = srv.submit_finding(token, title='Everything is evidence', block_id=block,
+    line, quote = quote_from(run)
+    every = list(range(1, srv.MAX_EVIDENCE_LINES + 2))
+    assert len(every) == srv.MAX_EVIDENCE_LINES + 1, 'this fixture is too short to test the cap'
+    refused = srv.submit_finding(token, title='Everything is evidence', line=line,
                                  quote=quote, comment='...', severity='minor',
-                                 evidence_blocks=every)
-    assert f'at most {srv.MAX_EVIDENCE_BLOCKS}' in refused['request_rejected']
+                                 evidence_lines=every)
+    assert f'at most {srv.MAX_EVIDENCE_LINES}' in refused['request_rejected']
     assert run.findings == []
 
 
@@ -670,8 +683,8 @@ def two_track_run(tmp_path, reviewers=2, model='claude-sonnet-5-5', unclosed=(),
     uids = {}
     for index in range(1, reviewers + 1):
         token = claim(f'core-{index}')['agent_token']
-        block, quote = quote_from(run, index - 1)
-        stored = srv.submit_finding(token, title=f'Reviewer {index} finding', block_id=block,
+        line, quote = quote_from(run, index - 1)
+        stored = srv.submit_finding(token, title=f'Reviewer {index} finding', line=line,
                                     quote=quote, comment='...', severity='major')
         uids[f'core-{index}'] = stored['finding_uid']
         if f'core-{index}' not in unclosed:
@@ -679,8 +692,8 @@ def two_track_run(tmp_path, reviewers=2, model='claude-sonnet-5-5', unclosed=(),
     for position, track in enumerate(srv.SPECIALIST_TRACKS):
         token = claim(f'spec-{track}')['agent_token']
         if track == 'stats':
-            block, quote = quote_from(run, position + 2)
-            stored = srv.submit_finding(token, title='Statistics finding', block_id=block,
+            line, quote = quote_from(run, position + 2)
+            stored = srv.submit_finding(token, title='Statistics finding', line=line,
                                         quote=quote, comment='...', severity='moderate',
                                         escalate=True)
             uids['spec-stats'] = stored['finding_uid']
@@ -788,8 +801,8 @@ def test_a_stage_that_reviewed_nothing_holds_the_run_beside_one_that_only_missed
     open_run(tmp_path, reviewers=2)
     run = srv.current()
     token = claim('core-1')['agent_token']
-    block, quote = quote_from(run, 0)
-    srv.submit_finding(token, title='Stored and never closed', block_id=block, quote=quote,
+    line, quote = quote_from(run, 0)
+    srv.submit_finding(token, title='Stored and never closed', line=line, quote=quote,
                        comment='...', severity='major')
     for track in srv.SPECIALIST_TRACKS:
         close(claim(f'spec-{track}')['agent_token'], none_found=True)
@@ -815,8 +828,8 @@ def test_every_closure_is_on_disk_whether_it_was_taken_or_refused(tmp_path):
     open_run(tmp_path, arm='single')
     run = srv.current()
     token = claim('core-1')['agent_token']
-    block, quote = quote_from(run, 0)
-    srv.submit_finding(token, title='One finding', block_id=block, quote=quote, comment='...',
+    line, quote = quote_from(run, 0)
+    srv.submit_finding(token, title='One finding', line=line, quote=quote, comment='...',
                        severity='major')
     assert 'request_rejected' in srv.submit_report(token, 'Nothing to report.', none_found=True)
     assert 'request_rejected' in srv.submit_report('not-a-token', 'Let me close something')
@@ -929,9 +942,9 @@ def test_a_computed_finding_becomes_a_suggestion_only_over_an_anchored_rebuttal(
     open_run(tmp_path, arm='single')
     run = srv.current()
     token = claim('core-1')['agent_token']
-    block, quote, number = numeric_quote(run)
+    line, quote, number = numeric_quote(run)
     receipt = srv.calculate(token, f'{number} + {number}')['receipt']
-    stored = srv.submit_finding(token, title='Arithmetic', block_id=block, quote=quote,
+    stored = srv.submit_finding(token, title='Arithmetic', line=line, quote=quote,
                                 comment='...', severity='major', calculate_receipt=receipt)
     assert stored['basis'] == 'computed'
     close(token, model='claude-sonnet-5-5')
@@ -947,7 +960,7 @@ def test_a_computed_finding_becomes_a_suggestion_only_over_an_anchored_rebuttal(
              'members': [stored['finding_uid']]}
     refused = srv.submit_issues(editor, [issue])
     assert any('rebuttal_quote' in problem for problem in refused['problems'])
-    accepted = srv.submit_issues(editor, [{**issue, 'rebuttal_block_id': block,
+    accepted = srv.submit_issues(editor, [{**issue, 'rebuttal_line': line,
                                            'rebuttal_quote': quote}])
     assert accepted['stored'] == 1, accepted
     closed = srv.submit_editor(editor, summary='One suggestion over an answered sum.',
@@ -1139,11 +1152,11 @@ def test_the_guard_status_in_the_run_files_is_read_and_not_assumed(tmp_path):
     open_run(tmp_path, arm='single')
     run = srv.current()
     token = token_for('core-1')
-    block, quote = quote_from(run)
-    srv.submit_finding(token, title='Invented', block_id=block,
+    line, quote = quote_from(run)
+    srv.submit_finding(token, title='Invented',
                        quote='a sentence this paper does not contain anywhere',
                        comment='...', severity='major')
-    srv.submit_finding(token, title='Anchored', block_id=block, quote=quote, comment='...',
+    srv.submit_finding(token, title='Anchored', line=line, quote=quote, comment='...',
                        severity='major')
     close(token, model='claude-sonnet-5-5')
     assert srv.write_review(token_for('recorder'))['status'] == 'complete'
@@ -1155,14 +1168,14 @@ def test_the_guard_status_in_the_run_files_is_read_and_not_assumed(tmp_path):
 def test_nothing_is_stored_after_the_stage_closed_or_the_editor_ruled(tmp_path):
     """A late finding was written to findings.jsonl and then left out of the package."""
     run, uids = two_track_run(tmp_path)
-    block, quote = quote_from(run, 3)
+    line, quote = quote_from(run, 3)
     late = srv.submit_finding(run.agents['core-1'].token, title='One more thing',
-                              block_id=block, quote=quote, comment='...', severity='major')
+                              line=line, quote=quote, comment='...', severity='major')
     assert 'closed this stage' in late['request_rejected']
     assert len(run.findings) == 3
     editor, accepted = accept_editor(run, uids)
     assert accepted['accepted'] is True, accepted
-    after = srv.submit_finding(reclaim('core-2'), title='After the ruling', block_id=block,
+    after = srv.submit_finding(reclaim('core-2'), title='After the ruling', line=line,
                                quote=quote, comment='...', severity='major')
     assert 'already been ruled on' in after['request_rejected']
     assert len(run.findings) == 3
@@ -1172,9 +1185,9 @@ def test_a_finding_filed_after_the_run_was_blocked_is_refused(tmp_path):
     open_run(tmp_path, arm='single')
     run = srv.current()
     token = token_for('core-1')
-    block, quote = quote_from(run)
+    line, quote = quote_from(run)
     srv.mark_blocked(CODES['recorder_key'], 'the subscription rate limit was reached')
-    refused = srv.submit_finding(token, title='Too late', block_id=block, quote=quote,
+    refused = srv.submit_finding(token, title='Too late', line=line, quote=quote,
                                  comment='...', severity='major')
     assert 'run is blocked' in refused['request_rejected']
     assert run.findings == []

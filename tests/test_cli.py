@@ -148,14 +148,14 @@ def _run_folder(tmp_path) -> Path:
                     'model': 'claude-sonnet-5-5'}],
     }), encoding='utf-8')
     (review / 'issues.json').write_text(json.dumps({
-        'schema_version': 'review-issues-v1',
+        'schema_version': 'review-issues-v2',
         'summary': 'One issue.', 'limitations': [], 'escalation_rulings': [],
         'issues': [{'id': 'i01', 'name': 'The claim is not supported', 'rank': 1,
                     'severity': 'major', 'category': 'claims', 'status': 'new',
                     'statement': 'The headline number has no computation behind it.',
                     'members': [{'finding_uid': 'a' * 16, 'slot': 'core-1', 'track': 'core',
-                                 'title': 'Unsupported claim', 'block_id': 'b3',
-                                 'quote': 'we improve by 40%'}]}],
+                                 'title': 'Unsupported claim', 'document': 'paper.md',
+                                 'line': 42, 'quote': 'we improve by 40%'}]}],
     }), encoding='utf-8')
     return review
 

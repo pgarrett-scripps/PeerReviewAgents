@@ -94,19 +94,24 @@ defects has produced an inventory and not a review.
 
 ## Submitting
 
-`submit_finding` stores one finding. It takes a title, the `block_id` and an
-exact `quote` from that block, a `comment` written as you would write to the
-authors, and a severity of `major`, `moderate` or `minor`. Pass
-`calculate_receipt` when a receipt backs it, and `corroborating_block_id` with
-`corroborating_quote` when a second passage matters.
+`submit_finding` stores one finding. It takes a title, an exact `quote` of the
+manuscript, a `comment` written as you would write to the authors, and a
+severity of `major`, `moderate` or `minor`. Pass `calculate_receipt` when a
+receipt backs it, and `corroborating_quote` when a second passage matters.
 
-The quote must appear in that block exactly once, character for character. If
-it does not, the server quarantines the finding, tells you why, and stores
-nothing: fix the quote and submit again. Copy the quote out of the block text
-rather than retyping it. Do not paraphrase inside a quote, do not reorder what
-the block puts in one order, and do not drop a clause from the middle: a quote
-reassembled from memory is quarantined even when the finding is right, and the
-finding is lost with it.
+The engine finds the quote itself and records the line it is on, so leave
+`line` out unless the quote occurs more than once — the refusal tells you which
+lines it is on — or you are citing an equation, a table row or a figure. Give
+`end_line` as well where the quote runs over several lines, and `document` for a
+supplement.
+
+The quote must appear in the manuscript exactly once, character for character.
+If it does not, the server quarantines the finding, tells you why and where the
+nearest lines are, and stores nothing: fix the quote and submit again. Copy the
+quote out of the lines `read_paper` printed rather than retyping it. Do not
+paraphrase inside a quote, do not reorder what the manuscript puts in one order,
+and do not drop a clause from the middle: a quote reassembled from memory is
+quarantined even when the finding is right, and the finding is lost with it.
 
 Reporting nothing is a real answer. If the paper is sound, say so and submit no
 findings rather than padding the list with something you do not believe. Three

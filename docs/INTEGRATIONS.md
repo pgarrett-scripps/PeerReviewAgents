@@ -119,8 +119,8 @@ Then ask for one of its three skills:
 The agents may call only the server's tools — the allow list the starter passes
 is `Workflow`, `Skill`, `TodoWrite` and the 28 `peerreview` tools, and nothing
 else. No `Read`, `Write`, `Edit`, `Bash`, `WebSearch` or `WebFetch` reaches a
-reviewer, which is why a quotation cannot come from anywhere but a source
-block.
+reviewer, which is why a quotation cannot come from anywhere but the
+manuscript the server served.
 
 ## Other MCP clients
 
@@ -281,11 +281,12 @@ row is
 {"id": "i03", "name": "...", "severity": "major", "category": "statistics-and-inference",
  "rank": 1, "statement": "the paragraph the authors read", "raised_by": 2,
  "members": [{"finding_uid": "...", "slot": "core-2", "track": "core", "quote": "...",
-              "block_id": "b41", "evidence_blocks": ["b41", "b42"],
+              "document": "paper.md", "line": 118, "end_line": None,
+              "evidence_lines": [118, 121],
               "severity": "major", "kind": "issue", "basis": "two-quotes",
               "escalate": False, "title": "..."}],
  "audits": ["audit_stats.md"],
- "rebuttal_block_id": None, "rebuttal_quote": None,
+ "rebuttal_line": None, "rebuttal_quote": None,
  "prior_id": None, "prior_rank": None,
  "status": "new", "status_reason": None,
  "text_unchanged_reason": None, "surviving_quotes": []}
@@ -294,7 +295,7 @@ row is
 **Every one of those seventeen fields is on every row**, live or closed, edited
 or synthesised, and a field that does not apply to a row is `None` — or `[]`
 where the field is a list. `peerreviewagents.issues.ISSUE_FIELDS` is that list
-and `MEMBER_FIELDS` is a member's eleven, so a consumer reads a field by name
+and `MEMBER_FIELDS` is a member's thirteen, so a consumer reads a field by name
 and never tests whether a key is there. Earlier releases left the inapplicable
 ones out; 0.10 does not.
 
@@ -305,11 +306,12 @@ ones out; 0.10 does not.
   holding the prior round's rank would collide with this round's order, so the
   rank it had then is in `prior_rank` instead.
 - `members` are the findings the issue was raised from, kept as its evidence:
-  the slot that filed each one, the quote it anchored, and the blocks it cited.
+  the slot that filed each one, the quote it anchored, the document and line
+  the engine placed that quote on, and the lines it cited as evidence.
   `raised_by` is counted from them, so two reviewers raising one problem is one
   issue that says it was raised twice — never two rows. A closed row has no
   members and `raised_by` of zero.
-- The rest of a finding — `comment`, `start`, `end`, `block_sha256`,
+- The rest of a finding — `comment`, `start`, `end`, `page`, `bbox`,
   `basis_reason`, `counterevidence`, `source_urls` — is **not** copied onto the
   member. Join `members[*]["finding_uid"]` to `read_run()["findings"]` (or to
   `findings.jsonl`) for those, keyed on the same uid. The member carries what a
@@ -326,8 +328,9 @@ ones out; 0.10 does not.
 - `rebuttal_quote` is set on a `minor` issue that holds a `computed` finding —
   one whose arithmetic the server checked against the manuscript. Calling such
   a finding a suggestion takes a passage of the manuscript that answers the
-  receipt, anchored exactly in `rebuttal_block_id` (the finding's own block
-  where that field is `None`); the server refuses the issue without one. Both
+  receipt, quoted exactly as the manuscript reads; `rebuttal_line` is the line
+  the engine placed it on, and is `None` where the quote was not placed. The
+  server refuses the issue without a quote. Both `rebuttal_quote` and it
   are `None` on every other issue, and a renderer that shows a suggestion over
   a receipt should show the rebuttal with it.
 
@@ -448,7 +451,7 @@ shows `REVIEW.md` are showing the same review.
 `read_run` is the supported way in, and these are the document's own top-level
 keys for anything that reads the file directly. `schema_version` is the one to
 check first: `peerreviewagents.ISSUES_SCHEMA_VERSION` is what this release
-writes (`review-issues-v1`), and a stamp this release does not know is refused
+writes (`review-issues-v2`), and a stamp this release does not know is refused
 by name rather than read as far as it happens to parse —
 `issues.schema_problem(document)` is the rule the reader, the prior-round loader
 and the renderer all go through, so a consumer can use the same one.
@@ -583,10 +586,10 @@ Four rules it enforces so you do not have to:
   **When no row of the ledger can be read and `issues.json` can**, the members
   of the issues are the fallback: `findings` is rebuilt from
   `issues[*]["members"]`, so every finding an issue holds is still there with
-  its slot, quote and blocks, and `problems` names the file or the lines that
+  its slot, quote and lines, and `problems` names the file or the lines that
   could not be read. A ledger that is only torn in places keeps the rows that
   read, and the torn ones are counted and named in the same way. The fields the
-  ledger alone carries — `comment`, `start`, `end`, `block_sha256`,
+  ledger alone carries — `comment`, `start`, `end`, `page`, `bbox`,
   `category` — are absent from those rebuilt rows, and
   `findings_source` is still `issues`: the review is intact, the ledger behind
   it is not.
@@ -654,7 +657,7 @@ to display a document it did not write:
 | `objects_in(rows)` | the same filter over a list you already hold |
 | `members_of(issue)` | the member findings of one issue; a member that is not an object is dropped |
 | `quotes_of(issue)` | its `surviving_quotes`, the same way |
-| `block_ids_of(row)` | the block ids a row names, from either spelling |
+| `lines_of(row)` | the lines a row cites: its own line, the lines of a range, and its `evidence_lines` |
 | `audits_of(issue)` | the specialist audits named on it |
 | `field_problems(document)` | the malformed fields, in words — the lines `read_run` reports a damaged document through |
 
@@ -1029,7 +1032,7 @@ a refusal will withhold reviews that are whole — read `publishable`, print
 `problems`.
 
 **A quarantined finding does not make a run unpublishable.** The guard throws
-out a finding whose quote it could not match to the block the finding names. A
+out a finding whose quote it could not place in the manuscript. A
 guard that did that has done its job, and what is left is a whole review minus
 one unanchored quote. `guard_status` is `clean` or `quarantined` — there is no
 error state — and `quarantined` holds the rows themselves, so an application

@@ -20,7 +20,7 @@ RUN_DIRECTORY = 'review'
 MANUSCRIPT_DIRECTORY = 'manuscript'
 
 #: The schema every stored finding is stamped with, in its ``schema_version``.
-FINDING_SCHEMA_VERSION = 'review-finding-v3'
+FINDING_SCHEMA_VERSION = 'review-finding-v4'
 
 #: ``running`` while the session is alive, ``blocked`` for any outcome that is
 #: not a written review, and the two ``complete`` statuses for one that is.

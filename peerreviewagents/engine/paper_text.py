@@ -19,9 +19,18 @@ the manuscript says this, not that it says something like it.
 """
 from __future__ import annotations
 
+import re
 import unicodedata
 
 from .storage import digest
+
+#: The markup a reference link is written with in ``paper.md``: the printed
+#: marker in brackets, then the entry it ties to. The file keeps it, because it
+#: is the one record of which marker cites which reference, and a reader of the
+#: Markdown follows it. It is not what the page shows, so the normal form keeps
+#: the digits and drops the rest of it: a reviewer quoting the sentence off the
+#: page and the ledger quoting it off the markup are quoting the same sentence.
+REFERENCE_LINK = re.compile(r'\[(\d{1,3})\]\(#ref-([^)\s]{1,40})\)')
 
 #: Every dash, minus and horizontal bar that a manuscript prints where a reader
 #: sees "-". NFKC leaves these alone — they are distinct characters, not
@@ -87,6 +96,15 @@ def _clusters(text):
         yield start, text[start:]
 
 
+def _link_markup(text) -> frozenset:
+    """The indices of ``text`` that are a reference link's markup and not its marker."""
+    skipped: set = set()
+    for match in REFERENCE_LINK.finditer(text):
+        skipped.add(match.start())
+        skipped.update(range(match.end(1), match.end()))
+    return frozenset(skipped)
+
+
 def normalise(text):
     """``(normal_form, offsets)``, where ``offsets[i]`` indexes ``text``.
 
@@ -94,12 +112,18 @@ def normalise(text):
     or the lines of a quotation — collapse to one space, and the ends are
     trimmed. The offsets of a collapsed run point at its first character, so a
     quote that spans a line break still highlights from the right place.
+
+    A reference link keeps the marker it prints and loses its markup, so the
+    sentence reads as the page reads it either way round.
     """
     text = str(text or '')
     characters: list[str] = []
     offsets: list[int] = []
     pending_space = -1
+    markup = _link_markup(text)
     for index, cluster in _clusters(text):
+        if index in markup:
+            continue
         for character in unicodedata.normalize('NFKC', cluster):
             character = DASHES.get(character, QUOTES.get(character, character))
             if character in DROPPED:
@@ -143,5 +167,5 @@ def words(text) -> list:
     return normalised(text).casefold().split()
 
 
-__all__ = ['DASHES', 'QUOTES', 'DROPPED', 'MARKS', 'is_mark', 'normalise', 'normalised',
-           'fingerprint', 'words']
+__all__ = ['DASHES', 'QUOTES', 'DROPPED', 'MARKS', 'REFERENCE_LINK', 'is_mark', 'normalise',
+           'normalised', 'fingerprint', 'words']
