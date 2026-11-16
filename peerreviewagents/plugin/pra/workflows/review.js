@@ -721,12 +721,21 @@ let recorded = await agent(
   // because none had been written, and blocked a run whose references were
   // simply still being fetched. That refusal writes nothing, so the call after
   // it is the first write, not a second one.
+  // What this is and is not: one retry, not a wait. Nothing here can block on
+  // another agent's pass — `resolve_citations` answers `already_resolving` at
+  // once while one is held — so the stage asks the table where it stands, tries
+  // the write a second time, and reports the answer either way. A pass that is
+  // still running when that second write lands refuses it again, and that
+  // refusal is the stage's result: it names the pass, and the run is written by
+  // whoever calls after it rather than quietly left unwritten here.
   + ' One refusal is not final: if it refuses because a resolve_citations pass is still'
   + ' looking references up, nothing was written and the table is still being filled.'
-  + ' Call resolve_citations with recorder_key="' + recorderKey + '" and limit=0, repeating'
-  + ' while it answers with remaining above 0, and then call write_review once more with'
-  + ' your token. Report what that write answers. A write refused that way is not a write,'
-  + ' so this is not calling write_review twice; any other refusal stands and you report it.',
+  + ' Call resolve_citations with recorder_key="' + recorderKey + '" and limit=0 to see where'
+  + ' the table stands — if it answers already_resolving, that pass is another agent\'s and'
+  + ' still running — then call write_review once more with your token and report what it'
+  + ' answers, refusal included. That is one retry, not a wait: a write refused that way is'
+  + ' not a write, so this is not calling write_review twice, and any other refusal stands'
+  + ' and you report it.',
   options('recorder', {
     label: 'write review', phase: 'Record', agentType: 'pra:recorder', schema: RECORDED,
   }),

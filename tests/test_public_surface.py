@@ -808,6 +808,62 @@ def test_a_malformed_field_of_an_issues_document_is_reported_not_raised(tmp_path
     assert set(peerreviewagents.write_reports(other)) == {'markdown', 'text'}
 
 
+def test_the_last_readers_of_a_damaged_document_report_it_rather_than_raising(tmp_path):
+    """Three readers still ended on a type, each on a path of its own.
+
+    A fuzz pass over the readers found them: the member fallback `read_run`
+    takes when the ledger is gone iterated ``members`` itself rather than
+    through the shared guard, so a ``members`` of ``7`` raised a TypeError on
+    the one path with nothing to fall back on; ``escalation_rulings`` of ``7``
+    did the same beside it; and a member whose ``title`` was a number was
+    concatenated into a TypeError out of ``write_reports``, the call that has to
+    work on a damaged folder because it is how the folder gets read at all.
+
+    What this pins is that each of them answers: the reader comes back and the
+    rest of the run reads. A type ``field_problems`` does not name — the rulings
+    here — is dropped rather than reported, which is the sweep that is not in
+    this change.
+    """
+    # The ledger is gone, so the member rows are the only findings there are.
+    review = complete_run(tmp_path / 'no-ledger')
+    document = json.loads((review / 'issues.json').read_text(encoding='utf-8'))
+    document['issues'] = [{**document['issues'][0], 'members': 7}]
+    _write(review / 'issues.json', document)
+    (review / 'findings.jsonl').unlink()
+
+    run = read_run(review)
+
+    assert run['findings'] == [] and run['publishable'] is False
+    assert any('whose members is a int' in problem for problem in run['problems'])
+    assert [issue['id'] for issue in run['issues']] == ['i01']
+
+    # A ruling that is not a list, beside it.
+    ruled = complete_run(tmp_path / 'rulings')
+    _write(ruled / 'issues.json', {**document, 'issues': document['issues'],
+                                   'escalation_rulings': 7})
+
+    assert read_run(ruled)['escalations'] is not None
+
+    # And a member the renderer prints, held as a number.
+    titled = complete_run(tmp_path / 'title')
+    document = json.loads((titled / 'issues.json').read_text(encoding='utf-8'))
+    first = document['issues'][0]
+    document['issues'] = [{**first, 'members': [{**first['members'][0], 'title': 7}]}]
+    _write(titled / 'issues.json', document)
+
+    assert set(peerreviewagents.write_reports(titled)) == {'markdown', 'text'}
+    assert '7' in (titled / 'REVIEW.md').read_text(encoding='utf-8')
+
+    # And the rows themselves, held as anything at all, through the renderer:
+    # the guard every reader of this document shares.
+    for held in (7, True, 1.5, 'see the suggestions'):
+        folder = complete_run(tmp_path / f'rows-{held}')
+        _write(folder / 'issues.json', {**document, 'issues': held})
+
+        assert set(peerreviewagents.write_reports(folder)) == {'markdown', 'text'}
+        assert read_run(folder)['publishable'] is False
+
+
 def test_an_issues_document_stamped_with_an_unknown_version_is_refused_by_name(tmp_path):
     """A stamp is only worth writing if a reader checks it."""
     review = complete_run(tmp_path)

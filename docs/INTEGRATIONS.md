@@ -630,9 +630,20 @@ problem returned on its own: nothing else in a document this version cannot read
 is worth reporting.
 
 It is the check the loader runs, not a copy of it. The loader refuses with this
-list's first problem, so a file this says nothing about is a file the next round
-loads, and a rule added to the loader shows up here in the same release rather
-than drifting out of step.
+list's first problem and asks nothing outside it, so a file this says nothing
+about is a file the next round loads, and a rule added to the loader shows up
+here in the same release rather than drifting out of step.
+
+What it requires of a prior file, in the order it says it: a `schema_version`
+this release reads; every field the type a reader expects; an `issues` list,
+present — a prior round is the rows it holds; a non-empty text `id` on every
+row, because the id is the only thing a later round matches on; no id twice; an
+`issue_ids_used` that is present and holds ids of this engine's own form, so the
+next round mints above every id already spent; and at least one row left once
+the resolved ones are dropped. A list field held as `null` — `members`,
+`surviving_quotes`, `audits` — is malformed rather than empty: every one of them
+is a list in what this engine writes, `[]` where it does not apply, so `null`
+says something this version does not read.
 
 `peerreviewagents.issues` holds the readers behind it, for a consumer that has
 to display a document it did not write:
@@ -1202,6 +1213,15 @@ while a `resolve_citations` pass is open, with `resolving: true`. The review is
 written from the citation table, so it is not written while the table is being
 filled — wait for that call to answer, and then write. A pass that will never
 answer is still released by `mark_blocked`.
+
+Cancelling the `resolve_citations` request does not stop the pass. A client that
+sends `notifications/cancelled` is answered nothing and stops waiting, but the
+lookups are in a worker thread that runs to the end of the slice it was given:
+the ledger and `progress.json` keep growing after the client has given up, and
+`write_review` is refused with `resolving: true` until that pass ends. The
+session itself survives the cancellation — every later call on it is served — so
+a cancelled call is a lost answer, never a lost run: ask `run_status`, or call
+`resolve_citations` again once the pass has ended, to see where the table got to.
 
 A second `write_review` answers with the counts of the review already on disk
 (`issue_counts`, `required_changes`, `suggestions`, `escalated`), so a recorder

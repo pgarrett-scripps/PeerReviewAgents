@@ -263,7 +263,11 @@ def _member(member):
     """One member finding of an issue: who raised it, where, and the passage itself."""
     label = ' · '.join(str(part) for part in
                        (member.get('slot'), member.get('track'), _location(member)) if part)
-    blocks = [('paragraph', (label + ': ' + (member.get('title') or '')).strip(' :'))]
+    # `str`, because the title is read off a file this renderer did not write:
+    # a member whose title was a number concatenated into a TypeError out of
+    # `write_reports`, which is the one call that has to work on a damaged
+    # folder — it is how the folder gets read at all.
+    blocks = [('paragraph', (label + ': ' + str(member.get('title') or '')).strip(' :'))]
     if member.get('quote'):
         blocks.append(('quote', member['quote']))
     return blocks
@@ -404,7 +408,7 @@ def _prior_round_blocks(document, rows):
 
 def _escalation_blocks(document, rows):
     """Each escalated finding's ruling, named against the issue that holds it."""
-    rulings = document.get('escalation_rulings') or []
+    rulings = issue_model.objects_in(document.get('escalation_rulings'))
     if not rulings:
         return []
     held = {}
@@ -414,7 +418,6 @@ def _escalation_blocks(document, rows):
                 held[str(member['finding_uid'])] = (issue, member)
     blocks = [('heading2', 'Escalations ruled on')]
     for ruling in rulings:
-        ruling = ruling if isinstance(ruling, dict) else {}
         uid = str(ruling.get('finding_uid') or '').strip()
         pair = held.get(uid)
         if pair:
@@ -450,7 +453,11 @@ def _verdict_blocks(document):
 
 def _issue_review(document):
     """The review itself, from the issues document and from nothing else."""
-    rows = document.get('issues') or []
+    # The rows every block below is handed come through the shared guard, not
+    # off the document: an `issues` that was not a list reached the escalation
+    # and prior-round blocks raw and was iterated there, so a damaged document
+    # ended `write_reports` instead of being rendered as far as it reads.
+    rows = issue_model.rows_of(document)
     counts = document.get('counts') or issue_model.counts(rows)
     blocks = [('heading2', 'Review')]
     if document.get('summary'):

@@ -18,8 +18,15 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   later round to read had one way to find out whether that round could read it —
   start the round — because the rules lived inside the loader. This is that
   loader's own check rather than a copy of it: the loader refuses with this
-  list's first problem, so a rule added to one is in both. `label=` names the
-  file the problems are written against, for a tool that checks several.
+  list's first problem, and asks nothing outside it, so a file this says nothing
+  about is a file the next round loads. What it requires of a prior file is what
+  that loader requires: the `issues` list and `issue_ids_used` are both present,
+  every row carries a non-empty text `id`, no id appears twice, and something is
+  left once the resolved rows are dropped. A list field held as `null` —
+  `members`, `surviving_quotes`, `audits` — is malformed rather than empty,
+  because every one of them is a list in what this engine writes, empty where it
+  does not apply. `label=` names the file the problems are written against, for
+  a tool that checks several.
   Documented in `docs/INTEGRATIONS.md`, with the tolerant readers behind it —
   `rows_of`, `objects_in`, `members_of`, `quotes_of`, `block_ids_of`,
   `audits_of` — and `field_problems`, the malformed fields `read_run` reports a
@@ -37,9 +44,16 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   `running`. The pass now reaches a cancellation checkpoint after it has written
   its work, so a cancelled call keeps its ledger rows, receipts and
   `progress.json`, releases the stage, and the next `resolve_citations` or
-  `write_review` is served by the same session. `resolve_citations` is the only
-  tool that awaits; a synchronous tool answers inside one loop step, so none of
-  the others could reach this.
+  `write_review` is served by the same session. Every exit path of the call goes
+  below that checkpoint, the rejection a failed pass answers with included:
+  returning that rejection above it left one path — cancel the call, then have
+  the pass raise — that still answered a cancelled request a second time and
+  took the session down with the run at `running`. A pass that fails now leaves
+  the stage open, `progress.json` written to what it reached, and the run still
+  `running` for the next call. `resolve_citations` is the only tool that awaits;
+  a synchronous tool answers inside one loop step, so none of the others could
+  reach this. A cancelled pass is not a stopped pass: the worker thread runs to
+  the end of its lookups, and `write_review` is refused until it does.
 - **A malformed `issues.json` is reported, never raised.** `members` held as a
   string was iterated one character at a time into `str.get` and raised an
   `AttributeError` out of `read_run`, so a damaged file took the reader down
@@ -54,7 +68,12 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   `write_review` refused because a `resolve_citations` pass was still looking
   references up writes nothing and says so, but the workflow read it as a run
   that would not be written and blocked a run whose references were simply
-  still being fetched. The stage now waits for that pass and writes after it.
+  still being fetched. The stage now asks the citation table where it stands and
+  tries the write a second time. This is one bounded retry, not a wait: nothing
+  in the stage can block on another agent's pass — `resolve_citations` answers
+  `already_resolving` immediately while one is held — so a pass still running
+  when that second write lands refuses it again, and the stage reports that
+  refusal by name instead of reporting a run that would not be written.
 
 ## [0.10.0] — 2026-11-15
 

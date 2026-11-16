@@ -798,6 +798,79 @@ def test_a_cancelled_resolve_call_does_not_take_the_session_down(tmp_path):
     assert progress['counts']['resolved'] == 3
 
 
+def test_a_cancelled_call_whose_pass_fails_still_answers_only_once(tmp_path, monkeypatch):
+    """The checkpoint was below the rejection a failed pass answers with.
+
+    A pass that raises is answered with a rejection, and that rejection was
+    returned from the ``except`` clause — above the cancellation checkpoint. So
+    the one call that both was cancelled *and* failed answered a request the
+    cancellation had already answered, raised "Request already responded to"
+    out of the session's task group, and ended the session for every agent in
+    the run exactly as the uncancelled crash did, with the folder at
+    ``running``. Every exit path of this call goes below that checkpoint now.
+    """
+    open_run(tmp_path)
+    run = srv.current()
+    passing, release = threading.Event(), threading.Event()
+
+    def broken(*args, **kwargs):
+        """A pass held open in the worker thread, which then fails."""
+        passing.set()
+        assert release.wait(30), 'the test never released the pass'
+        raise OSError('the ledger went away under the pass')
+
+    monkeypatch.setattr(cl, 'resolve', broken)
+    seen = {}
+
+    async def the_recorder_resolves(session):
+        try:
+            seen['first'] = await session.call_tool(
+                'resolve_citations', {'recorder_key': CODES['recorder_key'], 'limit': 0})
+        except McpError as exc:
+            seen['first'] = exc
+
+    async def drive():
+        async with create_connected_server_and_client_session(srv.create_server()) as session:
+            async with anyio.create_task_group() as group:
+                group.start_soon(the_recorder_resolves, session)
+                with anyio.fail_after(30):
+                    while not passing.is_set():
+                        await anyio.sleep(0.005)
+                    await session.send_notification(mcp_types.ClientNotification(
+                        mcp_types.CancelledNotification(
+                            method='notifications/cancelled',
+                            params=mcp_types.CancelledNotificationParams(
+                                requestId=session._request_id - 1))))
+                    while 'first' not in seen:
+                        await anyio.sleep(0.005)
+                    # And now the held pass fails, under a request that has
+                    # already been answered.
+                    release.set()
+                    while run.resolving:
+                        await anyio.sleep(0.005)
+                    seen['second'] = await session.call_tool(
+                        'resolve_citations',
+                        {'recorder_key': CODES['recorder_key'], 'limit': 0})
+
+    anyio.run(drive)
+
+    assert isinstance(seen['first'], McpError), seen['first']
+    assert 'cancelled' in str(seen['first']).lower()
+    # A failed pass leaves nothing held and nothing final: the stage is open,
+    # the run is still running, and the folder says so.
+    assert run.resolving is False
+    assert run.status == 'running'
+    standing = json.loads((run.review / 'progress.json').read_text(encoding='utf-8'))
+    assert standing['status'] == 'running'
+    # The session served the call after it, and that call — not cancelled, and
+    # failing the same way — is answered with the rejection, once.
+    answer = seen['second']
+    rejection = (answer.structuredContent if answer.structuredContent is not None
+                 else json.loads(answer.content[0].text))
+    assert 'could not be resolved' in rejection['request_rejected'], rejection
+    assert 'still running' in rejection['request_rejected'], rejection
+
+
 def test_one_call_waits_only_so_long_and_tells_the_recorder_to_call_again(tmp_path, monkeypatch):
     """The run's deadline bounds the run; it does not bound one tool call.
 

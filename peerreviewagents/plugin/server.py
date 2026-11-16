@@ -441,8 +441,13 @@ def load_prior_issues(path):
     # prior rounds spent. A resolved row is dropped from the carry, so without
     # this the id it held would be minted again for a different problem two
     # rounds later — the one thing an id is for is that it does not happen.
-    spent = {row['id'] for row in rows}
-    spent |= set(document['issue_ids_used'])
+    # Read off the document, never indexed into it: every requirement of this
+    # loader is a problem `validate_prior_issues` returns, so a document that
+    # got this far holds the list — and a `document['issue_ids_used']` here
+    # would be a second, silent check, which is how a file the validator passed
+    # came to be refused by a bare KeyError instead.
+    spent = {str(row['id']) for row in rows if row.get('id')}
+    spent |= {str(value) for value in document.get('issue_ids_used') or []}
     return str(source.resolve()), kept, {**provenance, 'ids_used': sorted(spent)}
 
 
@@ -2863,17 +2868,34 @@ async def resolve_citations(recorder_key: str, limit: int = 15) -> dict:
                                         tick=heartbeat)
     lookups = run.citation_lookups()
     run.resolving = True
+    failed = None
     try:
         progress = await anyio.to_thread.run_sync(
             functools.partial(citation_ledger.resolve, run.citations, lookups, limit=limit,
                               patience=patience))
     except (OSError, ValueError) as exc:
-        return rejection('The citation ledger could not be resolved: ' + str(exc))
+        # Held, not answered yet. A pass that raised is still a pass that ran:
+        # it wrote ledger rows and receipts before it failed, and the rejection
+        # has to go out below the checkpoint with every other answer this call
+        # can give. Returning it from here was an exit path out of a cancelled
+        # call that reached no checkpoint, so the rejection was sent over a
+        # request the cancellation had already answered — the same crash the
+        # checkpoint was added for, by the one path that skipped it.
+        progress, failed = None, str(exc)
     finally:
         # In a `finally` so a raised pass, or a cancelled one, cannot wedge the
         # stage shut for the rest of the run.
         run.resolving = False
-    run.write_progress()
+    # The folder is brought up to what the pass actually left on both paths,
+    # and a failed pass leaves the run `running` with the stage open: nothing
+    # about it is final, and the next call takes the remaining references up
+    # where this one stopped.
+    try:
+        run.write_progress()
+    except (OSError, ValueError) as exc:
+        # Reported with the rest, below the checkpoint. Raising from here is one
+        # more exit path that answers a cancelled request a second time.
+        failed = (failed + '; ' if failed else '') + 'progress.json: ' + str(exc)
     # A client that cancels this request mid-pass used to crash the session.
     # `anyio.to_thread.run_sync` does not abandon its thread on cancel, so the
     # cancellation is held until the pass ends and there is no checkpoint
@@ -2889,6 +2911,10 @@ async def resolve_citations(recorder_key: str, limit: int = 15) -> dict:
     # inline on the loop, so the cancellation notification is not even read
     # until after its response has been sent.
     await anyio.lowlevel.checkpoint_if_cancelled()
+    if failed is not None:
+        return rejection('The citation ledger could not be resolved: ' + failed
+                         + '. The stage is open and the run is still running, so the references '
+                           'this pass did not reach are owed another call, not written off.')
     remaining, wait = progress['remaining'], progress.get('retry_after') or 0
     if remaining and wait and progress.get('budget_spent'):
         nxt = (str(remaining) + ' reference(s) are owed another lookup and are still waiting out '

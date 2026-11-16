@@ -935,9 +935,12 @@ def read_run(path):
     if not findings:
         # A run whose ledger is gone still has the issues' own member rows, and
         # they carry the uid, the slot, the quote and the blocks.
+        # Through the same guard as every other reader of this document: a
+        # `members` held as a number was iterated here and raised a TypeError
+        # out of `read_run` on the one path that had no ledger to fall back on.
         findings = dedupe([dict(member) for row in issue_rows
-                           for member in row.get('members') or [] if isinstance(member, dict)])
-    rulings = [r for r in document.get('escalation_rulings') or [] if isinstance(r, dict)]
+                           for member in issue_model.members_of(row)])
+    rulings = issue_model.objects_in(document.get('escalation_rulings'))
     quarantined = _rows(review / 'quarantined.jsonl', problems)
     guard = document.get('review_guard_status') or progress.get('review_guard_status')
     issue_counts = issue_model.counts(issue_rows)

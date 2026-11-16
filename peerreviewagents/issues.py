@@ -222,7 +222,8 @@ def objects_in(issues) -> list:
     that starts from the document, and :func:`field_problems` is where it is
     named.
     """
-    return [issue for issue in issues or [] if isinstance(issue, dict)]
+    return [issue for issue in issues if isinstance(issue, dict)] if isinstance(
+        issues, (list, tuple)) else []
 
 
 def live(issues) -> list:
@@ -381,12 +382,18 @@ def field_problems(document, label='issues.json') -> list:
         identity = (f'issue {row["id"]}' if isinstance(row.get('id'), str) and row['id']
                     else f'the issue in row {position}')
         for field in _LIST_FIELDS:
-            value = row.get(field)
-            if value is None or isinstance(value, list):
+            if field not in row or isinstance(row[field], list):
                 continue
-            problems.append(f'{label} holds {identity} whose {field} is a '
-                            f'{type(value).__name__} where a list belongs, so its '
-                            f'{field} were not read')
+            # `field in row`, not `row.get(field) is not None`: a list field
+            # this engine writes is always a list, empty where it does not
+            # apply, so a row that holds `"members": null` says something this
+            # version does not read rather than nothing at all. A row with no
+            # `members` key is the older, narrower shape and is read as a row
+            # with no members, which is what every reader above does with it.
+            problems.append(f'{label} holds {identity} whose {field} is '
+                            + ('null' if row[field] is None
+                               else 'a ' + type(row[field]).__name__)
+                            + f' where a list belongs, so its {field} were not read')
         for field, entries in (('members', row.get('members')),
                                ('surviving_quotes', row.get('surviving_quotes'))):
             if not isinstance(entries, list):
@@ -411,13 +418,19 @@ def validate_prior_issues(document, label='issues.json') -> list:
     code.
 
     What it asks, in order: the ``schema_version`` is one this release reads;
-    every field is the type a reader expects (:func:`field_problems`); every
+    every field is the type a reader expects (:func:`field_problems`); the
+    ``issues`` list is there, because a prior round is the rows it holds; every
     row carries an ``id`` that is non-empty text, because the id is the only
     thing a later round matches on; no id appears twice; ``issue_ids_used`` is
-    a list of ids in this engine's own form, so the next round mints past the
-    ones already spent; and something is left after the resolved rows are
-    dropped (:func:`carried_forward`) — a file of nothing but fixes is a round
-    that closed, and there is nothing in it for a later round to match.
+    present and a list of ids in this engine's own form, so the next round
+    mints past the ones already spent; and something is left after the resolved
+    rows are dropped (:func:`carried_forward`) — a file of nothing but fixes is
+    a round that closed, and there is nothing in it for a later round to match.
+
+    A field this function says nothing about is a field the next round loads,
+    which is why every requirement of the loader is a requirement here: the
+    loader asks nothing outside this list, so a document that passes is a
+    document that opens.
 
     *label* is how the file is named in each problem. The loader passes the
     path it read.
@@ -428,9 +441,17 @@ def validate_prior_issues(document, label='issues.json') -> list:
     problems = field_problems(document, label=label)
     rows = document.get('issues')
     if not isinstance(rows, list):
-        return problems
+        # A run folder's own document may be read without its issues — a run
+        # that stopped before the editor closed has none, and `read_run`
+        # reports what it has. A *prior* round is its rows: a file with no
+        # issues list has nothing for this round to match its own issues
+        # against, and it was refused by name long before this function
+        # existed. Checked here rather than in `field_problems`, so the
+        # tolerance of one reader is not the requirement of the other.
+        problems.append(f'{label} holds no issues list, so it is not an issues.json this '
+                        'version can match against')
     seen: dict = {}
-    for position, row in enumerate(rows, 1):
+    for position, row in enumerate(rows if isinstance(rows, list) else (), 1):
         if not isinstance(row, dict):
             continue
         identity = row.get('id')
