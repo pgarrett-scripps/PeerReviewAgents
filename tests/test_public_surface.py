@@ -22,6 +22,7 @@ import json
 from pathlib import Path
 
 import pytest
+from manuscripts import build_base
 
 import peerreviewagents
 from peerreviewagents import issues as issue_model
@@ -479,18 +480,21 @@ def test_the_server_keeps_its_own_protocol_when_the_starter_runs_after_it(tmp_pa
 # -- the draft export ------------------------------------------------------
 
 
-def test_export_draft_no_longer_emits_the_debate_keys():
-    paper = {'id': 'p1', 'source_sha256': 'abc', 'blocks': [{'id': 'b1', 'text': 'A sentence.',
-                                                             'sha256': 'x'}]}
-    review = {'id': 'r1', 'paper_id': 'p1', 'findings': [], 'limitations': [],
+def test_export_draft_no_longer_emits_the_debate_keys(tmp_path):
+    base = build_base(tmp_path / 'manuscript',
+                      [{'kind': 'paragraph', 'text': 'A sentence.'}])
+    review = {'id': 'r1', 'paper_id': base.paper_id, 'findings': [], 'limitations': [],
               'raw_response': {'component_decisions': [{'kept': True}],
                                'epistemic_audit': {'checked': True}}}
 
-    exported = peerreviewagents.export_draft(paper, review, {'paper_id': 'p1', 'items': {}})
+    exported = peerreviewagents.export_draft(base, review,
+                                             {'paper_id': base.paper_id, 'items': {}})
 
     assert 'component_decisions' not in exported
     assert 'epistemic_audit' not in exported
-    assert exported['proposed_blocks'] == paper['blocks']
+    # Nothing was decided, so the proposal is the manuscript as it stands: the
+    # documents themselves, because a draft is now text and not a block list.
+    assert exported['proposed_documents'] == base.documents
 
 
 # -- a damaged folder is still a reading ------------------------------------
@@ -1071,30 +1075,33 @@ def test_the_workspace_helpers_are_the_engine_s_own_objects():
 
 
 def test_a_workspace_written_through_the_public_module_is_one_the_engine_verifies(tmp_path):
-    """The round trip: write with these names, and `verify_workspace` accepts it."""
+    """The round trip: a written workspace, and the review `verify_workspace` accepts.
+
+    What comes back from the verification is the manuscript's base — the
+    Markdown and the map over it — so the app that saves a review against this
+    folder cites a line of a file, not an id of a block it never read.
+    """
     from peerreviewagents import verify_workspace, workspace
 
     text = 'The cohort of 12 samples was 🧠 imaged twice.'
-    paper = {'id': 'paper-1', 'source_sha256': 'ab' * 32,
-             'blocks': [{'id': 'b1', 'text': text, 'sha256': workspace.digest(text)}]}
     root = tmp_path / 'workspace'
-    workspace.write_json(root / 'paper.json', paper)
-    workspace.write_json(root / 'manifest.json', {
-        'files': {'paper.json': workspace.digest((root / 'paper.json').read_bytes())}})
+    base = build_base(root, [{'kind': 'paragraph', 'section': 'Methods', 'text': text}])
 
-    assert verify_workspace(root)['id'] == 'paper-1'
-    assert workspace.read_json(root / 'paper.json') == paper
+    verified = verify_workspace(root)
+    assert verified.paper_id == 'paper-1'
+    assert verified.line_text(1) == text
+    assert workspace.read_json(root / 'map.json') == base.rows
 
     response = {'findings': [
-        {'title': 'Name the unit', 'block_id': 'b1', 'quote': '12 samples',
-         'kind': 'question', 'evidence_blocks': ['b1'], 'comment': 'donors or scans?'}]}
+        {'title': 'Name the unit', 'line': 1, 'quote': '12 samples',
+         'kind': 'question', 'evidence_lines': [1], 'comment': 'donors or scans?'}]}
     saved = workspace.save_review(root, response, 'r1')
 
     assert saved['findings'][0]['placement'] == 'anchored'
     assert workspace.read_json(root / 'reviews' / 'r1.json') == saved
     # The same review again is the same file, not a second one and not an error.
     assert workspace.save_review(root, response, 'r1') == saved
-    assert workspace.normalize_review(paper, response, 'r2')['findings'][0]['id'] == 'r2-1'
+    assert workspace.normalize_review(base, response, 'r2')['findings'][0]['id'] == 'r2-1'
 
 
 def test_the_two_text_helpers_read_text_the_way_the_import_does():

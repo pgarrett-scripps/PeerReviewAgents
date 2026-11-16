@@ -1016,7 +1016,7 @@ def test_a_finished_run_writes_the_files_a_consumer_reads(tmp_path):
     assert protocol['finding_schema_version'] == names.FINDING_SCHEMA_VERSION
 
     manifest = json.loads((review / 'manifest.json').read_text(encoding='utf-8'))
-    assert manifest['paper_id'] == run.paper['id']
+    assert manifest['paper_id'] == run.base.paper_id
     assert any(key.startswith('engine/') for key in manifest['code'])
     assert manifest['plan']['reviewers'] == 2
 

@@ -1,7 +1,7 @@
 """Manuscript workspaces, the investigation tools and the run reports.
 
 What is left here after 0.9 is the part of the engine the plugin uses: a PDF
-becomes a workspace of addressable source blocks (:mod:`ingest`,
+becomes a workspace holding the manuscript as ``paper.md`` (:mod:`ingest`,
 :mod:`annotations`), an agent investigates that workspace through bounded tools
 (:mod:`investigation`), and a finished run is rendered as a report
 (:mod:`run_report`, :mod:`usage`). There is no orchestration here any more. The

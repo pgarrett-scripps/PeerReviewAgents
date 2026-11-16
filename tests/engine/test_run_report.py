@@ -102,8 +102,11 @@ STREAM = [
 @pytest.fixture
 def run(tmp_path):
     """A finished two-track run: a manuscript folder, a review folder, both reports' input."""
-    write(tmp_path / 'manuscript' / 'paper.json',
-          {'id': 'paper-1', 'title': 'Dimerization regulates enzyme activity',
+    # The manuscript folder says which paper was reviewed, and after 0.9 it says
+    # so in its manifest: the renderer reads the identity from the file the
+    # import wrote, not from a paper document of its own.
+    write(tmp_path / 'manuscript' / 'manifest.json',
+          {'paper_id': 'paper-1', 'title': 'Dimerization regulates enzyme activity',
            'source_url': 'https://example.org/preprint'})
     review = tmp_path / 'review'
     write(review / 'protocol.json', {
@@ -382,7 +385,7 @@ def test_the_manuscript_folder_is_found_beside_the_review_folder(run):
 
 def test_a_mismatched_workspace_or_a_missing_protocol_fails_before_writing(run, tmp_path):
     other = tmp_path / 'other'
-    write(other / 'paper.json', {'id': 'paper-2', 'title': 'Another paper'})
+    write(other / 'manifest.json', {'paper_id': 'paper-2', 'title': 'Another paper'})
 
     with pytest.raises(ValueError, match='does not match'):
         write_reports(run, workspace=other)

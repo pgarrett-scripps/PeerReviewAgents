@@ -282,7 +282,7 @@ row is
  "rank": 1, "statement": "the paragraph the authors read", "raised_by": 2,
  "members": [{"finding_uid": "...", "slot": "core-2", "track": "core", "quote": "...",
               "document": "paper.md", "line": 118, "end_line": None,
-              "evidence_lines": [118, 121],
+              "evidence_lines": [118, 121], "fingerprint": "9f2c…",
               "severity": "major", "kind": "issue", "basis": "two-quotes",
               "escalate": False, "title": "..."}],
  "audits": ["audit_stats.md"],
@@ -295,7 +295,7 @@ row is
 **Every one of those seventeen fields is on every row**, live or closed, edited
 or synthesised, and a field that does not apply to a row is `None` — or `[]`
 where the field is a list. `peerreviewagents.issues.ISSUE_FIELDS` is that list
-and `MEMBER_FIELDS` is a member's thirteen, so a consumer reads a field by name
+and `MEMBER_FIELDS` is a member's fourteen, so a consumer reads a field by name
 and never tests whether a key is there. Earlier releases left the inapplicable
 ones out; 0.10 does not.
 
@@ -364,12 +364,21 @@ findings were the earlier round's — so what it carries instead is
 against those. An id that was `resolved` stays in `issue_ids_used` for good.
 
 `resolved` is the stronger claim and the server checks it. Where a prior
-member's quote still appears **verbatim** in the new manuscript, `resolved`
-takes a `text_unchanged_reason` as well, and the passages the server found are
-published in `surviving_quotes` so a reader can see what the ruling was made
-against. Without that reason the status is `unverified`: not raised again, not
-shown fixed. `surviving_quotes` is `[]` and `text_unchanged_reason` is `None` on
-every other row.
+member's passage is still in the new manuscript, `resolved` takes a
+`text_unchanged_reason` as well, and the passages the server found are published
+in `surviving_quotes` so a reader can see what the ruling was made against.
+Without that reason the status is `unverified`: not raised again, not shown
+fixed. `surviving_quotes` is `[]` and `text_unchanged_reason` is `None` on every
+other row.
+
+A prior round's line numbers mean nothing in a manuscript imported afresh, so
+the passage is looked for twice over: first the quote itself, **verbatim**, and
+then the member's `fingerprint`, the digest of the whole passage it was found
+in, which still matches where the converter has since broken the lines
+somewhere else. Each row of `surviving_quotes` is `{"finding_uid", "quote",
+"document", "line", "fingerprint", "matched_by"}`, and `matched_by` is `"quote"`
+or `"fingerprint"` — a fingerprint match says the passage is unchanged without
+claiming the quoted words were found at that line.
 
 #### The rest of the document
 
@@ -905,8 +914,11 @@ object per line, and the last line written for a `row_id` is that row. A
 reference row is `{"kind": "reference", "row_id": "ref:<reference_id>",
 "reference_id": …, "label": …, "raw": …, "printed": {…}}` plus a `resolution`
 object once it was looked up; a use row is `{"kind": "use", "row_id":
-"use:<block>:<sentence>:<reference_id>", "reference_id": …, "sentence": …,
-"marker": …}` plus a `verdict` once a worker judged it. The stage record beside
+"use:<document>:<line>:<sentence>:<reference_id>", "reference_id": …,
+"document": …, "line": …, "end_line": …, "sentence": …, "marker": …}` plus a
+`verdict` once a worker judged it — `document` is `paper.md` for the manuscript
+and the supplement's file name otherwise, and `line` is the line of that file
+the citing sentence starts on. The stage record beside
 it, `citations/stages.json`, is what `complete` and `lookups` are read from:
 `{"fill": {"done": true}, "resolve": {"done": true, "lookups": 2}}`.
 `tests/test_ledger_consumer_surface.py` builds its fixtures exactly this way

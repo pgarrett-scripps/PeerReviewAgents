@@ -1170,7 +1170,7 @@ def test_the_lookup_allowance_is_the_paper_s_length_not_a_constant(tmp_path):
     """
     resolved_run(tmp_path)
     run = srv.current()
-    references = len(run.paper['references'])
+    references = len(run.references)
     assert run.citation_lookups().limit == cl.lookup_budget(references)
     assert cl.lookup_budget(4) == cl.MIN_LOOKUPS, 'a short list still gets room to retry'
     assert cl.lookup_budget(300) == 300 * cl.LOOKUPS_PER_REFERENCE
@@ -1560,7 +1560,6 @@ def test_no_registered_tool_writes_in_a_complete_folder(tmp_path):
     run, worker, row_id = complete_two_track_run(tmp_path)
     reviewer, editor, recorder = token_for('core-1'), token_for('editor'), token_for('recorder')
     key = CODES['recorder_key']
-    block = run.paper['blocks'][0]
     quote = run.base.line_text(1)
     calls = {
         'ingest': lambda: srv.ingest(str(FIXTURE), str(run.root)),
@@ -1573,12 +1572,10 @@ def test_no_registered_tool_writes_in_a_complete_folder(tmp_path):
         'view_page': lambda: srv.view_page(reviewer, 1),
         'view_supplement': lambda: srv.view_supplement(reviewer, 'S1'),
         'check_citation': lambda: srv.check_citation(reviewer, 'b0006'),
-        'search_literature': lambda: srv.search_literature(reviewer, 'widgets', block['id']),
-        'resolve_identifier': lambda: srv.resolve_identifier(reviewer, 'doi', '10.5555/x',
-                                                             block['id']),
-        'lookup_source': lambda: srv.lookup_source(reviewer, 'crossref', '10.5555/x',
-                                                   block['id']),
-        'inspect_results': lambda: srv.inspect_results(reviewer, block['id']),
+        'search_literature': lambda: srv.search_literature(reviewer, 'widgets', 1),
+        'resolve_identifier': lambda: srv.resolve_identifier(reviewer, 'doi', '10.5555/x', 1),
+        'lookup_source': lambda: srv.lookup_source(reviewer, 'crossref', '10.5555/x', 1),
+        'inspect_results': lambda: srv.inspect_results(reviewer, 1),
         'record_comparison': lambda: srv.record_comparison(reviewer, []),
         'validate_synthesis': lambda: srv.validate_synthesis(reviewer, '{}'),
         'submit_finding': lambda: srv.submit_finding(

@@ -507,14 +507,19 @@ def _reviewer_models(*candidates):
 
 
 def _identity(manifest, protocol, paper, pdf_from_startup=None, problems=None, agents=None):
-    """Who the run reviewed, from the files that say so rather than from a name."""
+    """Who the run reviewed, from the files that say so rather than from a name.
+
+    *paper* is the manuscript workspace's own manifest, which is where the
+    paper id, the title and the source digest are written down at import.
+    """
     manifest, protocol, paper = manifest or {}, protocol or {}, paper or {}
     problems = problems if problems is not None else []
     plan = manifest.get('plan') or protocol.get('plan') or {}
     plan = plan if isinstance(plan, dict) else {}
     return {
-        'paper_id': manifest.get('paper_id') or protocol.get('paper_id') or paper.get('id'),
-        'source_sha256': manifest.get('source_sha256') or paper.get('source_sha256'),
+        'paper_id': manifest.get('paper_id') or protocol.get('paper_id') or paper.get('paper_id'),
+        'source_sha256': (manifest.get('source_sha256')
+                          or (paper.get('source') or {}).get('sha256')),
         'pdf': manifest.get('pdf') or protocol.get('pdf') or pdf_from_startup,
         'title': paper.get('title') or protocol.get('title'),
         'arm': protocol.get('arm') or protocol.get('mode') or plan.get('arm'),
@@ -650,7 +655,7 @@ def publishable_reasons(status, findings_source, guard_status, problems, quarant
     disagree: ``publishable`` is this list being empty.
 
     A quarantined finding is not one of the reasons. The review guard exists to
-    throw out a finding whose quote it could not match to the block it names,
+    throw out a finding whose quote it could not match to the lines it names,
     and a guard that did that has done its job — what is left is a whole review
     minus one bad quote. Stage A found the cost of the other rule: a correct
     catch of a planted error was quarantined for a paraphrased quote, and the
@@ -802,7 +807,7 @@ def read_run(path):
         ``moderate`` or ``minor``), ``category``, ``rank``, one paragraph of
         ``statement``, its ``status`` against the prior round, and its
         ``members`` — the findings it is raised from, each with its
-        ``finding_uid``, slot, quote and block ids kept as evidence.
+        ``finding_uid``, slot, quote and cited lines kept as evidence.
         ``raised_by`` is how many reviewer slots are among those members.
         Every row carries every field of
         :data:`peerreviewagents.issues.ISSUE_FIELDS`, and every member every
@@ -883,8 +888,8 @@ def read_run(path):
     runtime = _mapping(review / 'runtime.json', problems) or {}
     startup = _mapping(review / 'startup.json', problems) or {}
     workspace = root / MANUSCRIPT_DIRECTORY
-    _no_symlink(workspace / 'paper.json')
-    paper = _mapping(workspace / 'paper.json', problems)
+    _no_symlink(workspace / 'manifest.json')
+    paper = _mapping(workspace / 'manifest.json', problems)
 
     state = run_status(progress, runtime, startup, problems)
     status, complete = state['status'], state['status'] in COMPLETE_STATUSES
@@ -934,7 +939,7 @@ def read_run(path):
         source = 'ledger' if findings else 'none'
     if not findings:
         # A run whose ledger is gone still has the issues' own member rows, and
-        # they carry the uid, the slot, the quote and the blocks.
+        # they carry the uid, the slot, the quote and the cited lines.
         # Through the same guard as every other reader of this document: a
         # `members` held as a number was iterated here and raised a TypeError
         # out of `read_run` on the one path that had no ledger to fall back on.

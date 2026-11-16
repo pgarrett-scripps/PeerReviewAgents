@@ -16,7 +16,8 @@ from __future__ import annotations
 RUN_DIRECTORY = 'review'
 
 #: The folder inside a run that holds the imported manuscript, including
-#: ``paper.json`` and the page images. ``<run>/manuscript``.
+#: ``paper.md``, ``map.json``, ``manifest.json`` and the page images.
+#: ``<run>/manuscript``.
 MANUSCRIPT_DIRECTORY = 'manuscript'
 
 #: The schema every stored finding is stamped with, in its ``schema_version``.

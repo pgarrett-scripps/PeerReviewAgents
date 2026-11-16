@@ -44,7 +44,7 @@ against them. You start it and report what it found.
      from the earlier round with the statement it had then.
 
    Do not match anything yourself, and never compare `finding_uid`s across
-   runs: a uid is a digest of the paper's id, the slot, the quote and the blocks
+   runs: a uid is a digest of the paper's id, the slot, the quote and the lines
    cited, so a revised PDF renames every finding in it and the core slots are
    interchangeable between runs. The ids that carry across rounds are the issue
    ids, and they carry because the editor matched them.

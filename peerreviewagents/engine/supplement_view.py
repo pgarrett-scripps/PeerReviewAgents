@@ -5,11 +5,12 @@ from pathlib import Path
 from .storage import read, digest
 
 
-def supplement_page(root, paper, asset_id, output, page=1):
+def supplement_page(root, manifest, asset_id, output, page=1):
+    """One page of a verified supplement, named by the manifest's asset list."""
     root, output = Path(root).resolve(), Path(output)
     if type(page) is not int or not 1 <= page <= 100:
         raise ValueError('Supplement page must be between 1 and 100')
-    asset = next((a for a in paper.get('assets', []) if a['id'] == asset_id), None)
+    asset = next((a for a in manifest.get('assets', []) if a['id'] == asset_id), None)
     if asset is None:
         raise ValueError('Unknown supplement ID')
     relative = asset.get('path')

@@ -3,6 +3,7 @@ import json
 import re
 from pathlib import Path
 
+from . import paper_base
 from .storage import digest
 
 ROOT = Path(__file__).parent / 'domains'
@@ -43,22 +44,34 @@ def catalog(root=ROOT):
     return packages
 
 
-def route(paper, packages=None, limit=2):
+def route(base, packages=None, limit=2):
+    """Which domain packages this manuscript's own narrative asks for.
+
+    The evidence is a line of the manuscript and the phrase found on it, so a
+    routing decision can be read back against what ``read_paper`` printed.
+    """
     if type(limit) is not int or not 1 <= limit <= 4:
         raise ValueError('Load between one and four domain packages')
     packages = catalog() if packages is None else packages
-    sections = {s.get('id'): s.get('title', '') for s in paper.get('sections', []) if isinstance(s, dict)}
-    blocks = [b for b in paper['blocks'] if b.get('kind') not in ('reference', 'bibliography')
-              and not re.search(r'\b(references|bibliography)\b', str(b.get('section', sections.get(b.get('section_id'), ''))), re.I)]
+    narrative = []
+    for row in base.rows:
+        if row.get('kind') in ('reference', 'bibliography'):
+            continue
+        if re.search(r'\b(references|bibliography)\b', str(row.get('section') or ''), re.I):
+            continue
+        document = row.get('document') or paper_base.MAIN_DOCUMENT
+        start, end = row['lines']
+        narrative.append((document, start, base.range_text(start, end, document)))
     matches = []
     for item in packages:
         evidence = []
         for phrase in item['triggers']:
             expression = re.compile(r'(?<!\w)' + re.escape(phrase) + r'(?!\w)', re.I)
-            for block in blocks:
-                hit = expression.search(block['text'])
+            for document, line, text in narrative:
+                hit = expression.search(text)
                 if hit:
-                    evidence.append({'block_id': block['id'], 'quote': hit.group(), 'trigger': phrase})
+                    evidence.append({'document': document, 'line': line,
+                                     'quote': hit.group(), 'trigger': phrase})
                     break
         if evidence:
             matches.append({'id': item['id'], 'name': item['name'], 'evidence': evidence,

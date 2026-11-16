@@ -31,7 +31,7 @@ const OPENED = {
     paper_id: { type: 'string' },
     title: { type: 'string' },
     arm: { type: 'string' },
-    block_count: { type: 'integer', description: 'how many blocks the outline holds' },
+    line_count: { type: 'integer', description: 'how many lines paper.md holds' },
     slots: {
       type: 'array', items: { type: 'string' },
       description: 'the slot list ingest returned, verbatim',
@@ -331,7 +331,8 @@ const opened = await agent(
   // server reads the file, and an issue the authors did not fix keeps the id it
   // was first reported under.
   + (run.prior_issues ? ', prior_issues="' + run.prior_issues + '"' : '')
-  + '. Report the paper id, the title, the block count, the slot list and the citation_workers'
+  + '. Report the paper id, the title, the line count of paper.md, the slot list and the'
+  + ' citation_workers'
   + ' list it returned, and — where the response holds them rather than null —'
   + ' citations.references, citations.uses and citation_worker_allowance, which are what the'
   + ' citation stages are sized from. Copy'

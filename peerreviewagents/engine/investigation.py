@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 from .annotations import verify_workspace
 from .calculator import calculate
-from .storage import digest
+from .storage import digest, read
 from . import paper_base, paper_view
 
 #: Tools that do not spend the allowance. Reading the manuscript is not an
@@ -21,11 +21,10 @@ class Investigation:
         self.root=Path(config['paper']).resolve()
         self.out=Path(config['output']).resolve()
         self.out.mkdir(parents=True,exist_ok=True)
-        self.paper=verify_workspace(self.root)
-        self.base=paper_base.load(self.root)
+        self.base=verify_workspace(self.root)
+        self.references=read(self.root/'references.json')
         from .result_map import build_result_map
-        self.result_map = build_result_map(self.paper)
-        self.by={b['id']:b for b in self.paper['blocks']}
+        self.result_map = build_result_map(self.base)
         self.limit=config.get('tool_limit',8)
         self.cutoff=config.get('literature_cutoff')
         self.calls=0
@@ -63,27 +62,43 @@ class Investigation:
             stream.write(json.dumps(log,ensure_ascii=False)+'\n')
         return result
 
+    def _line(self, args, what):
+        """One line of one document of this manuscript, or a refusal saying so."""
+        document = str(args.get('document') or paper_base.MAIN_DOCUMENT)
+        if document not in self.base.documents:
+            raise ValueError(what + ' names a document this manuscript does not hold')
+        total = self.base.line_count(document)
+        line = args.get('line')
+        if type(line) is not int or isinstance(line, bool) or not 1 <= line <= total:
+            raise ValueError(what + ' names a line of ' + document + ', 1 to ' + str(total))
+        return document, line
+
+    def _anchor(self, args, what):
+        """Where a source investigation came from, as ``paper.md:118``."""
+        document, line = self._line(args, what)
+        return document + ':' + str(line)
+
     def dispatch(self,name,args):
         if name == 'resolve_identifier':
-            if args['block_id'] not in self.by:
-                raise ValueError('A source investigation needs a valid manuscript block ID')
-            return self.targeted.resolve_identifier(args['kind'],args['identifier'],args['block_id'])
+            anchor = self._anchor(args, 'A source investigation')
+            return self.targeted.resolve_identifier(args['kind'],args['identifier'],anchor)
         if name == 'inspect_results':
             from .result_map import inspect_results
-            if args['block_id'] and args['block_id'] not in self.by:
-                raise ValueError('Unknown manuscript block ID')
-            return inspect_results(self.result_map, args['block_id'] or None)
+            if args.get('line'):
+                document, line = self._line(args, 'A result inspection')
+            else:
+                document, line = str(args.get('document') or paper_base.MAIN_DOCUMENT), None
+            return inspect_results(self.result_map, line, document)
         if name == 'record_comparison':
             from .result_map import compare_observations
-            result = compare_observations(self.paper, args['observations'])
+            result = compare_observations(self.base, args['observations'])
             target = self.out/'comparisons.jsonl'
             with target.open('a',encoding='utf-8') as stream:
                 stream.write(json.dumps(result, ensure_ascii=False)+'\n')
             return result
         if name == 'lookup_source':
-            if args['block_id'] not in self.by:
-                raise ValueError('A source lookup needs a valid manuscript block ID')
-            return self.sources.lookup(args['provider'], args['identifier'], args['block_id'])
+            anchor = self._anchor(args, 'A source lookup')
+            return self.sources.lookup(args['provider'], args['identifier'], anchor)
         if name=='read_paper':
             document=str(args.get('document') or paper_base.MAIN_DOCUMENT)
             part=args.get('part',1)
@@ -120,17 +135,18 @@ class Investigation:
             return {'saved':True,'limitation':'A saved hypothesis is not a verified finding.'}
         if name=='view_page':
             page=args['page']
-            if type(page) is not int or not 1<=page<=self.paper['statistics']['pdf_pages']:raise ValueError('Unknown page')
+            pages=(self.base.manifest.get('statistics') or {}).get('pdf_pages')
+            if type(page) is not int or not 1<=page<=(pages or 0):raise ValueError('Unknown page')
             target=self.out/f'page_{page:03d}.png'
             if not target.exists():
                 subprocess.run(['pdftoppm','-f',str(page),'-l',str(page),'-scale-to','1500','-singlefile','-png',str(self.root/'original'/'original.pdf'),str(target.with_suffix(''))],check=True,capture_output=True,timeout=30)
             return {'label':f'Original PDF page {page}','image':base64.b64encode(target.read_bytes()).decode()}
         if name=='view_supplement':
             from .supplement_view import supplement_page
-            path, metadata = supplement_page(self.root,self.paper,args['id'],self.out,args.get('page',1))
+            path, metadata = supplement_page(self.root,self.base.manifest,args['id'],self.out,args.get('page',1))
             return {**metadata,'image':base64.b64encode(path.read_bytes()).decode()}
         if name=='check_citation':
-            ref=next((r for r in self.paper['references'] if r['id']==args['reference_id']),None)
+            ref=next((r for r in self.references if r['id']==args['reference_id']),None)
             if ref is None:raise ValueError('Unknown reference ID')
             ref=dict(ref)
             if not ref.get('doi'):
@@ -144,7 +160,6 @@ class Investigation:
             return {'reference': ref, 'source_card': card,
                     'limitation': 'Bibliographic identity only. Compare the returned title and authors with the extracted reference.'}
         if name=='search_literature':
-            if args['block_id'] not in self.by:
-                raise ValueError('A literature investigation needs a valid manuscript block ID')
-            return self.targeted.search_literature(args['query'],args['block_id'])
+            anchor = self._anchor(args, 'A literature investigation')
+            return self.targeted.search_literature(args['query'],anchor)
         raise ValueError('Unknown investigation tool')

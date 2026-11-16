@@ -104,18 +104,25 @@ class SourceClient:
         self.limit, self.cutoff = limit, cutoff
         self.opener = opener or urllib.request.build_opener(NoRedirect()).open
 
-    def reserve_target(self, block_id, provider='targeted-source'):
-        if not isinstance(block_id, str) or not block_id.strip() or len(block_id) > 160:
-            raise ValueError('Source investigation requires a short manuscript block ID')
+    def reserve_target(self, anchor, provider='targeted-source'):
+        """Hold one of the two places this condition may investigate sources for.
+
+        An anchor is where in the manuscript the question came from:
+        ``paper.md:118`` for a line of the paper, or a reference id for a
+        bibliography entry being checked. It is a short string either way, and
+        two of them is the whole allowance.
+        """
+        if not isinstance(anchor, str) or not anchor.strip() or len(anchor) > 160:
+            raise ValueError('Source investigation requires a short manuscript anchor')
         with (self.state / 'targets.lock').open('a', encoding='utf-8') as lock:
             exclusive_lock(lock)
             target_path = self.state / 'targets.json'
             targets = read(target_path) if target_path.exists() else []
-            if block_id not in targets:
+            if anchor not in targets:
                 if len(targets) >= 2:
                     return {'status': 'target_limit', 'provider': provider,
                             'limitation': 'Two source investigation locations have already been selected for this condition.'}
-                targets.append(block_id)
+                targets.append(anchor)
                 write(target_path, targets)
         return None
 
@@ -129,7 +136,7 @@ class SourceClient:
                         fields={}, evidence_text='',
                         limitation=(card.get('limitation', '') +
                             ' Normalized selected fields exceeded the 14000-character model-facing limit.').strip())
-        identity = {k: card.get(k) for k in ('provider', 'identifier', 'manuscript_block_id',
+        identity = {k: card.get(k) for k in ('provider', 'identifier', 'manuscript_anchor',
                     'cutoff', 'raw_sha256', 'record_version', 'status', 'evidence_text')}
         stored = dict(card)
         stored['evidence_id'] = 'source-' + digest(json.dumps(identity, sort_keys=True))[:20]
@@ -184,17 +191,17 @@ class SourceClient:
             finally:
                 write(budget_path, budget)
 
-    def lookup(self, provider, identifier, block_id):
+    def lookup(self, provider, identifier, anchor):
         url = request(provider, identifier)
         if url is None:
             return {'status': 'not_implemented', 'provider': provider,
                     'limitation': 'This catalog resource has no active PRA adapter.'}
-        denied = self.reserve_target(block_id, provider)
+        denied = self.reserve_target(anchor, provider)
         if denied:
             return denied
         record = self.fetch(url)
         data = record.pop('data', None)
-        card = {**record, 'provider': provider, 'identifier': identifier, 'manuscript_block_id': block_id,
+        card = {**record, 'provider': provider, 'identifier': identifier, 'manuscript_anchor': anchor,
                 'cutoff': self.cutoff, 'record_version': None,
                 'source_publication_date': None, 'fields': {}, 'evidence_text': '',
                 'limitation': PROVIDERS[provider][1], 'eligible': False}
