@@ -61,9 +61,14 @@ def run_folder(tmp_path, rows=(), stages=None, protocol=PLANNED):
     review.mkdir(parents=True, exist_ok=True)
     (review / 'protocol.json').write_text(json.dumps(protocol), encoding='utf-8')
     (review / 'progress.json').write_text(json.dumps({'status': 'complete'}), encoding='utf-8')
-    (review / 'editor-package.json').write_text(
-        json.dumps({'findings': [{'finding_uid': 'f1', 'title': 'A finding'}], 'appendix': [],
-                    'review_guard_status': 'checked'}), encoding='utf-8')
+    (review / 'issues.json').write_text(
+        json.dumps({'schema_version': 'review-issues-v1', 'issues_source': 'editor',
+                    'issues': [{'id': 'i01', 'name': 'One problem', 'severity': 'major',
+                                'category': 'claims-and-conclusions', 'rank': 1,
+                                'statement': 'The one issue this run raised.',
+                                'members': [{'finding_uid': 'f1', 'slot': 'core-1',
+                                             'title': 'A finding'}]}],
+                    'review_guard_status': 'clean'}), encoding='utf-8')
     if rows:
         folder = review / cl.LEDGER_DIRECTORY
         folder.mkdir(parents=True, exist_ok=True)

@@ -123,6 +123,7 @@ the review's options:
 | `--track` | all six | Repeatable; limits the specialist tracks (used by `draft-check`) |
 | `--citation-workers` | `4` | Workers judging in-text citations against the resolved sources, 0 to 12; only where the `citations` track runs |
 | `--citation-worker-model` | `claude-haiku-5-5` | Every citation worker |
+| `--prior-issues` | none | An earlier run's `issues.json`, or its run folder: the editor matches this round's issues against it, keeps the matched ids, and marks each prior issue persisting, regressed or resolved |
 | `--literature-cutoff` | today | Latest eligible publication date |
 | `--per-agent-tokens` | `500000` | Per-agent token ceiling, enforced from the session stream |
 | `--per-run-tokens` | `6000000` | Per-run token ceiling |
@@ -151,7 +152,9 @@ on them.
 <run>/manuscript/             the immutable import: original.pdf, paper.json
                               source blocks, page images, the manifest
 <run>/review/REVIEW.md        the review, and REVIEW.txt beside it
-<run>/review/editor-package.json   the editor's decisions, one per finding
+<run>/review/issues.json      the review itself: the issues the editor grouped
+                              the findings into, ranked, with their members
+<run>/review/editor-log.jsonl every editor submission and every refusal
 <run>/review/findings.jsonl   every stored finding, with its basis
 <run>/review/reviewer-<n>/    each core reviewer's own package view
 <run>/review/audit_<track>.md the specialist audits
@@ -198,10 +201,14 @@ leaves the run `blocked`: that is an outcome recorded in `runtime.json` and
   reference list and every use of it, `field` what this kind of study is
   required to do. Each brief names the other five lanes as not its own, so a
   defect is filed once rather than by whoever noticed it first.
-- **One decision per finding.** The editor rules on each, merges duplicates by
-  `finding_uid`, puts at most eight in the body, and must rule by name on every
-  specialist escalation. Leaving a `computed` finding out of the body needs an
-  anchored rebuttal quotation.
+- **The issue is the unit.** The editor groups the findings into issues — one
+  problem, one issue, its findings kept inside it as evidence — gives each a
+  severity, a category, a rank and a one-paragraph statement, and must rule by
+  name on every specialist escalation. Nothing is capped and nothing is hidden:
+  the major and moderate issues are the required changes in rank order, the
+  minor ones are suggestions by category, and every finding belongs to an
+  issue. `issues.json` is the source of truth and `REVIEW.md` is rendered from
+  it alone.
 
 ### Citations, every one of them
 
@@ -327,7 +334,7 @@ run = review("manuscript.pdf", "run-output", reviewers=3)
 print(run["status"], run["tokens_total"], run["report"]["markdown"])
 
 summary = read_run("run-output")          # any run folder, finished or not
-print(summary["status"], summary["cause"], len(summary["body"]))
+print(summary["status"], summary["cause"], len(summary["issues"]))
 ```
 
 Everything an application is meant to use is importable from the top level and
@@ -398,29 +405,34 @@ them:
 | `publishable`, `not_publishable_reasons` | whether the whole review is here to show, and why not when it is not (see below) |
 | `cause`, `note` | why a run that is not complete stopped, and a limit that fired after the review was written |
 | `stage` | `startup` when no session ever ran and no subscription usage was spent, `session` once one did |
-| `findings`, `body`, `appendix` | the findings, de-duplicated per `finding_uid`, split the way the editor placed them |
-| `findings_source` | `editor-package`, `ledger` or `none` |
-| `counts` | `findings`, `body`, `appendix`, `quarantined`, and the server's own `findings_delivered`/`findings_submitted` |
+| `findings` | every stored finding, de-duplicated per `finding_uid` |
+| `issues` | the review: one row per issue, with `id`, `name`, `severity`, `category`, `rank`, `statement`, `raised_by`, its `members` (the findings that evidence it), the specialist `audits` it cites, and `prior_id`/`status`/`status_reason` where a prior round was given |
+| `issues_source` | `editor` where an editor grouped the findings, `server` where the arm runs no editor and the server synthesised one issue per finding |
+| `prior_round` | the earlier run's `issues.json` the issues were matched against, or `None` |
+| `findings_source` | `issues`, `ledger` or `none` |
+| `counts` | `findings`, `issues`, `required`, `suggestions`, `resolved`, `issue_members`, `by_severity`, `by_category`, `quarantined`, and the server's own `findings_delivered`/`findings_submitted` |
 | `quarantined`, `guard_status` | what the guard threw out, and `clean` or `quarantined` |
 | `citations` | the citation ledger: `enabled`, the absolute `ledger` path, `counts` (references resolved, not found, could not be checked, mismatched, retracted; in-text uses judged and how), `complete`, a one-sentence `summary`, and `problems` — one line per stage that did not finish |
 | `escalations`, `escalation_rulings` | the specialist findings that asked for a ruling, and the rulings given |
 | `summary`, `verdict`, `limitations` | the editor's own three, or `None`/`[]` |
 | `identity` | paper id, source hash, PDF path, arm, reviewers, specialist tracks, versions, `provider`, `code_hashes` — the manifest's digest of each engine and plugin file that served the run — and `models`/`reviewer_models`, the model each slot was started with (both empty for a run from before 0.9.0), with `models_unverified` naming the slots that never reported running one |
-| `stages` | the stage ledger the run recorded, or `None`: `required`, `reported`, `missing`, and `missing` split in two — `silent` (stored nothing, filed nothing, so the run is blocked) and `missing_with_findings` (findings delivered and ruled on, no report filed, so the review is written and `note` names the gap) |
+| `stages` | the stage ledger the run recorded, or `None`: `required`, `reported`, `missing`, and `missing` split in two — `silent` (stored nothing, filed nothing, so the run is blocked) and `missing_with_findings` (findings delivered and ruled on, no report filed, so the review is written and `note` names the gap) — plus `editor_trace`, what the editor's submission calls did and the last refusals it could not satisfy |
 | `runtime` | wall time, total tokens, rate limits, both token ceilings, the Claude Code version |
 | `agents` | one row per agent slot: role, track, `assigned_model` and the `model` it reported running as, tool calls, tokens, state |
 | `usage` | observed subscription tokens from the usage receipts, with `unknown` set if any receipt was unreadable |
-| `reports` | absolute paths to what exists — `REVIEW.md`, `REVIEW.txt`, `editor-package.json`, and `audits` keyed by track |
+| `reports` | absolute paths to what exists — `REVIEW.md`, `REVIEW.txt`, `issues.json`, `editor-log.jsonl`, and `audits` keyed by track |
 | `startup` | the harness's own start-up event as `probe` (`None` when no probe was written or it holds the wrong shape) and the probe's own `problems` |
 | `startup_problems` | what the start-up probe refused to launch over |
 | `problems` | every file that could not be read in full, named, every slot that ran a different model family than it was assigned, and one line per citation stage that did not finish |
 | `files` | the run files that exist, by name |
 
-Findings come from `editor-package.json` when the editor got that far and from
-the `findings.jsonl` ledger when it did not, de-duplicated to the latest row
-per `finding_uid` either way: the ledger is append-only, so a finding restated
-during the run is one finding, not three. A uid the editor placed in both lists
-is in `body` only, so each finding is counted once.
+Findings always come from the `findings.jsonl` ledger, de-duplicated to the
+latest row per `finding_uid`: the ledger is append-only, so a finding restated
+during the run is one finding, not three. Where that file is gone, the issues'
+own `members` carry the same rows and are read instead. The issues come from
+`issues.json`, which is the review — nothing is capped and nothing is placed
+out of sight, so every finding reaches the review through the issue that holds
+it, and the two readings never disagree about how much was found.
 
 **The status rule.** One function decides it — `peerreviewagents.runs.run_status`
 — and `REVIEW.md` is rendered from the same answer, so a folder never reads one
@@ -436,10 +448,12 @@ nothing, or the guard quarantined everything they raised. `counts['quarantined']
 is what tells them apart.
 
 **`publishable`** is the one flag to gate publishing on. It is true when the
-status is `complete` or `complete-without-findings`, the findings came from a
-readable `editor-package.json`, the guard recorded a verdict, and no file was
-unreadable. When it is false, `not_publishable_reasons` names every reason in
-words, so the flag is never false with nothing said.
+status is `complete` or `complete-without-findings`, the issues came from a
+readable `issues.json` an editor wrote, the guard recorded a verdict, and no
+file was unreadable. When it is false, `not_publishable_reasons` names every
+reason in words, so the flag is never false with nothing said. An arm that runs
+no editor is never publishable and that is not a fault: its `issues_source` is
+`server`, one issue per finding, and a reason says so.
 
 A quarantined finding is not one of those reasons. The guard exists to throw out
 a finding whose quote it could not match to the block it names; a guard that did

@@ -8,7 +8,7 @@ import unicodedata
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
-from .storage import digest, write
+from .storage import digest, relative_name, write
 
 POPPLER_MISSING = ('Poppler (pdftotext) is not installed. Install it with `brew install poppler` '
                    'on macOS, `sudo apt install poppler-utils` on Debian or Ubuntu, or '
@@ -196,5 +196,8 @@ def import_paper(pdf, output, xml=None, title=None, source_url='', supplements=N
         p=output/'pages'/f'{i:03d}.txt'
         p.parent.mkdir(exist_ok=True)
         p.write_text(page,encoding='utf-8')
-    write(output/'manifest.json',{'paper_id':paper['id'],'files':{str(p.relative_to(output)):digest(p.read_bytes()) for p in sorted(output.rglob('*')) if p.is_file() and p.name!='manifest.json'}})
+    # POSIX keys: the scaffold inventory check builds its names with as_posix,
+    # so a manifest keyed with the OS separator read as a changed inventory on
+    # Windows and refused every run over a scaffold manuscript.
+    write(output/'manifest.json',{'paper_id':paper['id'],'files':{relative_name(p,output):digest(p.read_bytes()) for p in sorted(output.rglob('*')) if p.is_file() and p.name!='manifest.json'}})
     return paper

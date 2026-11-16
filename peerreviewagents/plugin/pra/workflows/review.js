@@ -1,13 +1,13 @@
 export const meta = {
   name: 'review',
   description: 'Two-track peer review: ingest, N core reviewers and six specialists in parallel, editor, write the run',
-  whenToUse: 'Reviewing one manuscript PDF with PeerReviewAgents 0.9. Pass {pdf, out, reviewers, arm}, and {reviewer_models, specialist_model, editor_model, recorder_model, citation_worker_model} to choose the models.',
+  whenToUse: 'Reviewing one manuscript PDF with PeerReviewAgents 0.10. Pass {pdf, out, reviewers, arm}, {prior_issues} to match a later round against an earlier run\'s issues.json, and {reviewer_models, specialist_model, editor_model, recorder_model, citation_worker_model} to choose the models.',
   phases: [
     { title: 'Ingest', detail: 'import the PDF and fix the plan for this arm' },
     { title: 'Citations', detail: 'resolve every reference, then judge each in-text use against the source' },
     { title: 'Review', detail: 'core reviewers and specialists, in parallel, each isolated' },
     { title: 'Revision', detail: 'single-revision arm only: the reviewer revises its own findings' },
-    { title: 'Editor', detail: 'pool the findings, decide body against appendix, rule on escalations' },
+    { title: 'Editor', detail: 'group the findings into ranked issues, rule on escalations' },
     { title: 'Record', detail: 'write the run files, or mark the run blocked' },
   ],
 }
@@ -134,12 +134,39 @@ const EDITED = {
   type: 'object',
   properties: {
     accepted: { type: 'boolean', description: 'true only if submit_editor returned accepted' },
-    body: { type: 'integer', description: 'findings placed in the body' },
+    issues: { type: 'integer', description: 'issues the accepted review holds' },
+    required_changes: { type: 'integer', description: 'major and moderate issues' },
+    suggestions: { type: 'integer', description: 'minor issues' },
+    resolved_from_prior: { type: 'integer', description: 'prior issues you ruled resolved' },
+    unverified_from_prior: {
+      type: 'integer',
+      description: 'prior issues you ruled unverified: not raised again, not verified fixed',
+    },
     escalated_ruled: { type: 'integer' },
+    batches: { type: 'integer', description: 'how many times you called submit_issues' },
     attempts: { type: 'integer', description: 'how many times you called submit_editor' },
     summary: { type: 'string' },
   },
-  required: ['accepted', 'body', 'summary'],
+  required: ['accepted', 'issues', 'summary'],
+}
+
+// Why a blocked editor is worth its own schema: with about forty findings the
+// 0.9.0 editor ended four runs out of four with nothing on disk and no reason,
+// so the trace the server now keeps is read back here and carried into the
+// block reason rather than left in the run folder for somebody to find.
+const TRACE = {
+  type: 'object',
+  properties: {
+    calls: { type: 'integer', description: 'editor_trace.calls, or 0 where there is no trace' },
+    accepted: { type: 'integer', description: 'editor_trace.accepted' },
+    refused: { type: 'integer', description: 'editor_trace.refused' },
+    last_refusal: {
+      type: 'string',
+      description: 'the refusal text of the last entry in editor_trace.last_refusals, verbatim;'
+        + ' empty where there is none',
+    },
+  },
+  required: ['calls'],
 }
 
 // Stage 2 of the citation ledger: the server's own lookups, no model involved.
@@ -177,8 +204,9 @@ const RECORDED = {
   type: 'object',
   properties: {
     status: { type: 'string', description: 'the status write_review returned' },
-    body_findings: { type: 'integer' },
-    appendix_findings: { type: 'integer' },
+    issues: { type: 'integer', description: 'issue_counts.issues' },
+    required_changes: { type: 'integer' },
+    suggestions: { type: 'integer' },
     escalated: { type: 'integer' },
     refusal: { type: 'string', description: 'the request_rejected text, if it refused' },
   },
@@ -299,6 +327,10 @@ const opened = await agent(
   + (run.citation_workers !== undefined && run.citation_workers !== null
     ? ', citation_workers=' + run.citation_workers : '')
   + (run.citation_worker_model ? ', citation_worker_model="' + run.citation_worker_model + '"' : '')
+  // A later round of the same paper. The path is passed straight through: the
+  // server reads the file, and an issue the authors did not fix keeps the id it
+  // was first reported under.
+  + (run.prior_issues ? ', prior_issues="' + run.prior_issues + '"' : '')
   + '. Report the paper id, the title, the block count, the slot list and the citation_workers'
   + ' list it returned, and — where the response holds them rather than null —'
   + ' citations.references, citations.uses and citation_worker_allowance, which are what the'
@@ -630,22 +662,54 @@ if (hasEditor) {
   edited = await stage(
     'editor', 'pra:editor', 'Editor',
     code => 'Every reviewer and specialist has reported. Claim slot="editor" with claim_code="'
-    + code + '", read every finding with'
-    + ' list_findings, then submit_editor: one decision per finding with a reason, duplicates'
-    + ' merged, at most about eight findings in the body, a ruling by name on every escalated'
-    + ' finding, and the two-axis verdict in words. If it returns problems, fix them and submit'
-    + ' again. Close with submit_report.',
+    + code + '", read every finding with list_findings, then group them into issues: one issue'
+    + ' per problem with the findings that raised it as its members, a severity, a category, a'
+    + ' rank and the paragraph the authors read. Send them with submit_issues, at most'
+    + ' issue_model.batch_limit from your claim answer per call and as many calls as you need —'
+    + ' every answer tells you how many findings no issue holds yet, and that has to reach zero.'
+    + ' Read issues_held in your claim answer first: it lists the issues an earlier attempt of'
+    + ' this slot already stored, and they are still held, so send only what is missing or what'
+    + ' you are changing. To merge, rename or drop one of them, name it in submit_issues\''
+    + ' retire beside the batch that replaces it. Where your claim answer carries prior_issues,'
+    + ' match each issue you can to one of those with prior_id and a status of persisting or'
+    + ' regressed, and rule on every one you did not match in submit_editor\'s prior_rulings as'
+    + ' resolved or unverified with a reason. Then close with submit_editor: the summary, a'
+    + ' ruling by name on every escalated finding, and the two-axis verdict in words. If a call'
+    + ' returns problems, fix exactly those and send that batch again; what you submitted before'
+    + ' is kept. Close with submit_report, and report how many batches you sent in the batches'
+    + ' field.',
     EDITED,
   )
-  if (!edited) await block('The editor never submitted an accepted pooled review')
+  if (!edited) {
+    // Part of the fix for the silent failure: the server logs every submit call
+    // and every refusal, and the reason reaches the run's own output instead of
+    // staying in the folder.
+    const trace = await agent(
+      'The editor failed to submit an accepted review. Call run_status with recorder_key="'
+      + recorderKey + '" and report ledger.editor_trace: its calls, accepted and refused'
+      + ' counts, and the refusal text of the last entry in last_refusals, verbatim. Where'
+      + ' editor_trace is null, report calls=0 and an empty last_refusal.',
+      options('recorder', {
+        label: 'read the editor trace', phase: 'Editor', agentType: 'pra:recorder', schema: TRACE,
+      }),
+    )
+    const spent = trace && trace.calls ? trace.calls : 0
+    await block('The editor never submitted an accepted review: '
+      + (spent === 0
+        ? 'it made no submit call at all, so the trace in editor-log.jsonl is empty'
+        : spent + ' submit call(s), ' + (trace.refused || 0) + ' refused'
+          + (trace.last_refusal ? ', last refusal: ' + trace.last_refusal : '')
+          + '; the full trace is in editor-log.jsonl in the run folder'))
+  }
 }
 
 phase('Record')
 const recorded = await agent(
   'Close the run. Call claim_agent with slot="recorder" and claim_code="' + codeFor('recorder')
   + '", then write_review with that token.'
-  + ' Report the status, the body and appendix counts and the escalated count. If it refuses,'
-  + ' report the refusal text verbatim in the refusal field.',
+  + ' Report the status, issue_counts.issues as issues, the required_changes and suggestions'
+  + ' counts and the escalated count. If it refuses, report the refusal text verbatim in the'
+  + ' refusal field.',
   options('recorder', {
     label: 'write review', phase: 'Record', agentType: 'pra:recorder', schema: RECORDED,
   }),
@@ -672,12 +736,21 @@ return {
     findings: r.findings_stored || 0, none_found: !!r.none_found,
   })),
   editor: edited && {
-    body: edited.body, escalated_ruled: edited.escalated_ruled || 0, attempts: edited.attempts,
+    issues: edited.issues,
+    required_changes: edited.required_changes || 0,
+    suggestions: edited.suggestions || 0,
+    resolved_from_prior: edited.resolved_from_prior || 0,
+    unverified_from_prior: edited.unverified_from_prior || 0,
+    escalated_ruled: edited.escalated_ruled || 0,
+    batches: edited.batches || null,
+    attempts: edited.attempts,
   },
   citations: citations,
   findings_stored: findingsStored,
-  body_findings: recorded.body_findings,
-  appendix_findings: recorded.appendix_findings,
+  prior_issues: run.prior_issues || null,
+  issues: recorded.issues,
+  required_changes: recorded.required_changes,
+  suggestions: recorded.suggestions,
   escalated: recorded.escalated,
   run: run.out,
 }

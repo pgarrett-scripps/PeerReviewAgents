@@ -1,12 +1,12 @@
 # Integrations
 
-There is one integration in 0.9: the `pra` plugin for Claude Code. It is also
+There is one integration in 0.10: the `pra` plugin for Claude Code. It is also
 the only way a review runs, whether you start it from the command line or from
 inside a session, so there is nothing to wire up twice.
 
 ```
 peerreview review     peerreviewagents/plugin/pra   peerreviewagents.plugin.server
-  (the command)      →     (workflow, agents,     →   (23 MCP tools, the ledger,
+  (the command)      →     (workflow, agents,     →   (28 MCP tools, the ledger,
                             skills, .mcp.json)         the run files)
 ```
 
@@ -117,7 +117,7 @@ Then ask for one of its three skills:
 | `follow-up` | what changed since a previous run of the same paper |
 
 The agents may call only the server's tools — the allow list the starter passes
-is `Workflow`, `Skill`, `TodoWrite` and the 27 `peerreview` tools, and nothing
+is `Workflow`, `Skill`, `TodoWrite` and the 28 `peerreview` tools, and nothing
 else. No `Read`, `Write`, `Edit`, `Bash`, `WebSearch` or `WebFetch` reaches a
 reviewer, which is why a quotation cannot come from anywhere but a source
 block.
@@ -128,7 +128,7 @@ The server is a plugin server. It takes `--plugin-root`, derives a per-run salt
 for agent tokens, and expects the workflow to claim slots in order, so pointing
 another client at it directly gives you the tools without the protocol that
 makes them meaningful. There is no supported generic-client configuration in
-0.9, and the standalone `peerreview-mcp` server that offered one was deleted
+0.10, and the standalone `peerreview-mcp` server that offered one was deleted
 with the rest of the 0.8 surface.
 
 If you want a review from another client, have it run `peerreview review` as a
@@ -137,8 +137,10 @@ subprocess and read the run folder. The command is the integration boundary.
 ## From Python: the supported surface
 
 An application written in Python does not have to shell out. These names are
-the supported surface, all importable from `peerreviewagents` itself. Nothing
-else in the package is: if what you need is only reachable from
+the supported surface, all importable from `peerreviewagents` itself, together
+with the two modules named below it — `peerreviewagents.issues`, the shape of a
+review, and `peerreviewagents.workspace`, the files the engine reads back.
+Nothing else in the package is: if what you need is only reachable from
 `peerreviewagents.plugin` or `peerreviewagents.engine`, treat it as a gap in
 this list and say so, because those modules change without notice.
 
@@ -153,8 +155,19 @@ from peerreviewagents import (
     review_parser, report_parser,           # the real parsers behind the commands
     RUN_DIRECTORY, MANUSCRIPT_DIRECTORY,   # "review" and "manuscript"
     RUN_STATUSES, COMPLETE_STATUSES, CLI_COMMANDS, FINDING_SCHEMA_VERSION,
+    ISSUES_SCHEMA_VERSION,                 # the stamp on issues.json
+    ISSUE_SEVERITIES, ISSUE_CATEGORIES, ISSUE_STATUSES,  # an issue's vocabularies
 )
 ```
+
+Those four `ISSUE_*` names are the whole issue vocabulary on the top-level
+surface, and they are the ones to validate against rather than string literals
+of your own. The rest of the shape — `ISSUE_FIELDS` and `MEMBER_FIELDS` (every
+field of an issue row and of a member), `MAX_ISSUE_BATCH`, `issue_batch_limit`,
+`schema_problem`, and the grouping helpers `required_issues`,
+`suggestion_issues`, `live`, `closed_issues`, `carried_forward`, `by_category`
+and `counts` — is in `peerreviewagents.issues`, which imports nothing from the
+rest of the package and is stable in the same way.
 
 The callables resolve lazily, so `import peerreviewagents` costs nothing and an
 app that only reads finished runs never imports the launcher or the MCP SDK.
@@ -224,8 +237,9 @@ from peerreviewagents import read_run
 run = read_run("run-output")              # the run folder or its review/ folder
 if run["blocked"]:
     print("stopped:", run["cause"], f"({run['stage']})")
-for finding in run["body"]:
-    print(finding["severity"], finding["title"], finding["quote"])
+for issue in run["issues"]:
+    print(issue["rank"], issue["severity"], issue["name"],
+          f'raised by {issue["raised_by"]}')
 print(run["runtime"]["tokens_total"], "tokens",
       [(a["slot"], a["tokens"]) for a in run["agents"]])
 ```
@@ -240,7 +254,7 @@ It works on every kind of folder a review can leave behind, which is the point:
 
 | Folder | What `read_run` gives you |
 | --- | --- |
-| complete | `status` `complete`, findings from `editor-package.json`, body and appendix |
+| complete | `status` `complete`, the issues from `issues.json`, the findings from the ledger |
 | complete without findings | `status` `complete-without-findings`, `findings` empty, `cause` `None` |
 | blocked by the server | the cause from `progress.json`, findings from the ledger |
 | killed by the starter | the cause from `runtime.json` — token ceiling, timeout, rate limit, session error — even though `progress.json` still says `running` |
@@ -248,12 +262,244 @@ It works on every kind of folder a review can leave behind, which is the point:
 | killed mid-write | everything that could be read, and each file that could not in `problems` |
 
 Keys: `status`, `complete`, `publishable`, `not_publishable_reasons`, `blocked`,
-`cause`, `note`, `stage`, `findings`, `body`, `appendix`, `findings_source`,
-`counts`, `quarantined`, `citations`, `guard_status`, `escalations`,
-`escalation_rulings`, `summary`, `verdict`, `limitations`, `identity`, `stages`,
-`runtime`, `agents`, `usage`, `reports`, `startup`, `startup_problems`,
-`problems`, `files`, `run`, `review`. The same 33 keys come back for every
-folder, in every state, so a consumer never has to test whether a key is there.
+`cause`, `note`, `stage`, `findings`, `issues`, `issues_source`, `prior_round`,
+`findings_source`, `counts`, `quarantined`, `citations`, `guard_status`,
+`escalations`, `escalation_rulings`, `summary`, `verdict`, `limitations`,
+`identity`, `stages`, `runtime`, `agents`, `usage`, `reports`, `startup`,
+`startup_problems`, `problems`, `files`, `run`, `review`. The same 34 keys come
+back for every folder, in every state, so a consumer never has to test whether a
+key is there.
+
+### The issues
+
+`issues` is the review: one row per problem with the paper, in the order
+`issues.json` holds them, and it is the only list a consumer should render. A
+row is
+
+```python
+{"id": "i03", "name": "...", "severity": "major", "category": "statistics-and-inference",
+ "rank": 1, "statement": "the paragraph the authors read", "raised_by": 2,
+ "members": [{"finding_uid": "...", "slot": "core-2", "track": "core", "quote": "...",
+              "block_id": "b41", "evidence_blocks": ["b41", "b42"],
+              "severity": "major", "kind": "issue", "basis": "two-quotes",
+              "escalate": False, "title": "..."}],
+ "audits": ["audit_stats.md"],
+ "rebuttal_block_id": None, "rebuttal_quote": None,
+ "prior_id": None, "prior_rank": None,
+ "status": "new", "status_reason": None,
+ "text_unchanged_reason": None, "surviving_quotes": []}
+```
+
+**Every one of those seventeen fields is on every row**, live or closed, edited
+or synthesised, and a field that does not apply to a row is `None` — or `[]`
+where the field is a list. `peerreviewagents.issues.ISSUE_FIELDS` is that list
+and `MEMBER_FIELDS` is a member's eleven, so a consumer reads a field by name
+and never tests whether a key is there. Earlier releases left the inapplicable
+ones out; 0.10 does not.
+
+- `severity` is `major`, `moderate` or `minor`. Major and moderate are the
+  authors' **required changes**, in `rank` order; minor are **suggestions**,
+  which a renderer groups by `category`. `rank` is 1..N over the live issues of
+  the run, with no gaps and no ties, and it is `None` on a closed row — a row
+  holding the prior round's rank would collide with this round's order, so the
+  rank it had then is in `prior_rank` instead.
+- `members` are the findings the issue was raised from, kept as its evidence:
+  the slot that filed each one, the quote it anchored, and the blocks it cited.
+  `raised_by` is counted from them, so two reviewers raising one problem is one
+  issue that says it was raised twice — never two rows. A closed row has no
+  members and `raised_by` of zero.
+- The rest of a finding — `comment`, `start`, `end`, `block_sha256`,
+  `basis_reason`, `counterevidence`, `source_urls` — is **not** copied onto the
+  member. Join `members[*]["finding_uid"]` to `read_run()["findings"]` (or to
+  `findings.jsonl`) for those, keyed on the same uid. The member carries what a
+  reader of `issues.json` alone needs to go to the manuscript, and the ledger
+  carries the finding.
+- `id` is stable across rounds: an issue the editor matched to a prior one keeps
+  that round's id. `finding_uid` is not — it is a digest of the paper's id and
+  the slot, both of which move between runs.
+- `audits` are the specialist audits a member's track wrote, as **bare file
+  names** (`audit_stats.md`) inside the run's `review/` folder — not paths. Join
+  them to `reports['audits']`, which maps each track to that file's full path,
+  or to the review folder in `read_run()['review']`. The audits are evidence and
+  stay where they are; the issue names them.
+- `rebuttal_quote` is set on a `minor` issue that holds a `computed` finding —
+  one whose arithmetic the server checked against the manuscript. Calling such
+  a finding a suggestion takes a passage of the manuscript that answers the
+  receipt, anchored exactly in `rebuttal_block_id` (the finding's own block
+  where that field is `None`); the server refuses the issue without one. Both
+  are `None` on every other issue, and a renderer that shows a suggestion over
+  a receipt should show the rebuttal with it.
+
+#### The five statuses
+
+`status` is one of `new`, `persisting`, `regressed`, `resolved`, `unverified` —
+`peerreviewagents.ISSUE_STATUSES`, in that order. Only a run given a prior round
+(`peerreview review --prior-issues`) has anything but `new`, and **nothing
+becomes a status by omission**: the editor rules on every issue of the prior
+round, by matching it or by naming it, or the review is refused. `--prior-issues`
+on an arm that runs no editor is refused by the command itself, before the run
+starts — there would be nobody to rule on the prior round.
+
+| `status` | What it says | `rank` | `members` |
+| --- | --- | --- | --- |
+| `new` | This round is the first to raise it | 1..N | the findings behind it |
+| `persisting` | The prior round raised it and it is still wrong | 1..N | this round's findings |
+| `regressed` | The prior round raised it and it is worse | 1..N | this round's findings |
+| `resolved` | The editor read the revision and it is fixed | `None` | empty |
+| `unverified` | Nobody raised it again and nothing shows it was fixed | `None` | empty |
+
+`status_reason` is the editor's one line for any status but `new`: why it still
+stands, or what changed. The last two are the closed statuses
+(`issues.CLOSED_STATUSES`) and they are not carried forward alike. `resolved` is
+reported once — in the round that resolved it — and then dropped, so nothing is
+recounted round after round (`issues.carried_forward`). `unverified` is carried,
+because that status exists precisely because it is *not* a fix: a later round
+rules on it again like any other open issue. Its row holds no `members` — those
+findings were the earlier round's — so what it carries instead is
+`surviving_quotes`, and the round that does rule it `resolved` tests the ruling
+against those. An id that was `resolved` stays in `issue_ids_used` for good.
+
+`resolved` is the stronger claim and the server checks it. Where a prior
+member's quote still appears **verbatim** in the new manuscript, `resolved`
+takes a `text_unchanged_reason` as well, and the passages the server found are
+published in `surviving_quotes` so a reader can see what the ruling was made
+against. Without that reason the status is `unverified`: not raised again, not
+shown fixed. `surviving_quotes` is `[]` and `text_unchanged_reason` is `None` on
+every other row.
+
+#### The rest of the document
+
+`issues_source` says where the issues came from: `editor` where an editor closed
+a pooled review, `server` where nothing did — `draft-check` and `single` write
+one issue per finding, so every arm reads in the same shape.
+
+`issues_source_reason` is why, in one line, and `None` wherever
+`issues_source` is `editor`. Four different runs end with `server` and they are
+not the same run: an arm that runs no editor; a ledger past the 200 findings the
+editor path supports, which is refused the editor slot by name; an arm with an
+editor nobody claimed; and an editor that claimed the slot and never got a
+review accepted, which carries the number of submission calls it made. The
+reason is printed in `REVIEW.md` under the issues, repeated in each
+server-written issue's `status_reason`, and carried in `not_publishable_reasons`
+— so an application never has to guess which of the four it is holding. Before
+0.10.0 all four printed the first.
+
+`issue_ids_used` is every issue id this run and every round before it has
+spent, sorted — live, resolved and unverified alike. **An id is never reused.**
+A resolved issue is dropped from the next round's carry, so the carry alone does
+not say what `i03` meant two rounds ago; this list does, and the next round
+reads it back and mints around it. A consumer that stores issues across rounds
+can treat an id as permanent: one id is one problem, for the life of the
+manuscript. A reader that writes its own `issues.json` for a later round to
+match against must carry the list forward, or that round will mint an id an
+earlier one already reported.
+
+A prior-round file handed to `--prior-issues` is validated before the run opens
+and refused by name, with the path, if it cannot be matched against: the
+schema stamp must be a known one, every row must be an object with a **string**
+`id` (`7` and `"7"` are not the same id), no id may appear twice **across all
+rows** — open and closed alike — every `members` and `surviving_quotes` must be
+a list, and `issue_ids_used` must be present and a list of ids in this engine's
+own form (`i01` upwards). Every `issues.json` this version writes satisfies
+that; a hand-written or edited file that drops `issue_ids_used` is refused
+rather than read with the ids unreserved.
+
+A run that degrades **after** it opened — a ledger that passed the editor's
+maximum, an editor slot nobody claimed, an editor that never closed — still
+accounts for the prior round in the file it writes: its own issues are minted
+above every id in `issue_ids_used`, and each prior issue is carried as
+`unverified` with a `status_reason` saying no editor ruled on it and why there
+was no editor. Nothing is reported as `resolved` by a round that had no editor
+to rule it so.
+
+`prior_round` is `None` for a first round, and for a later one it is
+`{'file': 'issues.json', 'digest': '<16 hex>', 'issues': N, 'tally': {...}}`:
+the prior file's **name**, a digest of its contents, how many of its issues were
+carried into this round, and this round's issues by status. It holds no machine
+path — a run folder is published, and where the previous round sat on disk is
+not the authors' business. Two readings of the same prior round have the same
+digest; two different files never do.
+
+`findings` stays beside it, and it is always the whole ledger: nothing is hidden
+from a reader, so the ledger *is* the finding set rather than a longer list the
+review draws from. `counts` carries both tallies — `findings`, `issues`,
+`required`, `suggestions`, `resolved`, `unverified`, `issue_members`,
+`by_severity`, `by_category`, `by_status` and `quarantined`, plus
+`findings_delivered` and `findings_submitted`. `issue_members` is the number of
+distinct findings the issues hold between them, and it is called that
+everywhere it appears: in `issues.json`, in the `issues` tally `progress.json`
+carries while the run is still going, and here.
+`by_status` counts all five statuses, always with all five keys.
+
+`reports` names the files on disk: `markdown` and `text` are `REVIEW.md` and
+`REVIEW.txt`, `issues` is `issues.json` itself, `editor_log` is
+`editor-log.jsonl`, and `audits` maps each track to its audit. Each is `None`
+where the file is not there. `REVIEW.md` is rendered from `issues.json` and from
+nothing else, so an application that renders the issues itself and one that
+shows `REVIEW.md` are showing the same review.
+
+#### `issues.json` itself
+
+`read_run` is the supported way in, and these are the document's own top-level
+keys for anything that reads the file directly. `schema_version` is the one to
+check first: `peerreviewagents.ISSUES_SCHEMA_VERSION` is what this release
+writes (`review-issues-v1`), and a stamp this release does not know is refused
+by name rather than read as far as it happens to parse —
+`issues.schema_problem(document)` is the rule the reader, the prior-round loader
+and the renderer all go through, so a consumer can use the same one.
+
+| Key | What it holds |
+| --- | --- |
+| `schema_version` | the stamp above; refuse what you do not know |
+| `issues_source` | `editor` or `server` |
+| `issues_source_reason` | why it is `server`, in one line; `None` where an editor closed the review |
+| `issue_ids_used` | every issue id this run and the rounds before it have spent; an id is never reused |
+| `summary` | the editor's paragraph above the issues |
+| `issues` | the rows described above, live ones first |
+| `counts` | the tally described above, less `findings` and `quarantined` — those are ledger-wide, and the reader adds them |
+| `verdict` | `significance`, `strength_of_evidence`, `reasoning`, `basis`, `limitation` — words, never a score; `None` where no editor closed the review |
+| `limitations` | what the editor says the review could not do |
+| `escalation_rulings` | `{finding_uid, ruling}` per escalated finding, one each |
+| `escalated_count` | how many findings were escalated |
+| `prior_round` | the shape above, or `None` on a first round |
+| `stages` | the ledger: which slots were required, reported, silent |
+| `audits` | every specialist audit in the run, as bare file names |
+| `findings_by_track` | the findings that reached the editor, counted per track |
+| `findings_delivered`, `findings_submitted` | what reached the editor, and what was filed |
+| `quarantined_findings`, `quarantined_findings_count` | the rows the guard held back, and how many |
+| `review_guard_status` | `clean` or `quarantined` |
+| `reviewer_count`, `reviewer_provenance` | how many core reviewers, and how they were drawn |
+| `arm`, `synthesis_policy` | the arm that ran, and whether an editor pooled it |
+| `finding_schema_version`, `workflow_version` | the ledger's stamp and the workflow's |
+
+Every one of those keys is written on every run, and so is every field of every
+issue row: a run that had nothing of the kind writes the key with `None` —
+`prior_round` on a first round — or with an empty list or object.
+
+**No file meant to be published holds an absolute machine path.** `issues.json`
+and `REVIEW.md` are the two an integration hands on — to the authors, to a
+journal, into a repository — so every path in them is relative to the run folder
+(`review/editor-log.jsonl`, `audit_stats.md`) or is a bare file name
+(`prior_round['file']`, `reports`, `audits`), and the run folder itself appears
+as its own name and nothing more. A test scans both files whole for the
+machine's paths, rather than field by field, because the two that leaked got in
+through fields nobody thought of as paths: the editor's trace inside `stages`,
+and the run folder printed in `REVIEW.md`'s header.
+
+`manifest.json` is the one exception and it is deliberate: it keeps the
+manuscript's **absolute** path, and `read_run()['identity']['pdf']` hands it on
+as it stands. The manifest is the run's own record of what it read — the pdf
+lives outside the run folder, so a relative path would name nothing — and it is
+not in the published set. Strip it yourself if you publish the folder whole.
+
+`REVIEW.md` is rendered from this file alone, and `peerreview report <run>`
+re-renders it from the file on disk. A folder with no `issues.json` renders "No
+review was produced", which is what a run whose editor never closed looks like.
+Two cases are refused instead, with `REVIEW.md` left exactly as it is: a
+`schema_version` this release does not know, and a folder from an engine that
+wrote its review as `editor-package.json` with no `issues.json` beside it. Both
+refuse before anything is written, because re-rendering either one would print
+"No review was produced" over a review that exists.
 
 Three of them hold what an integration used to read out of the run folder
 itself:
@@ -320,10 +566,25 @@ Four rules it enforces so you do not have to:
 
 - **One row per finding.** `findings.jsonl` is append-only, so a finding
   restated during the run is several rows. `read_run` keeps the latest row per
-  `finding_uid`, in the order the findings were first seen, from the editor
-  package when there is one and from the ledger when there is not —
-  `findings_source` says which. A uid the editor placed in both its lists is in
-  `body` only, so it is one finding and one escalation, not two.
+  `finding_uid`, in the order the findings were first seen. The ledger is the
+  finding set — nothing is hidden from a reader, so there is no shorter list to
+  prefer — and the issues are how that set is presented. `findings_source` says
+  which of the two the reading stands on: `issues` when `issues.json` could be
+  read, so what came back is the review (this includes the empty review of a
+  manuscript nobody raised anything about); `ledger` when it could not be read,
+  or when it holds no issue over findings that *are* in the ledger — then what
+  came back is the raw findings and not the review, and `publishable` is
+  `False` for that reason; and `none` for a folder that holds neither.
+  **When no row of the ledger can be read and `issues.json` can**, the members
+  of the issues are the fallback: `findings` is rebuilt from
+  `issues[*]["members"]`, so every finding an issue holds is still there with
+  its slot, quote and blocks, and `problems` names the file or the lines that
+  could not be read. A ledger that is only torn in places keeps the rows that
+  read, and the torn ones are counted and named in the same way. The fields the
+  ledger alone carries — `comment`, `start`, `end`, `block_sha256`,
+  `category` — are absent from those rebuilt rows, and
+  `findings_source` is still `issues`: the review is intact, the ledger behind
+  it is not.
 - **A folder that is not a run is an error, not an empty answer.** It raises
   `peerreviewagents.NotARunFolder` (a `ValueError`, also reachable as
   `peerreviewagents.runs.NotARunFolder`) naming the files it
@@ -336,10 +597,9 @@ Four rules it enforces so you do not have to:
   when you need to know why. When a receipt could not be read in full,
   `usage['unknown']` is `True` and `usage['observed_tokens']` is a lower bound.
 - **A symlink anywhere under `review/` is refused, by name.** The review
-  directory itself, a usage receipt, a specialist audit, `editor-package.json`:
-  all the same way, with a `ValueError` naming the path. A symlink in
-  `editor-package.json`'s place is some other file's contents presented as this
-  run's result.
+  directory itself, a usage receipt, a specialist audit, `issues.json`: all the
+  same way, with a `ValueError` naming the path. A symlink in `issues.json`'s
+  place is some other file's contents presented as this run's result.
 
 ### The citation ledger
 
@@ -648,6 +908,32 @@ so the review is written and the status is `complete`; what is missing is that
 stage's own summary and limitations, and `note` says so in both `read_run` and
 `REVIEW.md`. `stages['missing']` is still the union of the two, unchanged.
 
+#### An editor that never submitted a review
+
+`stages['editor_trace']` is the editor's own record of what it tried, present
+for every run of an arm that has an editor — a row of zeros where the editor
+made no submission call at all, rather than nothing: `calls`, `accepted`,
+`refused`, `calls_spent` against `call_budget`, and `last_refusals` — the last
+three refusals with the reason and the first problems of each (`calls_spent`
+and `call_budget` are `None` until the first call, because the budget is the
+server's answer to a call). Every call and every
+refusal is also appended to `editor-log.jsonl` in the run folder, which
+`reports['editor_log']` names.
+
+`editor_trace['log']` is where that file sits, **relative to the run folder** —
+`review/editor-log.jsonl` — and not the path it was read from. The trace is
+carried into `stages`, `stages` is published inside `issues.json`, and an
+absolute path there names the home directory of whoever ran the review. Join it
+onto the run folder you read to open the file.
+
+A run blocked because the editor never produced an accepted review says so with
+those numbers in `cause`, and the trace stays on disk. The silent version of
+this failure — `blocked` with nothing to read — was what 0.9.0 did on a
+forty-finding manuscript, four runs out of four, and it is what the log exists
+to answer. `calls` of zero with the run blocked means the editor made no
+submission call at all, which is a different fault from a refusal it could not
+satisfy.
+
 ### Gating on `publishable`
 
 `complete` answers whether the run finished. `publishable` answers whether the
@@ -656,16 +942,16 @@ before it puts a review in front of someone. It is `True` only when:
 
 - `status` is `complete`, or `complete-without-findings` with nothing
   quarantined,
-- `findings_source` is `editor-package` — the editor's own placement, not the
-  ledger fallback,
+- `findings_source` is `issues` — the review was read from `issues.json`, not
+  fallen back to the raw ledger,
 - `guard_status` is set, so the guard recorded a verdict over these findings,
   and
 - `problems` is empty.
 
 When it is `False`, `not_publishable_reasons` holds one sentence per reason and
 is never empty, so the flag is never `False` with nothing named. A complete run
-whose `editor-package.json` was truncated is the usual case: the ledger findings
-are real, but they are not the editor's review, and the reason says so.
+whose `issues.json` was truncated is the usual case: the ledger findings are
+real, but they are not the review, and the reason says so.
 
 **`problems` is not a gate.** `publishable` and `not_publishable_reasons` are
 the gate; `problems` is for showing. The fourth condition above is `problems`
@@ -689,7 +975,8 @@ that wants to weigh what was held can.
 **A review with no findings in it is still a review.**
 `complete-without-findings` with `counts['quarantined']` at zero means the
 reviewers read the manuscript and raised nothing make-or-break, and the editor
-wrote a package saying so: publishable. The same status with findings
+closed the review saying so — `issues` empty, `findings_source` `issues`,
+`counts['issues']` zero: publishable. The same status with findings
 quarantined is not publishable, because what the reviewers raised is not in the
 review; the reason names how many were held back. The status alone does not
 tell you which case you have — the count does.

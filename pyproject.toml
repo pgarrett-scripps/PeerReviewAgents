@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "peerreviewagents"
-version = "0.9.1"
+version = "0.10.0"
 description = "Evidence-linked peer review of a manuscript PDF, on a coding-agent subscription"
 readme = "README.md"
 requires-python = ">=3.10,<3.14"

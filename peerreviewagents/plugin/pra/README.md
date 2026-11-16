@@ -2,8 +2,8 @@
 
 One peer review of one manuscript, run as a Claude Code plugin: a workflow
 script fans out N core reviewers and six specialists over the same paper, an
-editor pools what they found into one package, and the run is written to disk
-with every finding anchored to a quotation in the manuscript.
+editor groups what they found into ranked issues, and the run is written to
+disk with every finding anchored to a quotation in the manuscript.
 
 Nothing here trusts an agent's own account of what it did. The MCP server owns
 the manuscript, the identities, the ledger, the budgets and the files; an agent
@@ -13,7 +13,7 @@ can only ask it for text and hand it findings.
 
 | Part | Where | What it is |
 | --- | --- | --- |
-| `peerreview` server | `.mcp.json` → `peerreviewagents.plugin.server` | 27 tools, and every piece of state worth forging |
+| `peerreview` server | `.mcp.json` → `peerreviewagents.plugin.server` | 28 tools, and every piece of state worth forging |
 | Agents | `agents/*.md` | `core-reviewer`, six specialists, `citation-worker`, `editor`, `recorder`; each pins `maxTurns:` and a fallback `model:`, and may call only server tools |
 | Models | `peerreviewagents/plugin/models.py` | which model each slot runs, and the refusal when one is not available |
 | Workflow | `workflows/review.js` | ingest → reviewers ∥ specialists (the citation lane first resolves, then fans out workers) → (revision) → editor → record |
@@ -26,6 +26,7 @@ can only ask it for text and hand it findings.
 peerreview review <manuscript.pdf> <run folder> [--reviewers N] [--arm NAME]
                   [--reviewer-models A,B,C] [--specialist-model M] [--editor-model M]
                   [--citation-workers N] [--citation-worker-model M]
+                  [--prior-issues PATH]
 ```
 
 That is the only way to run a review in 0.9: the Python orchestration the 0.8
@@ -216,17 +217,24 @@ of the table was finished.
 
 ## Editor rules
 
-One decision per finding, a reason for each, duplicates merged by `finding_uid`,
-at most eight findings in the body, and a ruling by name on every escalation.
-Leaving a `computed` finding out of the body needs an anchored rebuttal
-quotation. The verdict is two axes in words, never a number.
+One issue per problem, submitted in batches of at most twelve: a short name, a
+severity, a category, a rank, a one-paragraph statement, and the findings it
+holds as its members. Every stored finding has to belong to an issue, the ranks
+have to be exactly 1..N over the required changes, and the escalations each
+need a ruling by name. Nothing is capped and nothing is hidden — major and
+moderate are the required changes, minor are the suggestions. Given a prior
+round, each issue is matched against it by reading, keeps the matched id, and
+says whether it is persisting, regressed or new. The verdict is two axes in
+words, never a number.
 
 ## Run folder
 
 ```
 <run>/manuscript/        the imported paper
-<run>/review/REVIEW.md   the review
-<run>/review/editor-package.json
+<run>/review/REVIEW.md   the review, rendered from the issues
+<run>/review/issues.json      the issues, their members and the verdict
+<run>/review/editor-log.jsonl every editor submission and every refusal
+<run>/review/findings.jsonl   every stored finding, with its basis
 <run>/review/reviewer-<n>/    each reviewer's own package view
 <run>/review/audit_<track>.md six specialist audits
 <run>/review/protocol.json    arm, slots, versions, provenance
@@ -245,9 +253,11 @@ One `full-two-track` run with 3 reviewers, on the same FTLD-TDP manuscript the
 0.8.0 live run used: complete, 4 minutes 7 seconds, 636,299 tokens over
 11 agents, 89 tool calls. 53 findings stored and none quarantined — core 17,
 field 7, methods-reporting 6, figures-tables 6, citations 6, consistency 6,
-stats 5 — of which the editor put 8 in the body, 45 in the appendix, and ruled
-by name on all 4 escalations. For comparison the 0.8.0 run of the same paper
-delivered 11 findings for 1,462,572 tokens.
+stats 5 — and the editor ruled by name on all 4 escalations. For comparison the
+0.8.0 run of the same paper delivered 11 findings for 1,462,572 tokens. That
+run reported under the old shape, which put 8 findings in a body and 45 in an
+appendix; there is no body or appendix any more, and the same 53 findings would
+now be grouped into issues with nothing hidden.
 
 Of the 53, 7 earned `two-quotes` and, as the run was stored, none earned
 `computed` despite 17 `calculate` calls: the rule then counted a receipt only

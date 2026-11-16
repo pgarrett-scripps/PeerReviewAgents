@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 import peerreviewagents
+from peerreviewagents import issues as issue_model
 from peerreviewagents import names, runs
 from peerreviewagents.cli.main import report_main
 from peerreviewagents.plugin import server as srv
@@ -52,6 +53,36 @@ def _finding(uid, title, **extra):
             'schema_version': names.FINDING_SCHEMA_VERSION, **extra}
 
 
+def _issue_row(**fields):
+    """One issue row in the shape the server writes: every field, null where it does not apply."""
+    row = {'rank': None, 'members': [], 'raised_by': 0, 'rebuttal_block_id': None,
+           'rebuttal_quote': None, 'prior_id': None, 'prior_rank': None, 'status': 'new',
+           'status_reason': None, 'text_unchanged_reason': None, 'surviving_quotes': [],
+           'audits': []}
+    row.update(fields)
+    assert sorted(row) == sorted(issue_model.ISSUE_FIELDS), sorted(row)
+    return row
+
+
+def _issues(raised):
+    """The two issues the editor grouped the fixture's findings into."""
+    total, stated_n = raised
+    return [
+        _issue_row(
+            id='i01', name='The reported total does not follow from its parts',
+            severity='major', category='results-and-numbers', rank=1,
+            statement='The total in the abstract is not the sum of the groups it is drawn '
+                      'from, and the headline conclusion rests on the larger number.',
+            members=[issue_model.member_of(total)], raised_by=1),
+        _issue_row(
+            id='i02', name='The stated n disagrees with Table 2',
+            severity='minor', category='statistics-and-inference', rank=2,
+            statement='Table 2 counts fewer animals than the methods report, so a reader '
+                      'cannot tell which n the tests were run over.',
+            members=[issue_model.member_of(stated_n)], raised_by=1),
+    ]
+
+
 def complete_run(tmp_path, status='complete', findings=True) -> Path:
     """A run folder as ``write_review`` leaves it: the files, the reports, the ledger."""
     review = tmp_path / 'run' / names.RUN_DIRECTORY
@@ -72,8 +103,8 @@ def complete_run(tmp_path, status='complete', findings=True) -> Path:
                                       'workflow_version': 'plugin-two-track-v1',
                                       'claude_code_version': '2.1.322'})
     _write(review / 'progress.json', {'status': status, 'error': None, 'arm': 'full-two-track',
-                                      'findings_delivered': 3 if findings else 0,
-                                      'findings_submitted': 4 if findings else 0,
+                                      'findings_delivered': 2 if findings else 0,
+                                      'findings_submitted': 3 if findings else 0,
                                       'review_guard_status': 'clean',
                                       'stages': {'required': ['core-1'], 'missing': []}})
     _write(review / 'runtime.json', {
@@ -84,20 +115,23 @@ def complete_run(tmp_path, status='complete', findings=True) -> Path:
                     'model': 'claude-sonnet-5-5'},
                    {'label': 'spec-stats', 'tokens': 236299, 'toolCalls': 9,
                     'state': 'completed', 'model': 'claude-sonnet-5-5'}]})
-    body = [_finding('aaa1', 'The total does not follow from its parts'),
-            _finding('bbb2', 'The stated n disagrees with Table 2', slot='spec-stats',
-                     track='stats', escalate=True)] if findings else []
-    _write(review / 'editor-package.json', {
+    raised = [_finding('aaa1', 'The total does not follow from its parts'),
+              _finding('bbb2', 'The stated n disagrees with Table 2', slot='spec-stats',
+                       track='stats', escalate=True)] if findings else []
+    issue_rows = _issues(raised) if findings else []
+    _write(review / 'issues.json', {
+        'schema_version': issue_model.ISSUES_SCHEMA_VERSION,
+        'issues_source': 'editor',
         'summary': 'Two issues in the reported totals.',
         'review_guard_status': 'clean',
-        'findings': body,
-        'appendix': ([_finding('ccc3', 'A duplicate of the first')] if findings else []),
+        'issues': issue_rows,
+        'counts': issue_model.counts(issue_rows),
         'escalation_rulings': ([{'finding_uid': 'bbb2', 'ruling': 'upheld'}] if findings else []),
         'limitations': ['No access to the raw data.'],
         'verdict': {'significance': 'moderate'},
         'findings_by_track': {'core': 1, 'stats': 1},
     })
-    _rows(review / 'findings.jsonl', body)
+    _rows(review / 'findings.jsonl', raised)
     (review / 'audit_stats.md').write_text('# stats audit\n', encoding='utf-8')
     (review / 'REVIEW.md').write_text('# Review\n', encoding='utf-8')
     return review
@@ -156,16 +190,24 @@ def test_read_run_reads_a_complete_run(tmp_path):
 
     assert (run['status'], run['complete'], run['blocked']) == ('complete', True, False)
     assert run['cause'] is None
-    assert run['findings_source'] == 'editor-package'
-    assert [f['finding_uid'] for f in run['body']] == ['aaa1', 'bbb2']
-    assert [f['finding_uid'] for f in run['appendix']] == ['ccc3']
-    assert run['counts'] == {'findings': 3, 'body': 2, 'appendix': 1, 'quarantined': 0,
-                             'findings_delivered': 3, 'findings_submitted': 4}
+    assert run['findings_source'] == 'issues'
+    assert run['issues_source'] == 'editor'
+    assert [issue['id'] for issue in run['issues']] == ['i01', 'i02']
+    assert [f['finding_uid'] for f in run['findings']] == ['aaa1', 'bbb2']
+    assert run['counts'] == {
+        'findings': 2, 'issues': 2, 'required': 1, 'suggestions': 1, 'resolved': 0,
+        'unverified': 0, 'issue_members': 2,
+        'by_severity': {'major': 1, 'moderate': 0, 'minor': 1},
+        'by_category': {'results-and-numbers': 1, 'statistics-and-inference': 1},
+        'by_status': {'new': 2, 'persisting': 0, 'regressed': 0, 'resolved': 0,
+                      'unverified': 0},
+        'quarantined': 0, 'findings_delivered': 2, 'findings_submitted': 3}
     assert run['identity']['source_sha256'] == 'cafe' * 16
     assert run['identity']['arm'] == 'full-two-track'
     assert run['runtime']['tokens_total'] == 636299
     assert run['reports']['audits'] == {'stats': str(review / 'audit_stats.md')}
     assert run['reports']['markdown'] == str(review / 'REVIEW.md')
+    assert run['reports']['issues'] == str(review / 'issues.json')
 
 
 def test_read_run_reports_the_runtime_of_each_agent(tmp_path):
@@ -201,8 +243,8 @@ def test_read_run_reads_a_blocked_run_and_keeps_the_findings_it_had(tmp_path):
     assert run['status'] == 'blocked'
     assert run['cause'] == 'Stages that never reported: core-3'
     assert run['findings_source'] == 'ledger'
-    assert [f['finding_uid'] for f in run['body']] == ['aaa1']
-    assert run['appendix'] == []
+    assert [f['finding_uid'] for f in run['findings']] == ['aaa1']
+    assert run['issues'] == []
 
 
 def test_read_run_reads_a_run_the_starter_killed(tmp_path):
@@ -251,15 +293,15 @@ def test_read_run_takes_the_run_folder_as_well_as_the_review_folder(tmp_path):
 def test_read_run_refuses_a_symlinked_run_file(tmp_path):
     """A symlink in a run file's place is some other file's contents, not this run's."""
     review = complete_run(tmp_path)
-    elsewhere = _write(tmp_path / 'elsewhere' / 'editor-package.json',
-                       {'summary': 'not this run', 'findings': []})
-    (review / 'editor-package.json').unlink()
+    elsewhere = _write(tmp_path / 'elsewhere' / 'issues.json',
+                       {'summary': 'not this run', 'issues': []})
+    (review / 'issues.json').unlink()
     try:
-        (review / 'editor-package.json').symlink_to(elsewhere)
+        (review / 'issues.json').symlink_to(elsewhere)
     except OSError as exc:  # Windows without the privilege. The guard is still there.
         pytest.skip(f'this machine cannot create a symlink to test against: {exc}')
 
-    with pytest.raises(ValueError, match='editor-package.json'):
+    with pytest.raises(ValueError, match='issues.json'):
         read_run(review)
 
 
@@ -474,7 +516,7 @@ def test_read_run_reads_a_damaged_folder_instead_of_raising(tmp_path):
 
     run = read_run(review)
 
-    assert run['counts']['findings'] == 3, 'the editor package was whole and was read'
+    assert run['counts']['findings'] == 2, 'the issues document was whole and was read'
     assert run['usage']['observed_tokens'] == 400000
     assert run['usage']['unknown'] is True, 'a receipt nobody could read is unresolved spend'
     named = ' | '.join(run['problems'])
@@ -529,10 +571,10 @@ def test_report_main_returns_a_code_instead_of_raising(tmp_path, capsys):
     assert 'protocol.json' in capsys.readouterr().err
 
     review = complete_run(tmp_path / 'linked')
-    elsewhere = _write(tmp_path / 'elsewhere' / 'editor-package.json', {'findings': []})
-    (review / 'editor-package.json').unlink()
+    elsewhere = _write(tmp_path / 'elsewhere' / 'issues.json', {'issues': []})
+    (review / 'issues.json').unlink()
     try:
-        (review / 'editor-package.json').symlink_to(elsewhere)
+        (review / 'issues.json').symlink_to(elsewhere)
     except OSError as exc:  # Windows without the privilege. The guard is still there.
         pytest.skip(f'this machine cannot create a symlink to test against: {exc}')
 
@@ -546,7 +588,8 @@ def test_an_unknown_status_is_unknown_and_publishable_says_what_is_showable(tmp_
 
     # A review with no findings in it, and nothing quarantined: the reviewers
     # read the manuscript and raised nothing. "Nothing make-or-break" is a
-    # review, and the editor wrote a package for it, so it is publishable.
+    # review, and the editor wrote an issues document for it, so it is
+    # publishable.
     none = read_run(complete_run(tmp_path / 'none', status='complete-without-findings',
                                  findings=False))
     assert (none['status'], none['complete'], none['publishable']) == (
@@ -570,8 +613,8 @@ def test_an_unknown_status_is_unknown_and_publishable_says_what_is_showable(tmp_
         held_all['not_publishable_reasons']
 
     guarded = complete_run(tmp_path / 'guarded')
-    package = json.loads((guarded / 'editor-package.json').read_text(encoding='utf-8'))
-    _write(guarded / 'editor-package.json', {**package, 'review_guard_status': 'quarantined'})
+    document = json.loads((guarded / 'issues.json').read_text(encoding='utf-8'))
+    _write(guarded / 'issues.json', {**document, 'review_guard_status': 'quarantined'})
     _rows(guarded / 'quarantined.jsonl', [{'finding_uid': 'ddd4', 'reason': 'no such block'}])
 
     held = read_run(guarded)
@@ -607,19 +650,19 @@ def test_publishable_is_never_false_without_saying_why(tmp_path):
     """A flag that holds a review back has to name the reason that held it.
 
     An application cannot act on ``False`` alone: a guard that threw out one
-    unanchored quote, a truncated editor package and a killed run are three
+    unanchored quote, a truncated issues document and a killed run are three
     different events, and one of them is not a reason to hold the review at all.
     """
     whole = read_run(complete_run(tmp_path / 'whole'))
     assert (whole['publishable'], whole['not_publishable_reasons']) == (True, [])
 
     for name, prepare, expected in (
-        ('ledger', lambda review: (review / 'editor-package.json').write_text(
+        ('ledger', lambda review: (review / 'issues.json').write_text(
             '{"summary": "truncated', encoding='utf-8'), 'ledger'),
         ('killed', lambda review: _write(review / 'runtime.json', {
             'status': 'blocked', 'blocked_reason': 'per-run token ceiling', 'agents': []}), None),
         ('no-guard', lambda review: [_write(review / name, _without_guard(review / name))
-                                     for name in ('editor-package.json', 'progress.json')],
+                                     for name in ('issues.json', 'progress.json')],
          'guard'),
     ):
         review = complete_run(tmp_path / name)
@@ -664,43 +707,93 @@ def test_read_run_refuses_every_kind_of_symlink_by_name(tmp_path):
             read_run(review.parent if kind == 'review' else review)
 
 
-def test_a_uid_in_the_body_and_the_appendix_is_one_finding(tmp_path):
-    """The editor placing a finding twice is a placement, not two findings."""
+def test_a_uid_two_issues_hold_as_evidence_is_one_finding(tmp_path):
+    """The members are evidence, so the same uid under two issues is one finding.
+
+    An issue's members carry the uid, the slot, the quote and the block, which
+    is what makes ``issues.json`` readable without the ledger beside it. A run
+    whose ledger is gone is read from those members, and a uid two issues cite
+    is still the one finding it was.
+    """
     review = complete_run(tmp_path)
-    package = json.loads((review / 'editor-package.json').read_text(encoding='utf-8'))
-    _write(review / 'editor-package.json', {**package, 'appendix': package['findings']})
+    document = json.loads((review / 'issues.json').read_text(encoding='utf-8'))
+    document['issues'][1]['members'] += document['issues'][0]['members']
+    _write(review / 'issues.json', document)
+    (review / 'findings.jsonl').unlink()
 
     run = read_run(review)
 
-    assert [f['finding_uid'] for f in run['body']] == ['aaa1', 'bbb2']
-    assert run['appendix'] == []
-    assert run['counts'] == {'findings': 2, 'body': 2, 'appendix': 0, 'quarantined': 0,
-                             'findings_delivered': 3, 'findings_submitted': 4}
+    assert [f['finding_uid'] for f in run['findings']] == ['aaa1', 'bbb2']
+    assert run['counts']['findings'] == 2
+    assert run['counts']['issue_members'] == 2
     assert [f['finding_uid'] for f in run['escalations']] == ['bbb2']
 
 
-def test_a_damaged_editor_package_on_a_complete_run_is_not_a_whole_review(tmp_path):
+def test_a_damaged_issues_document_on_a_complete_run_is_not_a_whole_review(tmp_path):
     """The ledger fallback is real findings, and it is not the editor's review."""
     review = complete_run(tmp_path)
-    (review / 'editor-package.json').write_text('{"summary": "Two issues', encoding='utf-8')
+    (review / 'issues.json').write_text('{"summary": "Two issues', encoding='utf-8')
 
     run = read_run(review)
 
     assert (run['status'], run['complete']) == ('complete', True)
     assert run['findings_source'] == 'ledger'
     assert run['publishable'] is False
-    assert any('editor-package.json' in problem for problem in run['problems'])
+    assert any('issues.json' in problem for problem in run['problems'])
 
-    # Readable JSON holding the wrong shape is the same thing: a package this
-    # version cannot read, not a review with nothing in its body.
+    # Readable JSON holding the wrong shape is the same thing: an issues
+    # document this version cannot read, not a review with no issues in it.
     other = complete_run(tmp_path / 'wrong-shape')
-    package = json.loads((other / 'editor-package.json').read_text(encoding='utf-8'))
-    _write(other / 'editor-package.json', {**package, 'findings': 'see the appendix'})
+    document = json.loads((other / 'issues.json').read_text(encoding='utf-8'))
+    _write(other / 'issues.json', {**document, 'issues': 'see the suggestions'})
 
     shaped = read_run(other)
 
-    assert shaped['body'] == [] and shaped['publishable'] is False
-    assert any("findings is not a list" in problem for problem in shaped['problems'])
+    assert shaped['issues'] == [] and shaped['publishable'] is False
+    assert any("issues is not a list" in problem for problem in shaped['problems'])
+
+
+def test_an_issues_document_stamped_with_an_unknown_version_is_refused_by_name(tmp_path):
+    """A stamp is only worth writing if a reader checks it."""
+    review = complete_run(tmp_path)
+    document = json.loads((review / 'issues.json').read_text(encoding='utf-8'))
+    _write(review / 'issues.json', {**document, 'schema_version': 'review-issues-v9'})
+
+    run = read_run(review)
+
+    assert run['issues'] == [] and run['publishable'] is False
+    assert run['findings_source'] == 'ledger', 'the findings are still real'
+    assert any('review-issues-v9' in problem for problem in run['problems']), run['problems']
+
+    # No stamp at all is the same refusal with its own reason: a folder from
+    # before the issues document existed, not a review with no issues in it.
+    older = complete_run(tmp_path / 'older')
+    stored = json.loads((older / 'issues.json').read_text(encoding='utf-8'))
+    stored.pop('schema_version')
+    _write(older / 'issues.json', stored)
+
+    reading = read_run(older)
+
+    assert reading['issues'] == [] and reading['publishable'] is False
+    assert any('no schema_version' in problem for problem in reading['problems'])
+
+
+def test_every_issue_row_carries_every_field_of_the_shape(tmp_path):
+    """Absent or null was the consumer's problem either way; always-present is the rule."""
+    review = complete_run(tmp_path)
+    document = json.loads((review / 'issues.json').read_text(encoding='utf-8'))
+
+    for row in document['issues']:
+        assert sorted(row) == sorted(issue_model.ISSUE_FIELDS), row['id']
+    for row in read_run(review)['issues']:
+        assert sorted(row) == sorted(issue_model.ISSUE_FIELDS), row['id']
+
+    # The no-editor path writes the same shape; a consumer reads one document.
+    synthesized = issue_model.synthesize([
+        {'finding_uid': 'aaa1', 'slot': 'core-1', 'track': 'core', 'severity': 'major',
+         'kind': 'issue', 'title': 'A finding on its own', 'comment': 'Why it matters.'}])
+    assert sorted(synthesized[0]) == sorted(issue_model.ISSUE_FIELDS)
+    assert sorted(synthesized[0]['members'][0]) == sorted(issue_model.MEMBER_FIELDS)
 
 
 def test_a_startup_blocked_run_records_the_tracks_the_arm_would_have_run(tmp_path):

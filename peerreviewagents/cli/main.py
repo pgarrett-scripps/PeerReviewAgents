@@ -84,6 +84,12 @@ def report_main(argv: list[str] | None = None, prog: str = "peerreview report") 
     A folder that is not a run, and a run file that is a symlink, are a message
     on stderr and the code 1. Nothing is raised: the code is returned, which is
     what a wrapper around this function has to be able to rely on.
+
+    The counts it prints are the review in both units: ``findings`` is what the
+    reviewers raised, and ``issues``, ``required`` and ``suggestions`` are what
+    the editor grouped them into, which is what ``REVIEW.md`` is rendered from.
+    An arm that runs no editor still has issues — the server's one-per-finding
+    synthesis — so the keys mean the same thing in every run.
     """
     from peerreviewagents.engine.run_report import write_reports
     from peerreviewagents.runs import read_run
@@ -103,6 +109,9 @@ def report_main(argv: list[str] | None = None, prog: str = "peerreview report") 
         return 1
     print(json.dumps({'status': summary['status'], 'cause': summary['cause'],
                       'findings': summary['counts']['findings'],
+                      'issues': summary['counts']['issues'],
+                      'required': summary['counts']['required'],
+                      'suggestions': summary['counts']['suggestions'],
                       'publishable': summary['publishable'],
                       'not_publishable_reasons': summary['not_publishable_reasons'],
                       'problems': summary['problems'],

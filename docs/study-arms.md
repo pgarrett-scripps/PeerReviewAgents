@@ -148,8 +148,9 @@ peerreview review manuscript.pdf arms/reviewers-only --literature-cutoff "$CUTOF
 
 The same N core reviewers with the same tools and the same editor, and no
 specialist tracks at all. This is the arm that isolates what the six audits
-contribute: the editor still pools, merges by `finding_uid`, caps the body at
-eight and gives a reason per finding, but there is nothing to escalate.
+contribute: the editor still pools the findings into issues, keeps each one's
+`finding_uid` inside the issue that holds it and ranks the issues, but there is
+nothing to escalate.
 
 Keep `--reviewers` the same as the reference run, or the comparison also
 changes the reviewer count:

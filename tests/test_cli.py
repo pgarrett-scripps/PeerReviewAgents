@@ -147,8 +147,15 @@ def _run_folder(tmp_path) -> Path:
         'agents': [{'label': 'core-1', 'tokens': 1234, 'toolCalls': 9, 'state': 'done',
                     'model': 'claude-sonnet-5-5'}],
     }), encoding='utf-8')
-    (review / 'editor-package.json').write_text(json.dumps({
-        'summary': 'One finding.', 'findings': [], 'limitations': [],
+    (review / 'issues.json').write_text(json.dumps({
+        'schema_version': 'review-issues-v1',
+        'summary': 'One issue.', 'limitations': [], 'escalation_rulings': [],
+        'issues': [{'id': 'i01', 'name': 'The claim is not supported', 'rank': 1,
+                    'severity': 'major', 'category': 'claims', 'status': 'new',
+                    'statement': 'The headline number has no computation behind it.',
+                    'members': [{'finding_uid': 'a' * 16, 'slot': 'core-1', 'track': 'core',
+                                 'title': 'Unsupported claim', 'block_id': 'b3',
+                                 'quote': 'we improve by 40%'}]}],
     }), encoding='utf-8')
     return review
 
@@ -175,6 +182,38 @@ def test_report_takes_the_run_folder_as_well_as_the_review_folder(tmp_path, monk
 
 def test_report_refuses_a_folder_that_is_not_a_run(tmp_path, monkeypatch):
     assert 'protocol.json' in _fails(['report', str(tmp_path)], monkeypatch)
+
+
+def test_report_refuses_a_run_folder_from_an_older_engine_and_keeps_its_review(
+        tmp_path, monkeypatch):
+    """A folder whose review is an editor package is not re-rendered over."""
+    review = _run_folder(tmp_path)
+    (review / 'issues.json').unlink()
+    (review / 'editor-package.json').write_text(json.dumps({
+        'summary': 'One finding.', 'findings': [], 'limitations': [],
+    }), encoding='utf-8')
+    kept = 'The review this engine cannot read.\n'
+    (review / 'REVIEW.md').write_text(kept, encoding='utf-8')
+
+    text = _fails(['report', str(review)], monkeypatch)
+
+    assert 'editor-package.json' in text
+    assert (review / 'REVIEW.md').read_text(encoding='utf-8') == kept
+
+
+def test_report_refuses_a_run_whose_issues_file_is_a_version_it_cannot_read(
+        tmp_path, monkeypatch):
+    review = _run_folder(tmp_path)
+    document = json.loads((review / 'issues.json').read_text(encoding='utf-8'))
+    document['schema_version'] = 'review-issues-v9'
+    (review / 'issues.json').write_text(json.dumps(document), encoding='utf-8')
+    kept = 'The review a later engine wrote.\n'
+    (review / 'REVIEW.md').write_text(kept, encoding='utf-8')
+
+    text = _fails(['report', str(review)], monkeypatch)
+
+    assert 'review-issues-v9' in text
+    assert (review / 'REVIEW.md').read_text(encoding='utf-8') == kept
 
 
 # -- what is gone -----------------------------------------------------------

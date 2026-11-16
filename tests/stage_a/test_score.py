@@ -178,23 +178,34 @@ def test_a_run_folder_with_nothing_in_it_does_not_raise(tmp_path):
     assert result['problems'] and 'not a run folder' in result['problems'][0].lower()
 
 
-def test_a_finding_the_editor_placed_twice_is_one_catch(tmp_path):
-    """A uid in both the body and the appendix is one finding, so it is one catch.
+def test_a_finding_the_editor_pooled_into_an_issue_is_one_catch(tmp_path):
+    """A finding and the issue that pools it are one catch, not two.
 
-    Stage A counts catches and findings per arm, and the body/appendix split is
-    the editor's placement, not two findings: counting it twice would make the
-    full two-track arm look more productive than it was.
+    Stage A counts catches and findings per arm, and an issue is the editor's
+    grouping of findings it already has: counting the ledger row and the issue
+    member separately would make the full two-track arm look more productive
+    than it was. The issue counts are reported beside the finding count, in
+    their own columns, because they answer a different question.
     """
     caught = finding(finding_uid='f7', block_id='b0010',
                      comment='548 in the text against 530 in Table 1.')
     run = write_run(tmp_path / 'run', [caught])
-    package = {'findings': [caught], 'appendix': [caught], 'review_guard_status': 'clean',
-               'summary': 'one finding', 'verdict': 'major revision'}
-    (run / 'review' / 'editor-package.json').write_text(json.dumps(package), encoding='utf-8')
+    document = {
+        'schema_version': 'review-issues-v1', 'issues_source': 'editor',
+        'review_guard_status': 'clean', 'summary': 'one issue',
+        'verdict': {'significance': 'incremental'},
+        'issues': [{'id': 'i01', 'name': 'The randomised total disagrees with itself',
+                    'severity': 'major', 'category': 'statistics-and-inference', 'rank': 1,
+                    'statement': 'Two statements of n disagree.',
+                    'members': [dict(caught)]}],
+    }
+    (run / 'review' / 'issues.json').write_text(json.dumps(document), encoding='utf-8')
     result = score.score(run, KEY)
-    assert result['findings_total'] == 1 and result['findings_appendix'] == 0
+    assert result['findings_total'] == 1
+    assert result['issues_total'] == 1 and result['issues_required'] == 1
+    assert result['issues_suggestions'] == 0
     assert len(result['caught_by']) == 1
-    assert result['findings_source'] == 'editor-package' and result['publishable'] is True
+    assert result['findings_source'] == 'issues' and result['publishable'] is True
 
 
 def test_a_control_counts_only_severe_allegations(tmp_path):

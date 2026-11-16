@@ -2,7 +2,7 @@
 import copy
 import re
 from pathlib import Path
-from .storage import digest, read, write
+from .storage import digest, read, relative_name, write
 
 
 def verify_workspace(root):
@@ -18,7 +18,7 @@ def verify_workspace(root):
         for path in (root/'scaffold').rglob('*'):
             if path.is_symlink():
                 raise ValueError('Manuscript source contains a new symlink')
-            if path.is_file():actual.add(path.relative_to(root).as_posix())
+            if path.is_file():actual.add(relative_name(path,root))
         expected={name for name in manifest['files'] if name.startswith('scaffold/')}
         if actual!=expected:
             raise ValueError('Manuscript source inventory changed')
