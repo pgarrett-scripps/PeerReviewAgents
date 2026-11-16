@@ -6,7 +6,7 @@ inside a session, so there is nothing to wire up twice.
 
 ```
 peerreview review     peerreviewagents/plugin/pra   peerreviewagents.plugin.server
-  (the command)      →     (workflow, agents,     →   (28 MCP tools, the ledger,
+  (the command)      →     (workflow, agents,     →   (36 MCP tools, the ledger,
                             skills, .mcp.json)         the run files)
 ```
 
@@ -117,7 +117,7 @@ Then ask for one of its three skills:
 | `follow-up` | what changed since a previous run of the same paper |
 
 The agents may call only the server's tools — the allow list the starter passes
-is `Workflow`, `Skill`, `TodoWrite` and the 28 `peerreview` tools, and nothing
+is `Workflow`, `Skill`, `TodoWrite` and the 36 `peerreview` tools, and nothing
 else. No `Read`, `Write`, `Edit`, `Bash`, `WebSearch` or `WebFetch` reaches a
 reviewer, which is why a quotation cannot come from anywhere but the
 manuscript the server served.

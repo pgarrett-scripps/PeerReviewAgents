@@ -37,6 +37,7 @@ from peerreviewagents import names
 from peerreviewagents.cli.main import report_main
 from peerreviewagents.engine import citation_ledger as cl
 from peerreviewagents.engine import paper_base, paper_text
+from peerreviewagents.engine.ingest import import_paper
 from peerreviewagents.engine.run_report import report_blocks
 from peerreviewagents.plugin import server as srv
 from peerreviewagents.runs import read_run
@@ -179,7 +180,7 @@ def citing_workspace(tmp_path):
     """
     root = tmp_path / 'run'
     workspace = root / names.MANUSCRIPT_DIRECTORY
-    srv.import_paper(str(FIXTURE), workspace)
+    import_paper(str(FIXTURE), workspace)
     name = paper_base.MAIN_DOCUMENT
     path = workspace / name
     lines = path.read_text(encoding='utf-8').split('\n')
@@ -1586,6 +1587,17 @@ def test_no_registered_tool_writes_in_a_complete_folder(tmp_path):
             significance='Nothing here matters after all.',
             strength_of_evidence='Fully supported.',
             verdict_reasoning='I have changed my mind about every issue of this review.'),
+        # The Read stage's tools. This run was read by nobody and sealed long
+        # ago, so every one of them is a call against a manuscript that is
+        # already written: refused, and the folder untouched.
+        'read_draft': lambda: srv.read_draft(reviewer),
+        'replace_equation': lambda: srv.replace_equation(reviewer, 'p1', 1, 'E = mc^2'),
+        'replace_table': lambda: srv.replace_table(reviewer, 'p1', 1, [['a', 'b']]),
+        'describe_figure': lambda: srv.describe_figure(reviewer, 'p1', 1, 'A plot of a widget.'),
+        'add_piece': lambda: srv.add_piece(reviewer, 'p1', 'equation', 1, latex='x = 1'),
+        'merge_equations': lambda: srv.merge_equations(reviewer, ['p1', 'p2'], 1, 'x = 1'),
+        'confirm_piece': lambda: srv.confirm_piece(reviewer, 'p1', 1),
+        'seal_manuscript': lambda: srv.seal_manuscript(reviewer),
         'resolve_citations': lambda: resolving(key, limit=0),
         'citation_rows': lambda: srv.citation_rows(token_for('spec-citations'), 'counts'),
         'claim_citation_batch': lambda: srv.claim_citation_batch(worker, size=10,
@@ -1606,6 +1618,11 @@ def test_no_registered_tool_writes_in_a_complete_folder(tmp_path):
     # it belongs to the standalone engine, and there is nothing about this run
     # for its refusal to say.
     always_refuses = {'validate_synthesis'}
+    # The Read stage's tools belong to the reader slot, and a finished run has
+    # no reader to call them with: whichever of the two refusals comes first —
+    # this run is finished, or this slot may not call that tool — the call is
+    # refused and the folder is untouched, which is what this test is about.
+    reader_only = set(srv.READER_TOOLS)
     before = folder_digests(run.root)
 
     for name, call in calls.items():
@@ -1616,6 +1633,10 @@ def test_no_registered_tool_writes_in_a_complete_folder(tmp_path):
             continue
         assert 'request_rejected' in answer, (name, answer)
         if name in always_refuses:
+            continue
+        if name in reader_only:
+            assert ('complete' in answer['request_rejected']
+                    or 'may not' in answer['request_rejected']), (name, answer)
             continue
         assert 'complete' in answer['request_rejected'], (name, answer)
     assert read_run(run.review)['status'] in names.COMPLETE_STATUSES

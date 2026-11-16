@@ -262,7 +262,7 @@ def test_nothing_in_the_module_gates_on_billing_or_usage():
 # -- through the server -----------------------------------------------------
 
 
-def test_ingest_settles_the_models_and_hands_back_the_spawn_override(tmp_path):
+def test_ingest_settles_the_models_and_hands_back_the_spawn_override(tmp_path, with_reader):
     answer = opened(tmp_path, reviewers=3)
     assert models_of(answer) == {
         'core-1': SONNET, 'core-2': OPUS, 'core-3': HAIKU,
@@ -301,7 +301,7 @@ def test_the_launcher_passes_the_choice_in_the_environment(tmp_path, monkeypatch
     assert again['core-1'] == SONNET
 
 
-def test_the_reader_is_its_own_setting_and_not_a_review_stage(tmp_path):
+def test_the_reader_is_its_own_setting_and_not_a_review_stage(tmp_path, with_reader):
     """The Read stage is planned like any other slot and waited for like none of them."""
     answer = opened(tmp_path, reviewers=1)
     assert answer['reader'] == {'slot': 'reader', 'model': SONNET,
@@ -317,13 +317,14 @@ def test_the_reader_is_its_own_setting_and_not_a_review_stage(tmp_path):
     assert answer['reader']['allowance'] >= 10
 
 
-def test_the_reader_model_is_settable_by_argument_and_by_variable(tmp_path, monkeypatch):
+def test_the_reader_model_is_settable_by_argument_and_by_variable(tmp_path, monkeypatch,
+                                                                  with_reader):
     assert models_of(opened(tmp_path, reviewers=1, reader_model='opus'))['reader'] == OPUS
     monkeypatch.setenv('PEERREVIEW_READER_MODEL', 'haiku')
     assert models_of(opened(tmp_path, folder='two', reviewers=1))['reader'] == HAIKU
 
 
-def test_a_run_without_a_reader_plans_no_reader_at_all(tmp_path, monkeypatch):
+def test_a_run_without_a_reader_plans_no_reader_at_all(tmp_path, monkeypatch, with_reader):
     answer = opened(tmp_path, reviewers=1, ai_read=False)
     assert answer['reader'] is None and answer['ai_read'] is False
     assert 'reader' not in models_of(answer)
@@ -336,7 +337,7 @@ def test_a_run_without_a_reader_plans_no_reader_at_all(tmp_path, monkeypatch):
     assert opened(tmp_path, folder='two', reviewers=1, ai_read=True)['reader'] is None
 
 
-def test_an_unavailable_reader_model_is_refused_by_its_own_flag(tmp_path):
+def test_an_unavailable_reader_model_is_refused_by_its_own_flag(tmp_path, with_reader):
     refused = srv.ingest(str(FIXTURE), str(tmp_path / 'run'), reviewers=1,
                          reader_model='claude-nonesuch-9')
     assert 'claude-nonesuch-9' in refused['request_rejected']

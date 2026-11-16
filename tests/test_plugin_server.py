@@ -1233,4 +1233,5 @@ def test_the_tool_list_is_the_one_the_agents_are_allowed_to_call(tmp_path):
             'list_findings', 'submit_issues', 'submit_editor', 'write_review', 'mark_blocked',
             'run_status'} <= names
     assert {'resolve_citations', *srv.LEDGER_TOOLS} <= names
-    assert len(srv.TOOLS) == len(names) == 28
+    assert set(srv.READER_TOOLS) <= names
+    assert len(srv.TOOLS) == len(names) == 36

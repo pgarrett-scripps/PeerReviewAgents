@@ -40,10 +40,11 @@ import anyio.to_thread
 
 from .. import issues as issue_model
 from ..engine import citation_ledger, paper_base, paper_view, quotes
+from ..engine import reader as engine_reader
 from ..engine.annotations import line_finding, quarantine_findings
 from ..engine.domain_registry import context as domain_context
 from ..engine.domain_registry import route as domain_route
-from ..engine.ingest import import_paper
+from ..engine.ingest import DRAFT_FILE, convert_paper, seal_draft
 from ..engine.investigation import Investigation
 from ..engine.storage import digest, read, relative_name, write
 from ..names import (
@@ -95,6 +96,16 @@ PAPER_TOOLS = (*OFFLINE_TOOLS, *IMAGE_TOOLS, *NETWORK_TOOLS, 'validate_synthesis
 #: do not go through an :class:`Investigation`: a ledger row is the server's
 #: record, and the only outside lookups in the pipeline are the server's own.
 LEDGER_TOOLS = ('citation_rows', 'claim_citation_batch', 'submit_citation_verdict')
+
+#: The Read stage's tools: the draft, the page images, one tool per repair, and
+#: the seal that turns the draft into the manuscript. `view_page` is the
+#: reviewers' tool by the same name over the same renderer — the reader is
+#: looking at the page a reviewer would be sent to — and everything else here
+#: exists for this stage alone. Granted in :meth:`Run.claim`, like the
+#: ledger's, because a draft is not something an investigation reads.
+READER_TOOLS = ('read_draft', 'view_page', 'replace_equation', 'replace_table',
+                'describe_figure', 'add_piece', 'merge_equations', 'confirm_piece',
+                'seal_manuscript')
 
 TRACK_TOOLS = {
     'core': (*OFFLINE_TOOLS, *IMAGE_TOOLS, *NETWORK_TOOLS),
@@ -617,14 +628,38 @@ class Run:
         self.prior_by_id = {str(row['id']): row for row in self.prior_issues}
         self.refuse_foreign_folder(pdf)
         self.review.mkdir(parents=True, exist_ok=True)
-        if not (self.workspace / 'manifest.json').is_file():
-            import_paper(pdf, self.workspace, title=title, supplements=supplements or None)
-        # The manuscript as it is read: paper.md, its supplements, and the map
-        # row behind every line. The run holds one, so the parts a reviewer is
-        # served and the lines a finding cites are measured against the same
-        # text in the same order for every slot.
-        self.base = paper_base.load(self.workspace)
-        self.references = read(self.workspace / 'references.json')
+        # The manuscript in two states, never both. A *draft* is the converted
+        # pieces with no line numbers: the reader repairs it, and nothing else
+        # in the run can see it. A *base* is paper.md, its supplements and the
+        # map row behind every line — what every reviewer reads, and the thing
+        # a finding cites. `seal` turns the first into the second, once, and
+        # the lines never move again.
+        self.draft = None
+        self.base = None
+        if (self.workspace / 'manifest.json').is_file():
+            self.base = paper_base.load(self.workspace)
+        elif (self.workspace / DRAFT_FILE).is_file():
+            # A folder whose conversion already happened: a run that was killed
+            # during the Read stage is picked up at the draft rather than
+            # converted a second time.
+            self.draft = engine_reader.number_pieces(read(self.workspace / DRAFT_FILE))
+        else:
+            self.draft = convert_paper(pdf, self.workspace, title=title,
+                                       supplements=supplements or None)
+            engine_reader.number_pieces(self.draft)
+            write(self.workspace / DRAFT_FILE, self.draft)
+        if self.base is None and not self.ai_read:
+            # No reader in this run, so there is nothing for the draft to wait
+            # for. One code path writes the base either way: this is the same
+            # call the reader's `seal_manuscript` makes at the end of its
+            # stage, with no account of a reading to put in the manifest.
+            self.seal_base()
+        self.references = (read(self.workspace / 'references.json') if self.base is not None
+                           else list(self.draft.get('references') or []))
+        # The paper's identity, which exists before its line numbers do, so
+        # protocol.json can be written during the Read stage.
+        self.paper_id = (self.base.paper_id if self.base is not None
+                         else str(self.draft['paper_id']))
         self.pdf = str(Path(pdf).resolve())
         self.salt = secrets.token_hex(16)
         self.agents = {}
@@ -645,15 +680,16 @@ class Run:
         self.started = now()
         self.required = self.required_slots()
         # The citation ledger: one row per reference, one row per in-text use.
-        # Stage one runs here, at ingest, because it is a pure reading of the
-        # manuscript that was just imported — no model, no network — and the
-        # table has to exist before anything can claim a batch out of it. It is
-        # idempotent, so attaching to a folder that already holds a ledger
-        # keeps every row and every resolution already in it.
+        # Stage one is a pure reading of the manuscript — no model, no network —
+        # and it reads lines, so it runs at the seal and not at ingest: a
+        # ledger built over the draft would hold the line numbers of a
+        # manuscript that did not exist yet. It is idempotent, so attaching to
+        # a folder that already holds a ledger keeps every row and every
+        # resolution already in it.
         self.citations = citation_ledger.Ledger(self.review)
         self.citation_fill = None
-        if self.citation_workers or self.citations_enabled():
-            self.citation_fill = citation_ledger.build(self.citations, self.base, self.references)
+        if self.base is not None:
+            self.fill_citations()
         # Identity. A slot is claimed with the one code minted for it here, and
         # the codes go back to `ingest`'s caller — the recorder — and nowhere
         # else. Without this a reviewer that knows a slot name is that slot.
@@ -680,7 +716,13 @@ class Run:
         design keeps apart. A folder written before models were recorded says
         nothing about them, and is left alone rather than guessed at.
         """
+        # The draft counts as the folder's manuscript too. A converted folder
+        # whose Read stage has not finished holds no manifest yet, and without
+        # this a second ingest of a different PDF into it would be accepted and
+        # then read the first paper's draft.
         kept = self.workspace / 'manifest.json'
+        if not kept.is_file():
+            kept = self.workspace / DRAFT_FILE
         if kept.is_file():
             try:
                 before = read(kept)
@@ -824,12 +866,56 @@ class Run:
         The pages are the PDF's, because the reader must look at every one of
         them — a piece the converter dropped is only found on the page it was
         printed on. The pieces are the equations, tables and figures, which
-        are the three kinds it repairs or confirms.
+        are the three kinds it repairs or confirms. Measured on the draft while
+        there is one, because the draft is what the stage works on; on a sealed
+        folder the map answers the same question.
         """
+        if self.draft is not None:
+            return (int(self.draft.get('page_count') or 0),
+                    sum(1 for document in self.draft.get('documents', {}).values()
+                        for piece in document if engine_reader.account_kind(piece)))
         statistics = self.base.manifest.get('statistics') or {}
         pages = statistics.get('pdf_pages') or 0
         pieces = sum(1 for row in self.base.rows if row.get('kind') in READABLE_KINDS)
         return int(pages or 0), pieces
+
+    def fill_citations(self):
+        """Build the citation ledger's first stage over the sealed manuscript."""
+        if self.citation_workers or self.citations_enabled():
+            self.citation_fill = citation_ledger.build(self.citations, self.base,
+                                                       self.references)
+        return self.citation_fill
+
+    def seal_base(self, ai_read=None):
+        """Write the manuscript from the draft, once, and read it back.
+
+        The one place a line number comes into existence, whether a reader ran
+        or not. Nothing beyond the base is touched here — no ledger, no
+        protocol — so that this can be called from ``__init__`` for a run with
+        no Read stage, before the rest of the run exists.
+        """
+        if self.base is not None:
+            raise ValueError('This manuscript is already sealed: its lines are written and a '
+                             'finding may already cite them. Nothing re-seals it.')
+        manifest = seal_draft(self.workspace, self.draft, ai_read=ai_read)
+        self.base = paper_base.load(self.workspace)
+        self.draft = None
+        return manifest
+
+    def seal(self, ai_read=None):
+        """The reader's seal: write the base, then everything that reads it.
+
+        The citation ledger is built here rather than at ingest because its
+        rows cite lines. The protocol and the manifest are rewritten so a run
+        killed after the seal still says what it sealed.
+        """
+        manifest = self.seal_base(ai_read=ai_read)
+        self.references = read(self.workspace / 'references.json')
+        self.fill_citations()
+        self.write_progress()
+        self.write_protocol()
+        self.write_manifest()
+        return manifest
 
     def reader_allowance(self):
         """The reader's tool allowance for this manuscript."""
@@ -875,6 +961,18 @@ class Run:
                 'into a finished run: nothing it submitted could be stored. A further round of '
                 'review is a new run over the revised manuscript, with this run named as its '
                 'prior round.')
+        # Nothing but the reader holds a slot while the manuscript is a draft.
+        # Every other slot's work is lines — a finding cites them, a citation
+        # row anchors to them, a review quotes them — and the draft has none:
+        # they would be reading text that is about to be rewritten and
+        # renumbered under them. So the Read stage is not a stage the others
+        # run beside; it is the one before them.
+        if self.base is None and role != 'reader':
+            raise ValueError(
+                'This manuscript is still a draft: its equations and tables have not been read '
+                'against the pages and it has no line numbers yet. The reader slot seals it, and '
+                'until it does there is nothing for ' + slot + ' to cite. Run the Read stage '
+                'first, or ingest with the reader turned off.')
         if role == 'editor':
             beyond = self.editor_capacity()
             if beyond:
@@ -906,7 +1004,10 @@ class Run:
             ledger_tools = ('claim_citation_batch', 'submit_citation_verdict')
         elif track == 'citations' and self.citations_enabled():
             ledger_tools = ('citation_rows',)
-        allowed = (*paper_tools, *ledger_tools)
+        # The reader's tools are granted the same way, and for the same reason:
+        # they work on the draft, which is the server's own file and not the
+        # manuscript an investigation reads.
+        allowed = (*paper_tools, *ledger_tools, *(READER_TOOLS if role == 'reader' else ()))
         # Every other slot's allowance is a constant, because the work is one
         # manuscript however many findings come out of it. The editor's work is
         # the findings themselves, so its allowance is measured from the ledger
@@ -938,7 +1039,14 @@ class Run:
             # than refusing into a dead end.
             agent.issues = previous.issues
             agent.editor_package = previous.editor_package
-        if paper_tools:
+        if role == 'reader':
+            # The reader's desk stands where every other slot's investigation
+            # does, so one dispatch covers both: a call is counted the same
+            # way, and the page it opens is recorded by the same line that
+            # records a reviewer's.
+            agent.investigation = engine_reader.Desk(self.workspace, self.draft, out,
+                                                    pages_seen=agent.pages_seen)
+        elif paper_tools:
             agent.investigation = Investigation({
                 'paper': str(self.workspace),
                 'output': str(out),
@@ -1316,6 +1424,12 @@ class Run:
             'quarantined_findings_count': len(self.quarantined),
             'issues': self.issue_counts(),
             'review_guard_status': self.guard_status(),
+            # The Read stage, which closes no stage in the ledger: either the
+            # manuscript is sealed or it is a draft with work left on it, and a
+            # run killed mid-stage says which here.
+            'read': {'ai_read': self.ai_read, 'sealed': self.base is not None,
+                     'outstanding': (None if self.base is not None
+                                     else engine_reader.outstanding(self.draft))},
             'citations': self.citation_counts(),
             'tool_calls': {slot: agent.calls for slot, agent in self.agents.items()},
             'tool_calls_total': self.calls,
@@ -1336,9 +1450,10 @@ class Run:
         here = Path(__file__).resolve().parent
         for path in sorted(here.glob('*.py')):
             files['plugin-python/' + path.name] = digest(path.read_bytes())
+        held = (self.base.manifest if self.base is not None else self.draft)
         return {
-            'paper_id': self.base.paper_id,
-            'source_sha256': (self.base.manifest.get('source') or {}).get('sha256'),
+            'paper_id': self.paper_id,
+            'source_sha256': (held.get('source') or {}).get('sha256'),
             'pdf': self.pdf,
             'code': files,
             'workflow_version': WORKFLOW_VERSION,
@@ -1409,7 +1524,7 @@ class Run:
             'mode': self.arm,
             'arm': self.arm,
             'reviewers': self.reviewers,
-            'paper_id': self.base.paper_id,
+            'paper_id': self.paper_id,
             'literature_cutoff': self.cutoff,
             'version': WORKFLOW_VERSION,
             'finding_schema_version': FINDING_SCHEMA_VERSION,
@@ -1602,15 +1717,28 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
 
 
 def summary_of(run):
+    # Before the seal there is no paper.md, so the three answers that are read
+    # off it are not available yet and say so rather than guessing: the
+    # statistics are counted on the written text, and the sections and
+    # documents are line ranges in it. `seal_manuscript` hands all three back
+    # the moment they exist, which is why the Read stage returns them.
+    sealed = run.base is not None
     return {
         'run': str(run.root),
-        'paper_id': run.base.paper_id,
-        'title': run.base.title,
+        'paper_id': run.paper_id,
+        'title': (run.base.title if sealed else run.draft.get('title')),
         'arm': run.arm,
         'arm_summary': run.plan['summary'],
         'reviewers': run.reviewers,
         'status': run.status,
-        'statistics': run.base.manifest.get('statistics'),
+        'sealed': sealed,
+        'statistics': (run.base.manifest.get('statistics') if sealed else None),
+        'draft': (None if sealed else {
+            'pages': int(run.draft.get('page_count') or 0),
+            'pieces': sum(len(pieces) for pieces in run.draft.get('documents', {}).values()),
+            'to_account_for': engine_reader.outstanding(run.draft),
+            'documents': list(run.draft.get('documents') or {}),
+        }),
         'slots': list(run.required) + ['recorder'],
         # The Read stage, apart from the review stages on purpose: the reader
         # works before them, on a draft, and files no report, so it is never
@@ -1634,8 +1762,8 @@ def summary_of(run):
         'models': [{'slot': slot, 'model': model,
                     'spawn': model_plan.spawn_name(model)}
                    for slot, model in run.models.items()],
-        'sections': run.index(),
-        'documents': run.documents(),
+        'sections': run.index() if sealed else [],
+        'documents': run.documents() if sealed else [],
         'literature_cutoff': run.cutoff,
         'finding_schema_version': FINDING_SCHEMA_VERSION,
         'issues_schema_version': issue_model.ISSUES_SCHEMA_VERSION,
@@ -1679,11 +1807,11 @@ def claim_agent(slot: str, claim_code: str = '') -> dict:
         'attempt': agent.attempt,
         'tool_call_budget': agent.call_budget,
         'allowed_tools': list(agent.allowed),
-        'paper_id': run.base.paper_id,
-        'title': run.base.title,
-        'statistics': run.base.manifest.get('statistics'),
-        'sections': run.index(),
-        'documents': run.documents(),
+        'paper_id': run.paper_id,
+        'title': (run.base.title if run.base is not None else run.draft.get('title')),
+        'statistics': (run.base.manifest.get('statistics') if run.base is not None else None),
+        'sections': run.index() if run.base is not None else [],
+        'documents': run.documents() if run.base is not None else [],
         'domain_guidance': guidance,
         'finding_schema_version': FINDING_SCHEMA_VERSION,
         'severities': list(SEVERITIES),
@@ -1695,6 +1823,28 @@ def claim_agent(slot: str, claim_code: str = '') -> dict:
         'reminder': ('Your track is set by this token. Quote the manuscript exactly: an '
                      'unanchored quote is quarantined and the finding is lost.'),
     }
+    if agent.role == 'reader':
+        # The reader is told about the draft, because there is no manuscript
+        # yet and the two general instructions above are about one: nothing to
+        # read with read_paper, and no finding to file.
+        left = engine_reader.outstanding(run.draft)
+        answer['draft'] = {
+            'pages': int(run.draft.get('page_count') or 0),
+            'documents': list(run.draft.get('documents') or {}),
+            'to_account_for': left,
+        }
+        answer['read_first'] = (
+            'Call read_draft now. Then view every page of the PDF and, for every equation, table '
+            'and figure on it, either repair the piece from the image or confirm it as printed. '
+            'A repair is taken only from a page you have opened in this attempt. When nothing is '
+            'outstanding, call seal_manuscript: that writes the manuscript the reviewers read, '
+            'once, and your stage is over.')
+        answer['reminder'] = (
+            'You transcribe and describe. You do not judge the science and you never correct '
+            'what the authors printed, not even an obvious typo: reproduce the page. '
+            + str(len(left['pieces'])) + ' piece(s) and '
+            + str(len(left['pages'])) + ' page(s) are waiting for you.')
+        return answer
     if agent.role != 'editor':
         return answer
     # The editor writes the issues, so it is the one slot that is handed the
@@ -1790,6 +1940,13 @@ def _call(token, name, args, free=False):
                          + ' reads the manuscript into a record that is closed, so nothing was '
                          'read and nothing was written. A later look at this paper is a new run '
                          'with this one as its prior round.', status=run.status)
+    # The Read stage ends at the seal. After it the draft is gone and the
+    # lines exist, so a repair would be a rewrite of a manuscript a reviewer
+    # may already be citing — which is the one thing this whole shape is for.
+    if agent.slot == 'reader' and run.base is not None:
+        return rejection('This manuscript is sealed: paper.md and map.json are written and every '
+                         'line is citable. ' + name + ' works on a draft, and there is no longer '
+                         'one. The Read stage is over.')
     # Reading the manuscript is free, so neither budget applies and neither
     # counter moves. Everything above still does: a token is a token, a track
     # is a track, and a written review is closed to reading as much as to
@@ -1875,6 +2032,143 @@ def view_page(agent_token: str, page: int) -> dict:
 def view_supplement(agent_token: str, id: str, page: int = 1) -> dict:
     """Inspect one supplement page or image preview. IDs are in the asset inventory."""
     return _call(agent_token, 'view_supplement', {'id': id, 'page': page})
+
+
+# --- the Read stage ---------------------------------------------------------
+# The reader's tools. They work on the draft, which has no line numbers, and
+# every repair is a transcription of a page image: the server takes one only
+# from a holder that has opened that page in this attempt, and keeps what the
+# converter had beside what the model wrote.
+
+
+def read_draft(agent_token: str, document: str = '', part: int = 1) -> dict:
+    """The converted pieces, numbered, with what you still have to account for.
+
+    It costs nothing from your allowance and you may call it again whenever you
+    want the list back. The text in it is the converter's reading of the page:
+    where the two disagree, the page is the manuscript. Every equation, table
+    and figure here has to be repaired or confirmed before the draft can be
+    sealed, and `outstanding` is what is left.
+    """
+    return _call(agent_token, 'read_draft', {'document': document, 'part': part}, free=True)
+
+
+def replace_equation(agent_token: str, piece: str, page: int, latex: str,
+                     number: str = '') -> dict:
+    """Rewrite one displayed equation's LaTeX as the page image prints it.
+
+    Transcribe, do not correct: if the authors printed an equation that is
+    wrong, the manuscript says what they printed. `number` is the equation
+    number beside it, if there is one, without brackets.
+    """
+    return _call(agent_token, 'replace_equation',
+                 {'piece': piece, 'page': page, 'latex': latex, 'number': number})
+
+
+def replace_table(agent_token: str, piece: str, page: int, rows: list) -> dict:
+    """Rewrite one table's cells as the page image prints them, header row first.
+
+    `rows` is a list of rows, each a list of cell strings. Every row has the
+    same number of cells as the header; an empty cell is an empty string.
+    """
+    return _call(agent_token, 'replace_table', {'piece': piece, 'page': page, 'rows': rows})
+
+
+def describe_figure(agent_token: str, piece: str, page: int, description: str) -> dict:
+    """Write what the figure's image shows, as a piece after its caption.
+
+    Say what is plotted, the axes and their units, the series, the values and
+    the trends that are visible, and anything in the image the caption does not
+    say. It is a description and not a judgement: what is there, not whether it
+    supports the claim. It is marked as written by a model wherever a reviewer
+    reads it.
+    """
+    return _call(agent_token, 'describe_figure',
+                 {'piece': piece, 'page': page, 'description': description})
+
+
+def add_piece(agent_token: str, after: str, kind: str, page: int, text: str = '',
+              latex: str = '', number: str = '', rows: list = ()) -> dict:
+    """Add an equation, table or figure description the converter never produced.
+
+    `after` is the piece it belongs behind. Use it for a table the converter
+    reduced to its caption, or an equation it dropped — not for anything the
+    page does not print.
+    """
+    return _call(agent_token, 'add_piece',
+                 {'after': after, 'kind': kind, 'page': page, 'text': text, 'latex': latex,
+                  'number': number, 'rows': list(rows)})
+
+
+def merge_equations(agent_token: str, pieces: list, page: int, latex: str,
+                    number: str = '') -> dict:
+    """Put one equation the converter split into several pieces back together.
+
+    `pieces` are the ids, in printed order; the first keeps the whole
+    equation's LaTeX and the rest are removed.
+    """
+    return _call(agent_token, 'merge_equations',
+                 {'pieces': list(pieces), 'page': page, 'latex': latex, 'number': number})
+
+
+def confirm_piece(agent_token: str, piece: str, page: int) -> dict:
+    """Say that an equation or table is already what the page prints, having looked."""
+    return _call(agent_token, 'confirm_piece', {'piece': piece, 'page': page})
+
+
+def seal_manuscript(agent_token: str) -> dict:
+    """Write the manuscript from the draft. Once, and nothing renumbers after it.
+
+    It is refused while any equation, table or figure is unaccounted for or any
+    page is unopened, and says which. What comes back is what the rest of the
+    run reads: the statistics, the sections, the documents and the citation
+    counts.
+    """
+    run = current()
+    try:
+        agent = run.agent_for(agent_token)
+    except ValueError as exc:
+        return rejection(str(exc))
+    if 'seal_manuscript' not in agent.allowed:
+        return rejection('The ' + agent.slot + ' agent may not seal the manuscript. The Read '
+                         'stage writes it, once, and every other slot reads what it wrote.')
+    if run.base is not None:
+        return rejection('This manuscript is already sealed. Its lines are written and a finding '
+                         'may already cite them, so nothing re-seals it.')
+    left = engine_reader.outstanding(run.draft)
+    if left['pieces'] or left['pages']:
+        return rejection(
+            'The draft is not accounted for yet, so nothing was written. '
+            + (str(len(left['pieces'])) + ' piece(s) are neither repaired nor confirmed: '
+               + ', '.join(str(one['piece']) + ' (' + one['kind']
+                           + ' p' + str(one['page']) + ')' for one in left['pieces'][:20])
+               + ('…' if len(left['pieces']) > 20 else '') + '. ' if left['pieces'] else '')
+            + ('Page(s) ' + ', '.join(str(page) for page in left['pages'])
+               + ' have not been viewed; a piece the converter dropped is only visible on its '
+                 'page. ' if left['pages'] else '')
+            + 'Finish those and seal again.', outstanding=left)
+    tally = engine_reader.tally(run.draft)
+    account = {'read': True, 'reader_model': agent.observed or run.models.get('reader'),
+               'reader_slot': agent.slot, 'attempt': agent.attempt,
+               'pages_viewed': tally['pages_viewed'], 'pages': tally['pages'],
+               'actions': tally['pieces'], 'tool_calls': agent.calls}
+    try:
+        manifest = run.seal(ai_read=account)
+    except (ValueError, OSError) as exc:
+        return rejection(str(exc))
+    # What ingest used to hand back and could not while the base did not exist:
+    # the manuscript's own numbers and the citation table's. The workflow reads
+    # them here, in one place, rather than asking twice.
+    return {'sealed': True, 'paper_id': run.base.paper_id, 'title': run.base.title,
+            'statistics': run.base.manifest.get('statistics'),
+            'documents': run.documents(), 'sections': run.index(),
+            'ai_read': manifest.get('ai_read'),
+            'pieces_per_source': manifest.get('pieces_per_source'),
+            'known_gaps': manifest.get('known_gaps'),
+            'citations': run.citation_counts(),
+            'citation_ledger': run.citation_fill,
+            'next': ('The manuscript is written and every line is citable. Your stage is over: '
+                     'the reviewers are claimed next and read what you sealed.')}
 
 
 def check_citation(agent_token: str, reference_id: str) -> dict:
@@ -3882,7 +4176,10 @@ def _fallback_issue(issue):
 
 
 TOOLS = (ingest, claim_agent, reissue_claim_code, read_paper, search, calculate, save_note,
-         view_page, view_supplement, check_citation, search_literature, resolve_identifier,
+         view_page, view_supplement,
+         read_draft, replace_equation, replace_table, describe_figure, add_piece,
+         merge_equations, confirm_piece, seal_manuscript,
+         check_citation, search_literature, resolve_identifier,
          lookup_source, inspect_results, record_comparison, validate_synthesis, submit_finding,
          submit_report, list_findings, submit_issues, submit_editor, resolve_citations,
          citation_rows,

@@ -1,0 +1,490 @@
+"""The Read stage: a model repairs the draft, and the seal writes the manuscript.
+
+Every test here runs offline and no model reads anything: the reader's tools are
+called directly, which is the whole point of putting them in the server. What
+they hold in place is the order of the stage — nothing claims a slot before the
+manuscript exists, a repair is taken only from a page the reader has opened, and
+the seal is refused while a single equation, table or figure is unaccounted for
+— and what the sealed base then says about where each line came from.
+
+The drafts are the fixture PDF's own pieces with a few more put in: the fixture
+is prose, and the converter's failures this stage exists for are equations,
+tables and figures. A piece added here has the shape the converter writes, so
+the reader sees what it would see on a paper that had them.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from peerreviewagents import names
+from peerreviewagents.engine import paper_base
+from peerreviewagents.engine.ingest import DRAFT_FILE, convert_paper
+from peerreviewagents.engine.storage import write
+from peerreviewagents.plugin import server as srv
+
+FIXTURE = Path(__file__).parent / 'fixtures' / 'single-column.pdf'
+
+#: The converter's reading of equation (1): a brace it never closed, with its
+#: own confidence at 1.0 beside it, which is the case this stage exists for.
+MANGLED = 'E = m c^{2'
+
+#: Slot claim codes from the last ``ingest``.
+CODES = {}
+
+
+@pytest.fixture(autouse=True)
+def fresh_state(with_reader):
+    """A run with a Read stage, as a default run has, and no state left over."""
+    srv.STATE['run'] = None
+    CODES.clear()
+    yield
+    srv.STATE['run'] = None
+
+
+def piece(kind, text='', *, page=1, section='3 Results', **extra):
+    """One draft piece in the shape ``convert_paper`` writes them."""
+    return {'text': text, 'section': section, 'kind': kind, 'page': page, 'bbox': None,
+            'citations': [], 'table': None, 'source': 'text', 'page_mapping': 'converter',
+            'document': paper_base.MAIN_DOCUMENT, **extra}
+
+
+#: What the converter made of a page holding two equations, a figure and a
+#: table: equation (1) mangled, equation (2) split in half across two pieces,
+#: the figure as a caption with nothing behind it, and a table whose caption it
+#: found and whose cells it did not.
+CONVERTED = [
+    piece('equation', MANGLED, latex=MANGLED, number='(1)', confidence=1.0),
+    piece('equation', 'a^{2} + b^{2}', latex='a^{2} + b^{2}', number='', confidence=0.4),
+    piece('equation', '= c^{2}', latex='= c^{2}', number='(2)', confidence=0.4),
+    piece('caption', 'Figure 1: The bench, the instrument and the widgets.'),
+    piece('caption', 'Table 1: Readings of the blue widgets, by day.'),
+]
+
+#: The four pieces of that page the stage has to account for: three equations
+#: and the figure. ``Table 1``'s caption is a caption — the table itself is
+#: what the converter dropped, and the reader adds it.
+TO_ACCOUNT_FOR = 4
+
+DESCRIPTION = ('A photograph of the bench with the instrument clamped at the left and three '
+               'widgets in a row; the scale divisions are 0.5 mm apart.')
+
+
+def drafted(tmp_path, pieces=CONVERTED, supplement=None, **kwargs):
+    """A run over a draft holding the fixture's pieces and the ones given.
+
+    ``ingest`` picks up a conversion the folder already holds rather than
+    converting twice, which is how a run killed during the Read stage is
+    resumed — and how a test hands the server a draft of its own.
+    """
+    root = tmp_path / 'run'
+    workspace = root / names.MANUSCRIPT_DIRECTORY
+    draft = convert_paper(str(FIXTURE), workspace)
+    main = draft['documents'][paper_base.MAIN_DOCUMENT]
+    at = next(index for index, held in enumerate(main)
+              if str(held.get('section')) == 'References')
+    draft['documents'][paper_base.MAIN_DOCUMENT] = [*main[:at], *pieces, *main[at:]]
+    if supplement:
+        draft['documents'][supplement] = [
+            {**piece('title', 'Supplementary material', section='Supplement S1'),
+             'document': supplement},
+            {**piece('equation', 'x = y', latex='x = y', number='(S1)', section='Supplement S1'),
+             'document': supplement}]
+    write(workspace / DRAFT_FILE, draft)
+    kwargs.setdefault('reviewers', 1)
+    kwargs.setdefault('arm', 'single')
+    opened = srv.ingest(str(FIXTURE), str(root), **kwargs)
+    assert 'request_rejected' not in opened, opened
+    CODES.update({row['slot']: row['claim_code'] for row in opened.get('claim_codes', [])})
+    return opened
+
+
+def reading(tmp_path, **kwargs):
+    """``(ingest's answer, the reader's token)``: the stage, claimed and ready."""
+    opened = drafted(tmp_path, **kwargs)
+    taken = srv.claim_agent('reader', CODES['reader'])
+    assert 'agent_token' in taken, taken
+    return opened, taken['agent_token']
+
+
+def listed(token, document=''):
+    """``{piece id: row}`` of one document of the draft, as the reader sees it."""
+    answer = srv.read_draft(token, document=document)
+    assert 'request_rejected' not in answer, answer
+    return {row['piece']: row for row in answer['pieces']}
+
+
+def ids_of(token):
+    """The ids of the pieces this stage works on, by what each one is."""
+    rows = listed(token)
+    equations = [key for key, row in rows.items() if row['kind'] == 'equation']
+    figures = [key for key, row in rows.items() if row.get('account') == 'figure']
+    tables = [key for key, row in rows.items()
+              if str(row['text']).startswith('Caption: Table 1')]
+    return {'mangled': equations[0], 'split': equations[1:3],
+            'figure': figures[0], 'table_caption': tables[0]}
+
+
+def account_for_everything(token, marks):
+    """Do the stage's work: view both pages, repair what is wrong, add what is missing."""
+    for page in (1, 2):
+        assert 'request_rejected' not in srv.view_page(token, page)
+    assert 'request_rejected' not in srv.replace_equation(
+        token, marks['mangled'], 1, 'E = m c^{2}', number='(1)')
+    assert 'request_rejected' not in srv.merge_equations(
+        token, marks['split'], 1, 'a^{2} + b^{2} = c^{2}', number='(2)')
+    assert 'request_rejected' not in srv.describe_figure(
+        token, marks['figure'], 1, DESCRIPTION)
+    added = srv.add_piece(token, marks['table_caption'], 'table', 1,
+                          rows=[['Day', 'Reading (mm)'], ['1', '12.5'], ['2', '12.5']])
+    assert 'request_rejected' not in added, added
+    return added
+
+
+def before(rows, row):
+    """The map row above this one: the piece written on the lines just above it."""
+    return rows[rows.index(row) - 1]
+
+
+def base_of(run):
+    """``(paper.md, map.json's rows, the manifest)`` of the sealed manuscript."""
+    folder = run.workspace
+    text = (folder / paper_base.MAIN_DOCUMENT).read_text(encoding='utf-8')
+    rows = json.loads((folder / 'map.json').read_text(encoding='utf-8'))
+    manifest = json.loads((folder / 'manifest.json').read_text(encoding='utf-8'))
+    return text, rows, manifest
+
+
+def test_no_slot_but_the_reader_can_claim_before_the_manuscript_is_sealed(tmp_path):
+    """A draft is not a manuscript, and a reviewer is not handed one.
+
+    The reviewers, the specialists, the citation workers and the editor all
+    quote line numbers, and before the seal there are none. So the gate is on
+    the claim rather than on each tool: a slot that cannot be served the
+    manuscript is not opened at all.
+    """
+    opened = drafted(tmp_path)
+    assert opened['sealed'] is False
+    assert opened['statistics'] is None
+    assert opened['sections'] == [] and opened['documents'] == []
+    assert opened['draft']['pages'] == 2
+    assert opened['draft']['documents'] == [paper_base.MAIN_DOCUMENT]
+    assert len(opened['draft']['to_account_for']['pieces']) == TO_ACCOUNT_FOR
+    assert opened['draft']['to_account_for']['pages'] == [1, 2]
+    for slot in ('core-1', 'recorder'):
+        refused = srv.claim_agent(slot, CODES[slot])
+        assert 'still a draft' in refused['request_rejected'], slot
+        assert 'Read stage' in refused['request_rejected']
+    # The reader is the one slot that may: it is the stage that writes the
+    # thing the others are waiting for.
+    taken = srv.claim_agent('reader', CODES['reader'])
+    assert taken['role'] == 'reader' and taken['slot'] == 'reader'
+    assert 'read_draft' in taken['allowed_tools'] and 'read_paper' not in taken['allowed_tools']
+    assert taken['statistics'] is None and taken['sections'] == []
+    assert taken['paper_id'] == opened['paper_id']
+    assert taken['draft']['pages'] == 2
+    assert len(taken['draft']['to_account_for']['pieces']) == TO_ACCOUNT_FOR
+    assert 'never correct' in taken['reminder']
+    assert 'seal_manuscript' in taken['read_first']
+
+
+def test_the_seal_is_refused_until_every_piece_and_page_is_accounted_for(tmp_path):
+    """Refused by name, and when nothing is left it is the run's one writer."""
+    opened, token = reading(tmp_path)
+    marks = ids_of(token)
+    refused = srv.seal_manuscript(token)
+    assert 'request_rejected' in refused
+    assert marks['mangled'] in refused['request_rejected']
+    assert 'have not been viewed' in refused['request_rejected']
+    assert refused['outstanding']['pages'] == [1, 2]
+    assert len(refused['outstanding']['pieces']) == TO_ACCOUNT_FOR
+    assert not (srv.current().workspace / paper_base.MAIN_DOCUMENT).exists()
+
+    account_for_everything(token, marks)
+    sealed = srv.seal_manuscript(token)
+    assert 'request_rejected' not in sealed, sealed
+    assert sealed['sealed'] is True
+    assert sealed['paper_id'] == opened['paper_id']
+    assert sealed['ai_read']['read'] is True
+    assert sealed['ai_read']['pages_viewed'] == 2
+    assert sealed['ai_read']['reader_model'] == 'claude-sonnet-5-5'
+    assert sealed['ai_read']['actions']['repaired'] == 1
+    assert sealed['ai_read']['actions']['merged'] == 1
+    # What ingest used to hand back and could not while the base did not exist,
+    # handed back here instead, so the workflow reads the manuscript's numbers
+    # in one place and nothing downstream asks twice.
+    assert sealed['statistics']['lines'][paper_base.MAIN_DOCUMENT] > 0
+    assert sealed['statistics']['pieces'] > len(CONVERTED)
+    assert sealed['sections'] and sealed['documents']
+    assert 'citations' in sealed and 'citation_ledger' in sealed
+    # Sealed once. A second call is not a second manuscript.
+    again = srv.seal_manuscript(token)
+    assert 'already sealed' in again['request_rejected']
+
+
+def test_a_repair_is_refused_from_a_reader_that_has_not_viewed_the_page(tmp_path):
+    """The gate is the page image: a transcription nobody read is not one."""
+    opened, token = reading(tmp_path)
+    marks = ids_of(token)
+    for call in (lambda: srv.replace_equation(token, marks['mangled'], 1, 'E = m c^{2}'),
+                 lambda: srv.describe_figure(token, marks['figure'], 1, DESCRIPTION),
+                 lambda: srv.confirm_piece(token, marks['split'][0], 1),
+                 lambda: srv.add_piece(token, marks['table_caption'], 'table', 1,
+                                       rows=[['Day', 'Reading']])):
+        refused = call()
+        assert 'not viewed page 1' in refused['request_rejected'], refused
+    left = srv.read_draft(token)['outstanding']['pieces']
+    assert len(left) == TO_ACCOUNT_FOR, 'and nothing was settled by a refusal'
+
+    # Viewing it is what the refusal asked for, and then the same call lands.
+    assert 'request_rejected' not in srv.view_page(token, 1)
+    assert 'request_rejected' not in srv.replace_equation(
+        token, marks['mangled'], 1, 'E = m c^{2}', number='(1)')
+    # A page the PDF does not have is refused before anything is rendered.
+    assert 'Unknown page' in srv.view_page(token, 9)['request_rejected']
+    # And a repair read off page 2 is still refused while only page 1 is open.
+    assert 'not viewed page 2' in srv.confirm_piece(
+        token, marks['split'][0], 2)['request_rejected']
+
+
+def test_a_sealed_row_says_where_its_line_came_from_and_keeps_what_it_replaced(tmp_path):
+    """Provenance, piece by piece: the three sources and the converter's own text."""
+    opened, token = reading(tmp_path)
+    marks = ids_of(token)
+    account_for_everything(token, marks)
+    assert 'request_rejected' not in srv.seal_manuscript(token)
+    run = srv.current()
+    text, rows, manifest = base_of(run)
+
+    repaired = [row for row in rows if row['source'] == 'ai-reconstructed']
+    assert len(repaired) == 2, 'the mangled equation and the merged one'
+    assert all(row['kind'] == 'equation' for row in repaired)
+    assert all(row['original']['latex'] for row in repaired)
+    assert MANGLED in [row['original']['latex'] for row in repaired]
+    # The repair is on the line; the converter's reading is only on the row.
+    assert '$$ E = m c^{2} \\tag{(1)} $$' in text.splitlines()
+    assert '$$ ' + MANGLED + ' \\tag{(1)} $$' not in text.splitlines()
+
+    described = [row for row in rows if row['kind'] == 'figure-description']
+    assert len(described) == 1 and described[0]['source'] == 'ai'
+    assert described[0]['original'] == {}, 'a piece the converter never wrote'
+    assert 'Figure description: A photograph of the bench' in text
+    # The caption above it is still the authors' words, and still says so.
+    caption = before(rows, described[0])
+    assert caption['source'] == 'text' and 'original' not in caption
+    assert caption['kind'] == 'caption'
+
+    added = [row for row in rows if row['kind'] == 'table']
+    assert len(added) == 1 and added[0]['source'] == 'ai'
+    assert '| Day | Reading (mm) |' in text
+
+    assert manifest['pieces_per_source']['ai-reconstructed'] == 2
+    assert manifest['pieces_per_source']['ai'] == 2, 'the description and the table'
+    assert manifest['pieces_per_source']['text'] == len(rows) - 4
+    assert manifest['ai_read']['read'] is True
+    assert manifest['ai_read']['reader_model'] == 'claude-sonnet-5-5'
+    assert manifest['ai_read']['pages'] == 2
+    assert 'claude-sonnet-5-5' in manifest['known_gaps']['figures']
+    assert 'page image' in manifest['known_gaps']['equation_confidence']
+    # The draft is gone: the folder holds the manuscript and nothing that could
+    # be mistaken for it.
+    assert not (run.workspace / DRAFT_FILE).exists()
+
+
+def test_an_equation_the_converter_split_becomes_one_line(tmp_path):
+    """Two pieces that are one equation, merged, with both halves kept on the row."""
+    opened, token = reading(tmp_path)
+    marks = ids_of(token)
+    assert 'request_rejected' not in srv.view_page(token, 1)
+    merged = srv.merge_equations(token, marks['split'], 1, 'a^{2} + b^{2} = c^{2}', number='(2)')
+    assert 'request_rejected' not in merged, merged
+    assert merged['piece'] == marks['split'][0]
+    assert merged['removed'] == [marks['split'][1]]
+    assert merged['replaced']['merged'][0]['latex'] == '= c^{2}'
+    # The dropped half is gone from the draft, so it is not waiting to be
+    # accounted for and will not be a line of its own.
+    rows = listed(token)
+    assert marks['split'][1] not in rows
+    assert rows[marks['split'][0]]['settled'] == 'merged'
+
+    assert 'request_rejected' not in srv.replace_equation(
+        token, marks['mangled'], 1, 'E = m c^{2}', number='(1)')
+    assert 'request_rejected' not in srv.describe_figure(token, marks['figure'], 1, DESCRIPTION)
+    assert 'request_rejected' not in srv.add_piece(
+        token, marks['table_caption'], 'table', 1, rows=[['Day', 'Reading'], ['1', '12.5']])
+    assert 'request_rejected' not in srv.view_page(token, 2)
+    assert 'request_rejected' not in srv.seal_manuscript(token)
+
+    text, rows, _ = base_of(srv.current())
+    whole = [row for row in rows if row.get('original', {}).get('merged')]
+    assert len(whole) == 1
+    start, end = whole[0]['lines']
+    assert start == end, 'one equation is one line'
+    lines = text.splitlines()
+    assert lines[start - 1] == '$$ a^{2} + b^{2} = c^{2} \\tag{(2)} $$'
+    assert '$$ = c^{2} \\tag{(2)} $$' not in lines, 'and not a line of its own'
+    assert len([line for line in lines if line.startswith('$$')]) == 2
+
+
+def test_a_table_the_converter_missed_is_added_after_its_caption(tmp_path):
+    """A table only a caption names, written from the page and marked as written."""
+    opened, token = reading(tmp_path)
+    marks = ids_of(token)
+    assert 'request_rejected' not in srv.view_page(token, 1)
+    added = srv.add_piece(token, marks['table_caption'], 'table', 1,
+                          rows=[['Day', 'Reading (mm)'], ['1', '12.5'], ['2', '13.0']])
+    assert 'request_rejected' not in added, added
+    assert added['after'] == marks['table_caption'] and added['source'] == 'ai'
+    assert '| 1 | 12.5 |' in added['text']
+    # It is a table, so it is accountable — and adding it accounted for it.
+    assert listed(token)[added['piece']]['settled'] == 'added'
+    assert added['piece'] not in [row['piece'] for row in added['outstanding']['pieces']]
+    # A kind the stage does not add is refused: the rest of the manuscript is
+    # the authors' and stays as converted.
+    refused = srv.add_piece(token, marks['table_caption'], 'paragraph', 1, text='Not theirs.')
+    assert 'A reader adds' in refused['request_rejected']
+
+    assert 'request_rejected' not in srv.replace_equation(
+        token, marks['mangled'], 1, 'E = m c^{2}', number='(1)')
+    assert 'request_rejected' not in srv.merge_equations(
+        token, marks['split'], 1, 'a^{2} + b^{2} = c^{2}', number='(2)')
+    assert 'request_rejected' not in srv.describe_figure(token, marks['figure'], 1, DESCRIPTION)
+    assert 'request_rejected' not in srv.view_page(token, 2)
+    assert 'request_rejected' not in srv.seal_manuscript(token)
+
+    text, rows, _ = base_of(srv.current())
+    table = next(row for row in rows if row['kind'] == 'table')
+    caption = before(rows, table)
+    assert caption['kind'] == 'caption' and caption['source'] == 'text'
+    assert table['source'] == 'ai' and table['page'] == 1
+    start, end = table['lines']
+    assert end - start == 3, 'a header, its rule and two rows'
+    assert text.splitlines()[start - 1] == '| Day | Reading (mm) |'
+
+
+def test_a_run_without_a_reader_is_sealed_as_converted_and_says_so(tmp_path):
+    """The one setting for running without a Read stage, and what it leaves behind."""
+    opened = drafted(tmp_path, ai_read=False)
+    assert opened['sealed'] is True and opened['ai_read'] is False
+    assert opened['reader'] is None
+    assert 'reader' not in CODES
+    assert opened['statistics']['lines'][paper_base.MAIN_DOCUMENT] > 0
+    assert opened['sections']
+    assert opened['draft'] is None, 'there is no draft left to read'
+    # Every slot claims straight away: there is a manuscript to read.
+    taken = srv.claim_agent('core-1', CODES['core-1'])
+    assert 'agent_token' in taken, taken
+    assert 'read_draft' not in taken['allowed_tools']
+
+    text, rows, manifest = base_of(srv.current())
+    assert {row['source'] for row in rows} == {'text'}
+    assert manifest['ai_read']['read'] is False
+    assert manifest['ai_read']['reason']
+    assert MANGLED in text, "the converter's reading, as it stood"
+    assert 'Figure description:' not in text
+    # And the gaps say what they said before this stage existed.
+    assert 'claude' not in manifest['known_gaps']['figures']
+    assert not (srv.current().workspace / DRAFT_FILE).exists()
+
+
+def test_a_finding_cites_the_lines_the_seal_wrote(tmp_path):
+    """A reviewer quotes a repaired equation, and the line it cites is the sealed one."""
+    opened, token = reading(tmp_path)
+    marks = ids_of(token)
+    account_for_everything(token, marks)
+    assert 'request_rejected' not in srv.seal_manuscript(token)
+    run = srv.current()
+    _, rows, _ = base_of(run)
+    repaired = next(row for row in rows if row['source'] == 'ai-reconstructed'
+                    and row['original']['latex'] == MANGLED)
+    line = repaired['lines'][0]
+
+    reviewer = srv.claim_agent('core-1', CODES['core-1'])
+    assert 'agent_token' in reviewer, reviewer
+    reviewer = reviewer['agent_token']
+    assert 'request_rejected' not in srv.read_paper(reviewer)
+    quote = run.base.line_text(line)
+    assert quote == '$$ E = m c^{2} \\tag{(1)} $$'
+    # The gate on an equation finding stands: the reviewer opens the page image
+    # before filing against a line a model transcribed.
+    early = srv.submit_finding(reviewer, title='The exponent reads oddly', quote=quote,
+                               comment='Worth checking against the page.', severity='minor',
+                               kind='question', line=line)
+    assert 'Call view_page on page 1' in early['request_rejected']
+    assert 'request_rejected' not in srv.view_page(reviewer, 1)
+    stored = srv.submit_finding(reviewer, title='The exponent reads oddly', quote=quote,
+                                comment='The page prints a square, as the equation now reads.',
+                                severity='minor', kind='question', line=line)
+    assert 'request_rejected' not in stored, stored
+    filed = next(held for held in run.findings
+                 if held['finding_uid'] == stored['finding_uid'])
+    assert filed['line'] == line and filed['end_line'] == line
+    assert filed['piece_kind'] == 'equation'
+    assert filed['quoted_exactly'] is True
+    # The line the finding cites is the line the map says is a repair, which is
+    # the only reason the two readings can be put side by side at all.
+    assert repaired['lines'] == filed['piece_lines']
+
+
+def test_the_reader_cannot_work_after_the_seal(tmp_path):
+    """The stage is over when the manuscript exists, whoever still holds the token."""
+    opened, token = reading(tmp_path)
+    marks = ids_of(token)
+    account_for_everything(token, marks)
+    assert 'request_rejected' not in srv.seal_manuscript(token)
+    refused = srv.read_draft(token)
+    assert 'sealed' in refused['request_rejected']
+    assert 'Read stage is over' in refused['request_rejected']
+    assert 'request_rejected' in srv.confirm_piece(token, marks['mangled'], 1)
+    # And the run's own progress says the stage is done rather than leaving the
+    # reading's accounting behind to be read as outstanding work.
+    progress = json.loads((srv.current().review / 'progress.json').read_text(encoding='utf-8'))
+    assert progress['read'] == {'ai_read': True, 'sealed': True, 'outstanding': None}
+
+
+def test_the_readers_allowance_is_the_size_of_what_it_has_to_read(tmp_path):
+    """Two pages and four accountable pieces, not a number someone picked."""
+    opened, token = reading(tmp_path)
+    assert opened['reader']['allowance'] == srv.reader_call_budget(2, TO_ACCOUNT_FOR)
+    assert opened['reader']['model'] == 'claude-sonnet-5-5'
+    # read_draft costs nothing: the stage does not begin by rationing the list
+    # of what it has to do.
+    assert srv.read_draft(token)['calls_left'] == opened['reader']['allowance']
+    assert 'request_rejected' not in srv.view_page(token, 1)
+    assert srv.read_draft(token)['calls_left'] == opened['reader']['allowance'] - 1
+    log = (srv.current().review / 'reader' / 'tool-log.jsonl').read_text(encoding='utf-8')
+    written = [json.loads(line) for line in log.splitlines()]
+    assert [one['tool'] for one in written] == ['read_draft', 'view_page', 'read_draft']
+    assert all('image' not in one['result'] for one in written), 'the image is in views/'
+    assert all('pieces' not in one['result'] for one in written), 'and the listing is the draft'
+
+
+def test_a_supplement_is_read_and_accounted_for_as_a_document_of_its_own(tmp_path):
+    """A supplement goes through the same stage under the same rules."""
+    opened, token = reading(tmp_path, supplement='supplement-s1.md')
+    served = srv.read_draft(token)
+    assert served['documents'] == [paper_base.MAIN_DOCUMENT, 'supplement-s1.md']
+    supplementary = srv.read_draft(token, document='supplement-s1.md')
+    assert 'request_rejected' not in supplementary, supplementary
+    assert supplementary['document'] == 'supplement-s1.md'
+    equation = next(row for row in supplementary['pieces'] if row.get('account') == 'equation')
+    assert equation['settled'] is None
+    # The supplement's equation is one of the pieces the seal is waiting for.
+    left = served['outstanding']['pieces']
+    assert len(left) == TO_ACCOUNT_FOR + 1
+    assert equation['piece'] in [row['piece'] for row in left]
+    assert 'supplement-s1.md' in {row['document'] for row in left}
+
+    marks = ids_of(token)
+    account_for_everything(token, marks)
+    refused = srv.seal_manuscript(token)
+    assert equation['piece'] in refused['request_rejected']
+    assert 'request_rejected' not in srv.confirm_piece(token, equation['piece'], 1)
+    assert 'request_rejected' not in srv.seal_manuscript(token)
+    run = srv.current()
+    assert 'supplement-s1.md' in run.base.document_names()
+    assert '$$ x = y \\tag{(S1)} $$' in (
+        run.workspace / 'supplement-s1.md').read_text(encoding='utf-8')
