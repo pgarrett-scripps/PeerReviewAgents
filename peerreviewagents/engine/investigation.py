@@ -114,7 +114,7 @@ class Investigation:
             if type(page) is not int or not 1<=page<=self.paper['statistics']['pdf_pages']:raise ValueError('Unknown page')
             target=self.out/f'page_{page:03d}.png'
             if not target.exists():
-                subprocess.run(['pdftoppm','-f',str(page),'-l',str(page),'-scale-to','1500','-singlefile','-png',str(self.root/'original.pdf'),str(target.with_suffix(''))],check=True,capture_output=True,timeout=30)
+                subprocess.run(['pdftoppm','-f',str(page),'-l',str(page),'-scale-to','1500','-singlefile','-png',str(self.root/'original'/'original.pdf'),str(target.with_suffix(''))],check=True,capture_output=True,timeout=30)
             return {'label':f'Original PDF page {page}','image':base64.b64encode(target.read_bytes()).decode()}
         if name=='view_supplement':
             from .supplement_view import supplement_page

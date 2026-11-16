@@ -9,6 +9,42 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **An imported manuscript is a Markdown file, not a list of blocks.** The
+  manuscript folder now holds `paper.md` — the whole paper in reading order,
+  LF endings, one piece per line with a blank line between pieces, no ids in
+  the text — and `map.json`, one row per piece keyed by the line range it
+  occupies: kind, section, page, the box on that page, where the text came
+  from, and a fingerprint of its normal form. Supplements are their own `.md`
+  beside it with their own rows and their own line numbers, which is the first
+  time the Word supplements the importer copies have been readable at all. The
+  source files move to `original/`, and `manifest.json` gains the schema
+  version, the counts per kind and per source, the fingerprint rule and the
+  gaps this converter leaves — there are no figure images at the pinned
+  version, so a figure is its caption line.
+  Measured over seven saved runs, reviewers who could only reach the
+  manuscript twelve blocks at a time had seen between half and almost all of
+  the main text, and the editor as little as fifteen per cent, while spending
+  three to twenty of their thirty calls: the shape of the reading surface, not
+  the allowance, was what stopped them. Block ids were also a third numbering
+  that three applications had to agree on, and said nothing to the person
+  reading a review.
+- **A displayed equation is in the manuscript.** The converter returns an
+  equation with an empty `text` and its LaTeX under `math`, and the importer
+  returned early on empty text, so every displayed equation in every imported
+  paper was absent — eleven of eleven in the antenna manuscript — and
+  reviewers argued about algebra they had never been shown. Each one is now a
+  line of its own, `$$ latex \tag{n} $$`, with the converter's own confidence
+  in its map row: sums and subscripts are what it mangles, so a low confidence
+  means read the page rather than that the equation is missing.
+- **One normal form for manuscript text**, in `engine/paper_text.py`: NFKC,
+  whitespace runs collapsed, dash and quote variants folded, soft hyphens and
+  zero-width characters dropped, case kept — with, for every character of the
+  normal form, the offset of the character it came from, so a quote matched
+  there can be reported in the coordinates of the file an author reads. It is
+  what fingerprints are taken over, and what citing a quote will rest on.
+
 ### Added
 
 - **`validate_prior_issues(document)` on the public surface.** Every problem
