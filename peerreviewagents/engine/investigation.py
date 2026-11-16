@@ -7,7 +7,13 @@ from pathlib import Path
 from .annotations import verify_workspace
 from .calculator import calculate
 from .storage import digest
-from .source_payload import text_block
+from . import paper_base, paper_view
+
+#: Tools that do not spend the allowance. Reading the manuscript is not an
+#: investigative step a reviewer should be rationing: a budget that counts it
+#: buys the reviewer's attention away from the paper and into deciding which
+#: parts of it to skip, which is the opposite of what the allowance is for.
+FREE_TOOLS = ('read_paper',)
 
 
 class Investigation:
@@ -16,6 +22,7 @@ class Investigation:
         self.out=Path(config['output']).resolve()
         self.out.mkdir(parents=True,exist_ok=True)
         self.paper=verify_workspace(self.root)
+        self.base=paper_base.load(self.root)
         from .result_map import build_result_map
         self.result_map = build_result_map(self.paper)
         self.by={b['id']:b for b in self.paper['blocks']}
@@ -36,15 +43,22 @@ class Investigation:
         return record
 
     def call(self,name,args):
-        self.calls+=1
-        if self.calls>self.limit:
-            return {'notice':'Tool allowance exhausted. Finish from existing evidence.'}
+        if name not in FREE_TOOLS:
+            self.calls+=1
+            if self.calls>self.limit:
+                return {'notice':'Tool allowance exhausted. Finish from existing evidence.'}
         try:
             result=self.dispatch(name,args)
         except (ValueError,KeyError,TypeError,ArithmeticError,SyntaxError,StopIteration,subprocess.SubprocessError) as exc:
             result={'request_rejected':str(exc)}
-        result['tool_receipt']={'call_index':self.calls,'tool':name}
-        log={ 'tool':name,'arguments':args,'result':{k:v for k,v in result.items() if k!='image'}}
+        result['tool_receipt']={'call_index':self.calls,'tool':name,
+                                'spent':name not in FREE_TOOLS}
+        # The manuscript itself is not written into the log: the log is the
+        # record of what was asked for, and read_paper's answer is a copy of a
+        # file the folder already holds. What is kept is which part was served,
+        # which is what a reader of the log wants to know.
+        log={ 'tool':name,'arguments':args,
+              'result':{k:v for k,v in result.items() if k not in ('image','text')}}
         with (self.out/'tool-log.jsonl').open('a',encoding='utf-8') as stream:
             stream.write(json.dumps(log,ensure_ascii=False)+'\n')
         return result
@@ -70,33 +84,27 @@ class Investigation:
             if args['block_id'] not in self.by:
                 raise ValueError('A source lookup needs a valid manuscript block ID')
             return self.sources.lookup(args['provider'], args['identifier'], args['block_id'])
-        if name=='read_blocks':
-            ids=[str(i) for i in args['ids']]
-            if len(ids)>12:raise ValueError('Read at most 12 blocks')
-            # A bare KeyError here said nothing but the key itself. The editor
-            # reads findings, whose finding_uid is 16 hex characters and is not
-            # a block id, and one such call ended its turn with a message no
-            # agent could act on. Both cases now say what the argument is and
-            # where the right one comes from.
-            unknown=[i for i in ids if i not in self.by]
-            uids=[i for i in unknown if re.fullmatch(r'[0-9a-f]{16}',i)]
-            if uids:
-                raise ValueError('read_blocks takes manuscript block IDs, and '
-                                 +', '.join(uids)+' is a finding_uid. A finding carries the block '
-                                 'it cites in its block_id, and its wider evidence in '
-                                 'evidence_blocks: read those.')
-            if unknown:
-                raise ValueError('No block in this manuscript has the ID '
-                                 +', '.join(unknown[:5])
-                                 +'. The block IDs are in the section index and on every finding.')
-            return {'blocks':[text_block(self.by[i]) for i in ids]}
+        if name=='read_paper':
+            document=str(args.get('document') or paper_base.MAIN_DOCUMENT)
+            part=args.get('part',1)
+            if part in (None,''):part=1
+            text=paper_view.render(self.base,document,part)
+            return {'document':document,'part':part,
+                    'parts':paper_view.served(self.base,document),
+                    'lines':self.base.line_count(document),'text':text}
         if name=='search':
             query=args['query']
             if not query or len(query)>200:raise ValueError('Use a short literal query')
-            matches=[text_block(b) for b in self.paper['blocks'] if query.casefold() in b['text'].casefold()][:12]
+            matches,more=paper_view.search(self.base,query)
             result={'matches':matches}
-            if not matches:
-                result['search_guidance']='No exact contiguous phrase matched. This does not establish absence of the concept. Use a shorter phrase or read known block IDs from the section index.'
+            if more:
+                result['search_guidance']=('More lines than this match. The phrase is in the '
+                                           'manuscript; read the paper for the rest.')
+            elif not matches:
+                result['search_guidance']=('No exact contiguous phrase matched. This does not '
+                                           'establish absence of the concept: the reader may have '
+                                           'hyphenated or broken the words differently. Use a '
+                                           'shorter phrase, or read the paper.')
             return result
         if name=='calculate':
             result={'expression':args['expression'],'result':calculate(args['expression']),'limitation':'Arithmetic only. Applicability requires source evidence.'}

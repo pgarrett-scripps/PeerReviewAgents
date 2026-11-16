@@ -53,11 +53,24 @@ def open_run(tmp_path, **kwargs):
     return opened
 
 
+def read_whole_paper(token):
+    """Read every part of the manuscript, as the brief tells every agent to.
+
+    The server refuses a finding from a slot it has not served the whole paper
+    to, and reading spends nothing from the allowance.
+    """
+    run = srv.current()
+    if 'read_paper' in run.agent_for(token).allowed:
+        for part in range(1, srv.paper_view.served(run.base) + 1):
+            assert isinstance(srv.read_paper(token, part=part), str)
+    return token
+
+
 def token_for(slot):
     taken = srv.claim_agent(slot, CODES.get(slot, ''))
     assert 'agent_token' in taken, taken
     CODES.pop(slot, None)
-    return taken['agent_token']
+    return read_whole_paper(taken['agent_token'])
 
 
 def claim_editor():
@@ -65,6 +78,7 @@ def claim_editor():
     taken = srv.claim_agent('editor', CODES.get('editor', ''))
     assert 'agent_token' in taken, taken
     CODES.pop('editor', None)
+    read_whole_paper(taken['agent_token'])
     return taken
 
 
@@ -73,7 +87,10 @@ def reclaim(slot):
     fresh = srv.reissue_claim_code(CODES['recorder_key'], slot)
     assert 'claim_code' in fresh, fresh
     CODES[slot] = fresh['claim_code']
-    return srv.claim_agent(slot, CODES.pop(slot))
+    taken = srv.claim_agent(slot, CODES.pop(slot))
+    if 'agent_token' in taken:
+        read_whole_paper(taken['agent_token'])  # a new holder has read nothing
+    return taken
 
 
 def quote_pool(run, wanted):
@@ -166,6 +183,33 @@ def prior_issue(identifier, rank, name, members=(), status='new'):
 
 
 # -- what the editor may change --------------------------------------------
+
+
+def test_an_editor_that_has_not_read_the_paper_stores_no_issues(tmp_path):
+    """The editor read least of all: fifteen per cent of one manuscript.
+
+    It is the slot that decides which findings become the review, and it was
+    deciding that from the findings' own quotes. The package is refused until
+    the whole manuscript has been served to it, the refusal says how much is
+    unread, and the refusal is in ``editor-log.jsonl`` like every other.
+    """
+    open_run(tmp_path)
+    run = srv.current()
+    uids = file_findings(run, 2)
+    close_the_others(run)
+    taken = srv.claim_agent('editor', CODES.pop('editor', ''))
+    editor = taken['agent_token']
+    refused = srv.submit_issues(editor, [issue('The first reading', 1, [uids[0]])])
+    assert 'you have not been served the whole manuscript' in refused['request_rejected']
+    assert refused['unread_parts'] == [1]
+    assert srv.list_findings(editor)['findings_without_issue'] == 2, 'nothing was stored'
+    rows = [json.loads(line) for line
+            in (run.review / 'editor-log.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert rows[-1]['tool'] == 'submit_issues' and rows[-1]['accepted'] is False
+    assert 'whole manuscript' in rows[-1]['refusal']
+
+    read_whole_paper(editor)
+    assert srv.submit_issues(editor, [issue('The first reading', 1, uids)])['stored'] == 1
 
 
 def test_two_issues_merge_into_one_atomic_call(tmp_path):
@@ -1318,7 +1362,7 @@ def test_not_one_file_in_a_complete_folder_is_written_again(tmp_path):
     spent = run.agent_for(reviewer).calls
 
     answers = {
-        'read_blocks': srv.read_blocks(reviewer, [block['id']]),
+        'read_paper': srv.read_paper(reviewer),
         'search': srv.search(reviewer, block['text'].split('. ')[0]),
         'save_note': srv.save_note(reviewer, 'One more thought about the bench.',
                                    [block['id']]),

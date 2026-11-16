@@ -190,6 +190,19 @@ def open_run(tmp_path, **kwargs):
     return opened
 
 
+def read_whole_paper(token):
+    """Read every part of the manuscript, as the brief tells every agent to.
+
+    The server refuses a finding from a slot it has not served the whole paper
+    to, and reading spends nothing from the allowance.
+    """
+    run = srv.current()
+    if 'read_paper' in run.agent_for(token).allowed:
+        for part in range(1, srv.paper_view.served(run.base) + 1):
+            assert isinstance(srv.read_paper(token, part=part), str)
+    return token
+
+
 def token_for(slot):
     """The token for one slot, claimed once with the code minted for it."""
     if slot in TOKENS:
@@ -197,7 +210,7 @@ def token_for(slot):
     taken = srv.claim_agent(slot, CODES.get(slot, ''))
     assert 'agent_token' in taken, taken
     CODES.pop(slot, None)
-    TOKENS[slot] = taken['agent_token']
+    TOKENS[slot] = read_whole_paper(taken['agent_token'])
     return TOKENS[slot]
 
 
@@ -1529,7 +1542,7 @@ def test_no_registered_tool_writes_in_a_complete_folder(tmp_path):
         'ingest': lambda: srv.ingest(str(FIXTURE), str(run.root)),
         'claim_agent': lambda: srv.claim_agent('core-2', 'whatever-code-it-holds'),
         'reissue_claim_code': lambda: srv.reissue_claim_code(key, 'editor'),
-        'read_blocks': lambda: srv.read_blocks(reviewer, [block['id']]),
+        'read_paper': lambda: srv.read_paper(reviewer),
         'search': lambda: srv.search(reviewer, 'widget'),
         'calculate': lambda: srv.calculate(reviewer, '2 + 2'),
         'save_note': lambda: srv.save_note(reviewer, 'A late thought.', [block['id']]),

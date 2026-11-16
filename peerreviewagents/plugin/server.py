@@ -39,7 +39,7 @@ import anyio.from_thread
 import anyio.to_thread
 
 from .. import issues as issue_model
-from ..engine import citation_ledger
+from ..engine import citation_ledger, paper_base, paper_view
 from ..engine.annotations import normalize_review, quarantine_findings
 from ..engine.domain_registry import context as domain_context
 from ..engine.domain_registry import route as domain_route
@@ -83,7 +83,7 @@ NUMERIC_UNSIGNED = r'(?<![\w.])\d+(?:\.\d+)?(?:[eE][-+]?\d+)?(?![\w.])'
 # receipt, which turns `computed` into a label an agent can arrange.
 MAX_EVIDENCE_BLOCKS = 6
 
-OFFLINE_TOOLS = ('read_blocks', 'search', 'calculate', 'save_note', 'inspect_results',
+OFFLINE_TOOLS = ('read_paper', 'search', 'calculate', 'save_note', 'inspect_results',
                  'record_comparison')
 IMAGE_TOOLS = ('view_page', 'view_supplement')
 NETWORK_TOOLS = ('check_citation', 'search_literature', 'resolve_identifier', 'lookup_source')
@@ -113,7 +113,7 @@ TRACK_TOOLS = {
     # are.
     'numbers': (*OFFLINE_TOOLS, 'view_page'),
     'field': (*OFFLINE_TOOLS, *IMAGE_TOOLS, *NETWORK_TOOLS),
-    'editor': ('read_blocks', 'search', 'calculate', 'inspect_results'),
+    'editor': ('read_paper', 'search', 'calculate', 'inspect_results'),
     'recorder': (),
     # A citation worker reads one sentence and one stored passage and answers
     # one question about them. It gets no paper tools and no lookups of its
@@ -314,6 +314,13 @@ class Agent:
     # nothing observed. It stays the observation: never the plan.
     observed: str = None
     calls: int = 0
+    # Which parts of which document this holder has actually been served, by
+    # document name. A finding is refused until the whole of paper.md is in
+    # here: a reviewer who has read a fifth of the manuscript is not reviewing
+    # it, and the one check the server can make is whether it handed the text
+    # over. It belongs to the holder and not to the slot, so a reissued claim
+    # code starts a reader who has read nothing.
+    served: dict = field(default_factory=dict)
     receipts: dict = field(default_factory=dict)
     report: dict = None
     editor_package: dict = None
@@ -457,7 +464,7 @@ class Run:
     def __init__(self, pdf, root, reviewers, arm, literature_cutoff, plugin_root, title=None,
                  tracks=None, reviewer_models=None, specialist_model=None, editor_model=None,
                  recorder_model=None, citation_workers=None, citation_worker_model=None,
-                 prior_issues=None):
+                 prior_issues=None, supplements=None):
         if arm not in ARMS:
             raise ValueError('Unknown arm: ' + arm + '. Arms: ' + ', '.join(sorted(ARMS)))
         self.arm = arm
@@ -531,7 +538,13 @@ class Run:
         if (self.workspace / 'paper.json').is_file():
             self.paper = read(self.workspace / 'paper.json')
         else:
-            self.paper = import_paper(pdf, self.workspace, title=title)
+            self.paper = import_paper(pdf, self.workspace, title=title,
+                                      supplements=supplements or None)
+        # The manuscript as it is read: paper.md, its supplements, and the map
+        # row behind every line. The run holds one, so the parts a reviewer is
+        # served and the lines a finding cites are measured against the same
+        # text in the same order for every slot.
+        self.base = paper_base.load(self.workspace)
         self.pdf = str(Path(pdf).resolve())
         self.blocks = {b['id']: b for b in self.paper['blocks']}
         self.salt = secrets.token_hex(16)
@@ -1060,9 +1073,38 @@ class Run:
         with Path(path).open('a', encoding='utf-8') as stream:
             stream.write(json.dumps(record, ensure_ascii=False) + '\n')
 
-    def outline(self, limit=400):
-        return [{'id': b['id'], 'kind': b.get('kind'), 'section': b.get('section'),
-                 'characters': len(b.get('text', ''))} for b in self.paper['blocks'][:limit]]
+    def index(self, limit=400):
+        """One row per section of each document, with the lines it covers.
+
+        It is a table of contents and not a reading list: there is no id to
+        fetch here, because the way to read the paper is to read the paper.
+        Consecutive pieces under one heading are one row, so a long section is
+        one line range rather than forty.
+        """
+        found = []
+        for name in self.base.document_names():
+            for piece in self.base.pieces(name):
+                start, end = piece['lines']
+                last = found[-1] if found else None
+                if last and last['document'] == name and last['section'] == piece.get('section'):
+                    last['lines'][1] = int(end)
+                    last['pieces'] += 1
+                    continue
+                found.append({'document': name, 'section': piece.get('section'),
+                              'lines': [int(start), int(end)], 'pieces': 1})
+        return found[:limit]
+
+    def documents(self):
+        """Every document a slot may read, with its length and how it is served."""
+        return [{'document': name, 'lines': self.base.line_count(name),
+                 'parts': paper_view.served(self.base, name)}
+                for name in self.base.document_names()]
+
+    def unread_parts(self, agent, document=paper_base.MAIN_DOCUMENT):
+        """The parts of a document this holder has not been served, in order."""
+        seen = agent.served.get(document) or set()
+        return [part for part in range(1, paper_view.served(self.base, document) + 1)
+                if part not in seen]
 
     def ledger(self):
         reported = {slot: self.agents[slot].report for slot in self.required
@@ -1291,7 +1333,8 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
            reviewer_models: list = None, specialist_model: str = '',
            editor_model: str = '', recorder_model: str = '',
            citation_workers: int = CITATION_WORKERS,
-           citation_worker_model: str = '', prior_issues: str = '') -> dict:
+           citation_worker_model: str = '', prior_issues: str = '',
+           supplements: str = '') -> dict:
     """Open a run: import the manuscript PDF and fix the plan. Safe to call twice.
 
     ``tracks`` narrows the specialist track to the ones named; the default is
@@ -1315,6 +1358,12 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
     citations specialist reads, and a worker that never reports cannot hold the
     run open. The ledger itself is filled here, from the manuscript, with no
     model and no lookup; ``resolve_citations`` does the lookups next.
+
+    ``supplements`` is a folder of supplementary files to import beside the
+    manuscript. A ``.docx`` becomes a document of its own — its own ``.md``, its
+    own lines, read through ``read_paper`` by name and quoted and cited like any
+    other line of the paper. Everything else is copied in as an asset a reviewer
+    can look at with ``view_supplement``.
 
     ``prior_issues`` makes this run a second round: it is the ``issues.json`` of
     an earlier run of the same paper, or that run's folder. The editor is shown
@@ -1374,7 +1423,8 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
                   recorder_model=settled.get('recorder'),
                   citation_workers=citation_workers,
                   citation_worker_model=settled.get('citation_worker'),
-                  prior_issues=prior_issues or None)
+                  prior_issues=prior_issues or None,
+                  supplements=supplements or None)
     except (ValueError, KeyError, TypeError, OSError) as exc:
         return rejection(str(exc))
     STATE['run'] = run
@@ -1416,7 +1466,8 @@ def summary_of(run):
         'models': [{'slot': slot, 'model': model,
                     'spawn': model_plan.spawn_name(model)}
                    for slot, model in run.models.items()],
-        'outline': run.outline(),
+        'sections': run.index(),
+        'documents': run.documents(),
         'literature_cutoff': run.cutoff,
         'finding_schema_version': FINDING_SCHEMA_VERSION,
         'issues_schema_version': issue_model.ISSUES_SCHEMA_VERSION,
@@ -1463,12 +1514,17 @@ def claim_agent(slot: str, claim_code: str = '') -> dict:
         'paper_id': run.paper['id'],
         'title': run.paper.get('title'),
         'statistics': run.paper.get('statistics'),
-        'outline': run.outline(),
+        'sections': run.index(),
+        'documents': run.documents(),
         'domain_guidance': guidance,
         'finding_schema_version': FINDING_SCHEMA_VERSION,
         'severities': list(SEVERITIES),
         'kinds': list(KINDS),
-        'reminder': ('Your track is set by this token. Quote exactly from the block you cite: an '
+        'read_first': ('Call read_paper now and read every line of what it returns, then the '
+                       'other parts and the supplements if there are any. It costs nothing from '
+                       'your allowance. The server refuses a finding from a slot it has not '
+                       'served the whole manuscript to.'),
+        'reminder': ('Your track is set by this token. Quote the manuscript exactly: an '
                      'unanchored quote is quarantined and the finding is lost.'),
     }
     if agent.role != 'editor':
@@ -1545,7 +1601,7 @@ def reissue_claim_code(recorder_key: str, slot: str) -> dict:
             if slot in run.agents else 1}
 
 
-def _call(token, name, args):
+def _call(token, name, args, free=False):
     run = current()
     try:
         agent = run.agent_for(token)
@@ -1566,19 +1622,26 @@ def _call(token, name, args):
                          + ' reads the manuscript into a record that is closed, so nothing was '
                          'read and nothing was written. A later look at this paper is a new run '
                          'with this one as its prior round.', status=run.status)
-    if run.calls >= RUN_CALL_BUDGET:
-        return rejection('This run has used its whole tool allowance. Finish from existing '
-                         'evidence.', budget_exhausted=True)
-    if agent.calls >= agent.call_budget:
-        return rejection('Tool allowance exhausted. Finish from existing evidence.',
-                         budget_exhausted=True)
-    agent.calls += 1
-    run.slot_calls[agent.slot] = agent.calls
-    run.calls += 1
+    # Reading the manuscript is free, so neither budget applies and neither
+    # counter moves. Everything above still does: a token is a token, a track
+    # is a track, and a written review is closed to reading as much as to
+    # writing.
+    if not free:
+        if run.calls >= RUN_CALL_BUDGET:
+            return rejection('This run has used its whole tool allowance. Finish from existing '
+                             'evidence.', budget_exhausted=True)
+        if agent.calls >= agent.call_budget:
+            return rejection('Tool allowance exhausted. Finish from existing evidence.',
+                             budget_exhausted=True)
+        agent.calls += 1
+        run.slot_calls[agent.slot] = agent.calls
+        run.calls += 1
     result = agent.investigation.call(name, args)
     if name == 'calculate' and 'receipt' in result:
         agent.receipts[result['receipt']] = {'expression': result.get('expression'),
                                              'result': result.get('result')}
+    if name == 'read_paper' and 'part' in result:
+        agent.served.setdefault(result['document'], set()).add(int(result['part']))
     result['calls_left'] = agent.call_budget - agent.calls
     if 'image' in result:
         return _image(result, agent, name)
@@ -1598,13 +1661,25 @@ def _image(result, agent, name):
     return [Image(path=str(path)), json.dumps({**result, 'tool': name}, ensure_ascii=False)]
 
 
-def read_blocks(agent_token: str, ids: list) -> dict:
-    """Read source blocks by stable ID. At most twelve in one call."""
-    return _call(agent_token, 'read_blocks', {'ids': list(ids)})
+def read_paper(agent_token: str, document: str = '', part: int = 1):
+    """The manuscript, as numbered lines of text. Read all of it before anything else.
+
+    It costs nothing from your tool allowance, however many parts the paper is
+    served in, and you may call it again whenever you want the text back. The
+    line numbers are what a finding cites. ``document`` is empty for the
+    manuscript itself; a supplement is named, and the last part says which
+    supplements there are.
+    """
+    result = _call(agent_token, 'read_paper', {'document': document, 'part': part}, free=True)
+    if isinstance(result, dict) and 'text' in result:
+        # Text, not JSON: the paper is what was asked for, and a reviewer
+        # reading it should not be reading it through an escaped string.
+        return result['text']
+    return result
 
 
 def search(agent_token: str, query: str) -> dict:
-    """Search one short exact contiguous phrase in the manuscript and supplements."""
+    """Find one short exact phrase in the manuscript and supplements, by line."""
     return _call(agent_token, 'search', {'query': query})
 
 
@@ -1668,6 +1743,28 @@ def validate_synthesis(agent_token: str, draft_json: str) -> dict:
                      'editor checks and returns what to fix.')
 
 
+def _unread_refusal(run, agent, stored):
+    """The refusal for a slot that has not been served the whole manuscript, or ``None``.
+
+    A finding from a slot that has not been handed the paper is a finding about
+    whatever reached it by other means, and an editor's package drawn without
+    reading it cannot tell a finding that matters from one that is merely
+    specific. Reading costs nothing from the allowance, so there is no budget to
+    protect here and no reason to accept less than all of it.
+    """
+    unread = run.unread_parts(agent)
+    if not unread:
+        return None
+    total = paper_view.served(run.base, paper_base.MAIN_DOCUMENT)
+    return rejection(
+        'Nothing was ' + stored + ': you have not been served the whole manuscript. '
+        + paper_base.MAIN_DOCUMENT + ' comes in ' + str(total) + ' part'
+        + ('' if total == 1 else 's') + ' and you have not read part '
+        + ', '.join(str(part) for part in unread)
+        + '. Call read_paper for each — it costs nothing from your tool allowance — read '
+          'every line, and submit again.', unread_parts=unread)
+
+
 def submit_finding(agent_token: str, title: str, block_id: str, quote: str, comment: str,
                    severity: str, kind: str = 'question', replacement: str = '',
                    evidence_blocks: list = None, counterevidence: str = '',
@@ -1686,6 +1783,9 @@ def submit_finding(agent_token: str, title: str, block_id: str, quote: str, comm
         return rejection(str(exc))
     if agent.role not in ('core', 'specialist'):
         return rejection('Only a reviewer or a specialist submits findings.')
+    unread = _unread_refusal(run, agent, 'stored')
+    if unread is not None:
+        return unread
     if severity not in SEVERITIES:
         return rejection('severity is one of ' + ', '.join(SEVERITIES))
     # Nothing arrives after the ledger has moved on. A finding stored after the
@@ -2215,6 +2315,10 @@ def submit_issues(agent_token: str, issues=None, retire=None) -> dict:
         refusal = 'Only the editor groups findings into issues.'
         _record_editor_call(run, agent, 'submit_issues', False, refusal)
         return rejection(refusal)
+    unread = _unread_refusal(run, agent, 'stored')
+    if unread is not None:
+        _record_editor_call(run, agent, 'submit_issues', False, unread['request_rejected'])
+        return unread
     _count_submit_call(run, agent)
     # Reopening is for a retry that is still in the middle of the review. Once
     # the run's files are written, or once the editor has filed its report, the
@@ -3458,7 +3562,7 @@ def _fallback_issue(issue):
     return lines + ([''] if members else [])
 
 
-TOOLS = (ingest, claim_agent, reissue_claim_code, read_blocks, search, calculate, save_note,
+TOOLS = (ingest, claim_agent, reissue_claim_code, read_paper, search, calculate, save_note,
          view_page, view_supplement, check_citation, search_literature, resolve_identifier,
          lookup_source, inspect_results, record_comparison, validate_synthesis, submit_finding,
          submit_report, list_findings, submit_issues, submit_editor, resolve_citations,

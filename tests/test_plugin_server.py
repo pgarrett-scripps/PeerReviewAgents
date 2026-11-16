@@ -19,6 +19,24 @@ from peerreviewagents.plugin import server as srv
 from peerreviewagents.runs import read_run
 
 FIXTURE = Path(__file__).parent / 'fixtures' / 'single-column.pdf'
+
+
+def read_whole_paper(token):
+    """Read every part of the manuscript, as the brief tells every agent to.
+
+    It spends nothing from the allowance, so a test that reads the paper and
+    then counts tool calls counts the same numbers as one that did not.
+    """
+    run = srv.current()
+    if 'read_paper' not in run.agent_for(token).allowed:
+        return token  # the recorder and the citation workers read no manuscript
+    for part in range(1, srv.paper_view.served(run.base) + 1):
+        served = srv.read_paper(token, part=part)
+        assert isinstance(served, str), served
+    return token
+
+
+
 # The claim codes ingest hands back, kept the way the workflow script keeps
 # them: one per slot, each going to that slot's agent and nowhere else.
 CODES = {}
@@ -42,10 +60,17 @@ def open_run(tmp_path, **kwargs):
 
 
 def claim(slot, code=None):
-    """Claim a slot as its own agent does: with the code minted for it at ingest."""
+    """Claim a slot as its own agent does: with the code minted for it at ingest.
+
+    And then read the manuscript, which is the other thing its own agent does
+    first — the server refuses a finding from a slot it has not served the
+    whole of paper.md to. Reading spends nothing, so the allowance tests below
+    still count in single calls.
+    """
     taken = srv.claim_agent(slot, CODES.get(slot, '') if code is None else code)
     if 'agent_token' in taken:
         CODES.pop(slot, None)  # spent, exactly as the server treats it
+        read_whole_paper(taken['agent_token'])
     return taken
 
 
@@ -177,9 +202,9 @@ def test_the_token_carries_the_track_and_the_tool_list(tmp_path):
 def test_a_tool_call_needs_a_live_token(tmp_path):
     open_run(tmp_path)
     first = token_for('core-1')
-    assert 'request_rejected' in srv.read_blocks('not-a-token', ['b1'])
+    assert 'request_rejected' in srv.read_paper('not-a-token')
     reclaim('core-1')  # the recorder retried the stage, dropping the first holder
-    assert 'superseded' in srv.read_blocks(first, ['b1'])['request_rejected']
+    assert 'superseded' in srv.read_paper(first)['request_rejected']
 
 
 def test_a_slot_is_not_claimed_without_the_code_minted_for_it(tmp_path):
@@ -214,18 +239,18 @@ def test_a_fresh_code_for_a_retry_comes_from_the_recorder_alone(tmp_path):
     assert 'request_rejected' in srv.reissue_claim_code(CODES['recorder_key'], 'spec-stats')
     second = reclaim('core-1')
     assert second != first
-    assert 'superseded' in srv.read_blocks(first, ['b1'])['request_rejected']
+    assert 'superseded' in srv.read_paper(first)['request_rejected']
 
 
 def test_a_retry_does_not_buy_the_slot_a_second_tool_allowance(tmp_path, monkeypatch):
     """The allowance is the slot's, not the claim's: a re-claim continued the count."""
     monkeypatch.setitem(srv.CALL_BUDGET, 'core', 2)
     open_run(tmp_path, arm='single')
-    block = srv.current().paper['blocks'][0]['id']
-    assert 'request_rejected' not in srv.read_blocks(token_for('core-1'), [block])
+    phrase = srv.current().base.line_text(1)[:20]
+    assert 'request_rejected' not in srv.search(token_for('core-1'), phrase)
     retried = reclaim('core-1')
-    assert 'request_rejected' not in srv.read_blocks(retried, [block])
-    assert srv.read_blocks(retried, [block]).get('budget_exhausted') is True
+    assert 'request_rejected' not in srv.search(retried, phrase)
+    assert srv.search(retried, phrase).get('budget_exhausted') is True
 
 
 def test_an_agent_cannot_call_a_tool_outside_its_track(tmp_path):
@@ -240,18 +265,71 @@ def test_the_manuscript_only_arm_removes_the_page_and_lookup_tools(tmp_path):
     core = claim('core-1')
     assert 'view_page' not in core['allowed_tools']
     assert 'search_literature' not in core['allowed_tools']
-    assert 'read_blocks' in core['allowed_tools']
+    assert 'read_paper' in core['allowed_tools']
 
 
 def test_the_per_agent_tool_allowance_is_a_hard_stop(tmp_path, monkeypatch):
     monkeypatch.setitem(srv.CALL_BUDGET, 'core', 2)
     open_run(tmp_path, arm='single')
     token = claim('core-1')['agent_token']
-    block = srv.current().paper['blocks'][0]['id']
-    assert 'request_rejected' not in srv.read_blocks(token, [block])
-    assert 'request_rejected' not in srv.read_blocks(token, [block])
-    exhausted = srv.read_blocks(token, [block])
+    phrase = srv.current().base.line_text(1)[:20]
+    assert 'request_rejected' not in srv.search(token, phrase)
+    assert 'request_rejected' not in srv.search(token, phrase)
+    exhausted = srv.search(token, phrase)
     assert exhausted.get('budget_exhausted') is True
+
+
+def test_reading_the_manuscript_does_not_spend_the_allowance(tmp_path, monkeypatch):
+    """The whole paper, twice over, and the allowance is untouched.
+
+    A reviewer that pays per read spends its allowance deciding what to skip.
+    The budget is for investigating what it read.
+    """
+    monkeypatch.setitem(srv.CALL_BUDGET, 'core', 2)
+    open_run(tmp_path, arm='single')
+    run = srv.current()
+    token = claim('core-1')['agent_token']
+    for _ in range(3):
+        served = srv.read_paper(token)
+        assert served.startswith('paper.md - part 1 of 1 - lines 1-')
+    assert run.agent_for(token).calls == 0 and run.calls == 0
+    assert 'request_rejected' not in srv.search(token, 'the')
+    assert run.agent_for(token).calls == 1
+
+
+def test_a_finding_from_a_slot_that_has_not_read_the_paper_stores_nothing(tmp_path):
+    """Reviewers stopped reading and reviewed the part they had seen.
+
+    Nothing refused that before: a reviewer that read a third of the paper
+    could file a finding against it, and the review read as if the whole
+    manuscript had been examined. The slot is served the whole file or it
+    submits nothing, and the refusal says which parts are missing and that
+    reading them is free.
+    """
+    open_run(tmp_path, arm='single')
+    run = srv.current()
+    taken = srv.claim_agent('core-1', CODES['core-1'])
+    token = taken['agent_token']
+    assert 'Call read_paper now' in taken['read_first']
+    block, quote = quote_from(run, 0)
+    refused = srv.submit_finding(token, title='Read nothing, found something', block_id=block,
+                                 quote=quote, comment='Filed before reading.', severity='major')
+    assert 'you have not been served the whole manuscript' in refused['request_rejected']
+    assert 'costs nothing from your tool allowance' in refused['request_rejected']
+    assert refused['unread_parts'] == [1]
+    assert not (run.review / 'findings.jsonl').is_file()
+
+    assert isinstance(srv.read_paper(token), str)
+    stored = srv.submit_finding(token, title='Read it, then found it', block_id=block,
+                                quote=quote, comment='Filed after reading.', severity='major')
+    assert 'request_rejected' not in stored, stored
+
+    # A reissued code is a new holder, and a new holder has read nothing.
+    second = srv.reissue_claim_code(CODES['recorder_key'], 'core-1')
+    retried = srv.claim_agent('core-1', second['claim_code'])['agent_token']
+    again = srv.submit_finding(retried, title='A retry that read nothing', block_id=block,
+                               quote=quote, comment='Filed before reading.', severity='major')
+    assert again['unread_parts'] == [1]
 
 
 # -- the guard --------------------------------------------------------------
