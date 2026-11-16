@@ -181,12 +181,55 @@ def file_digests(folder):
     POSIX keys: the scaffold inventory check builds its names with ``as_posix``,
     so a manifest keyed with the OS separator read as a changed inventory on
     Windows and refused every run over a scaffold manuscript.
-    ``manifest.json`` itself is not in it, because it is what holds the map.
+    The workspace's own ``manifest.json`` is not in it, because it is what
+    holds the map. Only that one: a file called ``manifest.json`` deeper in the
+    tree is a file like any other — a scaffold manuscript carries one of its
+    own — and skipping it by name left it uncovered, so it could be edited
+    under a workspace that still verified.
     """
     folder = Path(folder)
+    own = folder / 'manifest.json'
     return {relative_name(path, folder): digest(path.read_bytes())
             for path in sorted(folder.rglob('*'))
-            if path.is_file() and path.name != 'manifest.json'}
+            if path.is_file() and path != own}
+
+
+def check_pieces(documents):
+    """Refuse a piece this format would write nothing of, by name.
+
+    Two silences are what this is for. A piece that renders to no line — a
+    ``list`` with its items under ``items``, a paragraph with an empty
+    ``text`` — was dropped by :func:`~peerreviewagents.engine.paper_base.compose`
+    and left no row, so an application that composed twelve pieces got a
+    manuscript of eleven and a count that agreed with itself. And a field the
+    renderer does not know was dropped between the caller's dict and the map
+    row, so an app's own ``anchor_id`` was gone with nothing to say so.
+
+    Both are refused here rather than at the row, because the caller still has
+    the piece in hand and the index of the piece is the only name it has.
+    """
+    for name, pieces in documents.items():
+        for index, piece in enumerate(pieces, start=1):
+            if not isinstance(piece, dict):
+                raise ValueError('Piece ' + str(index) + ' of ' + name + ' is a '
+                                 + type(piece).__name__ + ': a piece is a mapping of a kind, '
+                                 'its text, and whatever that kind renders from.')
+            kind = str(piece.get('kind') or 'paragraph')
+            unknown = sorted(str(field) for field in piece if field not in paper_base.PIECE_FIELDS)
+            if unknown:
+                raise ValueError(
+                    'Piece ' + str(index) + ' of ' + name + ' (kind "' + kind + '") carries '
+                    + 'field(s) this format has no column for: ' + ', '.join(unknown)
+                    + '. They would be dropped between here and map.json without a word, so '
+                      'the write is refused instead. The fields a piece may carry are '
+                    + ', '.join(sorted(paper_base.PIECE_FIELDS))
+                    + ', and docs/INTEGRATIONS.md says what each kind renders from.')
+            if not [line for line in paper_base.piece_lines(piece) if line.strip()]:
+                raise ValueError(
+                    'Piece ' + str(index) + ' of ' + name + ' (kind "' + kind + '") renders to '
+                    'no line, so it would be dropped and the manuscript would be short of it '
+                    'with nothing to say so. A piece is its text: give it text, give a table '
+                    'its rows, and leave out what the manuscript does not print.')
 
 
 def write_manuscript(folder, documents, title=None, paper_id=None, source=None, parser=None,
@@ -237,7 +280,15 @@ def write_manuscript(folder, documents, title=None, paper_id=None, source=None, 
                              'and ends in .md: ' + name)
     if (folder / 'map.json').exists():
         raise ValueError('Workspace already contains an immutable manuscript')
+    check_pieces(documents)
     rows = paper_base.write_base(folder, documents)
+    if len(rows) != sum(len(pieces) for pieces in documents.values()):
+        # Unreachable while `check_pieces` holds, and worth saying out loud if
+        # it ever stops holding: the map is the manuscript's index, and an
+        # index missing a piece is wrong in a way nothing downstream can see.
+        raise ValueError('The map holds ' + str(len(rows)) + ' rows for '
+                         + str(sum(len(pieces) for pieces in documents.values()))
+                         + ' pieces: a piece reached the writer and left no row.')
     if not any(row['document'] == paper_base.MAIN_DOCUMENT for row in rows):
         raise ValueError('No piece of ' + paper_base.MAIN_DOCUMENT + ' rendered to a line: a '
                          'manuscript with no text is not one, and a workspace holding an empty '
@@ -330,6 +381,45 @@ def page_text(pdf):
     return extracted.split('\f')
 
 
+#: A page the converter returned nothing from needs this many words in the text
+#: layer before the import calls it a loss. A full-page figure carries a running
+#: head, a page number and a caption the converter does read; a page of prose
+#: carries hundreds. The threshold is what sits between those two.
+LOST_PAGE_WORDS = 25
+
+
+def unconverted_pages(blocks, pages, geometry=()):
+    """Every page the PDF has text on that the converter returned no block from.
+
+    One entry per lost page: its number, how many words the text layer reads
+    off it, and the rotation a viewer applies to it. The pinned converter
+    returns nothing at all for a page whose ``/Rotate`` is not zero — the
+    landscape table page comes back empty while every upright page around it
+    converts — and nothing for some upright full-page tables either, so the
+    rotation is a symptom rather than the rule. The loss is per page either
+    way. Poppler's text layer, which the import already reads for its page
+    anchors, is the second opinion: a page it reads whole sentences off and the
+    converter returned nothing from is a page the conversion lost, and a
+    manuscript written from it would be missing a page with nothing to say so.
+    """
+    seen = {int(block.get('page') or 0) + 1 for block in blocks}
+    turned = {int(page['page']): int(page.get('rotation') or 0) for page in geometry or ()}
+    found = []
+    for number, text in enumerate(pages, start=1):
+        count = len(words(text))
+        if number not in seen and count >= LOST_PAGE_WORDS:
+            found.append({'page': number, 'words': count, 'rotation': turned.get(number, 0)})
+    return found
+
+
+def lost_page_names(lost):
+    """``2 (330 words, rotated 90°)`` for each lost page, for a refusal to name."""
+    return ', '.join(
+        str(page['page']) + ' (' + str(page['words']) + ' words'
+        + (', rotated ' + str(page['rotation']) + '°' if page.get('rotation') else '') + ')'
+        for page in lost)
+
+
 def text_of(element):
     return re.sub(r'\s+', ' ', ''.join(element.itertext())).strip() if element is not None else ''
 
@@ -384,6 +474,18 @@ def convert_paper(pdf, output, xml=None, title=None, source_url='', supplements=
     if raw_pages and not raw_pages[-1].strip():
         raw_pages.pop()
     normalized_pages = [norm(page) for page in raw_pages]
+    geometry = page_geometry(pdf, len(raw_pages))
+    parser = 'rustypaper ' + getattr(rustypaper, '__version__', 'unknown')
+    # With publisher XML the pieces are the publisher's and the PDF is only
+    # consulted for page anchors, so a page the converter dropped costs an
+    # anchor rather than the text. Without it, the converter is the only
+    # reading of the paper there is, and a page it returned nothing from is a
+    # page of the paper that would be absent from the manuscript. It is
+    # recorded here and carried on the draft rather than refused: the Read
+    # stage looks at every page anyway, and putting back what the converter
+    # dropped is the reader's work. :func:`seal_draft` is where it is refused,
+    # and only for a manuscript no reader is going to read.
+    lost = [] if xml else unconverted_pages(doc.get('blocks') or [], raw_pages, geometry)
     pieces, references, assets, warnings = [], [], [], []
     supplement_pieces = collections.OrderedDict()
 
@@ -552,6 +654,15 @@ def convert_paper(pdf, output, xml=None, title=None, source_url='', supplements=
                 image.thumbnail((1800,1800))
                 image.convert('RGB').save(dest.with_suffix('.png'))
             assets.append({'id':path.stem,'label':path.name,'kind':'supplement','path':'supplements/'+path.name,'preview':'supplements/'+path.with_suffix('.png').name if path.suffix.lower() in ('.tif','.tiff') else None,'available':'file','document':name if path.suffix.lower()=='.docx' else None})
+    if not pieces:
+        # Every page empty rather than one of them: a scan with no text layer,
+        # or a PDF whose text neither the converter nor Poppler can reach. The
+        # draft would hold nothing, the reader would have nothing to repair,
+        # and the manuscript would be a file with no lines in it.
+        raise ValueError(
+            'Nothing was converted from this PDF: ' + parser + ' returned no text and the text '
+            'layer has none either, which is what a scan with no text layer reads like. The '
+            'import is refused rather than writing a manuscript with no lines in it.')
     documents = collections.OrderedDict([(paper_base.MAIN_DOCUMENT, pieces)])
     documents.update(supplement_pieces)
     draft = {
@@ -568,7 +679,7 @@ def convert_paper(pdf, output, xml=None, title=None, source_url='', supplements=
                    'pages': len(raw_pages),
                    'xml': 'original/original.xml' if xml else None,
                    'xml_sha256': digest(Path(xml).read_bytes()) if xml else None},
-        'parser': 'rustypaper ' + getattr(rustypaper, '__version__', 'unknown'),
+        'parser': parser,
         'documents': documents,
         'references': references,
         'assets': assets,
@@ -576,8 +687,12 @@ def convert_paper(pdf, output, xml=None, title=None, source_url='', supplements=
         # Every page's size in the points the boxes are written in, so a viewer
         # can scale a box to the image it rendered of that page, and the unit
         # and origin those four numbers are in.
-        'pages': page_geometry(pdf, len(raw_pages)),
+        'pages': geometry,
         'page_count': len(raw_pages),
+        # The pages the converter returned nothing from, each with the words
+        # the text layer reads off it. They are the reader's to put back, and
+        # nothing seals over one that is still empty.
+        'lost_pages': lost,
         'diagnostics': ['converter.json'],
     }
     write(output / DRAFT_FILE, draft)
@@ -604,10 +719,33 @@ def seal_draft(output, draft=None, ai_read=None):
     if draft.get('schema_version') != DRAFT_SCHEMA_VERSION:
         raise ValueError('Not a ' + DRAFT_SCHEMA_VERSION + ' draft: '
                          + str(draft.get('schema_version')))
+    from . import reader as read_stage
     documents = collections.OrderedDict(
         (str(name), list(pieces)) for name, pieces in draft['documents'].items())
     references = list(draft.get('references') or [])
     page_count = int(draft.get('page_count') or 0)
+    parser = draft.get('parser') or 'unknown'
+    lost = read_stage.lost_pages(draft)
+    empty = [page for page in lost if not page['added']]
+    if empty and not (ai_read or {}).get('read'):
+        # No reader is going to put these pages back, and sealing would write a
+        # manuscript the paper's own pages are missing from with nothing
+        # downstream able to tell. With the Read stage on, the same pages are
+        # outstanding items the reader adds the text of off the page image.
+        raise ValueError(
+            parser + ' returned no text from page(s) ' + lost_page_names(empty)
+            + ' of this PDF, which the text layer reads whole sentences from. Sealing as '
+              'converted is refused: the manuscript would be missing those pages and nothing '
+              'downstream could tell. Import with the Read stage on, which hands those pages to '
+              'the reader to transcribe, or report the pages against ' + parser + '.')
+    if empty:
+        # The reader ran and left a page the converter returned nothing from
+        # with nothing on it. `seal_manuscript` refuses this before it gets
+        # here; this is the same refusal at the one place that writes lines.
+        raise ValueError(
+            'Page(s) ' + lost_page_names(empty) + ' are pages ' + parser + ' returned no text '
+            'from, and the read added nothing off them, so the manuscript would be missing them. '
+            'View each page and add what it prints with add_piece before sealing.')
     rows = paper_base.write_base(output, documents)
     stats = statistics_of(output, documents, rows, references, page_count)
     uncaptioned, captioned = missing_figures(documents[paper_base.MAIN_DOCUMENT])
@@ -633,6 +771,21 @@ def seal_draft(output, draft=None, ai_read=None):
             'rewritten from that image and keeps the converter\'s LaTeX in `original`, and one '
             'whose source is "text" was confirmed as the converter had it. The confidence is the '
             'converter\'s and was not updated.')
+    if lost:
+        # A page nothing was converted from is in the manuscript only because a
+        # model transcribed it off the image. A reader of the base is told
+        # which pages those are rather than meeting ordinary-looking lines
+        # whose source happens to be "ai".
+        read_account['lost_pages'] = lost
+        gaps['converter_pages'] = (
+            parser + ' returned no text from page(s) ' + lost_page_names(lost)
+            + ', which the text layer reads whole sentences from. What those pages contribute to '
+              'this manuscript was transcribed from the page image by '
+            + str(read_account.get('reader_model') or 'a model')
+            + ' and its pieces carry source "ai": '
+            + '; '.join('page ' + str(page['page']) + ' → ' + ', '.join(page['added'])
+                        for page in lost)
+            + '. They are not the converter\'s reading of the text layer, because there was none.')
     if uncaptioned:
         gaps['figure_captions'] = (
             'The text points at ' + ', '.join('Figure ' + str(n) for n in uncaptioned)

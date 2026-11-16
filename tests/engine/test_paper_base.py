@@ -53,6 +53,11 @@ def fake_conversion(title='Antenna beamforming', number='1'):
         {'kind': {'type': 'equation'}, 'text': '', 'page': 0,
          'bbox': {'x0': 280.0, 'y0': 553.0, 'x1': 331.0, 'y1': 565.0},
          'math': {'latex': 'T_b^{BF} = \\phi x_b', 'number': number, 'confidence': 0.4}},
+        # The fixture is two pages, so this stands for the second: an import
+        # whose converter returned nothing from a page the PDF has prose on is
+        # refused, and a stub that skipped the page would be refused with it.
+        {'kind': {'type': 'paragraph'}, 'text': 'Each tile was weighed twice on the bench.',
+         'page': 1, 'bbox': None},
         {'kind': {'type': 'reference'}, 'text': 'A Author, A paper, 2020.',
          'page': 0, 'bbox': None, 'reference': {'label': '1', 'year': '2020'}},
     ]}

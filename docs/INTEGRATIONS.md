@@ -125,6 +125,24 @@ the reviewer to open the page, no figure has a description, and
 when a reader fails twice, through the recorder's `seal_as_converted`. One code
 path writes the base either way, so a run never has a half-written manuscript.
 
+**A page the converter returned nothing from is the reader's work.** The
+pinned converter returns no block at all for a page whose `/Rotate` is not
+zero, and none for some upright full-page tables, so a paper can convert to a
+manuscript with a page missing and nothing to say so. The import holds the
+pages it got blocks from against Poppler's text layer and records every page
+that reads 25 words or more and converted to nothing. With the Read stage on
+those pages are outstanding items of their own: `read_draft` names them under
+`unconverted_pages`, the reader views each one and transcribes what it prints
+with `add_piece` — which may add a `paragraph` or a `caption` there, and only
+there — and `seal_manuscript` is refused while one of them still has nothing
+on it. The manifest then names the pages and the pieces added off them, in
+`ai_read['lost_pages']` and in `known_gaps['converter_pages']`, because that
+text is a model's transcription and not the converter's reading of anything.
+With no reader — `--no-ai-read`, or `seal_as_converted` after a reader failed
+— nothing is going to put those pages back, so the seal is **refused**, by
+page, naming the converter to report them against. (`write_manuscript` never
+meets this: its pieces are the app's, and no PDF was converted.)
+
 `write_manuscript` needs no reader and seals at once: an app that parses its
 own Typst or LaTeX source already has the equation, so there is nothing to read
 off a page image. Its manifest records `{"read": false, "reason": …}` too.
@@ -137,7 +155,11 @@ off a page image. Its manifest records `{"read": false, "reason": …}` too.
 "ai_read": {"read": true, "reader_model": "claude-sonnet-5-5",
             "reader_slot": "reader", "attempt": 1,
             "pages_viewed": 12, "pages": 12,
-            "actions": 20, "tool_calls": 47}
+            "actions": {"repaired": 6, "confirmed": 5, "merged": 1,
+                        "described": 9, "added": 4},
+            "tool_calls": 47,
+            "lost_pages": [{"page": 8, "words": 266, "rotation": 0,
+                            "added": ["p0211"]}]}
 ```
 
 `manifest['pieces_per_source']` counts the rows by where their text came from —
@@ -950,7 +972,8 @@ for row in cites["uses"]:
 - `references`, `uses` — the rows, the last one written for each `row_id`,
   ordered by `row_id` so two readings of a folder agree. **The order is
   natural**: a run of digits in the id is compared as the number it is, so
-  `ref:r2` comes before `ref:r10` and `use:b2:2:r1` before `use:b2:10:r1`,
+  `ref:r2` comes before `ref:r10` and `use:paper.md:11:2:r1` before
+  `use:paper.md:11:10:r1`,
   which is the reference order and the sentence order a reader counts in. You
   do not need to re-sort the rows to print them.
 - `counts`, `complete`, `summary`, `problems` — identical to
@@ -1241,7 +1264,7 @@ than a guess.
 | Field | Required | What it is |
 | --- | --- | --- |
 | `kind` | no, defaults to `paragraph` | `title`, `heading`, `paragraph`, `equation`, `figure`, `caption`, `table`, `reference`, `supplement` — or any other word, which renders as a paragraph and is reported under that name in the counts |
-| `text` | for every kind but `table` | the piece as a reader reads it. Newlines are folded to spaces: one piece is one paragraph, and a piece that renders to nothing gets no line and no row |
+| `text` | for every kind but `table` | the piece as a reader reads it. Newlines are folded to spaces: one piece is one paragraph. A piece that would render to nothing is refused by its index and kind rather than dropped |
 | `section` | no | the section the piece sits in, as printed (`'Results'`). It is what a finding reports as its location, so an app that knows its sections should pass them |
 | `page` | no | the printed page, numbered from **1**. Absent for a manuscript that has no pages |
 | `bbox` | no | where the piece is printed on that page, as `{'x0', 'y0', 'x1', 'y1'}` or `[x0, y0, x1, y1]`. See the next section for the unit |
@@ -1252,6 +1275,17 @@ than a guess.
 | `table` | for `table` | the rows as a list of lists of cells, header row first |
 | `confidence` | no | the converter's own confidence in this piece, `0.0`–`1.0`. It travels into the map row, which is what tells a reviewer whether to open the page |
 | `citations` | no | the reference ids this piece cites, for citations that are markup rather than text (a JATS `<xref>`). The citation ledger reads them |
+
+That table is the whole vocabulary — with `original` and `page_mapping`, which
+a repair and a page-numbering app pass through. **A field outside it is
+refused by name**, because the format has no column for it: it would be
+dropped between your dict and `map.json` with nothing to say so, and an app
+that kept its own `anchor_id` on a piece lost it that way. Keep your own ids
+beside the pieces, not on them, and anchor against the line range the map
+gives back. A piece that renders to no line — a list whose text is under an
+`items` key, an empty paragraph — is refused the same way, by its index and
+its kind: the count in the manifest is then over the pieces you passed, not
+over the ones that happened to survive rendering.
 
 A manuscript with no PDF — a Typst source before it is built — carries no
 `page` and no `bbox`:

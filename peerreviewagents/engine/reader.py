@@ -37,6 +37,13 @@ ACCOUNTABLE = ('equation', 'table', 'figure')
 #: What a repair may add that the converter missed.
 ADDABLE = ('equation', 'table', 'figure-description')
 
+#: What may be added on a page the converter returned nothing from, over and
+#: above :data:`ADDABLE`. That page's words are in the draft nowhere at all, so
+#: its prose and its captions have to be addable somewhere; everywhere else the
+#: text is the authors' as the converter read it, and a model writing a
+#: paragraph into it would be writing the paper.
+ADDABLE_ON_LOST_PAGE = ('paragraph', 'caption')
+
 #: How much of a piece the listing shows. An equation, a table or a caption is
 #: shown whole, because that is what gets repaired; prose is context, and a
 #: reader that needs more of it is reading the page image anyway.
@@ -130,14 +137,47 @@ def settle(piece, action, page):
     return piece
 
 
+def pieces_added_on(draft, page):
+    """The ids of the pieces a reader added off one page image."""
+    found = []
+    for pieces in draft.get('documents', {}).values():
+        for piece in pieces:
+            account = piece.get('read') or {}
+            if account.get('action') == 'added' and int(account.get('page') or 0) == int(page):
+                found.append(piece.get('piece_id'))
+    return found
+
+
+def lost_pages(draft):
+    """Each page the converter returned nothing from, with what was put back.
+
+    The import records them — number, the words the text layer reads off the
+    page, the rotation a viewer applies to it — because the converter returns
+    nothing at all for some pages, a turned one and the odd upright full-page
+    table, and the page would otherwise be absent from the manuscript with
+    nothing to say so. A page is accounted for once the reader has added a
+    piece off it: that is the one action that puts text back that the
+    conversion never had.
+    """
+    found = []
+    for entry in draft.get('lost_pages') or []:
+        page = int(entry.get('page') or 0)
+        found.append({'page': page, 'words': int(entry.get('words') or 0),
+                      'rotation': int(entry.get('rotation') or 0),
+                      'added': pieces_added_on(draft, page)})
+    return found
+
+
 def outstanding(draft):
     """What still stands between this draft and the seal.
 
-    Two lists: pieces nobody has repaired or confirmed, and pages nobody has
-    opened. A page is on it because a mangled equation the converter dropped
-    altogether is only visible on the page — a stage that accounted for every
-    piece it was handed and never looked at page nine cannot have found what
-    page nine is missing.
+    Three lists: pieces nobody has repaired or confirmed, pages nobody has
+    opened, and pages the converter returned nothing from that nobody has put
+    anything back on. A page is on the second because a mangled equation the
+    converter dropped altogether is only visible on the page — a stage that
+    accounted for every piece it was handed and never looked at page nine
+    cannot have found what page nine is missing — and on the third because
+    that page's text is not in the draft at all.
     """
     left = []
     for document, pieces in draft.get('documents', {}).items():
@@ -149,7 +189,9 @@ def outstanding(draft):
                              'section': piece.get('section')})
     seen = set(viewed(draft))
     count = int(draft.get('page_count') or 0)
-    return {'pieces': left, 'pages': [page for page in range(1, count + 1) if page not in seen]}
+    return {'pieces': left,
+            'pages': [page for page in range(1, count + 1) if page not in seen],
+            'lost_pages': [page for page in lost_pages(draft) if not page['added']]}
 
 
 def tally(draft):
@@ -297,11 +339,23 @@ class Desk:
             if piece.get('confidence') is not None:
                 row['confidence'] = piece['confidence']
             listed.append(row)
-        return {'document': name, 'documents': documents, 'part': part, 'parts': parts,
-                'pieces': listed, 'outstanding': outstanding(self.draft),
-                'page_count': int(self.draft.get('page_count') or 0),
-                'reading': ('The text here is the converter\'s. Where it disagrees with the page '
-                            'image, the page image is the manuscript.')}
+        left = outstanding(self.draft)
+        answer = {'document': name, 'documents': documents, 'part': part, 'parts': parts,
+                  'pieces': listed, 'outstanding': left,
+                  'page_count': int(self.draft.get('page_count') or 0),
+                  'reading': ('The text here is the converter\'s. Where it disagrees with the '
+                              'page image, the page image is the manuscript.')}
+        if left['lost_pages']:
+            answer['unconverted_pages'] = (
+                'The converter returned nothing at all from page(s) '
+                + ', '.join(str(one['page']) + ' (' + str(one['words']) + ' words'
+                            + (', rotated ' + str(one['rotation']) + '°' if one['rotation']
+                               else '') + ')' for one in left['lost_pages'])
+                + '. None of what those pages print is listed above, because none of it reached '
+                  'this draft. View each one and add what it prints with add_piece — the table, '
+                  'the prose, the caption — after the piece it follows. Nothing else puts those '
+                  'pages into the manuscript, and the draft cannot be sealed while one is empty.')
+        return answer
 
     def view_page(self, page):
         """One page of the original PDF, as the image a repair is read from."""
@@ -374,18 +428,36 @@ class Desk:
                        'document': document, 'describes': piece_id,
                        'original': {}, 'piece_id': self.next_id()}
             pieces.insert(index + 1, written)
+        # Only the figure is settled. The description is this call's own work,
+        # not a piece a reader acted on, and settling it as `added` counted it
+        # among the pieces `add_piece` put back: a manifest reported nine
+        # described and nine added on a run where `add_piece` was never called.
         settle(piece, 'described', page)
-        settle(written, 'added', page)
         self.save()
         return {'piece': piece_id, 'description_piece': written['piece_id'], 'source': 'ai',
                 'text': rendered(written), 'outstanding': outstanding(self.draft)}
 
     def add_piece(self, after, kind, page, text='', latex='', number='', rows=()):
-        """Add a piece the converter never produced, after the one it belongs behind."""
+        """Add a piece the converter never produced, after the one it belongs behind.
+
+        On a page the converter returned nothing from, this is the only way the
+        page reaches the manuscript at all, so a paragraph and a caption may be
+        added there as well as the three kinds addable anywhere. Adding one is
+        also what accounts for that page: the seal is refused while a lost page
+        has nothing on it.
+        """
         page = self.off_page(page)
-        if kind not in ADDABLE:
-            raise ValueError('A reader adds ' + ', '.join(ADDABLE) + '. For anything else the '
-                             'manuscript is the authors\' and stays as converted.')
+        empty = {one['page'] for one in lost_pages(self.draft)}
+        allowed = ADDABLE + ADDABLE_ON_LOST_PAGE if page in empty else ADDABLE
+        if kind not in allowed:
+            raise ValueError(
+                'A reader adds ' + ', '.join(ADDABLE) + '. For anything else the manuscript is '
+                'the authors\' and stays as converted. '
+                + ('Page ' + str(page) + ' is not one of the pages the converter returned nothing '
+                   'from, so its text is already in the draft.'
+                   if kind in ADDABLE_ON_LOST_PAGE
+                   else 'On a page the converter returned nothing from, '
+                        + ' and '.join(ADDABLE_ON_LOST_PAGE) + ' may be added too.'))
         document, index, anchor = locate(self.draft, after)
         piece = {'text': ' '.join(str(text).split()), 'section': anchor.get('section'),
                  'kind': kind, 'page': page, 'bbox': None, 'citations': [], 'table': None,

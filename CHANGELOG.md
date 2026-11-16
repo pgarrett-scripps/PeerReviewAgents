@@ -167,6 +167,40 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`manifest['ai_read']['actions']['added']` counts `add_piece` and nothing
+  else.** `describe_figure` settled the description it wrote as well as the
+  figure it read, so a run that described nine figures and never called
+  `add_piece` reported `described: 9, added: 9`, and a reader of the manifest
+  could not tell how much of the manuscript the stage had put back.
+- **`write_manuscript` refuses a piece it would write nothing of, by name.**
+  A piece that renders to no line — a list whose text sits under an `items`
+  key, a paragraph with an empty `text` — was dropped, so an application that
+  composed twelve pieces got a manuscript of eleven and counts that agreed
+  with themselves because they were taken over the rows. A field the format
+  has no column for was dropped the same way, between the caller's dict and
+  `map.json`, so an app's own `anchor_id` on a piece was gone with nothing to
+  say so. Both are now a `ValueError` naming the document, the index of the
+  piece and its kind, before anything is written, and the writer checks that
+  every piece it was given left a row. `paper_base.PIECE_FIELDS` is the
+  vocabulary, and `docs/INTEGRATIONS.md` documents it as the whole of it.
+- **Only the workspace's own `manifest.json` is outside the digests.** The
+  file list skipped every file called `manifest.json` at any depth, so a
+  source tree that keeps a manifest of its own — a figure inventory, a build
+  record — had that one file uncovered: it could be rewritten under a saved
+  review and the workspace still verified. The skip is now the workspace's own
+  manifest and nothing else.
+- **An import that would lose a page of the paper is refused, by page.** The
+  pinned converter returns no block at all for a page whose `/Rotate` is not
+  zero, so a one-page PDF turned ninety degrees imported to a `paper.md` with
+  nothing in it, and a paper with one landscape table page imported without
+  that page and said nothing about it. The engine cannot repair this — the
+  text never reaches it — so `import_paper` now compares the pages the
+  converter returned blocks from against the pages Poppler's text layer reads
+  prose off, and refuses the import naming the pages and their rotation, with
+  the converter and its version to report it against. A conversion that
+  returned nothing at all is refused in the same way rather than written as a
+  manuscript with no lines in it. A page that carries only a running head or a
+  page number, as a full-page figure does, is not a lost page.
 - **A cancelled `resolve_citations` no longer ends the session.** A client that
   sent `notifications/cancelled` while a lookup was in flight took the whole MCP
   session down when the pass finished: the cancellation completed the request's

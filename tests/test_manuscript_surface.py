@@ -205,6 +205,109 @@ def test_the_source_tree_beside_the_base_is_part_of_the_manuscript(tmp_path):
         peerreviewagents.verify_workspace(folder)
 
 
+def test_a_scaffold_that_holds_its_own_manifest_is_covered_like_any_file(tmp_path):
+    """Only the workspace's own manifest is outside the digests.
+
+    A source tree built by a tool that keeps a ``manifest.json`` of its own —
+    a figure inventory, a build record — had that file skipped by name at
+    every depth, so it was the one file in the manuscript that could be
+    rewritten under a saved review and still verify.
+    """
+    folder = tmp_path / 'manuscript'
+    folder.mkdir(parents=True)
+    (folder / 'scaffold').mkdir()
+    (folder / 'scaffold' / 'main.typ').write_text('= Replay during quiet rest\n',
+                                                  encoding='utf-8')
+    (folder / 'scaffold' / 'manifest.json').write_text('{"figures": ["raster-1.png"]}\n',
+                                                       encoding='utf-8')
+    manifest = workspace(folder, scaffold=False)
+
+    assert 'scaffold/manifest.json' in manifest['files']
+    # The workspace's own manifest is still outside the digests: it is what
+    # holds them.
+    assert 'manifest.json' not in manifest['files']
+    peerreviewagents.verify_workspace(folder)
+
+    (folder / 'scaffold' / 'manifest.json').write_text('{"figures": []}\n', encoding='utf-8')
+    with pytest.raises(ValueError, match='Manuscript source changed: scaffold/manifest.json'):
+        peerreviewagents.verify_workspace(folder)
+
+
+def test_a_piece_that_would_render_nothing_is_refused_by_name(tmp_path):
+    """The silent drop: twelve pieces in, eleven in the manuscript.
+
+    A ``list`` piece that keeps its text under ``items`` renders to nothing,
+    and nothing was written and nothing said — the map simply had one row
+    fewer than the pieces the caller composed, and the counts agreed with
+    themselves because they were taken over the rows.
+    """
+    pieces = [{'kind': 'title', 'text': 'Replay during quiet rest'},
+              {'kind': 'list', 'text': '', 'section': 'Results'}]
+    with pytest.raises(ValueError, match=r'Piece 2 of paper\.md \(kind "list"\) renders to no '
+                                         r'line'):
+        peerreviewagents.write_manuscript(tmp_path / 'listed', pieces, title='Replay')
+    assert not (tmp_path / 'listed' / 'map.json').exists()
+    # The reported shape, a list whose items are under `items`, is refused for
+    # the field before it is refused for the rendering: either way the write
+    # stops at the piece.
+    with pytest.raises(ValueError, match='items'):
+        peerreviewagents.write_manuscript(
+            tmp_path / 'itemised',
+            [pieces[0], {'kind': 'list', 'items': ['A first point.']}], title='Replay')
+
+    # A supplement's pieces are checked the same way, and named by document.
+    with pytest.raises(ValueError, match=r'Piece 1 of supplement-methods\.md'):
+        peerreviewagents.write_manuscript(
+            tmp_path / 'supplemented',
+            {peerreviewagents.MAIN_DOCUMENT: PIECES,
+             'supplement-methods.md': [{'kind': 'paragraph', 'text': '  '}]},
+            title='Replay')
+
+    # The list written as the format holds it — one paragraph per item — is
+    # the manuscript the application meant.
+    written = peerreviewagents.write_manuscript(
+        tmp_path / 'spelled-out',
+        [pieces[0], {'kind': 'paragraph', 'text': 'A first point.'},
+         {'kind': 'paragraph', 'text': 'A second point.'}], title='Replay')
+    assert written['counts']['pieces'] == 3
+
+
+def test_a_field_the_format_has_no_column_for_is_refused_by_name(tmp_path):
+    """An app's own key on a piece was dropped between the call and the map."""
+    pieces = [dict(PIECES[0], anchor_id='t1'), *PIECES[1:]]
+    with pytest.raises(ValueError, match='anchor_id') as refusal:
+        peerreviewagents.write_manuscript(tmp_path / 'anchored', pieces, title='Replay')
+    # It says what a piece may carry, because the answer to this refusal is
+    # always to move the value into a field the format holds — or to drop it.
+    assert 'page_mapping' in str(refusal.value) and 'citations' in str(refusal.value)
+
+    # Every field the renderer and the map row do use is accepted, including
+    # the ones only some kinds render from.
+    manifest = workspace(tmp_path / 'full', [
+        {'kind': 'title', 'text': 'Replay during quiet rest', 'section': 'Title'},
+        {'kind': 'heading', 'text': 'Methods', 'level': 1, 'section': 'Methods'},
+        {'kind': 'equation', 'text': '', 'latex': 'y = ax + b', 'number': '1',
+         'confidence': 0.9, 'section': 'Methods'},
+        {'kind': 'table', 'text': 'Table 1', 'section': 'Results',
+         'table': {'rows': [['Batch', 'Mass'], ['A', '12 g']]}},
+        {'kind': 'figure', 'text': 'Firing rate over time.', 'label': 'Figure 1',
+         'image': 'figures/fig1.png', 'section': 'Results'},
+        {'kind': 'paragraph', 'text': 'Rates rose.', 'section': 'Results',
+         'source': 'ai-reconstructed', 'original': {'text': 'Rates r0se.'},
+         'citations': ['r1'], 'page_mapping': 'typst', 'page': 1,
+         'bbox': [72.0, 100.0, 540.0, 120.0]},
+    ], pages=[{'page': 1, 'width': 612.0, 'height': 792.0}])
+    assert manifest['counts']['pieces'] == 6
+
+
+def test_every_piece_the_caller_gave_has_a_row(tmp_path):
+    """The count the map reports is over the pieces, not over the rows."""
+    folder = tmp_path / 'manuscript'
+    manifest = workspace(folder)
+    rows = peerreviewagents.read_manuscript(folder).rows
+    assert len(rows) == len(PIECES) == manifest['counts']['pieces']
+
+
 def test_what_the_writer_refuses(tmp_path):
     with pytest.raises(ValueError, match='needs a title'):
         peerreviewagents.write_manuscript(tmp_path / 'untitled',
@@ -215,9 +318,11 @@ def test_what_the_writer_refuses(tmp_path):
     with pytest.raises(ValueError, match=peerreviewagents.MAIN_DOCUMENT):
         peerreviewagents.write_manuscript(tmp_path / 'headless',
                                           {'supplement-methods.md': SUPPLEMENT})
-    with pytest.raises(ValueError, match='rendered to a line'):
+    with pytest.raises(ValueError, match='renders to no line'):
         peerreviewagents.write_manuscript(tmp_path / 'empty', [{'kind': 'paragraph', 'text': ''}],
                                           title='Nothing at all')
+    with pytest.raises(ValueError, match='rendered to a line'):
+        peerreviewagents.write_manuscript(tmp_path / 'none', [], title='Nothing at all')
     # A workspace is written once: the second write would renumber every line a
     # saved review cites.
     folder = tmp_path / 'twice'

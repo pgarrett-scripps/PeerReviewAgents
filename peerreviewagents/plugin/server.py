@@ -1838,12 +1838,18 @@ def claim_agent(slot: str, claim_code: str = '') -> dict:
             'and figure on it, either repair the piece from the image or confirm it as printed. '
             'A repair is taken only from a page you have opened in this attempt. When nothing is '
             'outstanding, call seal_manuscript: that writes the manuscript the reviewers read, '
-            'once, and your stage is over.')
+            'once, and your stage is over.'
+            + (' The converter returned no text at all from page(s) '
+               + ', '.join(str(one['page']) for one in left['lost_pages'])
+               + ': nothing on them is in the draft, so view each one and add what it prints with '
+                 'add_piece — the table, the prose, the caption. That page reaches the manuscript '
+                 'only through you.' if left['lost_pages'] else ''))
         answer['reminder'] = (
             'You transcribe and describe. You do not judge the science and you never correct '
             'what the authors printed, not even an obvious typo: reproduce the page. '
-            + str(len(left['pieces'])) + ' piece(s) and '
-            + str(len(left['pages'])) + ' page(s) are waiting for you.')
+            + str(len(left['pieces'])) + ' piece(s), '
+            + str(len(left['pages'])) + ' page(s) and '
+            + str(len(left['lost_pages'])) + ' unconverted page(s) are waiting for you.')
         return answer
     if agent.role != 'editor':
         return answer
@@ -2137,6 +2143,11 @@ def add_piece(agent_token: str, after: str, kind: str, page: int, text: str = ''
     `after` is the piece it belongs behind. Use it for a table the converter
     reduced to its caption, or an equation it dropped — not for anything the
     page does not print.
+
+    On a page the converter returned nothing at all from — `read_draft` names
+    them under `unconverted_pages` — this is the only way the page reaches the
+    manuscript, so `paragraph` and `caption` may be added there as well.
+    Transcribe what the page prints, in the order it prints it.
     """
     return _call(agent_token, 'add_piece',
                  {'after': after, 'kind': kind, 'page': page, 'text': text, 'latex': latex,
@@ -2179,7 +2190,7 @@ def seal_manuscript(agent_token: str) -> dict:
         return rejection('This manuscript is already sealed. Its lines are written and a finding '
                          'may already cite them, so nothing re-seals it.')
     left = engine_reader.outstanding(run.draft)
-    if left['pieces'] or left['pages']:
+    if left['pieces'] or left['pages'] or left['lost_pages']:
         return rejection(
             'The draft is not accounted for yet, so nothing was written. '
             + (str(len(left['pieces'])) + ' piece(s) are neither repaired nor confirmed: '
@@ -2189,6 +2200,14 @@ def seal_manuscript(agent_token: str) -> dict:
             + ('Page(s) ' + ', '.join(str(page) for page in left['pages'])
                + ' have not been viewed; a piece the converter dropped is only visible on its '
                  'page. ' if left['pages'] else '')
+            + ('The converter returned nothing at all from page(s) '
+               + ', '.join(str(one['page']) + ' (' + str(one['words']) + ' words'
+                           + (', rotated ' + str(one['rotation']) + '°'
+                              if one['rotation'] else '') + ')'
+                           for one in left['lost_pages'])
+               + ', and nothing has been added off them: that text is in this manuscript nowhere '
+                 'else. View each one and add what it prints with add_piece. '
+               if left['lost_pages'] else '')
             + 'Finish those and seal again.', outstanding=left)
     tally = engine_reader.tally(run.draft)
     account = {'read': True, 'reader_model': agent.observed or run.models.get('reader'),
