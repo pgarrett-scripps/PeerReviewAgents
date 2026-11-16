@@ -712,7 +712,21 @@ let recorded = await agent(
   + ' counts and the escalated count. If it refuses, report the refusal text verbatim in the'
   + ' refusal field — and where it refuses because the review is already written, report the'
   + ' status and the counts it returns with that refusal, which are the counts of the review'
-  + ' that was written. Do not call write_review twice.',
+  + ' that was written. Do not call write_review twice.'
+  // The one refusal that answers differently if it is asked again. A resolve
+  // pass holds the writing stage for as long as its lookups take and the
+  // refusal says so in as many words, but nothing here read it: the stage took
+  // "a resolve_citations pass is still looking references up" for a run that
+  // would not be written, asked the folder what it held, found no review
+  // because none had been written, and blocked a run whose references were
+  // simply still being fetched. That refusal writes nothing, so the call after
+  // it is the first write, not a second one.
+  + ' One refusal is not final: if it refuses because a resolve_citations pass is still'
+  + ' looking references up, nothing was written and the table is still being filled.'
+  + ' Call resolve_citations with recorder_key="' + recorderKey + '" and limit=0, repeating'
+  + ' while it answers with remaining above 0, and then call write_review once more with'
+  + ' your token. Report what that write answers. A write refused that way is not a write,'
+  + ' so this is not calling write_review twice; any other refusal stands and you report it.',
   options('recorder', {
     label: 'write review', phase: 'Record', agentType: 'pra:recorder', schema: RECORDED,
   }),

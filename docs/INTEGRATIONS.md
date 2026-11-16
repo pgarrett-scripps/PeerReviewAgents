@@ -149,6 +149,7 @@ from peerreviewagents import (
     review, review_main, report_main,      # run a review; the two commands
     read_run, write_reports,               # read and re-render a run folder
     read_citation_ledger,                  # the citation table's own rows
+    validate_prior_issues,                 # check an issues file before publishing it
     locate_run, NotARunFolder,             # resolve a run folder, and the error
     import_paper, verify_workspace, export_draft,
     plugin_directory, claude_code_version,  # check an installation
@@ -403,6 +404,10 @@ a list, and `issue_ids_used` must be present and a list of ids in this engine's
 own form (`i01` upwards). Every `issues.json` this version writes satisfies
 that; a hand-written or edited file that drops `issue_ids_used` is refused
 rather than read with the ids unreserved.
+`peerreviewagents.validate_prior_issues(document)` is that same check, callable
+on its own — see [Checking a file before you publish
+it](#checking-a-file-before-you-publish-it) — so a file can be held against it
+before it is published rather than at the start of the next review.
 
 A run that degrades **after** it opened — a ledger that passed the editor's
 maximum, an editor slot nobody claimed, an editor that never closed — still
@@ -600,6 +605,53 @@ Four rules it enforces so you do not have to:
   directory itself, a usage receipt, a specialist audit, `issues.json`: all the
   same way, with a `ValueError` naming the path. A symlink in `issues.json`'s
   place is some other file's contents presented as this run's result.
+
+### Checking a file before you publish it
+
+A consumer that writes an `issues.json` for a later round to read — a revision
+tool, a round-keeping service, anything that carries a review forward — used to
+have one way to find out whether that round could read it: start the round. The
+rules lived inside the loader behind `--prior-issues`. They are callable now:
+
+```python
+from peerreviewagents import validate_prior_issues
+
+problems = validate_prior_issues(document)   # the parsed JSON, not a path
+if problems:
+    raise SystemExit("\n".join(problems))    # do not publish it
+```
+
+`validate_prior_issues(document, label='issues.json')` returns **every** problem
+that would stop the document being read as a prior round, in words, worst first;
+an empty list means `peerreview review --prior-issues` will load it. `label` is
+the name the problems are written against, so a tool that checks several files
+can say which one each problem is about. An unknown `schema_version` is the only
+problem returned on its own: nothing else in a document this version cannot read
+is worth reporting.
+
+It is the check the loader runs, not a copy of it. The loader refuses with this
+list's first problem, so a file this says nothing about is a file the next round
+loads, and a rule added to the loader shows up here in the same release rather
+than drifting out of step.
+
+`peerreviewagents.issues` holds the readers behind it, for a consumer that has
+to display a document it did not write:
+
+| Name | What it gives you |
+| --- | --- |
+| `rows_of(document)` | the issue rows: the objects in `issues`, in order, with anything else dropped |
+| `objects_in(rows)` | the same filter over a list you already hold |
+| `members_of(issue)` | the member findings of one issue; a member that is not an object is dropped |
+| `quotes_of(issue)` | its `surviving_quotes`, the same way |
+| `block_ids_of(row)` | the block ids a row names, from either spelling |
+| `audits_of(issue)` | the specialist audits named on it |
+| `field_problems(document)` | the malformed fields, in words — the lines `read_run` reports a damaged document through |
+
+A damaged file is reported, never raised: `read_run` puts `field_problems` into
+`problems`, which makes the run not publishable with that reason, and reads
+everything it can. `members` held as a string, a row that is not an object, an
+`audits` that is a string: each is named and skipped, and the issues around it
+still come back.
 
 ### The citation ledger
 

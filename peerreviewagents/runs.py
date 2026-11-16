@@ -912,10 +912,15 @@ def read_run(path):
     # a finding reaches the review through the issue that holds it, and the two
     # readings never disagree about how much was found.
     findings = dedupe(_rows(review / 'findings.jsonl', problems))
-    if document.get('issues') is not None and not isinstance(document.get('issues'), list):
-        problems.append("issues.json's issues is not a list, so the issues in it could not be "
-                        'read')
-    issue_rows = [row for row in document.get('issues') or [] if isinstance(row, dict)]
+    # Every field of the document whose type this version cannot read, named
+    # one by one. A reader that took the shape on trust crashed instead of
+    # reporting it: a `members` held as a string was iterated one character at
+    # a time into `str.get` and raised an AttributeError out of this function,
+    # over a file that was merely malformed. The readers below skip what they
+    # cannot read, these lines say what was skipped, and a run with a damaged
+    # document reads as not publishable with the field named.
+    problems += issue_model.field_problems(document)
+    issue_rows = issue_model.rows_of(document)
     if issue_rows:
         source = 'issues'
     elif document and not document_problems:

@@ -279,7 +279,7 @@ def _issue(issue):
     inline = [('Severity', issue.get('severity') or 'n/a'),
               ('Category', issue.get('category') or 'n/a'),
               ('Raised by', f'{raised} reviewer(s)'),
-              ('Findings', len(issue.get('members') or []))]
+              ('Findings', len(issue_model.members_of(issue)))]
     if issue.get('id'):
         inline.append(('Issue', issue['id']))
     # Only a run given a prior round has a status to report; in a first round
@@ -298,11 +298,11 @@ def _issue(issue):
                                  'the manuscript already carries its own qualification'
                                  + where + ':'),
                    ('quote', issue['rebuttal_quote'])]
-    for member in issue.get('members') or []:
+    for member in issue_model.members_of(issue):
         blocks += _member(member)
-    if issue.get('audits'):
-        blocks.append(('labeled', 'Specialist audit', ', '.join(str(name) for name
-                                                                in issue['audits'])))
+    audits = issue_model.audits_of(issue)
+    if audits:
+        blocks.append(('labeled', 'Specialist audit', ', '.join(audits)))
     return blocks
 
 
@@ -359,8 +359,7 @@ def _closed(issue):
     if issue.get('text_unchanged_reason'):
         blocks.append(('labeled', 'Why it is fixed although the passages it cited still '
                                   'read the same', issue['text_unchanged_reason']))
-    quotes = [str(quote['quote']) for quote in issue.get('surviving_quotes') or []
-              if isinstance(quote, dict) and quote.get('quote')]
+    quotes = [str(quote['quote']) for quote in issue_model.quotes_of(issue) if quote.get('quote')]
     if quotes:
         # Labelled, because an unlabelled blockquote under "Why it is closed"
         # read as part of the ruling — the authors could not tell whether they
@@ -410,7 +409,7 @@ def _escalation_blocks(document, rows):
         return []
     held = {}
     for issue in rows:
-        for member in issue.get('members') or []:
+        for member in issue_model.members_of(issue):
             if member.get('finding_uid'):
                 held[str(member['finding_uid'])] = (issue, member)
     blocks = [('heading2', 'Escalations ruled on')]

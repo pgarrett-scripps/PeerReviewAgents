@@ -9,6 +9,53 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`validate_prior_issues(document)` on the public surface.** Every problem
+  that would stop an issues document being read as the prior round of a later
+  review, in words, worst first; an empty list means `peerreview review
+  --prior-issues` will load it. A consumer that writes an `issues.json` for a
+  later round to read had one way to find out whether that round could read it —
+  start the round — because the rules lived inside the loader. This is that
+  loader's own check rather than a copy of it: the loader refuses with this
+  list's first problem, so a rule added to one is in both. `label=` names the
+  file the problems are written against, for a tool that checks several.
+  Documented in `docs/INTEGRATIONS.md`, with the tolerant readers behind it —
+  `rows_of`, `objects_in`, `members_of`, `quotes_of`, `block_ids_of`,
+  `audits_of` — and `field_problems`, the malformed fields `read_run` reports a
+  damaged document through.
+
+### Fixed
+
+- **A cancelled `resolve_citations` no longer ends the session.** A client that
+  sent `notifications/cancelled` while a lookup was in flight took the whole MCP
+  session down when the pass finished: the cancellation completed the request's
+  responder, the pass ran on in a worker thread that `anyio.to_thread.run_sync`
+  does not abandon, and the lowlevel server then answered a request the
+  cancellation had already answered — "Request already responded to", out of the
+  task group that serves every agent in the run, with the folder left at
+  `running`. The pass now reaches a cancellation checkpoint after it has written
+  its work, so a cancelled call keeps its ledger rows, receipts and
+  `progress.json`, releases the stage, and the next `resolve_citations` or
+  `write_review` is served by the same session. `resolve_citations` is the only
+  tool that awaits; a synchronous tool answers inside one loop step, so none of
+  the others could reach this.
+- **A malformed `issues.json` is reported, never raised.** `members` held as a
+  string was iterated one character at a time into `str.get` and raised an
+  `AttributeError` out of `read_run`, so a damaged file took the reader down
+  instead of being reported by it; a row that was not an object did the same out
+  of the renderer. Every row and every list field is read through one tolerant
+  reader now: what cannot be read is skipped, named in `problems` — which makes
+  the run not publishable with that reason — and everything around it still
+  comes back. `read_run` and `write_reports` both read such a folder, and the
+  neighbouring fields are covered with `members`: block ids, `audits`,
+  `surviving_quotes`, and the issue rows themselves.
+- **The Record stage retries the one refusal that is not final.** A
+  `write_review` refused because a `resolve_citations` pass was still looking
+  references up writes nothing and says so, but the workflow read it as a run
+  that would not be written and blocked a run whose references were simply
+  still being fetched. The stage now waits for that pass and writes after it.
+
 ## [0.10.0] — 2026-11-15
 
 The report is issues now, not a body and an appendix, and an editor that cannot

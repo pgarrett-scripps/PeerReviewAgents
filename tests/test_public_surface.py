@@ -753,6 +753,61 @@ def test_a_damaged_issues_document_on_a_complete_run_is_not_a_whole_review(tmp_p
     assert any("issues is not a list" in problem for problem in shaped['problems'])
 
 
+def test_a_malformed_field_of_an_issues_document_is_reported_not_raised(tmp_path):
+    """``members`` held as a string crashed the reader it was handed to.
+
+    ``member_uids`` called ``member.get`` on whatever the list held, so an
+    ``issues.json`` whose ``members`` was a string was iterated one character at
+    a time into ``str.get`` and raised an ``AttributeError`` out of
+    :func:`read_run` — a malformed file took the reader down instead of being
+    reported by it, and an app that lists run folders could not read past it.
+    Every field is read through one tolerant reader now: what cannot be read is
+    skipped, named in ``problems``, and the run is not publishable with that
+    reason.
+    """
+    cases = {
+        'members-string': ('see the findings', 'whose members is a str'),
+        'members-holding-a-string': (['aaa1'], '1 members entry(s) that are not objects (str)'),
+        'members-number': (7, 'whose members is a int'),
+    }
+    for name, (held, said) in cases.items():
+        review = complete_run(tmp_path / name)
+        document = json.loads((review / 'issues.json').read_text(encoding='utf-8'))
+        document['issues'] = [{**document['issues'][0], 'members': held}]
+        _write(review / 'issues.json', document)
+
+        run = read_run(review)
+
+        assert run['status'] == 'complete', name
+        assert run['publishable'] is False, name
+        problem, = [line for line in run['problems'] if 'members' in line]
+        assert said in problem and 'issues.json' in problem, (name, problem)
+        assert any('named in `problems`' in reason
+                   for reason in run['not_publishable_reasons']), run['not_publishable_reasons']
+        # The issue itself is still reported: it is the evidence under it that
+        # could not be read, and the counts say so rather than guessing.
+        assert [issue['id'] for issue in run['issues']] == ['i01'], name
+        assert run['counts']['issue_members'] == 0, name
+        # And the review re-renders from that folder instead of raising.
+        assert set(peerreviewagents.write_reports(review)) == {'markdown', 'text'}
+
+    # The neighbouring fields of a row, and a row that is not an object at all.
+    other = complete_run(tmp_path / 'neighbours')
+    document = json.loads((other / 'issues.json').read_text(encoding='utf-8'))
+    document['issues'] = [{**document['issues'][0], 'audits': 'stats',
+                           'surviving_quotes': {'quote': 'the passage'}},
+                          'i02']
+    _write(other / 'issues.json', document)
+
+    run = read_run(other)
+
+    assert run['publishable'] is False
+    assert [issue['id'] for issue in run['issues']] == ['i01']
+    for said in ('audits', 'surviving_quotes', 'not objects'):
+        assert any(said in line for line in run['problems']), (said, run['problems'])
+    assert set(peerreviewagents.write_reports(other)) == {'markdown', 'text'}
+
+
 def test_an_issues_document_stamped_with_an_unknown_version_is_refused_by_name(tmp_path):
     """A stamp is only worth writing if a reader checks it."""
     review = complete_run(tmp_path)

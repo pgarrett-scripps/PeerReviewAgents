@@ -212,9 +212,22 @@ def _rank(issue):
     return rank if isinstance(rank, int) else 10 ** 6
 
 
+def objects_in(issues) -> list:
+    """The issue rows of a list that may hold anything, in order.
+
+    The orderers below are handed ``document['issues']`` by every renderer, and
+    a row that is not an object reached ``is_closed`` and raised an
+    ``AttributeError`` from inside the renderer. A row this version cannot read
+    is dropped here, which is the same answer :func:`rows_of` gives a reader
+    that starts from the document, and :func:`field_problems` is where it is
+    named.
+    """
+    return [issue for issue in issues or [] if isinstance(issue, dict)]
+
+
 def live(issues) -> list:
     """Every issue this round raised: the closed-out prior ones are not findings."""
-    return [issue for issue in issues or [] if not is_closed(issue)]
+    return [issue for issue in objects_in(issues) if not is_closed(issue)]
 
 
 def required_issues(issues) -> list:
@@ -229,12 +242,12 @@ def suggestion_issues(issues) -> list:
 
 def resolved_issues(issues) -> list:
     """The prior-round issues the editor ruled fixed, in prior rank order."""
-    return sorted((i for i in issues or [] if is_resolved(i)), key=_rank)
+    return sorted((i for i in objects_in(issues) if is_resolved(i)), key=_rank)
 
 
 def unverified_issues(issues) -> list:
     """The prior issues nobody raised again and nobody ruled fixed."""
-    return sorted((i for i in issues or [] if is_unverified(i)), key=_rank)
+    return sorted((i for i in objects_in(issues) if is_unverified(i)), key=_rank)
 
 
 def closed_issues(issues) -> list:
@@ -251,7 +264,7 @@ def carried_forward(issues) -> list:
     issues. Everything else is still open, ``unverified`` included — that status
     exists precisely because it is not a fix.
     """
-    return [issue for issue in issues or [] if not is_resolved(issue)]
+    return [issue for issue in objects_in(issues) if not is_resolved(issue)]
 
 
 def by_category(issues) -> list:
@@ -262,7 +275,7 @@ def by_category(issues) -> list:
     report shows what the file holds.
     """
     grouped: dict = {}
-    for issue in issues or []:
+    for issue in objects_in(issues):
         grouped.setdefault(str(issue.get('category') or 'uncategorised'), []).append(issue)
     known = [(name, sorted(grouped.pop(name), key=_rank))
              for name in ISSUE_CATEGORIES if name in grouped]
@@ -270,16 +283,199 @@ def by_category(issues) -> list:
     return known + rest
 
 
+def rows_of(document) -> list:
+    """The issue rows of an issues document: the objects in ``issues``, in order.
+
+    One tolerant reader for every caller that iterates a document it did not
+    write. Anything that is not a list of objects reads as no rows, and
+    :func:`field_problems` is where a reader says so.
+    """
+    rows = (document or {}).get('issues') if isinstance(document, dict) else None
+    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+
+def members_of(issue) -> list:
+    """The member findings of one issue: the objects in ``members``, in order.
+
+    Every ``issues.json`` this engine writes holds ``members`` as a list of
+    objects, and the readers used to take that on trust. A file that held it as
+    a string was iterated one character at a time into ``str.get`` and raised an
+    ``AttributeError`` out of :func:`peerreviewagents.read_run`, so a damaged
+    file crashed the reader instead of being reported by it. A member that is
+    not an object is evidence this version cannot read: it is skipped here and
+    named by :func:`field_problems`.
+    """
+    members = (issue or {}).get('members') if isinstance(issue, dict) else None
+    return [member for member in members
+            if isinstance(member, dict)] if isinstance(members, list) else []
+
+
+def quotes_of(issue) -> list:
+    """The surviving quotes of one closed issue: the objects, in order.
+
+    The same rule as :func:`members_of`. A closed row carries no members, so
+    these are the only evidence it has, and a reader of a file it did not write
+    cannot assume their shape either.
+    """
+    quotes = (issue or {}).get('surviving_quotes') if isinstance(issue, dict) else None
+    return [quote for quote in quotes if isinstance(quote, dict)] if isinstance(quotes,
+                                                                               list) else []
+
+
+def block_ids_of(row) -> list:
+    """Every manuscript block a finding or member points at: anchor, then evidence.
+
+    ``evidence_blocks`` is a list of block ids in everything this engine writes.
+    A reader that spread it into a list crashed on a number and silently took a
+    string apart one character at a time, so the ids come through here instead:
+    text, in order, with the empty ones dropped.
+    """
+    row = row if isinstance(row, dict) else {}
+    evidence = row.get('evidence_blocks')
+    evidence = evidence if isinstance(evidence, (list, tuple)) else []
+    return [str(block) for block in [row.get('block_id'), *evidence] if block]
+
+
+def audits_of(issue) -> list:
+    """The specialist audits named on one issue, as text, in order."""
+    audits = (issue or {}).get('audits') if isinstance(issue, dict) else None
+    audits = audits if isinstance(audits, (list, tuple)) else []
+    return [str(name) for name in audits if name]
+
+
+#: The issue fields every ``issues.json`` holds as a list, with the member
+#: reader each one belongs to. A field of any other type is malformed, not
+#: empty, and :func:`field_problems` reports it under this name.
+_LIST_FIELDS = ('members', 'surviving_quotes', 'audits')
+
+
+def field_problems(document, label='issues.json') -> list:
+    """Every field of an issues document whose type this version cannot read.
+
+    Shape only: the stamp is :func:`schema_problem` and what a *prior* round
+    additionally requires is :func:`validate_prior_issues`. The readers skip
+    what they cannot read — :func:`rows_of`, :func:`members_of`,
+    :func:`quotes_of` — and this is how a reader says so, which is what keeps a
+    malformed file a run that is not publishable with the field named instead of
+    a crash in the reader or a review rendered from half a document.
+
+    Each problem is one sentence, naming *label* and the field.
+    """
+    if not isinstance(document, dict):
+        return [f'{label} holds a {type(document).__name__} where the issues document belongs']
+    rows = document.get('issues')
+    if rows is None:
+        return []
+    if not isinstance(rows, list):
+        return [f"{label}'s issues is not a list but a {type(rows).__name__}, so no issue in "
+                'it could be read']
+    problems = []
+    strange = sorted({type(row).__name__ for row in rows if not isinstance(row, dict)})
+    if strange:
+        count = sum(1 for row in rows if not isinstance(row, dict))
+        problems.append(f'{label} holds {count} issue row(s) that are not objects '
+                        f"({', '.join(strange)}), and they were not read")
+    for position, row in enumerate(rows, 1):
+        if not isinstance(row, dict):
+            continue
+        identity = (f'issue {row["id"]}' if isinstance(row.get('id'), str) and row['id']
+                    else f'the issue in row {position}')
+        for field in _LIST_FIELDS:
+            value = row.get(field)
+            if value is None or isinstance(value, list):
+                continue
+            problems.append(f'{label} holds {identity} whose {field} is a '
+                            f'{type(value).__name__} where a list belongs, so its '
+                            f'{field} were not read')
+        for field, entries in (('members', row.get('members')),
+                               ('surviving_quotes', row.get('surviving_quotes'))):
+            if not isinstance(entries, list):
+                continue
+            odd = sorted({type(entry).__name__ for entry in entries
+                          if not isinstance(entry, dict)})
+            if odd:
+                count = sum(1 for entry in entries if not isinstance(entry, dict))
+                problems.append(f'{label} holds {identity} with {count} {field} entry(s) that '
+                                f"are not objects ({', '.join(odd)}), and they were not read")
+    return problems
+
+
+def validate_prior_issues(document, label='issues.json') -> list:
+    """Every problem that stops *document* being read as a prior round, in words.
+
+    An empty list means a next round can read this file: ``--prior-issues``
+    loads it, matches its ids against the issues the new round raises, and rules
+    on each one. This is the check that loader runs, not a copy of it, so a
+    consumer about to publish an issues document can hold it against the code
+    that will read it next round rather than against the documentation of that
+    code.
+
+    What it asks, in order: the ``schema_version`` is one this release reads;
+    every field is the type a reader expects (:func:`field_problems`); every
+    row carries an ``id`` that is non-empty text, because the id is the only
+    thing a later round matches on; no id appears twice; ``issue_ids_used`` is
+    a list of ids in this engine's own form, so the next round mints past the
+    ones already spent; and something is left after the resolved rows are
+    dropped (:func:`carried_forward`) — a file of nothing but fixes is a round
+    that closed, and there is nothing in it for a later round to match.
+
+    *label* is how the file is named in each problem. The loader passes the
+    path it read.
+    """
+    stamp = schema_problem(document, label=label)
+    if stamp:
+        return [stamp]
+    problems = field_problems(document, label=label)
+    rows = document.get('issues')
+    if not isinstance(rows, list):
+        return problems
+    seen: dict = {}
+    for position, row in enumerate(rows, 1):
+        if not isinstance(row, dict):
+            continue
+        identity = row.get('id')
+        if not isinstance(identity, str) or not identity.strip():
+            problems.append(f'{label} holds an issue in row {position} whose id is '
+                            + ('absent' if identity is None
+                               else f'a {type(identity).__name__}')
+                            + ', and an id is what a later round matches on')
+            continue
+        seen[identity] = seen.get(identity, 0) + 1
+    for identity, times in seen.items():
+        if times > 1:
+            problems.append(f'{label} holds the id {identity!r} more than once ({times} rows), '
+                            'so a ruling on it could not say which row it ruled on')
+    spent = document.get('issue_ids_used')
+    if not isinstance(spent, list):
+        problems.append(f'{label} holds '
+                        + ('no issue_ids_used list' if spent is None
+                           else f'an issue_ids_used that is a {type(spent).__name__}')
+                        + ', and that list — every id the round and its own prior rounds spent — '
+                          'is what a later round mints above, so without it a resolved issue\'s '
+                          'id would be handed to a different problem')
+    else:
+        odd = sorted({str(value) for value in spent if not is_issue_id(value)})
+        if odd:
+            problems.append(f"{label} holds {len(odd)} entr(ies) in issue_ids_used that are not "
+                            f"issue ids of this engine ({', '.join(odd[:5])}); an id is text of "
+                            'the form i01 upwards, and a round cannot mint above a list it '
+                            'cannot read')
+    if not problems and not carried_forward(rows_of(document)):
+        problems.append(f'{label} holds no open issue a later round could match: it holds no '
+                        'issues at all, or every row in it is resolved — and a resolved issue is '
+                        'reported by the round that resolved it and then dropped')
+    return problems
+
+
 def raised_by(issue) -> int:
     """How many reviewer slots raised this issue, counted from its members."""
-    return len({str(member.get('slot')) for member in (issue or {}).get('members') or []
-                if member.get('slot')})
+    return len({str(member.get('slot')) for member in members_of(issue) if member.get('slot')})
 
 
 def member_uids(issues) -> list:
     """Every ``finding_uid`` the issues hold as evidence, in order, with repeats."""
-    return [str(member.get('finding_uid')) for issue in issues or []
-            for member in issue.get('members') or [] if member.get('finding_uid')]
+    return [str(member.get('finding_uid')) for issue in objects_in(issues)
+            for member in members_of(issue) if member.get('finding_uid')]
 
 
 def counts(issues) -> dict:
@@ -291,7 +487,7 @@ def counts(issues) -> dict:
     for issue in rows:
         name = str(issue.get('category') or 'uncategorised')
         categories[name] = categories.get(name, 0) + 1
-    statuses = {name: sum(1 for i in issues or [] if i.get('status') == name)
+    statuses = {name: sum(1 for i in objects_in(issues) if i.get('status') == name)
                 for name in ISSUE_STATUSES}
     return {
         'issues': len(rows),
@@ -437,7 +633,7 @@ def synthesize(findings, reason=None, prior=(), spent=(), surviving=None) -> lis
 
 def prior_tally(issues) -> dict:
     """How this round stands against the prior one, by status."""
-    return {name: sum(1 for issue in issues or [] if issue.get('status') == name)
+    return {name: sum(1 for issue in objects_in(issues) if issue.get('status') == name)
             for name in ISSUE_STATUSES}
 
 
@@ -445,7 +641,10 @@ __all__ = ['ISSUES_SCHEMA_VERSION', 'KNOWN_ISSUES_SCHEMAS', 'ISSUE_SEVERITIES',
            'REQUIRED_SEVERITIES', 'SUGGESTION_SEVERITIES', 'ISSUE_CATEGORIES', 'ISSUE_STATUSES',
            'MATCHED_STATUSES', 'PRIOR_RULING_STATUSES', 'CLOSED_STATUSES', 'MAX_ISSUE_BATCH',
            'MAX_ISSUE_BATCHES', 'TRACK_CATEGORY', 'MEMBER_FIELDS', 'ISSUE_FIELDS', 'issue_id',
-           'issue_batch_limit', 'schema_problem', 'is_required', 'is_resolved', 'is_unverified',
-           'is_closed', 'live', 'required_issues', 'suggestion_issues', 'resolved_issues',
-           'unverified_issues', 'closed_issues', 'carried_forward', 'by_category', 'raised_by',
-           'member_uids', 'counts', 'member_of', 'category_for', 'synthesize', 'prior_tally']
+           'issue_batch_limit', 'schema_problem', 'field_problems', 'validate_prior_issues',
+           'rows_of', 'objects_in', 'members_of', 'quotes_of', 'block_ids_of', 'audits_of',
+           'is_required',
+           'is_resolved', 'is_unverified', 'is_closed', 'live', 'required_issues',
+           'suggestion_issues', 'resolved_issues', 'unverified_issues', 'closed_issues',
+           'carried_forward', 'by_category', 'raised_by', 'member_uids', 'counts', 'member_of',
+           'category_for', 'synthesize', 'prior_tally']

@@ -21,13 +21,17 @@ import io
 import json
 import re
 import shutil
+import threading
 import time
 import urllib.error
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import anyio
+import mcp.types as mcp_types
 import pytest
+from mcp.shared.exceptions import McpError
+from mcp.shared.memory import create_connected_server_and_client_session
 
 from peerreviewagents import names
 from peerreviewagents.cli.main import report_main
@@ -702,6 +706,96 @@ def test_two_resolve_calls_at_once_do_not_both_fetch_the_same_rows(tmp_path, mon
     monkeypatch.setattr(cl, 'resolve', broken)
     assert 'could not be resolved' in resolving(CODES['recorder_key'], limit=0)['request_rejected']
     assert run.resolving is False
+
+
+def test_a_cancelled_resolve_call_does_not_take_the_session_down(tmp_path):
+    """A client that cancels a pass mid-lookup used to end the whole session.
+
+    ``notifications/cancelled`` completes the request's responder and cancels
+    its scope, but the pass is in a worker thread that
+    ``anyio.to_thread.run_sync`` does not abandon, so the cancellation was held
+    until the pass ended and then had nowhere to land: the handler returned
+    normally, the lowlevel server answered a request the cancellation had
+    already answered, and the assertion behind ``RequestResponder.respond``
+    ("Request already responded to") came out of the task group that runs the
+    session. One cancelled lookup therefore ended the session for every agent
+    in the run and left the folder at ``running``.
+
+    Driven through a real in-memory MCP session, because the fault was in what
+    the server does with the handler's return value rather than in the tool.
+    The pass keeps what it wrote, the stage is released, and the next call is
+    served.
+    """
+    open_run(tmp_path)
+    run = srv.current()
+    index = Index()
+    looking_up, release = threading.Event(), threading.Event()
+
+    def gated(request, timeout=None):
+        """The index, with the first lookup held open in the worker thread."""
+        if not looking_up.is_set():
+            looking_up.set()
+            assert release.wait(30), 'the test never released the lookup'
+        return index(request, timeout=timeout)
+
+    srv.STATE['opener'] = gated
+    seen = {}
+
+    async def the_recorder_resolves(session):
+        try:
+            seen['first'] = await session.call_tool(
+                'resolve_citations', {'recorder_key': CODES['recorder_key'], 'limit': 0})
+        except McpError as exc:
+            # What a cancelled request answers: `responder.cancel()` sends the
+            # error itself, before the handler has anything to say.
+            seen['first'] = exc
+
+    async def drive():
+        async with create_connected_server_and_client_session(srv.create_server()) as session:
+            async with anyio.create_task_group() as group:
+                group.start_soon(the_recorder_resolves, session)
+                with anyio.fail_after(30):
+                    while not looking_up.is_set():
+                        await anyio.sleep(0.005)
+                    # The id the client gave the call that is in flight: the
+                    # only request it has open, and the one the notification
+                    # has to name.
+                    await session.send_notification(mcp_types.ClientNotification(
+                        mcp_types.CancelledNotification(
+                            method='notifications/cancelled',
+                            params=mcp_types.CancelledNotificationParams(
+                                requestId=session._request_id - 1))))
+                    while 'first' not in seen:
+                        await anyio.sleep(0.005)
+                    # And now the pass runs to its end underneath the request
+                    # that is already answered, which is the whole fault.
+                    release.set()
+                    while run.resolving:
+                        await anyio.sleep(0.005)
+                    # The session is still there to serve the call after it.
+                    seen['second'] = await session.call_tool(
+                        'resolve_citations',
+                        {'recorder_key': CODES['recorder_key'], 'limit': 0})
+
+    anyio.run(drive)
+
+    assert isinstance(seen['first'], McpError), seen['first']
+    assert 'cancelled' in str(seen['first']).lower()
+    # The stage is open again and the run was never left mid-pass.
+    assert run.resolving is False
+    assert run.status == 'running'
+    # The pass kept its work: the lookups it made are recorded, and so is the
+    # progress written after it.
+    assert run.citation_lookups().count() > 0
+    standing = json.loads((run.review / 'progress.json').read_text(encoding='utf-8'))
+    assert standing['status'] == 'running'
+    # And the next call is served by the same session and finishes the table.
+    answer = seen['second']
+    assert answer.isError is False, answer
+    progress = (answer.structuredContent if answer.structuredContent is not None
+                else json.loads(answer.content[0].text))
+    assert progress['remaining'] == 0
+    assert progress['counts']['resolved'] == 3
 
 
 def test_one_call_waits_only_so_long_and_tells_the_recorder_to_call_again(tmp_path, monkeypatch):
