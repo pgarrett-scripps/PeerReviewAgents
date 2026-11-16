@@ -24,7 +24,7 @@ from __future__ import annotations
 import re
 
 #: The schema every ``issues.json`` is stamped with, in its ``schema_version``.
-ISSUES_SCHEMA_VERSION = 'review-issues-v2'
+ISSUES_SCHEMA_VERSION = 'review-issues-v3'
 
 #: Every schema this version can read. A stamp is only worth writing if someone
 #: checks it: :func:`schema_problem` is that check, and the reader, the prior-round
@@ -32,7 +32,10 @@ ISSUES_SCHEMA_VERSION = 'review-issues-v2'
 #: ``v2`` is where evidence became lines in the manuscript instead of block ids,
 #: and a ``v1`` file is refused rather than read as though its ids meant
 #: something here: nothing in this release can turn one into the other.
-KNOWN_ISSUES_SCHEMAS = ('review-issues-v2',)
+#: ``v3`` added the offsets of the quote within its line to every member, which
+#: is additive: a ``v2`` file is read as it stands, with those fields missing
+#: rather than wrong, which is why a prior round's file still loads.
+KNOWN_ISSUES_SCHEMAS = ('review-issues-v2', 'review-issues-v3')
 
 #: An issue's severity. The same three words a finding carries, because an
 #: issue's severity is the editor's judgement of the same scale.
@@ -122,9 +125,26 @@ TRACK_CATEGORY = {
 #: later round reads it to recognise the same passage after the converter has
 #: broken the lines somewhere else, which is the one thing line numbers cannot
 #: survive.
+#:
+#: ``start``, ``end`` and ``anchor_text`` are where the quote sits *inside* that
+#: line, and they are on the member for the same reason the line is: an app that
+#: has ``issues.json`` knew which line to open and then had to search the line
+#: for the words again to underline them — the same search the engine already
+#: did, done a second time by code that cannot refuse. The rule they keep is the
+#: one every citation in a run keeps::
+#:
+#:     anchor_text == base.line_text(line, document)[start:end]
+#:
+#: for the quote inside one line, and for a quote that crosses a line break
+#: ``start`` is where it begins in ``line`` and ``end`` where it ends in
+#: ``end_line``. :func:`peerreviewagents.cited_text` is that read, both cases.
+#: ``anchor_text`` is the manuscript's own characters, so it is what a viewer
+#: highlights; ``quote`` is what the reviewer typed, and may differ in a dash,
+#: a quotation mark or a letter's case. All three are ``null`` on a member the
+#: guard could not place, which is a finding with words and no position.
 MEMBER_FIELDS = ('finding_uid', 'slot', 'track', 'severity', 'kind', 'basis', 'escalate',
-                 'title', 'document', 'line', 'end_line', 'quote', 'evidence_lines',
-                 'fingerprint')
+                 'title', 'document', 'line', 'end_line', 'start', 'end', 'anchor_text',
+                 'quote', 'evidence_lines', 'fingerprint')
 
 #: Every field on every issue row of ``issues.json``, live or closed, edited or
 #: synthesised. A field that does not apply to a row is ``null``, or ``[]``

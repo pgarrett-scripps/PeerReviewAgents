@@ -1104,6 +1104,83 @@ def test_a_workspace_written_through_the_public_module_is_one_the_engine_verifie
     assert workspace.normalize_review(base, response, 'r2')['findings'][0]['id'] == 'r2-1'
 
 
+def test_every_citation_a_consumer_reads_locates_the_quote_inside_its_line(tmp_path):
+    """The offsets on a finding and on an issue member are the manuscript's own words.
+
+    An app that highlights a quote knows the line and then has to find the
+    words inside it — the search the engine already did, done again by code
+    that cannot refuse. So every citation it reads carries the offsets too, and
+    they all keep one rule::
+
+        anchor_text == base.line_text(line, document)[start:end]
+
+    for a quote inside one line, and from ``start`` in ``line`` to ``end`` in
+    ``end_line`` for one that crosses a line break, which a quote spanning two
+    table rows does. :func:`peerreviewagents.cited_text` is that read, and this
+    holds it against the characters of the file on both paths a consumer has:
+    the findings :func:`read_run` returns, and the members of an issue, which
+    is all a run whose ledger is gone has left.
+    """
+    from peerreviewagents import cited_text, workspace
+
+    base = build_base(tmp_path / 'workspace', [
+        {'kind': 'paragraph', 'section': 'Results',
+         'text': 'Recovery reached 86% in the treated group [1].'},
+        {'kind': 'table', 'section': 'Results',
+         'table': [['Group', 'Recovery'], ['treated', '86%'], ['controls', '71%']]}])
+    anchored = workspace.normalize_review(base, {'findings': [
+        {'title': 'Say what recovered', 'quote': 'Recovery reached 86%',
+         'kind': 'question', 'comment': 'of what — animals, samples, both?'},
+        {'title': 'The rows disagree with the text', 'kind': 'question',
+         'quote': 'treated | 86% | | controls | 71%',
+         'comment': 'the table reads the other way round'},
+        {'title': 'Say what the table counts', 'kind': 'question',
+         'quote': 'Group | Recovery | | --- | --- | | treated',
+         'comment': 'the header says neither unit'}]}, 'r1')
+    places = ('document', 'line', 'end_line', 'start', 'end', 'anchor_text', 'quote')
+    raised = [_finding(uid, found['title'], **{key: found[key] for key in places})
+              for uid, found in zip(('aaa1', 'bbb2'), anchored['findings'][:2])]
+    # One quote inside a line, one across two of them: both cases, one rule.
+    assert [(row['line'], row['end_line']) for row in raised] == [(1, 1), (5, 6)]
+    # And the third crosses three lines, so the line between is covered whole.
+    three = anchored['findings'][2]
+    assert (three['line'], three['end_line']) == (3, 5)
+    assert cited_text(base, three) == three['anchor_text'] == (
+        '| --- | --- |'.join(['Group | Recovery |\n', '\n| treated']))
+    # A finding the guard could not place has words and no position: nothing is
+    # the honest answer, and the top of the paper is not.
+    assert cited_text(base, {'document': 'paper.md', 'line': None, 'end_line': None,
+                             'start': None, 'end': None}) == ''
+
+    review = complete_run(tmp_path)
+    _rows(review / 'findings.jsonl', raised)
+    document = json.loads((review / 'issues.json').read_text(encoding='utf-8'))
+    for issue, finding in zip(document['issues'], raised):
+        issue['members'] = [issue_model.member_of(finding)]
+    _write(review / 'issues.json', document)
+
+    run = read_run(review)
+    cited = [*run['findings'], *(m for issue in run['issues'] for m in issue['members'])]
+    assert len(cited) == 4
+    for row in cited:
+        assert cited_text(base, row) == row['anchor_text']
+        if row['line'] == row['end_line']:  # The rule as INTEGRATIONS.md states it.
+            text = base.line_text(row['line'], row['document'])
+            assert text[row['start']:row['end']] == row['anchor_text']
+
+    # A run whose ledger is gone is read from the members, and it may not lose
+    # the offsets there: a consumer that underlines a finding is handed the
+    # same numbers on that path as on the other.
+    (review / 'findings.jsonl').unlink()
+    without = read_run(review)
+
+    assert without['findings_source'] == 'issues'
+    assert [row['anchor_text'] for row in without['findings']] == [row['anchor_text']
+                                                                   for row in raised]
+    assert [cited_text(base, row) for row in without['findings']] == [row['anchor_text']
+                                                                      for row in raised]
+
+
 def test_the_two_text_helpers_read_text_the_way_the_import_does():
     import xml.etree.ElementTree as ET
 
