@@ -115,6 +115,74 @@ def test_an_equation_with_no_page_still_carries_the_warning(tmp_path):
     assert line.endswith('[machine-read equation, may be garbled]')
 
 
+def read_base(pieces, folder, model='claude-sonnet-5-5'):
+    """A base whose manifest says a model read the pages, as the seal writes it."""
+    paper_base.write_base(folder, {paper_base.MAIN_DOCUMENT: pieces})
+    paper_base.write(Path(folder) / 'manifest.json',
+                     {'title': 'Widgets', 'ai_read': {'read': True, 'reader_model': model}})
+    return paper_base.load(folder)
+
+
+def test_an_equation_read_from_the_page_says_so_and_names_the_model(tmp_path):
+    base = read_base([
+        {'kind': 'equation', 'latex': 'E = m c^{2}', 'number': '1', 'section': 'Methods',
+         'page': 4, 'source': 'ai-reconstructed', 'original': {'latex': 'E = m c^{2'}},
+        {'kind': 'equation', 'latex': 'a = b', 'number': '2', 'section': 'Methods', 'page': 4},
+    ], tmp_path)
+    served = paper_view.render(base)
+    repaired, untouched = (line for line in served.splitlines() if '$$' in line)
+    assert repaired.endswith('[read from the page image of page 4 by claude-sonnet-5-5;'
+                             " the converter's reading is in the map]")
+    # An equation nobody had to repair still carries the converter's warning.
+    assert untouched.endswith('[machine-read equation, may be garbled; view_page 4]')
+    # And the markers are served, never written into the manuscript.
+    paper = (tmp_path / paper_base.MAIN_DOCUMENT).read_text(encoding='utf-8')
+    assert 'page image' not in paper and 'claude-sonnet-5-5' not in paper
+
+
+def test_a_figure_description_is_served_as_a_model_reading_the_image(tmp_path):
+    base = read_base([
+        {'kind': 'caption', 'text': 'Figure 1: Gain against frequency.', 'section': 'Results',
+         'page': 3},
+        {'kind': 'figure-description', 'text': 'Gain in dBi on the vertical axis against '
+         'frequency in GHz, rising from 2 to 9 dBi across 1 to 4 GHz.',
+         'section': 'Results', 'page': 3, 'source': 'ai', 'original': {}},
+    ], tmp_path)
+    served = paper_view.render(base)
+    caption, description = [line for line in served.splitlines()
+                            if line[:5].strip().isdigit() and line[7:].strip()]
+    assert caption.endswith('Figure 1: Gain against frequency.'), 'the caption is the authors\''
+    assert 'Figure description: Gain in dBi' in description
+    assert description.endswith('[AI description of the figure image of page 3 '
+                                'by claude-sonnet-5-5]')
+    assert 'not the authors’ words' in served.replace("'", '’'), 'the header says what it is'
+
+
+def test_a_table_the_reader_added_is_marked_once_and_not_on_every_row(tmp_path):
+    base = read_base([
+        {'kind': 'caption', 'text': 'Table 1: Readings by day.', 'section': 'Results', 'page': 2},
+        {'kind': 'table', 'table': [['Day', 'Reading'], ['1', '4.2'], ['2', '4.4']],
+         'section': 'Results', 'page': 2, 'source': 'ai', 'original': {}},
+    ], tmp_path)
+    marked = [line for line in paper_view.render(base).splitlines()
+              if 'the converter missed it' in line]
+    assert len(marked) == 1, 'the marker belongs on the first line of the table, not every row'
+    assert marked[0].endswith('[read from the page image of page 2 by claude-sonnet-5-5;'
+                              ' the converter missed it]')
+    assert 'Day' in marked[0]
+
+
+def test_a_part_is_measured_with_the_markers_it_will_be_served_with(tmp_path):
+    pieces = [{'kind': 'equation', 'latex': 'a_{' + str(n) + '} = b', 'number': str(n),
+               'section': 'Methods', 'page': 1, 'source': 'ai-reconstructed',
+               'original': {'latex': 'a'}} for n in range(30)]
+    base = read_base(pieces, tmp_path)
+    widths = paper_view.line_width(base, paper_base.MAIN_DOCUMENT)
+    served = [line for line in paper_view.render(base).splitlines()
+              if line[:5].strip().isdigit()]
+    assert [len(line) + 1 for line in served] == widths
+
+
 def test_search_answers_with_the_line_and_what_it_belongs_to(tmp_path):
     base = base_with([
         {'kind': 'paragraph', 'text': 'The interval −10–−5 dB was efﬁcient.',

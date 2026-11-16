@@ -24,6 +24,7 @@ from peerreviewagents import names
 from peerreviewagents.engine import paper_base
 from peerreviewagents.engine.ingest import DRAFT_FILE, convert_paper
 from peerreviewagents.engine.storage import write
+from peerreviewagents.plugin import models as model_plan
 from peerreviewagents.plugin import server as srv
 
 FIXTURE = Path(__file__).parent / 'fixtures' / 'single-column.pdf'
@@ -405,7 +406,15 @@ def test_a_finding_cites_the_lines_the_seal_wrote(tmp_path):
     reviewer = srv.claim_agent('core-1', CODES['core-1'])
     assert 'agent_token' in reviewer, reviewer
     reviewer = reviewer['agent_token']
-    assert 'request_rejected' not in srv.read_paper(reviewer)
+    served = srv.read_paper(reviewer)
+    assert 'request_rejected' not in served
+    # What the reviewer is told about the lines it is reading: the repair names
+    # the page and the model, and the description is not offered as the paper's
+    # own words. Neither marker is in the file.
+    text = served if type(served) is str else json.dumps(served)
+    assert 'read from the page image of page 1 by ' + model_plan.DEFAULT_READER_MODEL in text
+    assert 'AI description of the figure image' in text
+    assert "not the authors' words" in text
     quote = run.base.line_text(line)
     assert quote == '$$ E = m c^{2} \\tag{(1)} $$'
     # The gate on an equation finding stands: the reviewer opens the page image
