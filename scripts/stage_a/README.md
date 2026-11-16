@@ -104,8 +104,8 @@ being imported again is thrown away rather than used.
 A finding catches the planted error when it is in the right place **and** about
 the right thing:
 
-* **place** — it names one of the blocks the key lists, or its quote lies inside
-  the altered text;
+* **place** — it cites one of the lines the key lists, in the document the key
+  names, or its quote lies inside the altered text;
 * **content** — the finding's *own words* name every value the key lists: the
   altered number together with the number it now contradicts. A short value has
   to stand on its own as a number: `.72` is not the `72` of `72%`, and not the
@@ -128,5 +128,5 @@ also not a failure of the arm — the arm found the error and the brief threw th
 finding away, nearly always because the reviewer paraphrased the quote instead
 of copying it. The two numbers have to stay separate, because one says the
 reviewers need a better check and the other says the brief needs a clearer
-instruction. A quarantined row keeps its block id, so the place rule still
+instruction. A quarantined row keeps the line it cites, so the place rule still
 reaches it even when its quote is the reason it was held.

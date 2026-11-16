@@ -16,13 +16,13 @@ that preceded it is at `legacy-langgraph-v0.6.1`. There is no shim.
 
 | Module | What it does |
 | --- | --- |
-| `ingest.py` | imports a PDF (and optional JATS XML and supplements) into a manuscript workspace of numbered source blocks |
+| `ingest.py` | imports a PDF (and optional JATS XML and supplements) into a manuscript workspace: `paper.md` and the `map.json` over its lines |
 | `storage.py`, `file_lock.py` | reads and writes the workspace and run folders, one writer at a time |
-| `source_adapters.py`, `source_adapters_extra.py`, `source_payload.py` | turn stored blocks into what an agent is allowed to see |
+| `source_adapters.py`, `source_adapters_extra.py`, `source_payload.py` | turn the stored manuscript into what an agent is allowed to see |
 | `supplement_view.py`, `targeted_sources.py` | supplementary tables and page/figure images, fetched by handle |
 | `calculator.py` | the restricted arithmetic behind the `calculate` tool, which records a receipt for every evaluation |
 | `external_evidence.py` | bounded Crossref and Europe PMC lookups under a publication cutoff |
-| `annotations.py`, `result_map.py` | anchoring a finding to a block, and the quote/anchor guards |
+| `annotations.py`, `result_map.py` | anchoring a finding to a line of the manuscript, and the quote/anchor guards |
 | `domain_registry.py`, `domains/` | 21 field checklists the `field` specialist is given |
 | `investigation.py` | the tool implementations the plugin server wraps |
 | `usage.py` | usage and runtime accounting (`observed_usage`, `runtime_usage`, `agent_rows`) |
@@ -65,9 +65,10 @@ prompt:
   each slot a per-run token, a tool allow list and a call budget. A
   `manuscript-only` reviewer has the image and network tools removed from its
   allow list, so asking for a page image is refused rather than discouraged.
-- A finding is anchored to a block with an exact quote or it is quarantined.
+- A finding is anchored to a line of the manuscript with an exact quote, or it
+  is quarantined.
 - `basis` is assigned by the server from what the agent actually did —
-  `computed` from a `calculate` receipt whose inputs appear in the blocks the
+  `computed` from a `calculate` receipt whose inputs appear in the lines the
   finding cites, `two-quotes` from two anchored quotations, `judgement`
   otherwise. An agent cannot assert it.
 - Every tool call, receipt and external lookup is written to the run's ledger

@@ -6,6 +6,9 @@ a reviewer that names the numbers while pointing at another part of the paper
 has not either. Both show up in Stage A as near misses, and if the scorer
 counted them as catches the comparison between arms would flatter every arm
 equally and tell us nothing.
+
+A place is a document and a line, because that is what a finding cites and what
+the answer key lists.
 """
 
 from __future__ import annotations
@@ -19,7 +22,7 @@ KEY = {
     'kind': 'sample-size',
     'rule': 'one-statement-of-n-against-another',
     'detect': {
-        'blocks': ['b0010'],
+        'lines': [{'document': 'paper.md', 'line': 19}],
         'quotes': ['A total of 548 patients were randomly assigned to treatment.'],
         'must_mention': ['548', '530'],
         'mention_rule': 'all',
@@ -49,14 +52,15 @@ def write_run(folder, findings, runtime=None, progress=None, quarantined=()):
 def finding(**fields) -> dict:
     row = {'finding_uid': 'f1', 'title': '', 'comment': '', 'quote': '', 'severity': 'major',
            'slot': 'specialist-stats', 'role': 'specialist', 'track': 'stats', 'kind': 'error',
-           'block_id': '', 'evidence_blocks': [], 'escalate': False}
+           'document': 'paper.md', 'line': 0, 'end_line': 0, 'evidence_lines': [],
+           'escalate': False}
     row.update(fields)
     return row
 
 
-def test_naming_both_numbers_in_the_right_block_is_a_catch(tmp_path):
+def test_naming_both_numbers_on_the_right_line_is_a_catch(tmp_path):
     run = write_run(tmp_path / 'run', [finding(
-        block_id='b0010',
+        line=19,
         title='Randomised total disagrees with the flow diagram',
         comment='The text says 548 randomised while the CONSORT diagram and Table 1 say 530.')])
     result = score.score(run, KEY)
@@ -70,14 +74,14 @@ def test_a_catch_the_guard_quarantined_is_counted_apart_from_the_delivered_ones(
     """A withheld catch is the brief's fault, so it is counted and not scored as a catch.
 
     The guard quarantines a finding whose quote it cannot place, and it keeps
-    the block id, so the place rule still reaches the row. The run delivered
-    nothing about the planted error, so ``caught`` is false; what the arm found
-    and the brief threw away is ``quarantined_catches``.
+    the line it cites, so the place rule still reaches the row. The run
+    delivered nothing about the planted error, so ``caught`` is false; what the
+    arm found and the brief threw away is ``quarantined_catches``.
     """
     run = write_run(tmp_path / 'run', [finding(
-        block_id='b0003', title='The discussion overstates the effect')],
+        line=3, title='The discussion overstates the effect')],
         quarantined=[finding(
-            block_id='b0010',
+            line=19,
             title='Randomised total disagrees with the flow diagram',
             comment='The text says 548 randomised while the diagram says 530.',
             quote='a total of roughly 548 patients')])
@@ -85,12 +89,12 @@ def test_a_catch_the_guard_quarantined_is_counted_apart_from_the_delivered_ones(
     assert result['caught'] is False
     assert result['quarantined'] == 1
     assert result['quarantined_catches'] == 1
-    assert result['quarantined_caught_by'][0]['block_id'] == 'b0010'
+    assert result['quarantined_caught_by'][0]['line'] == 19
 
 
 def test_a_quarantined_finding_about_something_else_is_not_a_withheld_catch(tmp_path):
     run = write_run(tmp_path / 'run', [], quarantined=[finding(
-        block_id='b0010', title='The randomisation method is not described',
+        line=19, title='The randomisation method is not described',
         comment='No allocation sequence is given.')])
     result = score.score(run, KEY)
     assert result['quarantined'] == 1 and result['quarantined_catches'] == 0
@@ -98,7 +102,7 @@ def test_a_quarantined_finding_about_something_else_is_not_a_withheld_catch(tmp_
 
 def test_quoting_the_sentence_without_the_claim_is_only_a_near_miss(tmp_path):
     run = write_run(tmp_path / 'run', [finding(
-        block_id='b0010',
+        line=19,
         title='Randomisation is not described',
         comment='The allocation method is not stated anywhere in the methods.',
         quote='A total of 548 patients were randomly assigned to treatment.')])
@@ -110,27 +114,50 @@ def test_quoting_the_sentence_without_the_claim_is_only_a_near_miss(tmp_path):
 
 def test_naming_one_of_the_two_numbers_is_not_enough(tmp_path):
     run = write_run(tmp_path / 'run', [finding(
-        block_id='b0010', comment='548 patients is a large trial for this indication.')])
+        line=19, comment='548 patients is a large trial for this indication.')])
     assert score.score(run, KEY)['caught'] is False
 
 
 def test_the_right_claim_in_the_wrong_place_is_a_near_miss(tmp_path):
     run = write_run(tmp_path / 'run', [finding(
-        block_id='b0400', comment='548 here and 530 there cannot both be the randomised total.')])
+        line=400, comment='548 here and 530 there cannot both be the randomised total.')])
     result = score.score(run, KEY)
     assert result['caught'] is False
     assert len(result['near_miss_right_content']) == 1
 
 
-def test_an_evidence_block_or_a_quote_can_establish_the_place(tmp_path):
+def test_a_line_of_another_document_is_not_the_same_place(tmp_path):
+    """Line 19 of a supplement is not line 19 of the manuscript.
+
+    A place is a document and a line together: the scorer that compared line
+    numbers alone would score a finding about the supplement as a catch of an
+    error planted in the paper.
+    """
+    run = write_run(tmp_path / 'run', [finding(
+        document='supplement-1.md', line=19,
+        comment='548 in the text against 530 in Table 1.')])
+    result = score.score(run, KEY)
+    assert result['caught'] is False
+    assert len(result['near_miss_right_content']) == 1
+
+
+def test_an_evidence_line_or_a_quote_can_establish_the_place(tmp_path):
     by_evidence = write_run(tmp_path / 'one', [finding(
-        block_id='b0999', evidence_blocks=['b0010'],
+        line=999, evidence_lines=[19],
         comment='548 in the text against 530 in the table.')])
     assert score.score(by_evidence, KEY)['caught'] is True
     by_quote = write_run(tmp_path / 'two', [finding(
         quote='A total of 548 patients were randomly assigned',
         comment='This disagrees with the 530 reported in Table 1; 548 cannot be right.')])
     assert score.score(by_quote, KEY)['caught'] is True
+
+
+def test_a_corroborating_passage_can_establish_the_place(tmp_path):
+    run = write_run(tmp_path / 'run', [finding(
+        line=999, comment='548 in the text against 530 in the table.',
+        corroborating={'quote': 'A total of 548 patients', 'document': 'paper.md',
+                       'line': 19, 'end_line': 19})])
+    assert score.score(run, KEY)['caught'] is True
 
 
 def test_a_quote_too_short_to_identify_a_place_does_not_count(tmp_path):
@@ -160,7 +187,7 @@ def test_a_limit_after_the_review_was_written_is_a_note_not_a_miss(tmp_path):
     catch and understate the arm.
     """
     run = write_run(tmp_path / 'run', [finding(
-        block_id='b0010', comment='The text says 548 randomised while Table 1 says 530.')],
+        line=19, comment='The text says 548 randomised while Table 1 says 530.')],
         runtime={'status': 'blocked', 'blocked_reason': 'rate limit: five_hour',
                  'wall_seconds': 300.0, 'tokens_total': 500000, 'agents': []})
     result = score.score(run, KEY)
@@ -187,7 +214,7 @@ def test_a_finding_the_editor_pooled_into_an_issue_is_one_catch(tmp_path):
     than it was. The issue counts are reported beside the finding count, in
     their own columns, because they answer a different question.
     """
-    caught = finding(finding_uid='f7', block_id='b0010',
+    caught = finding(finding_uid='f7', line=19,
                      comment='548 in the text against 530 in Table 1.')
     run = write_run(tmp_path / 'run', [caught])
     document = {
@@ -227,7 +254,7 @@ P_VALUE_KEY = {
     'paper': 'education-pmc6085180',
     'kind': 'statistic',
     'rule': 'p-value-against-its-own-claim',
-    'detect': {'blocks': ['b0010'],
+    'detect': {'lines': [{'document': 'paper.md', 'line': 19}],
                'quotes': ['and at 6 months (D = 1.29; P = .72; d = 0.29)'],
                'must_mention': ['.72'], 'mention_rule': 'all'},
 }
@@ -239,13 +266,13 @@ def test_a_percentage_that_happens_to_share_the_digits_is_not_the_p_value(tmp_pa
     A core finding about attrition said `109 of 151, 72%` and another carried an
     arithmetic receipt holding `72.185430463`. Scored on digits alone both read
     as naming the planted p-value, which would have counted either of them as a
-    catch had they pointed at the altered block.
+    catch had they pointed at the altered line.
     """
     run = write_run(tmp_path / 'run', [
-        finding(finding_uid='f1', block_id='b0010',
+        finding(finding_uid='f1', line=19,
                 comment='Deaths were numerically higher in the intervention arm (109 of 151, '
                         '72%) than in usual care.'),
-        finding(finding_uid='f2', block_id='b0010',
+        finding(finding_uid='f2', line=19,
                 calculate_receipt="{'values': [19.205298013245034, 72.185430463]}"),
     ])
     result = score.score(run, P_VALUE_KEY)
@@ -254,29 +281,30 @@ def test_a_percentage_that_happens_to_share_the_digits_is_not_the_p_value(tmp_pa
 
 def test_the_same_p_value_with_a_leading_zero_is_the_same_number(tmp_path):
     run = write_run(tmp_path / 'run', [finding(
-        block_id='b0010',
+        line=19,
         comment='The abstract calls the 6-month result significant but reports P = 0.72.')])
     assert score.score(run, P_VALUE_KEY)['caught'] is True
 
 
 def test_a_longer_number_containing_the_digits_is_not_the_value(tmp_path):
     run = write_run(tmp_path / 'run', [finding(
-        block_id='b0010', comment='The effect size of 10.72 is implausibly large.')])
+        line=19, comment='The effect size of 10.72 is implausibly large.')])
     assert score.score(run, P_VALUE_KEY)['caught'] is False
 
 
 def test_a_sample_size_must_stand_on_its_own(tmp_path):
     joined = write_run(tmp_path / 'one', [finding(
-        block_id='b0010', comment='The cohort of 11548 patients and 530 controls.')])
+        line=19, comment='The cohort of 11548 patients and 530 controls.')])
     assert score.score(joined, KEY)['caught'] is False
     plain = write_run(tmp_path / 'two', [finding(
-        block_id='b0010', comment='The text says n = 548. Table 1 says 530.')])
+        line=19, comment='The text says n = 548. Table 1 says 530.')])
     assert score.score(plain, KEY)['caught'] is True
 
 
 DOI_KEY = {
     'paper': 'epidemiology-pmc7611074', 'kind': 'fake-doi', 'rule': 'doi',
-    'detect': {'blocks': ['b0094'], 'quotes': ['Reference 41. 10.1101/2020.04.23.20076486'],
+    'detect': {'lines': [{'document': 'paper.md', 'line': 187}],
+               'quotes': ['Reference 41. 10.1101/2020.04.23.20076486'],
                'must_mention': ['2020.04.23.20076486', '2020.04.23.20076042'],
                'mention_rule': 'any'},
 }
@@ -284,7 +312,7 @@ DOI_KEY = {
 
 def test_a_fake_doi_key_is_matched_on_the_suffix(tmp_path):
     run = write_run(tmp_path / 'run', [finding(
-        block_id='b0094', track='literature', slot='specialist-literature',
+        line=187, track='literature', slot='specialist-literature',
         comment='The DOI 10.1101/2020.04.23.20076486 does not resolve to a registered record.')])
     assert score.score(run, DOI_KEY)['caught'] is True
 
@@ -298,7 +326,7 @@ def test_naming_the_real_doi_instead_of_the_fake_one_is_a_catch(tmp_path):
     demanding the planted digits instead threw away a correct catch.
     """
     run = write_run(tmp_path / 'run', [finding(
-        block_id='b0094', track='citations', slot='spec-citations',
+        line=187, track='citations', slot='spec-citations',
         title='Ref 6 has a wrong DOI',
         comment='The DOI printed for ref 6 returns 404 in Crossref. The preprint with this '
                 'title is 10.1101/2020.04.23.20076042; the last digits differ.')])
@@ -307,6 +335,6 @@ def test_naming_the_real_doi_instead_of_the_fake_one_is_a_catch(tmp_path):
 
 def test_a_complaint_about_the_reference_list_naming_no_doi_is_not_a_catch(tmp_path):
     run = write_run(tmp_path / 'run', [finding(
-        block_id='b0094', track='citations', slot='spec-citations',
+        line=187, track='citations', slot='spec-citations',
         comment='Several references are preprints and the DOIs were not checked.')])
     assert score.score(run, DOI_KEY)['caught'] is False

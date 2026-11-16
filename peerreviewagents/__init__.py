@@ -64,7 +64,9 @@ Checking a wrapper's own commands
 Manuscripts and workspaces
     :func:`import_paper` imports a PDF into a manuscript workspace without any
     model call. :func:`verify_workspace` re-checks an imported workspace
-    against its own manifest and returns the paper. :func:`export_draft`
+    against its own manifest and returns its manuscript — the Markdown and the
+    map over it, as a :class:`~peerreviewagents.engine.paper_base.PaperBase`.
+    :func:`export_draft`
     applies the accepted anchored edits of a review to a copy of ``paper.md``.
     :mod:`peerreviewagents.workspace` holds the smaller tools those are built
     from, for an app that writes files the engine reads back: the manifest

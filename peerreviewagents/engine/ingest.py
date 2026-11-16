@@ -109,7 +109,7 @@ def import_paper(pdf, output, xml=None, title=None, source_url='', supplements=N
     markdown, doc = rustypaper.convert(str(pdf))
     # The converter's own view of the PDF, kept for diagnosing a conversion
     # rather than for reading the paper: the Markdown a reviewer reads is
-    # composed from the blocks below, where every piece has a line and a map
+    # composed from the pieces below, where every piece has a line and a map
     # row, and `markdown` has neither.
     write(output / 'converter.json', doc)
     raw_pages = page_text(pdf)
@@ -291,42 +291,39 @@ def import_paper(pdf, output, xml=None, title=None, source_url='', supplements=N
     for row in rows:
         by_document[row['document']].append(row)
     # Every piece in these lists rendered — `add` drops the ones that do not —
-    # so a document's pieces and its rows are the same sequence, and each row
-    # can be given the text that actually went into the file rather than the
-    # text it was built from.
-    blocks = []
+    # so a document's pieces and its rows are the same sequence, and every row
+    # can be counted on the text that actually went into the file rather than
+    # the text it was built from. That text is read back out of the written
+    # document and kept nowhere else: the Markdown is the manuscript.
+    written = []
     for name, document_pieces in documents.items():
         lines = (output / name).read_text(encoding='utf-8').split('\n')
-        for piece, row in zip(document_pieces, by_document[name]):
+        for row in by_document[name]:
             start, end = row['lines']
-            text = '\n'.join(lines[start-1:end])
-            piece['rendered'] = text
-            blocks.append({'id': f'b{len(blocks)+1:04d}', 'text': text, 'sha256': digest(text),
-                           'section': row['section'], 'kind': row['kind'],
-                           'source_id': piece.get('source_id') or '', 'page': row['page'],
-                           'page_mapping': row.get('page_mapping'), 'bbox': row['bbox'],
-                           'citations': piece.get('citations') or [],
-                           'document': piece.get('source_file') or 'main',
-                           'table': piece.get('table'), 'lines': row['lines'],
-                           'document_file': name, 'fingerprint': row['fingerprint']})
-    main = [block for block in blocks if block['document'] == 'main']
+            written.append((row, '\n'.join(lines[start - 1:end])))
+    main = [(row, text) for row, text in written
+            if row['document'] == paper_base.MAIN_DOCUMENT]
     sections = collections.OrderedDict()
-    for block in main:
-        sections.setdefault(block['section'], []).append(block['id'])
+    for row, _ in main:
+        sections.setdefault(row['section'], []).append(row['lines'][0])
     stats = {
-        'total_words': sum(len(words(b['text'])) for b in blocks if b['kind'] != 'heading'),
-        'main_words': sum(len(words(b['text'])) for b in main
-                          if b['kind'] not in ('heading', 'reference', 'title')),
-        'reference_words': sum(len(words(b['text'])) for b in blocks
-                               if b['kind'] == 'reference'),
-        'reference_entries': len(references), 'pieces': len(rows), 'blocks': len(blocks),
+        'total_words': sum(len(words(text)) for row, text in written
+                           if row['kind'] != 'heading'),
+        'main_words': sum(len(words(text)) for row, text in main
+                          if row['kind'] not in ('heading', 'reference', 'title')),
+        'reference_words': sum(len(words(text)) for row, text in written
+                               if row['kind'] == 'reference'),
+        'reference_entries': len(references), 'pieces': len(rows),
         'pdf_pages': len(raw_pages),
         'lines': {name: len((output / name).read_text(encoding='utf-8').splitlines())
                   for name in documents},
-        'sections': {name: {'blocks': len(ids),
-                            'words': sum(len(b['text'].split()) for b in main
-                                         if b['id'] in ids and b['kind'] != 'heading')}
-                     for name, ids in sections.items()},
+        # A section is counted by the lines its pieces start on, because a line
+        # is what a reader of this manuscript can point at.
+        'sections': {name: {'pieces': len(starts),
+                            'words': sum(len(text.split()) for row, text in main
+                                         if row['lines'][0] in starts
+                                         and row['kind'] != 'heading')}
+                     for name, starts in sections.items()},
         'convention': ('Unicode words with internal apostrophes and hyphens. Includes captions, '
                        'tables and equations. References reported separately. No quality '
                        'inference from counts.')}
@@ -372,18 +369,6 @@ def import_paper(pdf, output, xml=None, title=None, source_url='', supplements=N
     }
     write(output / 'references.json', references)
     write(output / 'statistics.json', stats)
-    # The intermediate, and only that: `paper.json` holds the same text as the
-    # Markdown with a mint-at-import id on every piece, which is the shape this
-    # engine is being moved off. It is written so that each commit of that move
-    # is green on its own, and the commit that moves the last reader onto lines
-    # deletes it. Nothing new may read it.
-    paper = {'schema_version': 1, 'title': title, 'id': paper_id, 'source_url': source_url,
-             'source_sha256': digest(pdf.read_bytes()),
-             'parser': 'rustypaper ' + getattr(rustypaper, '__version__', 'unknown'),
-             'xml_sha256': digest(Path(xml).read_bytes()) if xml else None, 'blocks': blocks,
-             'references': references, 'assets': assets, 'sections': dict(sections),
-             'statistics': stats, 'warnings': warnings}
-    write(output / 'paper.json', paper)
     # POSIX keys: the scaffold inventory check builds its names with as_posix,
     # so a manifest keyed with the OS separator read as a changed inventory on
     # Windows and refused every run over a scaffold manuscript.
@@ -391,4 +376,7 @@ def import_paper(pdf, output, xml=None, title=None, source_url='', supplements=N
                          for p in sorted(output.rglob('*'))
                          if p.is_file() and p.name != 'manifest.json'}
     write(output / 'manifest.json', manifest)
-    return paper
+    # The manifest, which is the import's own account of what it wrote: the
+    # manuscript itself is `paper.md` and its map, and a caller that wants the
+    # text reads it with `paper_base.load`.
+    return manifest

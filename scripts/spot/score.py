@@ -114,7 +114,7 @@ CONTROLS = ('control-education-pmc7183109', 'control-microbiology-pmc8208984')
 
 
 def mentions_place(finding: dict, key: dict) -> bool:
-    """Whether a finding's words or block id land at the annotated location."""
+    """Whether a finding's own words land at the annotated location."""
     said = words_of(finding).lower()
     return any(phrase in said for phrase in key['where'])
 

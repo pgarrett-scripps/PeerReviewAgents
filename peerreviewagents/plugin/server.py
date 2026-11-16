@@ -605,15 +605,16 @@ class Run:
         design keeps apart. A folder written before models were recorded says
         nothing about them, and is left alone rather than guessed at.
         """
-        kept = self.workspace / 'paper.json'
+        kept = self.workspace / 'manifest.json'
         if kept.is_file():
             try:
                 before = read(kept)
             except (ValueError, OSError):
                 before = {}
+            held = (before.get('source') or {}).get('sha256')
             source = Path(pdf)
             incoming = digest(source.read_bytes()) if source.is_file() else None
-            if incoming and before.get('source_sha256') and incoming != before['source_sha256']:
+            if incoming and held and incoming != held:
                 raise ValueError(
                     'The folder ' + str(self.root) + ' already holds a different manuscript ('
                     + str(before.get('title'))[:60] + '). Review this PDF in a fresh folder.')
