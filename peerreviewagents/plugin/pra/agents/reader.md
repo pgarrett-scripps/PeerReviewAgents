@@ -114,7 +114,9 @@ paragraph off. At most three spans, and a fifth of the piece at most: this is
 for debris, and a paragraph that needs more than that is one you are rewriting.
 Where most of a block is really a table and a sentence of prose is left over,
 `{"kind": "paragraph", "keep": "the one run it is"}` takes that run and drops
-the rest. If the prose is right as the converter read it, leave it out of
+the rest — only alongside the table or equation part that accounts for the
+rest, never as the whole of a re-read, because then nothing would say where the
+paragraph went. If the prose is right as the converter read it, leave it out of
 `pieces` and it is untouched.
 
 ## A page the converter returned nothing from

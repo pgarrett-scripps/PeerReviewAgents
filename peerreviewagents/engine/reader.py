@@ -205,7 +205,7 @@ def span(held, wanted, where, named):
     return start, end
 
 
-def prose_from(held, part, where):
+def prose_from(held, part, where, accounted):
     """The text of a prose part of a re-read: a cut of *held*, never typed.
 
     A model asked to retype a paragraph minus some debris retypes the paragraph
@@ -216,6 +216,16 @@ def prose_from(held, part, where):
     out, in ``remove``, or which single run of it to keep, in ``keep``, and the
     engine does the cutting: every character that comes out is one the
     converter read, in the order it read it, because it is a slice of it.
+
+    ``keep`` is the harder of the two to hold, because what it drops is
+    everything it does not name: ``keep='Cytokine storms, which'`` on an
+    abstract was accepted and sealed those three words as the paragraph. It is
+    for one case — the prose left over from a piece that is really a table or
+    an equation as well — so it is allowed only when *accounted* says some
+    other part of this re-read is that table or equation, and the cells or the
+    LaTeX hold the rest of what the converter read. A re-read that is prose
+    alone has nothing to account for a drop, and uses ``remove``, which keeps
+    the piece and cuts what it names.
     """
     if str(part.get('text') or '').strip():
         raise ValueError(where + ': the running text is the authors\', so a paragraph, footnote, '
@@ -229,6 +239,13 @@ def prose_from(held, part, where):
                          'and cuts the spans you name; `keep` takes the one span you name and '
                          'drops the rest.')
     if keep.strip():
+        if not accounted:
+            raise ValueError(where + ': `keep` drops everything it does not name, so it is only '
+                             'for the prose left over from a piece that is really a table or an '
+                             'equation as well — those parts are what account for the rest of the '
+                             'converter\'s reading. This re-read is prose alone, so nothing here '
+                             'would say where the rest of it went. Use `remove`, which keeps the '
+                             'piece and cuts the spans you name.')
         start, end = span(held, keep, where, '`keep`')
         return held[start:end]
     if not cuts:
@@ -763,6 +780,10 @@ class Desk:
                              'converter reading under it to re-read. Withdraw it with '
                              'withdraw_piece and add what the page prints.')
         held = converter_reading(piece)
+        # Whether anything in this re-read is a displayed piece: what `keep`
+        # drops has to be accounted for by a table's cells or an equation's
+        # LaTeX, and in a re-read that is prose alone nothing would be.
+        accounted = any(str(part.get('kind') or '') not in PROSE_KINDS for part in parts)
         written = []
         for at, part in enumerate(parts, 1):
             kind = str(part.get('kind') or '')
@@ -772,7 +793,7 @@ class Desk:
                                  + ', '.join(REREADABLE) + ', and not as ' + (kind or 'nothing')
                                  + '. A figure\'s image is describe_figure\'s.')
             if kind in PROSE_KINDS:
-                text = prose_from(held, part, where)
+                text = prose_from(held, part, where, accounted)
             else:
                 text = str(part.get('text') or '')
                 if part.get('remove') or part.get('keep'):

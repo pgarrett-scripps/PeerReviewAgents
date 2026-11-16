@@ -513,7 +513,15 @@ def test_a_paragraph_re_read_names_the_debris_and_the_engine_cuts_it(tmp_path):
     assert answer['kinds'] == ['equation', 'paragraph']
 
     # `keep` is the other way round: most of the block was a table, and one run
-    # of prose is left over.
+    # of prose is left over. It drops everything it does not name, so it is
+    # allowed only where a table or an equation in the same re-read accounts
+    # for the rest — prose alone, it would be a silent loss of a paragraph.
+    alone = srv.reread_piece(token, prose['garbled'], 1,
+                             [{'kind': 'paragraph', 'keep': 'Hour Current'}])
+    assert '`keep` drops everything it does not name' in alone['request_rejected']
+    assert 'Use `remove`' in alone['request_rejected']
+    assert prose['garbled'] in listed(token), 'and nothing was replaced'
+
     held = srv.reread_piece(token, prose['garbled'], 1, [
         {'kind': 'table', 'rows': [['Hour', 'Current (mA)'], ['1', '4.5']]},
         {'kind': 'paragraph', 'keep': '2 9.0'}])
@@ -568,6 +576,12 @@ def test_a_sentence_a_model_invents_cannot_reach_a_paragraph(tmp_path):
     assert shown[prose['debris']] == whole
     assert '…' not in shown[prose['debris']]
 
+    # And `keep` is not the way round it: three words of an abstract kept and
+    # the rest dropped was the hole the lead found in the span design itself.
+    three = srv.reread_piece(token, prose['debris'], 1,
+                             [{'kind': 'paragraph', 'keep': 'At high signal-to-noise'}])
+    assert '`keep` drops everything it does not name' in three['request_rejected']
+
     assert 'request_rejected' not in srv.reread_piece(
         token, prose['debris'], 1, [{'kind': 'paragraph', 'remove': ['We have SNR ln 2']}])
     account_for_everything(token, marks)
@@ -575,6 +589,8 @@ def test_a_sentence_a_model_invents_cannot_reach_a_paragraph(tmp_path):
     text, _, _ = base_of(srv.current())
     assert 'highly significant' not in text
     assert 'SNR ln 2' not in text
+    assert 'In that regime the gain is linear in the bandwidth' in text, \
+        'the paragraph is still the paragraph, not three words of it'
 
 
 def test_an_empty_piece_is_refused_and_one_the_stage_added_can_be_withdrawn(tmp_path):

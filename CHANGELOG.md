@@ -128,7 +128,11 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   a re-read carries no text, only `remove` — the spans to cut, at most three
   and together at most a fifth of the piece — or `keep`, the one run of it that
   piece is, and the engine cuts them, so what comes out is a slice of the
-  converter's own characters. A span is matched on the normal form a citation's
+  converter's own characters. `keep` drops everything it does not name, which
+  `keep='Cytokine storms, which'` on an abstract turned into a sealed paragraph
+  of three words, so it is allowed only beside the table or equation part of
+  the same re-read that accounts for the rest; a re-read that is prose alone
+  uses `remove`. A span is matched on the normal form a citation's
   quote is matched on and has to read there exactly once, and `view_page` now
   returns that page's pieces whole, since a span cannot be named inside a
   preview the listing cut off. The first attempt at this let a re-read retype

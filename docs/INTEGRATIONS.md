@@ -126,8 +126,10 @@ order, each carrying `original` = the converter's reading plus `part` and `of`;
 Two things hold that to transcription. **Prose the stage never types**: a
 `paragraph`, `footnote`, `heading` or `title` part of a re-read carries no
 text, only `remove` — the spans to cut, at most three of them and together at
-most a fifth of the piece — or `keep`, the one run of it this piece is, and the
-engine does the cutting. So what comes out is a slice of the converter's own
+most a fifth of the piece — or `keep`, the one run of it this piece is, which
+drops the rest and so is allowed only beside a table or an equation part of the
+same re-read, whose cells or LaTeX account for what it dropped. The engine does
+the cutting. So what comes out is a slice of the converter's own
 characters: a displayed piece's debris can leave a paragraph and nothing a
 model writes can get into one. (A span is matched on the same normal form a
 citation's quote is matched on and has to read there exactly once, and

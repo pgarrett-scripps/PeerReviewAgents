@@ -2195,7 +2195,9 @@ def reread_piece(agent_token: str, piece: str, page: int, pieces: list) -> dict:
       piece's debris, not for rewriting a paragraph.
     - `{"kind": "paragraph", "keep": "In that regime, you can hardly"}` takes
       the one run you name and drops the rest — the prose left over when most
-      of a block turns out to be a table.
+      of a block turns out to be a table. Because it drops what it does not
+      name, it is allowed only beside a table or an equation part of the same
+      call, which is what accounts for the rest; on its own, use `remove`.
 
     If the prose is right as the converter read it, leave it out of `pieces`
     altogether. Refused if you have not viewed the page.
