@@ -26,7 +26,7 @@ import pytest
 
 from peerreviewagents import ISSUES_SCHEMA_VERSION, read_citation_ledger, read_run, runs
 from peerreviewagents.engine import citation_ledger as cl
-from peerreviewagents.engine import run_report
+from peerreviewagents.engine import paper_base, run_report
 
 PLANNED = {'arm': 'full-two-track', 'reviewers': 1, 'paper_id': 'abc',
            'plan': {'arm': 'full-two-track', 'reviewers': 1, 'editor': True,
@@ -45,15 +45,64 @@ def reference(row_id='ref:r1', exists='yes', **resolution):
     return row
 
 
-def use(row_id='use:11:1:r1', reference_id='r1', verdict='supports'):
-    """One in-text use row, judged by a worker."""
+#: The citing sentence these fixture rows are about, as ``paper.md`` holds it.
+SENTENCE = 'The method was first described elsewhere [1].'
+
+
+def use(row_id='use:paper.md:11:1:r1', reference_id='r1', verdict='supports'):
+    """One in-text use row, as :func:`citation_ledger.use_rows` writes it.
+
+    The whole row, not the half of it a consumer happens to print: the id is
+    ``use:<document>:<the line the piece starts on>:<sentence index>:<id>``,
+    and the anchor is the four numbers a viewer underlines the sentence with
+    plus the ``piece_lines`` of the passage it was read out of.
+    ``test_the_fixture_row_is_the_row_the_writer_writes`` holds this against
+    the writer, so a row that drifts from it is caught here rather than in an
+    application printing a run folder.
+    """
     row = {'kind': 'use', 'row_id': row_id, 'reference_id': reference_id,
-           'document': 'paper.md', 'line': 11,
-           'section': 'Introduction', 'sentence_index': 1, 'marker': '[1]',
-           'sentence': 'The method was first described elsewhere [1].', 'stage': 'fill'}
+           'document': 'paper.md', 'line': 11, 'end_line': 11,
+           'start': 0, 'end': len(SENTENCE), 'piece_lines': [11, 11],
+           'section': 'Introduction', 'sentence_index': 1,
+           'sentence': SENTENCE, 'marker': '[1]', 'derivation': 'marker-numeric',
+           'stage': 'fill', 'filled_at': '2026-11-14T09:00:00+00:00'}
     if verdict:
         row.update({'verdict': verdict, 'stage': 'verdict', 'worker': 'cite-1'})
     return row
+
+
+def test_the_fixture_row_is_the_row_the_writer_writes(tmp_path):
+    """Every fixture below is only worth what its shape is worth.
+
+    The rows here were written by hand against an older ledger: ``use:11:1:r1``
+    for an id, no ``end``, no ``end_line``, no ``piece_lines``, no document in
+    the id. A consumer reading those would have been told the surface was
+    tested while the field it needs to underline a sentence was never in a
+    fixture at all. So the shape is taken from the writer itself.
+    """
+    folder = tmp_path / 'manuscript'
+    paper_base.write_base(folder, {paper_base.MAIN_DOCUMENT: [
+        {'kind': 'title', 'text': 'Replay during quiet rest', 'section': 'Title'},
+        {'kind': 'heading', 'text': 'Introduction', 'level': 1, 'section': 'Introduction'},
+        {'kind': 'paragraph', 'section': 'Introduction', 'text': SENTENCE},
+    ]})
+    written, = cl.use_rows(paper_base.load(folder),
+                           [{'id': 'r1', 'label': '1', 'raw': 'A. Author. A title. 2020.'}])
+
+    fixture = use(verdict=None)
+    assert set(fixture) == set(written)
+    assert {field: fixture[field] for field in ('kind', 'reference_id', 'document', 'section',
+                                                'sentence', 'marker', 'derivation', 'stage')} \
+        == {field: written[field] for field in ('kind', 'reference_id', 'document', 'section',
+                                                'sentence', 'marker', 'derivation', 'stage')}
+    # The id is the document, the line the piece starts on, the sentence and
+    # the reference — the shape a consumer parses when it groups a table.
+    assert written['row_id'] == 'use:paper.md:5:1:r1'
+    assert fixture['row_id'].split(':')[:2] == written['row_id'].split(':')[:2]
+    assert len(fixture['row_id'].split(':')) == len(written['row_id'].split(':'))
+    # And the anchor is a span a viewer can underline, in both.
+    assert written['start'] == fixture['start'] and written['end'] == fixture['end']
+    assert written['piece_lines'] == [written['line'], written['end_line']]
 
 
 def run_folder(tmp_path, rows=(), stages=None, protocol=PLANNED):
@@ -228,7 +277,7 @@ def test_reading_a_run_leaves_every_file_and_folder_in_it_as_it_was(tmp_path):
     # And all of that was a real reading, not an empty one that wrote nothing
     # because it did nothing.
     assert [row['row_id'] for row in rows['references']] == ['ref:r1']
-    assert [row['row_id'] for row in rows['uses']] == ['use:11:1:r1']
+    assert [row['row_id'] for row in rows['uses']] == ['use:paper.md:11:1:r1']
     assert reading['citations']['counts']['references'] == 1
     assert totals['references'] == 1 and totals['uses_judged'] == 1
     assert state['resolve']['done'] is True
@@ -574,7 +623,7 @@ def test_the_two_readers_never_disagree_about_one_run_folder(tmp_path, monkeypat
     docstring promises cannot happen. Both now read it through the same
     function, so the five shapes a run folder comes in agree row for row.
     """
-    torn = [json.dumps(reference()), '{"kind": "use", "row_id": "use:11:1']
+    torn = [json.dumps(reference()), '{"kind": "use", "row_id": "use:paper.md:11:1']
 
     def folders():
         yield 'planned, no ledger', run_folder(tmp_path / 'planned')
@@ -626,7 +675,7 @@ def test_a_row_id_the_table_cannot_be_keyed_on_reaches_no_consumer(tmp_path):
 
     reading, citations = read_citation_ledger(root), read_run(root)['citations']
     assert [row['row_id'] for row in reading['references']] == ['ref:r1']
-    assert [row['row_id'] for row in reading['uses']] == ['use:11:1:r1']
+    assert [row['row_id'] for row in reading['uses']] == ['use:paper.md:11:1:r1']
     assert reading['counts']['unreadable_rows'] == 4
     assert reading['problems'] == citations['problems']
     assert any('could not be read and were skipped' in line for line in reading['problems'])
@@ -645,7 +694,7 @@ DAMAGED = {
     'kind is a number': {**use(), 'kind': 3},
     'row_id is 5000 digits': {**use(), 'row_id': 'use:' + '9' * 5000},
     'row_id is a list': {**use(), 'row_id': ['use', 'b1']},
-    'row_id is an object': {**use(), 'row_id': {'id': 'use:11:1:r1'}},
+    'row_id is an object': {**use(), 'row_id': {'id': 'use:paper.md:11:1:r1'}},
     'row_id is a number': {**use(), 'row_id': 4},
     'reference_id is a list': {**use(), 'reference_id': ['r1']},
     'reference_id is an object': {**reference(), 'reference_id': {'id': 'r1'}},
@@ -724,18 +773,19 @@ def test_the_rows_come_back_in_the_order_a_reader_reads_them_in(tmp_path):
     """Row ten is after row nine, which sorting the ids as text does not give.
 
     The ids carry the reference number and the sentence index, so a plain sort
-    puts ``ref:r10`` second and ``use:b2:10`` before ``use:b2:2``. Every
+    puts ``ref:r10`` second and ``use:paper.md:11:10`` before
+    ``use:paper.md:11:2``. Every
     consumer that prints the table was re-sorting it, each with its own idea of
     what the parts mean, so the reader hands back the order they were all
     reaching for.
     """
     references = [reference(row_id=f'ref:r{number}') for number in (2, 10, 1)]
-    uses = [use(row_id=f'use:b2:{index}:r1') for index in (10, 2, 1)]
+    uses = [use(row_id=f'use:paper.md:11:{index}:r1') for index in (10, 2, 1)]
     root, _ = run_folder(tmp_path, references + uses)
     reading = read_citation_ledger(root)
     assert [row['row_id'] for row in reading['references']] == ['ref:r1', 'ref:r2', 'ref:r10']
     assert [row['row_id'] for row in reading['uses']] == [
-        'use:b2:1:r1', 'use:b2:2:r1', 'use:b2:10:r1']
+        'use:paper.md:11:1:r1', 'use:paper.md:11:2:r1', 'use:paper.md:11:10:r1']
 
 
 # -- the files the reader opens on its way to the table ---------------------

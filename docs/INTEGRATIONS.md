@@ -950,7 +950,8 @@ for row in cites["uses"]:
 - `references`, `uses` — the rows, the last one written for each `row_id`,
   ordered by `row_id` so two readings of a folder agree. **The order is
   natural**: a run of digits in the id is compared as the number it is, so
-  `ref:r2` comes before `ref:r10` and `use:b2:2:r1` before `use:b2:10:r1`,
+  `ref:r2` comes before `ref:r10` and `use:paper.md:11:2:r1` before
+  `use:paper.md:11:10:r1`,
   which is the reference order and the sentence order a reader counts in. You
   do not need to re-sort the rows to print them.
 - `counts`, `complete`, `summary`, `problems` — identical to

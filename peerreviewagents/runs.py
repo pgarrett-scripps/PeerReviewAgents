@@ -1087,8 +1087,9 @@ def read_citation_ledger(path, source_text=False):
     ``references``, ``uses``
         The rows, the last one written for each ``row_id``, in **natural**
         ``row_id`` order — a run of digits is compared as the number it is, so
-        ``ref:r10`` comes after ``ref:r2`` and ``use:b2:10`` after
-        ``use:b2:2``, which is the order a reference list is printed in and the
+        ``ref:r10`` comes after ``ref:r2`` and ``use:paper.md:11:10:r1`` after
+        ``use:paper.md:11:2:r1``, which is the order a reference list is
+        printed in and the
         order every consumer was re-sorting into. Two readings of the same
         folder agree. A reference row
         carries the printed entry and, once the lane looked it up, its
@@ -1177,7 +1178,8 @@ def _natural(row_id):
     """A sort key that reads a run of digits in ``row_id`` as the number it is.
 
     Row ids are built from counters — ``ref:r2``, ``ref:r10``,
-    ``use:b2:2:r1``, ``use:b2:10:r1`` — and sorting them as text puts the
+    ``use:paper.md:11:2:r1``, ``use:paper.md:11:10:r1`` — and sorting them as
+    text puts the
     tenth reference second, because ``'1'`` is before ``'2'``. Every consumer
     that printed the table in order sorted it again, so the order the ledger
     hands out is the order it is printed in: digits compared as numbers,
