@@ -1117,3 +1117,45 @@ the time the session reported, so a blocked run says when it can be retried.
 The review is that process. It is not a background job and there is no server
 holding it; re-run the command. Everything the server had already written
 stays on disk, and `peerreview report` reads it.
+
+### The out folder already holds a review
+
+A folder whose `progress.json` says `complete` or `complete-without-findings`
+is the review, not a place to start one. `ingest` refuses it by name and
+changes nothing in it, so a re-run over a finished folder cannot undo the
+review it holds. A new server process and the session that wrote the review are
+refused alike, in the same words: one paper per session, and a second one passed
+to a live server fails by name rather than attaching to a finished folder. Read
+what is there with `peerreview report <run>` or straight
+from `review/REVIEW.md`; neither takes a run. A further round of review is a
+fresh out folder with this one as its prior round — pass
+`prior_issues=<old run>/review/issues.json` to that run.
+
+A `running` or `blocked` folder is reopened as before: re-ingesting into a
+blocked run is how a run that hit a rate limit or lost a stage is resumed.
+
+Nothing writes in a complete folder either. Every tool a slot could still hold
+a token for — the reviewer read tools, `save_note`, `submit_finding`,
+`submit_issues`, `submit_editor`, `submit_report`, `write_review`,
+`claim_agent`, `reissue_claim_code`, `resolve_citations`,
+`claim_citation_batch` and `submit_citation_verdict` — is refused with the run's
+status, and the refusal is not logged: the logs are the record of the review
+that was written. `run_status` and `list_findings` still answer, and write
+nothing. The test for this calls every registered tool over a finished
+two-track run and digests every file in the folder between calls.
+
+A lookup pass that is already in flight is the one writer a guard on the call
+cannot stop, so the order is fixed from the other side: `write_review` refuses
+while a `resolve_citations` pass is open, with `resolving: true`. The review is
+written from the citation table, so it is not written while the table is being
+filled — wait for that call to answer, and then write. A pass that will never
+answer is still released by `mark_blocked`.
+
+A second `write_review` answers with the counts of the review already on disk
+(`issue_counts`, `required_changes`, `suggestions`, `escalated`), so a recorder
+whose first answer was lost reports what was written rather than calling again.
+`run_status` carries the same counts once a review is written: its `issues` and
+`escalated` are read back from the published `issues.json`, on every arm,
+including the arms that run no editor and have no working tally. Before a review
+is written `issues` is the editor's tally and is absent where no editor runs —
+absent means the answer does not say, never zero.

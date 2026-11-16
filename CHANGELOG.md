@@ -296,6 +296,54 @@ and the overlap experiment.
   manuscript and refused every run over a scaffold source on Windows. One
   `storage.relative_name` makes every run-relative name POSIX on every OS, and
   the refusal that names the editor log no longer prints an absolute path.
+- **A finished run folder was reopened and undone by the next ingest.** A new
+  server process over a complete out folder — a restarted plugin, a second
+  worktree, a workflow run again over the same path — was accepted, rewrote
+  `progress.json` to `running` and took the folder over, so a review that had
+  been written and handed on read back as neither complete nor publishable
+  while `REVIEW.md` and `issues.json` sat beside it saying otherwise, and the
+  only exit was `mark_blocked`. `ingest` into a complete folder is now refused
+  by name, before anything is written, and the refusal says how a further round
+  runs: a fresh out folder with `prior_issues` pointing at this one. The session
+  that wrote the review is refused in the same words, so a second paper passed to
+  a live server fails loudly rather than attaching to a finished folder. Ingest
+  into a `blocked` folder stays allowed — that is the documented recovery.
+- **Refused calls still wrote into a complete folder.** Every completion guard
+  refused the call and then recorded the refusal, so `closures.jsonl` and
+  `editor-log.jsonl` grew after the review was handed on; and the reviewer read
+  tools and `save_note` were not guarded at all, so a reviewer still holding a
+  token went on appending to `tool-log.jsonl` and `notes.jsonl` — rows no
+  document in the folder counts, and reads that spent allowance in a run with
+  nothing left to spend it on. `claim_citation_batch` and
+  `submit_citation_verdict` are guarded too: a worker could still fill the
+  ledger the published citation counts were taken from. `resolve_citations` is
+  guarded too, and `write_review` refuses while a lookup pass is still open: the
+  review is written from the citation table, so it is not written while the table
+  is being filled, and a pass that was in flight cannot land rows under a review
+  that no longer counts them. A complete run folder does not change at all now:
+  the test digests every file in it, calls every one of the registered tools in
+  turn, and digests again, so a newly registered tool fails the test until it is
+  covered.
+- **The Record stage had one attempt at the one call that writes.** A
+  `write_review` that landed and an answer that was lost left the workflow with
+  nothing: it returned success with the counts undefined, or called `block()`
+  and threw "the run files were never written" over a folder holding a finished
+  review. The refusal over an already-complete run now carries the counts of the
+  review on disk — read from `issues.json`, written by nothing — and the stage
+  asks the folder what it holds (`run_status`) before it blocks, treating a
+  complete folder as the success it is. `run_status` carries the published
+  document's counts — `issues` and `escalated` read back from `issues.json` —
+  once a review is written, on every arm, because `issues` was the editor's
+  working tally and was `null` on the arms that run no editor; and the stage no
+  longer reports 0 for a count it could not read. A count nobody read is unknown
+  and is said to be unknown, in `counts_unknown`, rather than printed as a review
+  with no issues.
+- **A published document named the machine the review ran on.** `REVIEW.md` and
+  `REVIEW.txt` printed the ledger's absolute path in the Citations block, so the
+  two documents the authors are sent carried the reviewer's home directory on
+  every arm that keeps a ledger. The row is the run-relative name now, through
+  the same `storage.relative_name`, and the no-machine-path scan runs over a full
+  two-track run as well as a reviewers-only one.
 
 ## [0.9.1] — 2026-11-14
 

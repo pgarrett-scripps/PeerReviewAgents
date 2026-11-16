@@ -1205,12 +1205,12 @@ def test_a_written_review_cannot_be_rewritten_by_the_editor_that_wrote_it(tmp_pa
         assert (run.review / name).read_bytes() == raw, f'{name} was rewritten'
     reading = read_run(run.review)
     assert 'changed my mind' not in json.dumps(reading)
-    # The refusals are logged, and logging them does not reopen the run: the
-    # published file still reports the trace of the review it was written from.
+    # Nor are the refusals logged. The log is the record of the review that was
+    # written, the published document reports its counts, and a row appended
+    # after the fact belongs to no review in the folder.
     rows = [json.loads(line) for line in
             (run.review / 'editor-log.jsonl').read_text(encoding='utf-8').splitlines() if line]
-    assert [row['tool'] for row in rows if not row['accepted']] == [
-        'submit_editor', 'submit_report']
+    assert [row['tool'] for row in rows if not row['accepted']] == []
     document = json.loads(before['issues.json'])
     assert document['stages']['editor_trace']['refused'] == 0
 
@@ -1232,6 +1232,257 @@ def test_a_slot_is_not_claimed_into_a_finished_run(tmp_path):
     assert 'new run over the revised manuscript' in refused['request_rejected']
     assert (run.review / 'protocol.json').read_bytes() == before
     assert read_run(run.review)['status'] == 'complete'
+
+
+# -- a complete folder is the review, and nothing writes in it -------------
+
+
+def folder_state(root):
+    """Every file under one run folder, by run-relative name and digest."""
+    return {relative_name(path, root): srv.digest(path.read_bytes())
+            for path in sorted(Path(root).rglob('*')) if path.is_file()}
+
+
+def holds_path(text, machine):
+    """Whether one file names a path — as plain text, or escaped inside JSON.
+
+    A Windows path is written ``C:\\\\Users\\\\...`` inside a JSON string, so
+    scanning the raw file for ``str(path)`` finds nothing on the one OS where a
+    leaked path looks different from the path itself.
+    """
+    return machine in text or json.dumps(machine)[1:-1] in text
+
+
+def test_a_complete_folder_is_not_a_place_to_start_a_run(tmp_path):
+    """Ingest into a written review was accepted, and undid it.
+
+    A new server process — a restarted plugin, a second worktree, a workflow
+    run again over the same out folder — opened the folder, rewrote
+    progress.json to ``running`` and took the run over. ``read_run`` then said
+    the review was neither complete nor publishable while REVIEW.md and
+    issues.json sat beside it saying otherwise, and the only exit was
+    ``mark_blocked``. Ingest refuses by name now, and changes nothing.
+    """
+    run, _, _ = a_written_review(tmp_path)
+    before = folder_state(run.root)
+    srv.STATE['run'] = None
+
+    refused = srv.ingest(str(FIXTURE), str(run.root), arm='reviewers-only', reviewers=2)
+
+    assert 'request_rejected' in refused, refused
+    said = refused['request_rejected']
+    assert 'already holds a complete review' in said, said
+    assert 'prior_issues=' + str(run.review / 'issues.json') in said, 'and how a round two runs'
+    assert str(run.review / 'REVIEW.md') in said, 'and where the review it holds is'
+    assert folder_state(run.root) == before, 'the finished folder was written to'
+    reading = read_run(run.review)
+    assert reading['status'] == 'complete' and reading['publishable'] is True
+
+
+def test_a_blocked_folder_is_still_ingested_because_that_is_the_recovery(tmp_path):
+    """The complete-folder refusal does not catch the folder it must not catch.
+
+    A blocked run is left open on purpose: re-ingesting into it is the
+    documented way back, and the status guard is on the two complete statuses
+    alone.
+    """
+    open_run(tmp_path)
+    run = srv.current()
+    blocked = srv.mark_blocked(CODES['recorder_key'], 'The second reviewer never answered.')
+    assert blocked['status'] == 'blocked', blocked
+    srv.STATE['run'] = None
+
+    again = srv.ingest(str(FIXTURE), str(run.root), arm='reviewers-only', reviewers=2)
+
+    assert 'request_rejected' not in again, again
+    assert read_run(run.review)['status'] == 'running'
+
+
+def test_not_one_file_in_a_complete_folder_is_written_again(tmp_path):
+    """Refused calls still wrote: the logs grew after the review was handed on.
+
+    Every guard added before this one refused the call and then recorded the
+    refusal — ``closures.jsonl`` and ``editor-log.jsonl`` from the editor side,
+    and the reviewer tools wrote whatever they were asked for, because the
+    investigation appends to ``tool-log.jsonl`` on every read and ``save_note``
+    appends to ``notes.jsonl``. So a reviewer or an editor still holding a
+    token went on adding rows to the record of a review already written, rows
+    no document in the folder counts. The whole folder is checked here, by
+    digest, not the two published files.
+    """
+    run, editor, recorder = a_written_review(tmp_path)
+    reviewer = next(token for token, agent in run.tokens.items() if agent.slot == 'core-1')
+    block = run.paper['blocks'][0]
+    before = folder_state(run.root)
+    spent = run.agent_for(reviewer).calls
+
+    answers = {
+        'read_blocks': srv.read_blocks(reviewer, [block['id']]),
+        'search': srv.search(reviewer, block['text'].split('. ')[0]),
+        'save_note': srv.save_note(reviewer, 'One more thought about the bench.',
+                                   [block['id']]),
+        'submit_finding': srv.submit_finding(
+            reviewer, title='A late reading', block_id=block['id'],
+            quote=block['text'].split('. ')[0], comment='Raised after the review was written.',
+            severity='minor'),
+        'submit_issues': srv.submit_issues(editor, retire=['The one reading the passages carry']),
+        'submit_report': srv.submit_report(editor, 'A different closing story.',
+                                           model=run.models.get('editor')),
+        'write_review': srv.write_review(recorder),
+        'claim_agent': srv.claim_agent('core-2', 'whatever-code-it-holds'),
+        'reissue_claim_code': srv.reissue_claim_code(CODES['recorder_key'], 'editor'),
+    }
+
+    for name, answer in answers.items():
+        assert 'request_rejected' in answer, (name, answer)
+        assert 'complete' in answer['request_rejected'], (name, answer)
+    assert folder_state(run.root) == before, 'a refused call wrote in a finished folder'
+    assert run.agent_for(reviewer).calls == spent, 'and the refusals cost no allowance'
+
+
+def test_a_second_write_review_hands_back_the_counts_of_what_was_written(tmp_path):
+    """The recorder's answer was lost, and the retry had no counts to report.
+
+    ``write_review`` refuses a second call over a folder it already wrote, and
+    the refusal carried the two paths and nothing else — so a recorder whose
+    first answer never arrived could report the run's status and no numbers,
+    and the workflow read its counts as undefined. The counts come back with
+    the refusal now, read from the document that was published.
+    """
+    run, _, recorder = a_written_review(tmp_path)
+    document = json.loads((run.review / 'issues.json').read_text(encoding='utf-8'))
+
+    again = srv.write_review(recorder)
+
+    assert 'request_rejected' in again, again
+    assert again['status'] == 'complete'
+    assert again['issue_counts'] == document['counts'], 'the counts of the review on disk'
+    assert again['required_changes'] == document['counts']['required']
+    assert again['suggestions'] == document['counts']['suggestions']
+    assert again['escalated'] == document['escalated_count']
+    assert again['review'] == str(run.review / 'REVIEW.md')
+
+
+def test_the_paths_in_a_write_review_answer_are_in_no_file_of_the_run(tmp_path):
+    """The tool answer names the machine; nothing in the folder may.
+
+    ``write_review`` returns absolute paths, which is what a local tool answer
+    is for — the recorder has to be able to open the files it just wrote. The
+    rule is that none of it is persisted: no file in the run folder holds the
+    run's own location, so the folder reads the same wherever it is moved to.
+    The one absolute path written anywhere is the manuscript that was passed
+    in, in review/manifest.json, which is the record of what was ingested and
+    not a name anything in the review resolves.
+    """
+    run, _, recorder = a_written_review(tmp_path)
+
+    refused = srv.write_review(recorder)
+
+    assert refused['review'] == str(run.review / 'REVIEW.md'), 'the answer opens on this machine'
+    assert refused['issues'] == str(run.review / 'issues.json')
+    assert Path(refused['run']).is_absolute()
+    named_the_input = []
+    for path in sorted(run.root.rglob('*')):
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding='utf-8', errors='ignore')
+        where = relative_name(path, run.root)
+        for machine in (str(run.root), str(tmp_path)):
+            assert not holds_path(text, machine), f'{where} names {machine}'
+        if holds_path(text, str(FIXTURE)):
+            named_the_input.append(where)
+    assert named_the_input == ['review/manifest.json'], named_the_input
+    manifest = json.loads((run.review / 'manifest.json').read_text(encoding='utf-8'))
+    assert manifest['pdf'] == str(FIXTURE), 'the manuscript that was ingested'
+    assert str(FIXTURE) not in json.dumps(
+        {key: value for key, value in manifest.items() if key != 'pdf'})
+
+
+@pytest.mark.parametrize('arm', ['single', 'manuscript-only'])
+def test_run_status_carries_the_counts_of_a_written_review_on_every_arm(tmp_path, arm):
+    """The one answer a recorder whose write answer was lost can read.
+
+    ``issues`` was the editor's working tally and nothing else, so on an arm
+    that runs no editor it was ``null`` after the review was written — and the
+    workflow's fallback, which reads this answer for the counts of the document
+    on disk, had nothing to report. The document is the source once it exists,
+    on every arm, and the escalated count comes with it.
+    """
+    open_run(tmp_path, arm=arm)
+    run = srv.current()
+    if 'core-1' in run.required:
+        file_findings(run, 2)
+    for slot in run.required:
+        agent = run.agents.get(slot)
+        if agent is not None and agent.report:
+            continue
+        assert srv.submit_report(token_for(slot), 'Nothing further.', none_found=True,
+                                 model=run.models.get(slot))['closed']
+    written = srv.write_review(token_for('recorder'))
+    assert written['status'] in srv.COMPLETE_STATUSES, written
+    document = json.loads((run.review / 'issues.json').read_text(encoding='utf-8'))
+    assert run.issue_counts() is None, 'this arm runs no editor, so the run holds no tally'
+
+    standing = srv.run_status(CODES['recorder_key'])
+
+    assert standing['status'] in srv.COMPLETE_STATUSES
+    assert standing['issues'] == document['counts'], 'the counts of the document on disk'
+    assert standing['escalated'] == document['escalated_count']
+    assert standing['review'] == str(run.review / 'REVIEW.md')
+    if 'core-1' in run.required:
+        assert standing['issues']['issues'] == 2, 'and they are not a review of nothing'
+
+
+def test_the_session_that_wrote_the_review_does_not_attach_to_it_either(tmp_path):
+    """Ingest in the process that wrote the review answered ``attached: true``.
+
+    The folder guard catches a second process. This is the one that wrote the
+    review, whose run object says complete, and it handed the caller a finished
+    review as a run to work in — a workflow stage run twice, a second paper
+    passed to a live server — with nothing at the start saying the review was
+    over, while the docs say ingest refuses a complete folder by name. One
+    paper per session, and both cases refuse in the same words.
+    """
+    run, _, _ = a_written_review(tmp_path)
+    before = folder_state(run.root)
+
+    refused = srv.ingest(str(FIXTURE), str(run.root), arm='reviewers-only', reviewers=2)
+
+    assert 'request_rejected' in refused, refused
+    said = refused['request_rejected']
+    assert 'already holds a complete review' in said, said
+    assert 'prior_issues=' + str(run.review / 'issues.json') in said, 'and how a round two runs'
+    assert str(run.review / 'REVIEW.md') in said, 'and where the review it holds is'
+    assert 'attached' not in refused, 'nothing was attached to'
+    assert folder_state(run.root) == before, 'the finished folder was written to'
+    assert srv.STATE['run'] is run, 'and the session still serves the run it wrote'
+
+
+def test_the_record_stage_treats_an_already_written_review_as_the_run_it_is():
+    """The workflow's Record stage had one attempt at the one call that writes.
+
+    A ``write_review`` that landed and an answer that was lost left the stage
+    with nothing: it returned success with the counts undefined, or called
+    ``block()`` and threw "the run files were never written" over a folder
+    holding a finished review. Asserted on the source, because the workflow is
+    JavaScript the plugin ships and no test runner here loads it.
+    """
+    source = (Path(srv.__file__).parent / 'pra' / 'workflows' / 'review.js').read_text(
+        encoding='utf-8')
+    record = source.split("phase('Record')", 1)[1]
+
+    assert 'run_status with recorder_key=' in record, 'the folder is asked what it holds'
+    assert 'Do not call write_review twice' in record
+    assert record.index('const asFound') < record.index('await block('), (
+        'and it is asked before the run is blocked')
+    assert 'written(asFound.status)' in record, 'a complete folder is the success'
+    # And a count the run did not report is unknown, not zero. The stage used
+    # to tell the recorder to report 0 where a count was absent, and `issues`
+    # is absent from run_status on every arm that runs no editor — so a lost
+    # answer came back as a review with no issues while two sat in issues.json.
+    assert 'Where a count is absent' not in record, 'a count nobody read is not a count of none'
+    assert 'never report 0 for a count that is absent' in record
+    assert 'counts_unknown' in record, 'and the result says which counts those were'
 
 
 # -- the editor closes after its review, not before ------------------------

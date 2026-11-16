@@ -704,20 +704,56 @@ if (hasEditor) {
 }
 
 phase('Record')
-const recorded = await agent(
+const written = status => status === 'complete' || status === 'complete-without-findings'
+let recorded = await agent(
   'Close the run. Call claim_agent with slot="recorder" and claim_code="' + codeFor('recorder')
   + '", then write_review with that token.'
   + ' Report the status, issue_counts.issues as issues, the required_changes and suggestions'
   + ' counts and the escalated count. If it refuses, report the refusal text verbatim in the'
-  + ' refusal field.',
+  + ' refusal field — and where it refuses because the review is already written, report the'
+  + ' status and the counts it returns with that refusal, which are the counts of the review'
+  + ' that was written. Do not call write_review twice.',
   options('recorder', {
     label: 'write review', phase: 'Record', agentType: 'pra:recorder', schema: RECORDED,
   }),
 )
-if (!recorded || !recorded.status) {
-  await block('The run files were never written: the recorder returned nothing')
+// A write that landed and an answer that was lost is not a run that was never
+// written: the files are on disk, write_review refuses a second call over them,
+// and this stage used to return success with the counts undefined or block a
+// folder holding a finished review. The folder is asked what it holds before
+// anything is called twice or blocked, and a complete folder is the success.
+let unknownCounts = null
+if (!recorded || !written(recorded.status)) {
+  const asFound = await agent(
+    'The review of this run may already be written. Call run_status with recorder_key="'
+    + recorderKey + '" and report its status, issues.issues as issues, issues.required as'
+    + ' required_changes, issues.suggestions as suggestions and escalated. Over a written'
+    + ' review that answer carries the counts of the document that was published, on every'
+    + ' arm. Report only the counts it gives you: leave a field out where the answer has no'
+    + ' number for it, and never report 0 for a count that is absent — absent means this'
+    + ' answer does not say, and 0 would be a review with no issues. Call nothing else.',
+    options('recorder', {
+      label: 'read the run', phase: 'Record', agentType: 'pra:recorder', schema: RECORDED,
+    }),
+  )
+  if (asFound && written(asFound.status)) {
+    // Absent is not zero. The counts of a written review are in the document,
+    // and a count missing from this answer is one nobody read — it is reported
+    // as unknown, because a 0 here reads as a review that found nothing.
+    unknownCounts = ['issues', 'required_changes', 'suggestions', 'escalated']
+      .filter(key => typeof asFound[key] !== 'number')
+    log('the recorder did not answer, and the run folder is ' + asFound.status
+      + ': the review was written'
+      + (unknownCounts.length ? '; the run did not report ' + unknownCounts.join(', ') : ''))
+    recorded = Object.assign({}, asFound, { refusal: (recorded && recorded.refusal) || null })
+    if (!unknownCounts.length) unknownCounts = null
+  }
 }
-if (recorded.status !== 'complete' && recorded.status !== 'complete-without-findings') {
+if (!recorded || !recorded.status) {
+  await block('The run files were never written: the recorder returned nothing and the run '
+    + 'folder does not say the review was written')
+}
+if (!written(recorded.status)) {
   log('the run is ' + recorded.status + ': ' + (recorded.refusal || 'no reason given'))
 }
 
@@ -752,5 +788,8 @@ return {
   required_changes: recorded.required_changes,
   suggestions: recorded.suggestions,
   escalated: recorded.escalated,
+  // Which counts of a written review nobody could read, named rather than
+  // filled in with zeros: the review is in the folder either way.
+  counts_unknown: unknownCounts,
   run: run.out,
 }

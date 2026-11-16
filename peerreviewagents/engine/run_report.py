@@ -19,7 +19,7 @@ from .. import issues as issue_model
 from ..names import RUN_DIRECTORY
 from ..plugin import models as model_plan
 from . import citation_ledger
-from .storage import read
+from .storage import read, relative_name
 from .usage import agent_rows, observed_usage, runtime_usage
 
 WIDTH = 88
@@ -219,7 +219,13 @@ def _citation_blocks(run):
             ('Cannot tell', totals['cannot_tell']),
             ('Uses never judged', totals['uses_unjudged']),
             ('Lookups made', totals['lookups']),
-            ('Ledger', str(Path(run) / citation_ledger.LEDGER_PATH))]
+            # The name, not the path. This row wrote the absolute location of
+            # the ledger into REVIEW.md and REVIEW.txt, so the two documents
+            # the authors are sent named the machine that ran the review and a
+            # folder that was moved or copied read as a review of a file that
+            # is not there. A run-relative POSIX name is what every other
+            # published file is named by.
+            ('Ledger', relative_name(Path(run) / citation_ledger.LEDGER_PATH, _run_root(run)))]
     blocks = [('heading2', 'Citations'),
               ('paragraph', citation_ledger.summary_line(totals)),
               ('fields', [(key, value) for key, value in rows])]
@@ -323,6 +329,17 @@ def _run_folder(run):
     if run.name == RUN_DIRECTORY and run.parent.name:
         return run.parent.name
     return run.name
+
+
+def _run_root(run):
+    """The run folder a published name is relative to.
+
+    Every caller hands this module the review directory, and a file in it is
+    published as ``review/<name>`` — the same name the manifest, the issues
+    document and every message use.
+    """
+    run = Path(run)
+    return run.parent if run.name == RUN_DIRECTORY and run.parent.name else run
 
 
 def _closed(issue):
