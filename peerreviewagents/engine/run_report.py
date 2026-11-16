@@ -54,7 +54,7 @@ def find_workspace(run):
     """Locate the reviewed workspace: the manuscript folder the run imported into."""
     run = Path(run)
     for candidate in (run.parent / MANUSCRIPT, run / MANUSCRIPT):
-        if (candidate / 'paper.json').is_file():
+        if (candidate / 'manifest.json').is_file():
             return candidate
     return None
 
@@ -537,15 +537,17 @@ def report_blocks(run, workspace=None):
         protocol = {}
     paper_id = (_optional(run / 'manifest.json') or {}).get('paper_id') or protocol.get('paper_id')
     workspace = Path(workspace).resolve() if workspace else find_workspace(run)
-    paper = _optional(workspace / 'paper.json') if workspace else None
+    # The manuscript as its workspace records it: the manifest carries the
+    # paper id, the title and where the source came from.
+    paper = _optional(workspace / 'manifest.json') if workspace else None
     if workspace and paper is None:
         # The workspace is where the manuscript was imported, and a run that
         # never got that far has none. A caller naming one that does not exist
         # yet asked for the reports of this run, not for an exception: the run
         # folder is enough, and the paper fields are left out of the page.
         workspace = find_workspace(run)
-        paper = _optional(workspace / 'paper.json') if workspace else None
-    if paper and paper_id and paper.get('id') != paper_id:
+        paper = _optional(workspace / 'manifest.json') if workspace else None
+    if paper and paper_id and paper.get('paper_id') != paper_id:
         raise ValueError('The workspace does not match the reviewed manuscript')
     reviewers = _reviewer_packages(run)
     progress = _optional(run / 'progress.json') or {}

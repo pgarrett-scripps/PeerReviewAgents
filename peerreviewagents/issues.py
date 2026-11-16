@@ -118,8 +118,13 @@ TRACK_CATEGORY = {
 #: found on are kept on the member, so a reader of ``issues.json`` alone can
 #: open ``paper.md`` at the line without opening ``findings.jsonl``.
 #: ``document`` is empty for the manuscript and names the supplement otherwise.
+#: ``fingerprint`` is the digest of the whole passage the quote was found in: a
+#: later round reads it to recognise the same passage after the converter has
+#: broken the lines somewhere else, which is the one thing line numbers cannot
+#: survive.
 MEMBER_FIELDS = ('finding_uid', 'slot', 'track', 'severity', 'kind', 'basis', 'escalate',
-                 'title', 'document', 'line', 'end_line', 'quote', 'evidence_lines')
+                 'title', 'document', 'line', 'end_line', 'quote', 'evidence_lines',
+                 'fingerprint')
 
 #: Every field on every issue row of ``issues.json``, live or closed, edited or
 #: synthesised. A field that does not apply to a row is ``null``, or ``[]``

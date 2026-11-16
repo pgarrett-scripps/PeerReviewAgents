@@ -17,7 +17,7 @@ Six jobs, one per stage:
 
 1. **Open the run.** Call `ingest` once with the arguments given — including
    `prior_issues` when the prompt names an earlier round's issues file, and not
-   otherwise. Report the paper id, the title, the block count, the arm, the slot
+   otherwise. Report the paper id, the title, the line count of `paper.md`, the arm, the slot
    list, the citation worker list and `prior_round` as it comes back.
 2. **Resolve the references.** When the prompt asks for it, call
    `resolve_citations` with the run key and the limit given, and keep calling it

@@ -264,9 +264,9 @@ Of the 53, 7 earned `two-quotes` and, as the run was stored, none earned
 `computed` despite 17 `calculate` calls: the rule then counted a receipt only
 when its numbers appeared in the quoted sentence, and a reviewer quoting one
 sentence rarely quotes every number it combined. 0.9 widened the rule to the
-blocks a finding cites, which earns that run one `computed` finding: the stats
+lines a finding cites, which earns that run one `computed` finding: the stats
 specialist's confidence-interval asymmetry check, whose one unquoted input (the
-estimate, 0.1044) sits in the same block `b0048` the finding is anchored to.
+estimate, 0.1044) is printed on a line the finding cites.
 
 A rate limit, a breached budget or a stage that reviewed nothing leaves the run
 `blocked`.

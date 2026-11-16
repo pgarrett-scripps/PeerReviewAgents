@@ -11,7 +11,7 @@ So the work is a table, not a reading, and it is filled in four stages:
 
 1. **Fill** (:func:`build`, no model). Every reference in the manuscript gets a
    row, with or without a DOI, and every in-text use gets a row: the citing
-   sentence, the block it sits in and the reference it points at.
+   sentence, the document and line it sits on and the reference it points at.
 2. **Resolve** (:func:`resolve`, no model). Every reference row — not a ration —
    is looked up. A DOI goes to Crossref; a reference without one goes to a
    bibliographic title search, Crossref first and then Europe PMC. The row
@@ -66,6 +66,7 @@ import unicodedata
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
+from . import paper_base
 from .external_evidence import retrieve
 from .file_lock import exclusive_lock, shared_lock
 from .storage import digest, read, write
@@ -360,7 +361,7 @@ _NUMERIC_MARKER = re.compile(
 #: A citation the reader tied to an entry of the reference list. ``rustypaper``
 #: rewrites one as a Markdown link to the entry's anchor — ``fish3.`` becomes
 #: ``fish[3](#ref-3).`` and ``[1, 2]`` becomes ``[[1](#ref-1), [2](#ref-2)]`` —
-#: so the markup in the block text *is* the marker-to-reference link, for a
+#: so the markup in the piece's text *is* the marker-to-reference link, for a
 #: superscript run and a bracketed one alike. The ``#ref-`` target is what
 #: keeps this off the other links a converted paper carries.
 _ANCHOR = re.compile(r'\[(\d{1,3})\]\(#ref-([^)\s]{1,40})\)')
@@ -932,7 +933,7 @@ def _printed_year(reference):
 
 
 def sentences(text):
-    """One block's text as sentences, keeping abbreviations whole.
+    """One piece's text as sentences, keeping abbreviations whole.
 
     The abbreviation guard matches at a word boundary. Replacing the plain
     string put the guard inside every word that happens to end in one of them:
@@ -1002,10 +1003,10 @@ def _by_author_year(references):
     return index, ambiguous
 
 
-def reference_rows(paper):
+def reference_rows(references):
     """One row per reference the manuscript lists, DOI or no DOI."""
     rows = []
-    for reference in paper.get('references') or []:
+    for reference in references or []:
         identifier = reference.get('id')
         if not identifier:
             continue
@@ -1068,12 +1069,17 @@ def reference_rows(paper):
     return rows
 
 
-def use_rows(paper):
-    """One row per in-text use: the citing sentence, its block, the reference.
+def use_rows(base, references):
+    """One row per in-text use: the citing sentence, its lines, the reference.
+
+    A row is anchored on the document and the line the citing passage starts
+    on — the same anchor a finding carries — with the sentence's position
+    inside it, so a reviewer handed a row can read it in ``paper.md`` without
+    anything in between.
 
     Where the citations come from is recorded per row, because the paths
     differ. A manuscript imported from JATS carries the reference ids per
-    block, so a sentence's own marker refines a list that is already correct. A
+    piece, so a sentence's own marker refines a list that is already correct. A
     PDF carries the reader's own links: ``rustypaper`` matches a marker to the
     bibliography entry it parsed and rewrites it as a link to that entry, and
     :func:`_uses_in` takes those links rather than working the matching out
@@ -1090,32 +1096,39 @@ def use_rows(paper):
     judging a claim reads ``blocked the receptor3`` and not ``blocked the
     receptor[3](#ref-3)``.
     """
-    references = list(paper.get('references') or [])
+    references = list(references or [])
     by_label = _by_label(references)
     by_author, ambiguous = _by_author_year(references)
     known = {str(reference.get('id')) for reference in references}
     rows = []
-    for block in paper.get('blocks') or []:
-        kind = str(block.get('kind') or '')
-        text = block.get('text') or ''
+    for piece in base.rows:
+        kind = str(piece.get('kind') or '')
+        document = piece.get('document') or paper_base.MAIN_DOCUMENT
+        start, end = piece['lines']
+        text = base.range_text(start, end, document)
         if not text or not (kind.startswith(PROSE_KINDS) or kind in PROSE_KINDS):
             continue
-        listed = [str(one) for one in (block.get('citations') or []) if str(one) in known]
-        seen_in_block = set()
+        where = str(document) + ':' + str(start)
+        listed = [str(one) for one in (piece.get('citations') or []) if str(one) in known]
+        seen_in_piece = set()
+        placed = False
         for position, sentence in enumerate(sentences(text), start=1):
             for reference_id, derivation, marker in _uses_in(sentence, by_label, by_author,
                                                              ambiguous, listed):
-                row_id = 'use:' + str(block.get('id')) + ':' + str(position) + ':' + str(
+                row_id = 'use:' + where + ':' + str(position) + ':' + str(
                     reference_id or 'unmatched-' + marker)
-                if row_id in seen_in_block:
+                if row_id in seen_in_piece:
                     continue
-                seen_in_block.add(row_id)
+                seen_in_piece.add(row_id)
+                placed = True
                 rows.append({
                     'kind': 'use',
                     'row_id': row_id,
                     'reference_id': reference_id,
-                    'block_id': block.get('id'),
-                    'section': block.get('section'),
+                    'document': document,
+                    'line': start,
+                    'end_line': end,
+                    'section': piece.get('section'),
                     'sentence_index': position,
                     'sentence': squeeze(_printed(sentence), 1_200),
                     'marker': marker,
@@ -1123,18 +1136,20 @@ def use_rows(paper):
                     'stage': 'fill',
                     'filled_at': now(),
                 })
-            seen_in_block |= {row['row_id'] for row in rows[-4:]}
-        if listed and not any(row.get('block_id') == block.get('id') for row in rows):
-            # The import said this block cites these references and no marker
-            # survived extraction. The block is the citing passage then, which
-            # is a worse anchor than a sentence and is recorded as being one.
+            seen_in_piece |= {row['row_id'] for row in rows[-4:]}
+        if listed and not placed:
+            # The import said this passage cites these references and no marker
+            # survived extraction. The whole passage is the citing one then,
+            # which is a worse anchor than a sentence and is recorded as being
+            # one.
             for reference_id in listed:
                 rows.append({
-                    'kind': 'use', 'row_id': 'use:' + str(block.get('id')) + ':0:' + reference_id,
-                    'reference_id': reference_id, 'block_id': block.get('id'),
-                    'section': block.get('section'), 'sentence_index': 0,
+                    'kind': 'use', 'row_id': 'use:' + where + ':0:' + reference_id,
+                    'reference_id': reference_id, 'document': document, 'line': start,
+                    'end_line': end,
+                    'section': piece.get('section'), 'sentence_index': 0,
                     'sentence': squeeze(_printed(text), 1_200), 'marker': None,
-                    'derivation': 'block-citations', 'stage': 'fill', 'filled_at': now(),
+                    'derivation': 'listed-citations', 'stage': 'fill', 'filled_at': now(),
                 })
     return rows
 
@@ -1215,7 +1230,7 @@ def _linked(reference_id, derivation, marker, listed):
     """One use the reader's markup accounts for, matched against this paper.
 
     The three answers are the three a label can earn: the reference it names,
-    the same reference when the block's own citation list does not carry it,
+    the same reference when the passage's own citation list does not carry it,
     and no reference at all. The reader reads its labels off this paper's own
     bibliography, so a label in no reference row means the reader and the
     reference list disagree about the list — a finding about the extraction,
@@ -1224,7 +1239,7 @@ def _linked(reference_id, derivation, marker, listed):
     if reference_id and (not listed or reference_id in listed):
         return (reference_id, derivation, marker)
     if reference_id:
-        return (reference_id, derivation + '-outside-block', marker)
+        return (reference_id, derivation + '-outside-listed', marker)
     return (None, derivation + '-unmatched', marker)
 
 
@@ -1277,7 +1292,7 @@ def _uses_in(sentence, by_label, by_author, ambiguous, listed):
             if reference_id and (not listed or reference_id in listed):
                 out.append((reference_id, 'marker-numeric', '[' + number + ']'))
             elif reference_id:
-                out.append((reference_id, 'marker-numeric-outside-block', '[' + number + ']'))
+                out.append((reference_id, 'marker-numeric-outside-listed', '[' + number + ']'))
             else:
                 out.append((None, 'marker-unmatched', '[' + number + ']'))
     for match in _AUTHOR_YEAR.finditer(printed):
@@ -1531,14 +1546,14 @@ class Ledger:
         return stored
 
 
-def build(ledger, paper):
+def build(ledger, base, reference_list):
     """Stage 1: fill the table from the manuscript. No model, no network.
 
     Safe to call twice: a row that is already there keeps whatever later stages
     wrote on it, and only new rows are appended.
     """
     known, _ = ledger.load()
-    references, uses = reference_rows(paper), use_rows(paper)
+    references, uses = reference_rows(reference_list), use_rows(base, reference_list)
     added = 0
     for row in references + uses:
         if row['row_id'] in known:
@@ -3590,8 +3605,8 @@ def batch(ledger, slot, size=10, stale_seconds=900):
                  if row.get('kind') == 'use' and isinstance(row.get('reference_id'), str)
                  and row['reference_id'] and not row.get('verdict')
                  and (row.get('claimed_by') in (None, slot) or _stale(row, stale_seconds))]
-    open_rows.sort(key=lambda row: (str(row.get('block_id')), _ordinal(row.get('sentence_index')),
-                                    row['row_id']))
+    open_rows.sort(key=lambda row: (str(row.get('document')), _ordinal(row.get('line')),
+                                    _ordinal(row.get('sentence_index')), row['row_id']))
     size = max(1, min(int(size or 10), 25))
     out = []
     for row in open_rows[:size]:
@@ -3602,7 +3617,8 @@ def batch(ledger, slot, size=10, stale_seconds=900):
         ledger.append({**row, 'claimed_by': slot, 'claimed_at': now()})
         out.append({
             'row_id': row['row_id'],
-            'block_id': row.get('block_id'),
+            'document': row.get('document'),
+            'line': row.get('line'),
             'sentence': row.get('sentence'),
             'marker': row.get('marker'),
             'reference': {
@@ -3775,7 +3791,9 @@ def use_view(row):
     return {
         'row_id': row.get('row_id'),
         'reference_id': row.get('reference_id'),
-        'block_id': row.get('block_id'),
+        'document': row.get('document'),
+        'line': row.get('line'),
+        'end_line': row.get('end_line'),
         'section': row.get('section'),
         'sentence': row.get('sentence'),
         'marker': row.get('marker'),

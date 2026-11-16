@@ -25,6 +25,7 @@ import urllib.parse
 
 import pytest
 
+from manuscripts import build_base
 from peerreviewagents.engine import citation_ledger as cl
 from peerreviewagents.engine import external_evidence as ev
 
@@ -100,23 +101,35 @@ def europepmc(hits):
     return {'hitCount': len(hits), 'resultList': {'result': hits}}
 
 
-def paper(references=None, text=None):
-    """A manuscript with one citing paragraph, as ``paper.json`` holds it."""
+#: The reference every fixture here cites when a test does not name its own.
+REPLAY = {'id': 'r1', 'label': '1', 'title': TITLE, 'year': '2019',
+          'first_author': 'Lin, M.', 'doi': '10.1234/replay',
+          'raw': '1. Lin M. ' + TITLE + '. Journal of Neuroscience, 2019.'}
+
+
+def listed(references=None):
+    """The reference list a fixture uses: the one given, or the default one."""
+    return [REPLAY] if references is None else list(references)
+
+
+def paper(tmp_path, references=None, text=None):
+    """A manuscript with one citing paragraph, written as a workspace.
+
+    The citing sentence is a line of ``paper.md`` here, as it is in a real
+    import, because the row the fill stage writes is keyed by the line the
+    sentence sits on and a dict of invented ids would not exercise that.
+    """
     sentence = text or 'Replay has been reported during quiet rest [1].'
-    return {
-        'id': 'paper-1',
-        'blocks': [{'id': 'b1', 'kind': 'paragraph', 'section': 'Introduction',
-                    'text': sentence}],
-        'references': references if references is not None else [
-            {'id': 'r1', 'label': '1', 'title': TITLE, 'year': '2019',
-             'first_author': 'Lin, M.', 'doi': '10.1234/replay',
-             'raw': '1. Lin M. ' + TITLE + '. Journal of Neuroscience, 2019.'}],
-    }
+    return build_base(tmp_path / 'manuscript',
+                      [{'kind': 'heading', 'text': 'Introduction',
+                        'section': 'Introduction'},
+                       {'kind': 'paragraph', 'section': 'Introduction', 'text': sentence}],
+                      references=listed(references))
 
 
 def filled(tmp_path, references=None, text=None):
     ledger = cl.Ledger(tmp_path / 'review')
-    cl.build(ledger, paper(references, text))
+    cl.build(ledger, paper(tmp_path, references, text), listed(references))
     return ledger
 
 
@@ -140,7 +153,8 @@ def test_every_reference_gets_a_row_with_or_without_a_doi(tmp_path):
     assert rows['ref:r2']['printed']['doi'] is None
     uses = [row for row in rows.values() if row['kind'] == 'use']
     assert {row['reference_id'] for row in uses} == {'r1', 'r2'}
-    assert all(row['sentence'] and row['block_id'] == 'b1' for row in uses)
+    assert all(row['sentence'] and row['document'] == 'paper.md' and row['line'] == 3
+               for row in uses)
     totals = cl.counts(ledger)
     assert (totals['references'], totals['uses']) == (2, 2)
     # Stage 1 reads the manuscript and nothing else: no model, no network.
@@ -154,7 +168,7 @@ def test_filling_twice_keeps_what_later_stages_wrote(tmp_path):
     net = Net([('/works/', crossref_work('10.1234/replay', TITLE, '2019')),
                ('DOI%3A', europepmc([]))])
     cl.resolve(ledger, lookups(tmp_path, net))
-    again = cl.build(ledger, paper())
+    again = cl.build(ledger, paper(tmp_path), listed())
     assert again['added'] == 0
     row = {row['row_id']: row for row in ledger.rows()}['ref:r1']
     assert row['resolution']['exists'] == 'yes', 'the fill must not erase the lookup'
@@ -482,7 +496,7 @@ def test_a_near_neighbour_title_is_a_candidate_and_never_the_resolved_work(tmp_p
     assert 'nothing corroborates it as this one' in flagged[0]['problem']
     # And a hit the year or the author corroborates *is* the work.
     second = cl.Ledger(tmp_path / 'second')
-    cl.build(second, paper())
+    cl.build(second, paper(tmp_path), listed())
     agreeing = {**neighbour, 'title': ['Hippocampal replay during quiet resting'],
                 'author': [{'given': 'Mei', 'family': 'Lin'}],
                 'issued': {'date-parts': [[2019]]}}
@@ -573,7 +587,7 @@ def test_a_rate_limited_or_broken_lookup_is_retried_but_not_for_ever(tmp_path):
 
     # And a host that stays down is not retried for ever.
     third = cl.Ledger(tmp_path / 'third')
-    cl.build(third, paper())
+    cl.build(third, paper(tmp_path), listed())
     for attempt in range(cl.RESOLVE_ATTEMPTS + 2):
         cl.resolve(third, cl.Lookups(tmp_path / 'third' / 'citations' / 'lookups',
                                      opener=Net([('/works/', 429), ('/works?', 503),
@@ -827,7 +841,7 @@ def test_the_lookup_count_per_stage_is_recorded_and_the_allowance_holds(tmp_path
     # The allowance is the ceiling, and a reference past it is "could not
     # check" rather than a reference the run quietly skipped.
     second = cl.Ledger(tmp_path / 'other')
-    cl.build(second, paper())
+    cl.build(second, paper(tmp_path), listed())
     stingy = cl.Lookups(tmp_path / 'other' / 'citations' / 'lookups', opener=net, limit=0)
     cl.resolve(second, stingy)
     resolution = {row['row_id']: row for row in second.rows()}['ref:r1']['resolution']
@@ -878,7 +892,10 @@ def test_a_worker_claims_a_batch_with_the_source_text_and_no_manuscript(tmp_path
     assert row['sentence'].endswith('[1].')
     assert 'quiet rest' in row['source_text'] and row['source_kind'] == 'abstract'
     assert row['reference']['printed_year'] == '2019'
-    assert 'manuscript' not in row and 'blocks' not in row
+    # Where the sentence is, and not the manuscript around it: a worker judging
+    # one citation is handed the line it sits on, not the paper to read.
+    assert (row['document'], row['line']) == ('paper.md', 3)
+    assert 'manuscript' not in row and 'source_lines' not in row
     # The claim is on the row, so a second worker is handed something else.
     assert cl.batch(ledger, 'cite-2', size=5) == []
     assert cl.batch(ledger, 'cite-1', size=5)[0]['row_id'] == row['row_id']
@@ -1169,7 +1186,7 @@ def test_only_the_doi_resolver_can_make_a_doi_not_exist(tmp_path):
     # And the resolver not answering is could not check, never no: a route that
     # is down says nothing about an identifier.
     quiet = cl.Ledger(tmp_path / 'quiet')
-    cl.build(quiet, paper(references, 'Earlier work differs [1].'))
+    cl.build(quiet, paper(tmp_path, references, 'Earlier work differs [1].'), references)
     broken = Net([('/works/10.48550/arxiv.1706.03762/agency', 404),
                   ('/works/10.48550', 404),
                   ('/works?', crossref_search([])),
@@ -1184,7 +1201,7 @@ def test_only_the_doi_resolver_can_make_a_doi_not_exist(tmp_path):
     # claim. (The handle API answers its own status in the body, so a 404 there
     # is read for its `responseCode` and nothing else is.)
     odd = cl.Ledger(tmp_path / 'odd')
-    cl.build(odd, paper(references, 'Earlier work differs [1].'))
+    cl.build(odd, paper(tmp_path, references, 'Earlier work differs [1].'), references)
     shapeless = Net([('/works/10.48550/arxiv.1706.03762/agency', 404),
                      ('/works/10.48550', 404),
                      ('doi.org/api/handles', {'values': []}),
@@ -1207,7 +1224,7 @@ def test_a_doi_is_checked_the_same_way_whatever_printed_it(tmp_path):
     cut = {'id': 'r1', 'label': '1', 'title': TITLE, 'year': '2020',
            'first_author': 'Lin, M.', 'doi': '10.1016/j.cell.2020.01.',
            'raw': '1. Lin M. ' + TITLE + '. Cell, 2020.'}
-    rows = cl.reference_rows({'references': [cut], 'blocks': []})
+    rows = cl.reference_rows([cut])
     assert rows[0]['printed']['doi'] is None, 'a truncated DOI is not a DOI to look up'
 
     # Nothing with a dot segment reaches a URL, whichever URL it would have
@@ -1605,7 +1622,7 @@ def test_only_a_doi_the_reference_list_gives_can_be_a_doi_that_does_not_exist(tm
     run_on = '1. Lin M. ' + TITLE + '. Nature 2013;499:295. 10.1038/nature12373Published online'
     scraped = [{'id': 'r1', 'label': '1', 'title': TITLE, 'year': '2013',
                 'first_author': 'Lin, M.', 'raw': run_on}]
-    rows = cl.reference_rows({'references': scraped, 'blocks': []})
+    rows = cl.reference_rows(scraped)
     assert rows[0]['printed']['doi'] == '10.1038/nature12373published'
     assert rows[0]['printed']['extracted']['doi'] == 'raw', 'nobody handed this over'
 
@@ -1626,7 +1643,8 @@ def test_only_a_doi_the_reference_list_gives_can_be_a_doi_that_does_not_exist(tm
     # its own reference, and that one the resolver may contradict.
     given = [dict(scraped[0], doi='10.1038/nature12373published')]
     field = cl.Ledger(tmp_path / 'field')
-    cl.build(field, paper(given, 'Replay has been reported during quiet rest [1].'))
+    cl.build(field, paper(tmp_path / 'field', given,
+                          'Replay has been reported during quiet rest [1].'), given)
     cl.resolve(field, cl.Lookups(tmp_path / 'field' / 'citations' / 'lookups', opener=Net(
         [NO_HANDLE, ('/works/10.1038', 404), ('/works?', crossref_search([])),
          ('/search?', europepmc([]))])))
@@ -1643,7 +1661,8 @@ def test_only_a_doi_the_reference_list_gives_can_be_a_doi_that_does_not_exist(tm
            'issued': {'date-parts': [[2013]]}, 'container-title': ['Nature'],
            'type': 'journal-article', 'abstract': 'Replay during quiet rest.'}
     found = cl.Ledger(tmp_path / 'found')
-    cl.build(found, paper(scraped, 'Replay has been reported during quiet rest [1].'))
+    cl.build(found, paper(tmp_path / 'found', scraped,
+                          'Replay has been reported during quiet rest [1].'), scraped)
     cl.resolve(found, cl.Lookups(tmp_path / 'found' / 'citations' / 'lookups', opener=Net(
         [NO_HANDLE, ('/works/10.1038', 404), ('/works?', crossref_search([hit])),
          ('/search?', europepmc([]))])))
@@ -1668,7 +1687,8 @@ def test_a_throttled_doi_resolver_is_could_not_check_whatever_its_body_says(tmp_
     for status in (429, 503):
         run = tmp_path / str(status)
         ledger = cl.Ledger(run)
-        cl.build(ledger, paper(references, 'Replay has been reported during quiet rest [1].'))
+        cl.build(ledger, paper(run, references,
+                               'Replay has been reported during quiet rest [1].'), references)
         net = Net([('doi.org/api/handles', (status, {'responseCode': 100, 'handle': 'x'})),
                    ('/works/10.1234', 404), ('/works?', crossref_search([])),
                    ('/search?', europepmc([]))])
@@ -1766,8 +1786,9 @@ UNTITLED = [{**SPLIT[0], 'raw': '1. Mikami N, Watanabe K, Yoshikawa N, et al. '
 def split_doi_row(tmp_path, net, references=None, name='review'):
     """Resolve one broken-DOI reference and hand back its resolution row."""
     ledger = cl.Ledger(tmp_path / name)
-    cl.build(ledger, paper(references if references is not None else SPLIT,
-                           'Neuropeptide signalling shapes the response [1].'))
+    chosen = SPLIT if references is None else references
+    cl.build(ledger, paper(tmp_path / name, chosen,
+                           'Neuropeptide signalling shapes the response [1].'), chosen)
     cl.resolve(ledger, cl.Lookups(tmp_path / name / 'citations' / 'lookups', opener=net))
     return {row['row_id']: row for row in ledger.rows()}['ref:r1']
 
@@ -1951,7 +1972,7 @@ def test_the_doi_a_split_page_prints_is_recovered_and_prose_is_not_absorbed(tmp_
 def reference_row(tmp_path, references, name='review'):
     """One reference row as the build stage leaves it: what the parser read."""
     ledger = cl.Ledger(tmp_path / name)
-    cl.build(ledger, paper(references))
+    cl.build(ledger, paper(tmp_path / name, references), references)
     return {row['row_id']: row for row in ledger.rows()}['ref:r1']
 
 
@@ -2101,7 +2122,7 @@ def test_a_title_read_off_the_raw_string_is_never_a_mismatch_finding(tmp_path):
                 'raw': '1. Lin M. Replay of hippocampal sequences during quiet rest in rats. '
                        'Journal of Neuroscience 2019;39:1-10.'}]
     ledger = cl.Ledger(tmp_path / 'review')
-    cl.build(ledger, paper(guessed))
+    cl.build(ledger, paper(tmp_path, guessed), guessed)
     printed ={row['row_id']: row for row in ledger.rows()}['ref:r1']['printed']
     assert printed['extracted']['title'] == 'raw'
     assert printed['title'] != TITLE, 'the guess and the record disagree'
@@ -2240,7 +2261,7 @@ RESULT = ('Replay of the same place-cell sequences was seen during quiet rest in
 def full_text_ledger(tmp_path, body, abstract=None, hit=None, name='review', **kwargs):
     """A ledger resolved against an open-access article, with a full text to window."""
     ledger = cl.Ledger(tmp_path / name)
-    cl.build(ledger, paper(**kwargs))
+    cl.build(ledger, paper(tmp_path / name, **kwargs), listed(kwargs.get('references')))
     net = Net([('/works/10.1234', crossref_work('10.1234/replay', TITLE, '2019',
                                                 abstract=abstract)),
                ('DOI%3A', europepmc([hit if hit is not None else OPEN_ACCESS_HIT])),
@@ -2371,7 +2392,7 @@ def test_an_archive_that_sent_no_body_is_not_a_row_resting_on_full_text(tmp_path
 def test_pubmed_central_answers_for_an_article_europe_pmc_did_not_serve(tmp_path):
     """Two mirrors of one open-access archive, and either may be the reachable one."""
     ledger = cl.Ledger(tmp_path / 'review')
-    cl.build(ledger, paper())
+    cl.build(ledger, paper(tmp_path), listed())
     net = Net([('/works/10.1234', crossref_work('10.1234/replay', TITLE, '2019')),
                ('DOI%3A', europepmc([OPEN_ACCESS_HIT])),
                ('PMC12345/fullTextXML', 503),
@@ -2399,7 +2420,7 @@ def test_a_preprints_abstract_comes_from_arxiv_when_no_index_holds_one(tmp_path)
              '<published>2019-01-02T00:00:00Z</published>'
              '<author><name>Mei Lin</name></author></entry></feed>')
     ledger = cl.Ledger(tmp_path / 'review')
-    cl.build(ledger, paper())
+    cl.build(ledger, paper(tmp_path), listed())
     net = Net([('/works/10.1234', crossref_work('10.1234/replay', TITLE, '2019')),
                ('DOI%3A', europepmc([])), ('export.arxiv.org', entry)])
     cl.resolve(ledger, cl.Lookups(tmp_path / 'review' / 'citations' / 'lookups', opener=net))
@@ -2416,7 +2437,7 @@ def test_a_preprints_abstract_comes_from_arxiv_when_no_index_holds_one(tmp_path)
              '<published>2013-01-02T00:00:00Z</published>'
              '<author><name>Kenji Okada</name></author></entry></feed>')
     second = cl.Ledger(tmp_path / 'other')
-    cl.build(second, paper())
+    cl.build(second, paper(tmp_path), listed())
     net = Net([('/works/10.1234', crossref_work('10.1234/replay', TITLE, '2019')),
                ('DOI%3A', europepmc([])), ('export.arxiv.org', other)])
     cl.resolve(second, cl.Lookups(tmp_path / 'other' / 'citations' / 'lookups', opener=net))

@@ -183,6 +183,13 @@ def compose(pieces, document=MAIN_DOCUMENT):
         for extra in ('confidence', 'page_mapping'):
             if piece.get(extra) is not None:
                 row[extra] = piece[extra]
+        # The reference ids a publisher's XML attached to this piece. They are
+        # not in the text — a JATS paragraph carries its citations as markup
+        # the Markdown cannot hold — and the citation ledger needs them to know
+        # what a sentence cites when no marker survived extraction, so the row
+        # is where they live.
+        if piece.get('citations'):
+            row['citations'] = [str(one) for one in piece['citations']]
         rows.append(row)
     return '\n'.join(lines) + ('\n' if lines else ''), rows
 

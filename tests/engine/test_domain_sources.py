@@ -6,7 +6,8 @@ import unittest
 from pathlib import Path
 from urllib.error import HTTPError
 
-from peerreviewagents.engine.domain_registry import catalog, route, context
+from manuscripts import build_base
+from peerreviewagents.engine.domain_registry import catalog, context, route
 from peerreviewagents.engine.external_evidence import SourceClient, validate_references
 from peerreviewagents.engine.source_adapters import request, parse
 from peerreviewagents.engine.storage import read
@@ -68,18 +69,17 @@ class Sources(unittest.TestCase):
             validate_references(value, [card])
 
     def test_source_records_survive_normalization_and_revision_export(self):
+        from peerreviewagents.engine.annotations import export_draft, normalize_review
         from peerreviewagents.engine.external_evidence import bind_sources
-        from peerreviewagents.engine.annotations import normalize_review, export_draft
-        from peerreviewagents.engine.storage import digest
         card = self.client().lookup('uniprot', 'P04637', 'b1')
-        paper = {'id': 'paper', 'source_sha256': 'source', 'blocks': [
-            {'id': 'b1', 'text': 'We studied TP53.', 'sha256': digest('We studied TP53.')} ]}
+        base = build_base(self.root/'manuscript',
+                          [{'kind': 'paragraph', 'section': 'Results', 'text': 'We studied TP53.'}])
         value = {'findings': [{'title': 'Confirm organism', 'comment': 'Confirm the organism.',
-            'block_id': 'b1', 'quote': 'TP53', 'kind': 'question', 'evidence_blocks': ['b1'],
+            'quote': 'TP53', 'kind': 'question', 'evidence_lines': [1],
             'source_evidence': [{'evidence_id': card['evidence_id'], 'quote': 'Homo sapiens'},
                                 {'evidence_id': card['evidence_id'], 'quote': 'sapiens'}]}]}
-        normalized = normalize_review(paper, bind_sources(value, [card]), 'review')
-        exported = export_draft(paper, normalized, {'paper_id': 'paper', 'items': {}})
+        normalized = normalize_review(base, bind_sources(value, [card]), 'review')
+        exported = export_draft(base, normalized, {'paper_id': base.paper_id, 'items': {}})
         self.assertEqual(exported['source_cards'][0]['evidence_id'], card['evidence_id'])
         self.assertEqual(exported['findings'][0]['external_sources'][0]['limitation'], card['limitation'])
         self.assertEqual(len(exported['findings'][0]['external_sources']), 1)
@@ -123,20 +123,27 @@ class Sources(unittest.TestCase):
 
 class Routing(unittest.TestCase):
     def test_registry_loads_and_routes_from_narrative_not_bibliography(self):
-        packages = catalog()
-        self.assertGreaterEqual(len(packages), 13)
-        paper = {'blocks': [{'id': 'b1', 'text': 'We performed co-immunoprecipitation after CRISPR knockout.'},
-                            {'id': 'b2', 'text': 'A randomized controlled trial with trial registration.', 'section_id': 'refs'}],
-                 'sections': [{'id': 'refs', 'title': 'References'}]}
-        profile = route(paper, packages)
-        self.assertEqual(profile['selected'][0]['id'], 'molecular-biology')
-        self.assertTrue(all(e['block_id'] != 'b2' for m in profile['selected'] for e in m['evidence']))
-        self.assertIn('molecular', context(profile, packages).lower())
-        self.assertEqual(route({'blocks': [{'id': 'b1', 'text': 'Ordinary unclassified discussion.'}]}, packages)['selected'], [])
-        imported = {'sections': ['Methods', 'References'], 'blocks': [
-            {'id': 'b1', 'text': 'We performed co-immunoprecipitation after CRISPR knockout.', 'section': 'Methods'},
-            {'id': 'b2', 'text': 'A randomized controlled trial with trial registration.', 'section': 'References'}]}
-        self.assertEqual(route(imported, packages)['selected'], profile['selected'])
+        """Routing reads the paper's own narrative lines, never its reference list."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            packages = catalog()
+            self.assertGreaterEqual(len(packages), 13)
+            methods = {'kind': 'paragraph', 'section': 'Methods',
+                       'text': 'We performed co-immunoprecipitation after CRISPR knockout.'}
+            listed = {'kind': 'reference', 'section': 'References',
+                      'text': 'A randomized controlled trial with trial registration.'}
+            base = build_base(root/'manuscript', [methods, listed])
+            profile = route(base, packages)
+            self.assertEqual(profile['selected'][0]['id'], 'molecular-biology')
+            # The trial phrases are printed in the bibliography, so nothing was
+            # routed to the line they are on.
+            cited = {(e['document'], e['line'])
+                     for m in profile['selected'] for e in m['evidence']}
+            self.assertEqual(cited, {('paper.md', 1)})
+            self.assertIn('molecular', context(profile, packages).lower())
+            plain = build_base(root/'plain', [{'kind': 'paragraph', 'section': 'Discussion',
+                                               'text': 'Ordinary unclassified discussion.'}])
+            self.assertEqual(route(plain, packages)['selected'], [])
 
     def test_skill_path_escape_and_duplicate_catalog_ids_are_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:

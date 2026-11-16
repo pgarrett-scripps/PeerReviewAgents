@@ -1,19 +1,35 @@
 """Source-bound suggestions, with editorial decisions separate from findings."""
-import copy
 import re
 from pathlib import Path
+
+from . import paper_base, quotes
 from .storage import digest, read, relative_name, write
+
+#: How many evidence lines one finding may list. The same cap the server
+#: applies to a submitted finding, applied here so the public anchoring path
+#: and the review server agree on what a finding may carry.
+MAX_EVIDENCE_LINES = 12
 
 
 def verify_workspace(root):
+    """Re-check an imported manuscript folder against its own manifest.
+
+    Returns the folder's :class:`~peerreviewagents.engine.paper_base.PaperBase`
+    — the manuscript's own text and the map over it — because that is what a
+    finding is anchored against. Every file the manifest lists is re-digested
+    first, so a folder whose Markdown was edited after import is refused by
+    name instead of producing line numbers that no longer mean anything.
+    """
     root=Path(root)
     manifest=read(root/'manifest.json')
     for name, expected in manifest['files'].items():
         path=(root/name).resolve()
         if not path.is_relative_to(root.resolve()) or digest(path.read_bytes())!=expected:
             raise ValueError('Manuscript source changed: '+name)
-    paper=read(root/'paper.json')
-    if paper.get('source_format')=='scaffold-typst':
+    # A manuscript imported from a source tree keeps that tree beside the base.
+    # The manifest's digests cover the files it listed; this covers the ones it
+    # did not, which is how a file added to the tree after import is caught.
+    if (root/'scaffold').is_dir():
         actual=set()
         for path in (root/'scaffold').rglob('*'):
             if path.is_symlink():
@@ -22,40 +38,43 @@ def verify_workspace(root):
         expected={name for name in manifest['files'] if name.startswith('scaffold/')}
         if actual!=expected:
             raise ValueError('Manuscript source inventory changed')
-    return paper
+    return paper_base.load(root)
 
 
-def normalize_review(paper, response, review_id):
-    for key in ('paper_id','source_sha256'):
-        if key in response and response[key]!=paper['id' if key=='paper_id' else key]:
-            raise ValueError('Review belongs to a different manuscript version')
-    by={b['id']:b for b in paper['blocks']}
+def normalize_review(base, response, review_id):
+    """Anchor a model's findings to the manuscript's lines and number them.
+
+    This is the public half of what the review server does on every
+    ``submit_finding``: each finding's quote is placed in the base — by
+    :mod:`peerreviewagents.engine.quotes`, over the whole document's normal
+    form — and the finding records the document, the line, the end line and
+    the offsets inside them. A quote that is absent, or that occurs in more
+    than one place and was cited with no line, is kept as an unplaced finding
+    with the refusal as its reason; it is not silently dropped and it is not
+    guessed at.
+    """
+    if 'paper_id' in response and response['paper_id']!=base.paper_id:
+        raise ValueError('Review belongs to a different manuscript version')
+    if 'source_sha256' in response and response['source_sha256']!=(
+            base.manifest.get('source') or {}).get('sha256'):
+        raise ValueError('Review belongs to a different manuscript version')
     notes=[]
-    for i, raw in enumerate(response.get('findings',[]),1):
-        a={**raw,'id':f'{review_id}-{i}','review_id':review_id,'issue_status':'open','edit_decision':'proposed'}
-        a['kind']=raw.get('kind','question') if raw.get('kind') in ('edit','question','literature') else 'question'
-        a['category']=raw.get('category') if raw.get('category') in ('scientific','copyedit') else 'scientific'
-        a['evidence_blocks']=[bid for bid in raw.get('evidence_blocks',[]) if bid in by]
-        a['invalid_evidence_blocks']=[bid for bid in raw.get('evidence_blocks',[]) if bid not in by]
-        block=by.get(raw.get('block_id'))
-        quote=raw.get('quote','')
-        positions=[m.start() for m in re.finditer('(?='+re.escape(quote)+')',block['text'])] if block and quote else []
-        if len(positions)==1:
-            a.update(start=positions[0],end=positions[0]+len(quote),block_sha256=block['sha256'],placement='anchored')
-        else:
-            a.update(start=None,end=None,block_sha256=block['sha256'] if block else None,placement='unplaced',
-                     placement_reason='Quote is absent or ambiguous in the selected source block')
-        replacement=raw.get('replacement','')
-        if a['kind']=='edit' and (not isinstance(replacement,str) or not replacement.strip() or a['placement']!='anchored'):
-            a['kind']='question'
-            a['edit_withheld']='A valid anchored replacement was not supplied'
-        numeric=r'(?<![\w])[-+]?\d+(?:\.\d+)?(?![\w])'
-        if a['kind']=='edit' and not set(re.findall(numeric,replacement)) <= set(re.findall(numeric,quote)):
-            a['kind']='question'
-            a['edit_withheld']='Replacement introduces a numerical literal. Keep it as an author question until checked.'
-        a['replacement']=replacement if a['kind']=='edit' else None
-        notes.append(a)
-    return {'id':review_id,'paper_id':paper['id'],'summary':response.get('summary',''),
+    for index, raw in enumerate(response.get('findings',[]),1):
+        document=str(raw.get('document') or paper_base.MAIN_DOCUMENT)
+        answer=quotes.anchor(base, str(raw.get('quote') or ''), raw.get('line'),
+                             raw.get('end_line'), document)
+        note=line_finding(raw, review_id, index, answer.get('placement'))
+        if 'refused' in answer:
+            note['placement_reason']=answer['refused']
+        wanted=[number for number in raw.get('evidence_lines') or []
+                if isinstance(number, int) and not isinstance(number, bool)]
+        count=base.line_count(document if document in base.documents
+                              else paper_base.MAIN_DOCUMENT)
+        note['evidence_lines']=[number for number in wanted
+                                if 1<=number<=count][:MAX_EVIDENCE_LINES]
+        note['invalid_evidence_lines']=[number for number in wanted if not 1<=number<=count]
+        notes.append(note)
+    return {'id':review_id,'paper_id':base.paper_id,'summary':response.get('summary',''),
             'findings':notes,'limitations':response.get('limitations',[]),'raw_response':response,
             'annotation_counts':{'total':len(notes),'anchored':sum(a['placement']=='anchored' for a in notes)}}
 
@@ -85,7 +104,7 @@ def line_finding(raw, review_id, index, placement):
     already said yes or no by the time this is called: *placement* is the one
     position it found, or ``None`` where the caller is recording a refusal.
     What is left is the finding's own shape — its kind, its category, and the
-    two rules that withhold an edit — and those are the same rules the block
+    two rules that withhold an edit — and those are the same rules the block-id
     era applied, for the same reasons.
 
     An edit is withheld unless it is anchored and carries a replacement, and
@@ -126,12 +145,12 @@ def line_finding(raw, review_id, index, placement):
 def quarantine_findings(findings):
     """Split normalized findings into the ones that passed evidence validation and the ones that did not.
 
-    A finding is quarantined when its quote could not be anchored in the
-    source block it names, or when it cites block IDs the manuscript does not
-    contain. Each quarantined finding keeps its content and gains a reason, so
-    one unanchored quote costs that finding and nothing else. The caller writes
-    both lists to the run output: the quarantine is evidence about the model,
-    not something to discard quietly.
+    A finding is quarantined when its quote could not be placed in the
+    manuscript, or when it cites lines the manuscript does not have. Each
+    quarantined finding keeps its content and gains a reason, so one unanchored
+    quote costs that finding and nothing else. The caller writes both lists to
+    the run output: the quarantine is evidence about the model, not something
+    to discard quietly.
     """
     kept, quarantined = [], []
     for finding in findings:
@@ -139,9 +158,10 @@ def quarantine_findings(findings):
         if finding.get('placement') != 'anchored':
             reasons.append(finding.get('placement_reason')
                            or 'Finding is not anchored to an exact source quote')
-        if finding.get('invalid_evidence_blocks'):
-            reasons.append('Cites block IDs absent from the manuscript: '
-                           + ', '.join(str(bid) for bid in finding['invalid_evidence_blocks']))
+        if finding.get('invalid_evidence_lines'):
+            reasons.append('Cites lines the manuscript does not have: '
+                           + ', '.join(str(number)
+                                       for number in finding['invalid_evidence_lines']))
         if reasons:
             quarantined.append({**finding, 'quarantined': True, 'issue_status': 'quarantined',
                                 'quarantine_reason': ' '.join(reasons)})
@@ -150,32 +170,57 @@ def quarantine_findings(findings):
     return kept, quarantined
 
 
-def export_draft(paper, review, decisions):
-    if review['paper_id']!=paper['id'] or decisions['paper_id']!=paper['id']:
+def _offsets(base, finding):
+    """The file offsets an anchored finding covers, in its own document."""
+    document=str(finding.get('document') or paper_base.MAIN_DOCUMENT)
+    if document not in base.documents:
+        raise ValueError('Edit anchor names a document this manuscript does not hold')
+    _, _, starts=base.projection(document)
+    try:
+        begin=starts[int(finding['line'])-1]+int(finding['start'])
+        finish=starts[int(finding['end_line'])-1]+int(finding['end'])
+    except (IndexError, KeyError, TypeError, ValueError) as exc:
+        raise ValueError('Edit anchor is not a position in the manuscript') from exc
+    return document, begin, finish
+
+
+def export_draft(base, review, decisions):
+    """The accepted wording edits applied to the manuscript's own text.
+
+    The base is immutable, so nothing here writes a file: the package carries
+    the document as it stands and the document as the accepted edits would
+    leave it, side by side, for whoever applies them. An accepted edit whose
+    span no longer reads as the text it was anchored on is refused for the
+    whole package rather than applied somewhere near where it meant.
+    """
+    if review['paper_id']!=base.paper_id or decisions['paper_id']!=base.paper_id:
         raise ValueError('Decisions belong to a different manuscript')
-    blocks=copy.deepcopy(paper['blocks'])
-    by={b['id']:b for b in blocks}
+    proposed={name: text for name, text in base.documents.items()}
     edits={}
     for a in review['findings']:
         if decisions['items'].get(a['id'],'proposed')!='accepted':
             continue
         if a['kind']!='edit' or a['placement']!='anchored':
             raise ValueError('Only anchored edit suggestions can be accepted')
-        b=by[a['block_id']]
-        if digest(b['text'])!=a['block_sha256'] or b['text'][a['start']:a['end']]!=a['quote']:
+        document, begin, finish=_offsets(base, a)
+        if base.documents[document][begin:finish]!=a.get('anchor_text'):
             raise ValueError('Edit anchor no longer matches the immutable source')
-        edits.setdefault(a['block_id'],[]).append(a)
-    for bid, pending in edits.items():
-        ordered=sorted(pending,key=lambda a:a['start'])
-        for left,right in zip(ordered,ordered[1:]):
-            if left['end']>right['start']:
+        edits.setdefault(document,[]).append((begin, finish, a['replacement']))
+    for document, pending in edits.items():
+        ordered=sorted(pending)
+        for (_, left_end, _), (right_start, _, _) in zip(ordered, ordered[1:]):
+            if left_end>right_start:
                 raise ValueError('Accepted suggestions overlap. Choose one or revise them before applying.')
-        for a in reversed(ordered):
-            b=by[bid]
-            b['text']=b['text'][:a['start']]+a['replacement']+b['text'][a['end']:]
-        by[bid]['sha256']=digest(by[bid]['text'])
-    return {'paper_id':paper['id'],'source_sha256':paper['source_sha256'],'review_id':review['id'],
-            'original_blocks':paper['blocks'],'proposed_blocks':blocks,'decisions':decisions,
+        text=proposed[document]
+        for begin, finish, replacement in reversed(ordered):
+            text=text[:begin]+replacement+text[finish:]
+        proposed[document]=text
+    return {'paper_id':base.paper_id,
+            'source_sha256':(base.manifest.get('source') or {}).get('sha256'),
+            'review_id':review['id'],
+            'original_documents':dict(base.documents),'proposed_documents':proposed,
+            'document_sha256':{name: digest(text) for name, text in proposed.items()},
+            'decisions':decisions,
             'findings':review['findings'],'source_findings':review.get('raw_response',{}).get('source_findings',[]),
             'source_hypotheses':review.get('raw_response',{}).get('source_hypotheses',[]),
             'candidate_inventory':review.get('raw_response',{}).get('candidate_inventory'),
@@ -209,8 +254,8 @@ def export_draft(paper, review, decisions):
 def save_review(root, response, review_id):
     if not re.fullmatch(r'[a-z0-9_-]{1,50}',review_id):
         raise ValueError('Invalid review ID')
-    paper=verify_workspace(root)
-    value=normalize_review(paper,response,review_id)
+    base=verify_workspace(root)
+    value=normalize_review(base,response,review_id)
     path=Path(root)/'reviews'/f'{review_id}.json'
     if path.exists():
         if read(path)==value:

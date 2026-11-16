@@ -129,39 +129,39 @@ class TargetedSources:
     def __init__(self, client):
         self.client = client
 
-    def _card(self, provider, identifier, block_id, record, fields, eligible, limitation):
+    def _card(self, provider, identifier, anchor, record, fields, eligible, limitation):
         text = '\n'.join(key + ': ' + json.dumps(value, ensure_ascii=False, sort_keys=True)
                          for key, value in fields.items())
         card = {key:value for key, value in record.items() if key != 'data'}
-        card.update(provider=provider, identifier=identifier, manuscript_block_id=block_id,
+        card.update(provider=provider, identifier=identifier, manuscript_anchor=anchor,
             cutoff=self.client.cutoff, record_version=None,
             source_publication_date=None, fields=fields, evidence_text=text,
             eligible=eligible, limitation=limitation)
         return self.client.store_card(card)
 
-    def search_literature(self, query, block_id, limit=3):
-        denied = self.client.reserve_target(block_id, 'literature-search')
+    def search_literature(self, query, anchor, limit=3):
+        denied = self.client.reserve_target(anchor, 'literature-search')
         if denied:
             return denied
         url = literature_request(query, self.client.cutoff, limit)
         record = self.client.fetch(url)
         data = record.get('data')
         if record.get('status') != 'ok' or data is None:
-            return self._card('literature-search', query, block_id, record, {}, False,
+            return self._card('literature-search', query, anchor, record, {}, False,
                 'Search failed before coverage could be established.')
         coverage = parse_literature(query, data, self.client.cutoff, limit)
-        return self._card('literature-search', query, block_id, record, coverage, bool(coverage['hits']),
+        return self._card('literature-search', query, anchor, record, coverage, bool(coverage['hits']),
             'Search results are relevance-ranked leads. Coverage is explicit but not exhaustive, and abstracts do not replace full-text assessment.')
 
-    def resolve_identifier(self, kind, identifier, block_id):
-        denied = self.client.reserve_target(block_id, 'identifier-resolution')
+    def resolve_identifier(self, kind, identifier, anchor):
+        denied = self.client.reserve_target(anchor, 'identifier-resolution')
         if denied:
             return denied
         record = self.client.fetch(identifier_request(kind, identifier))
         data = record.get('data')
         if record.get('status') != 'ok' or data is None:
-            return self._card('identifier-resolution', kind + ':' + identifier, block_id,
+            return self._card('identifier-resolution', kind + ':' + identifier, anchor,
                 record, {}, False, 'Identifier request failed before identity could be established.')
         result = parse_identifier(kind, identifier, data)
-        return self._card('identifier-resolution', kind + ':' + identifier, block_id,
+        return self._card('identifier-resolution', kind + ':' + identifier, anchor,
             record, result, result['status'] == 'resolved', result['limitation'])
