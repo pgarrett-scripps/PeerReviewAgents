@@ -167,6 +167,12 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Only the workspace's own `manifest.json` is outside the digests.** The
+  file list skipped every file called `manifest.json` at any depth, so a
+  source tree that keeps a manifest of its own — a figure inventory, a build
+  record — had that one file uncovered: it could be rewritten under a saved
+  review and the workspace still verified. The skip is now the workspace's own
+  manifest and nothing else.
 - **An import that would lose a page of the paper is refused, by page.** The
   pinned converter returns no block at all for a page whose `/Rotate` is not
   zero, so a one-page PDF turned ninety degrees imported to a `paper.md` with

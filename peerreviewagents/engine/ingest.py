@@ -181,12 +181,17 @@ def file_digests(folder):
     POSIX keys: the scaffold inventory check builds its names with ``as_posix``,
     so a manifest keyed with the OS separator read as a changed inventory on
     Windows and refused every run over a scaffold manuscript.
-    ``manifest.json`` itself is not in it, because it is what holds the map.
+    The workspace's own ``manifest.json`` is not in it, because it is what
+    holds the map. Only that one: a file called ``manifest.json`` deeper in the
+    tree is a file like any other — a scaffold manuscript carries one of its
+    own — and skipping it by name left it uncovered, so it could be edited
+    under a workspace that still verified.
     """
     folder = Path(folder)
+    own = folder / 'manifest.json'
     return {relative_name(path, folder): digest(path.read_bytes())
             for path in sorted(folder.rglob('*'))
-            if path.is_file() and path.name != 'manifest.json'}
+            if path.is_file() and path != own}
 
 
 def write_manuscript(folder, documents, title=None, paper_id=None, source=None, parser=None,

@@ -205,6 +205,34 @@ def test_the_source_tree_beside_the_base_is_part_of_the_manuscript(tmp_path):
         peerreviewagents.verify_workspace(folder)
 
 
+def test_a_scaffold_that_holds_its_own_manifest_is_covered_like_any_file(tmp_path):
+    """Only the workspace's own manifest is outside the digests.
+
+    A source tree built by a tool that keeps a ``manifest.json`` of its own —
+    a figure inventory, a build record — had that file skipped by name at
+    every depth, so it was the one file in the manuscript that could be
+    rewritten under a saved review and still verify.
+    """
+    folder = tmp_path / 'manuscript'
+    folder.mkdir(parents=True)
+    (folder / 'scaffold').mkdir()
+    (folder / 'scaffold' / 'main.typ').write_text('= Replay during quiet rest\n',
+                                                  encoding='utf-8')
+    (folder / 'scaffold' / 'manifest.json').write_text('{"figures": ["raster-1.png"]}\n',
+                                                       encoding='utf-8')
+    manifest = workspace(folder, scaffold=False)
+
+    assert 'scaffold/manifest.json' in manifest['files']
+    # The workspace's own manifest is still outside the digests: it is what
+    # holds them.
+    assert 'manifest.json' not in manifest['files']
+    peerreviewagents.verify_workspace(folder)
+
+    (folder / 'scaffold' / 'manifest.json').write_text('{"figures": []}\n', encoding='utf-8')
+    with pytest.raises(ValueError, match='Manuscript source changed: scaffold/manifest.json'):
+        peerreviewagents.verify_workspace(folder)
+
+
 def test_what_the_writer_refuses(tmp_path):
     with pytest.raises(ValueError, match='needs a title'):
         peerreviewagents.write_manuscript(tmp_path / 'untitled',
