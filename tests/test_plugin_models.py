@@ -231,8 +231,8 @@ def test_the_agent_files_pin_the_same_models_this_module_defaults_to():
     A per-spawn override is what normally decides a slot's model; the agent
     file's ``model:`` is what runs when none arrives — a dropped relay, a
     version of Claude Code that ignores the override. Two answers in two places
-    is how a run comes to record a model it did not run, so the ten files and
-    the defaults here are checked against each other rather than by hand.
+    is how a run comes to record a model it did not run, so the eleven files
+    and the defaults here are checked against each other rather than by hand.
     """
     agents = Path(model_plan.__file__).resolve().parent / 'pra' / 'agents'
     pinned = {}
@@ -241,13 +241,15 @@ def test_the_agent_files_pin_the_same_models_this_module_defaults_to():
         assert found, f'{path.name} pins no model, so its slot would inherit one'
         pinned[path.stem] = found.group(1)
 
-    assert len(pinned) == 10, pinned
+    assert len(pinned) == 11, pinned
     assert pinned['core-reviewer'] == model_plan.DEFAULT_REVIEWER_MODELS[0]
     assert pinned['editor'] == model_plan.DEFAULT_EDITOR_MODEL
     assert pinned['recorder'] == model_plan.DEFAULT_RECORDER_MODEL
     assert pinned['citation-worker'] == model_plan.DEFAULT_CITATION_WORKER_MODEL
+    assert pinned['reader'] == model_plan.DEFAULT_READER_MODEL
     specialists = {name: model for name, model in pinned.items()
-                   if name not in ('core-reviewer', 'editor', 'recorder', 'citation-worker')}
+                   if name not in ('core-reviewer', 'editor', 'recorder', 'citation-worker',
+                                   'reader')}
     assert set(specialists) == set(srv.SPECIALIST_TRACKS), 'one file per specialist track'
     assert set(specialists.values()) == {model_plan.DEFAULT_SPECIALIST_MODEL}
     assert set(pinned.values()) <= set(model_plan.KNOWN)
@@ -262,10 +264,13 @@ def test_nothing_in_the_module_gates_on_billing_or_usage():
 # -- through the server -----------------------------------------------------
 
 
-def test_ingest_settles_the_models_and_hands_back_the_spawn_override(tmp_path):
+def test_ingest_settles_the_models_and_hands_back_the_spawn_override(tmp_path, with_reader):
     answer = opened(tmp_path, reviewers=3)
     assert models_of(answer) == {
         'core-1': SONNET, 'core-2': OPUS, 'core-3': HAIKU,
+        # The reader is planned like any other slot, and runs Sonnet: its whole
+        # job is reading pictures of pages.
+        'reader': SONNET,
         **{f'spec-{track}': SONNET for track in srv.SPECIALIST_TRACKS},
         # The citation workers are planned with everything else and run Haiku:
         # a batch of use rows against a stored passage is the cheap model's job.
@@ -296,6 +301,50 @@ def test_the_launcher_passes_the_choice_in_the_environment(tmp_path, monkeypatch
     # An argument the workflow does pass wins over the environment.
     again = models_of(opened(tmp_path, folder='two', reviewers=1, reviewer_models=['sonnet']))
     assert again['core-1'] == SONNET
+
+
+def test_the_reader_is_its_own_setting_and_not_a_review_stage(tmp_path, with_reader):
+    """The Read stage is planned like any other slot and waited for like none of them."""
+    answer = opened(tmp_path, reviewers=1)
+    assert answer['reader'] == {'slot': 'reader', 'model': SONNET,
+                                'allowance': answer['reader']['allowance']}
+    assert answer['ai_read'] is True
+    # Not in `slots`: those are the stages `write_review` waits for, and a
+    # reader listed among them would be missing from the ledger for ever.
+    assert 'reader' not in answer['slots']
+    # But claimable like every other slot, with a code of its own minted once.
+    codes = {row['slot'] for row in answer['claim_codes']}
+    assert 'reader' in codes
+    # The allowance is the paper's size, not a constant.
+    assert answer['reader']['allowance'] >= 10
+
+
+def test_the_reader_model_is_settable_by_argument_and_by_variable(tmp_path, monkeypatch,
+                                                                  with_reader):
+    assert models_of(opened(tmp_path, reviewers=1, reader_model='opus'))['reader'] == OPUS
+    monkeypatch.setenv('PEERREVIEW_READER_MODEL', 'haiku')
+    assert models_of(opened(tmp_path, folder='two', reviewers=1))['reader'] == HAIKU
+
+
+def test_a_run_without_a_reader_plans_no_reader_at_all(tmp_path, monkeypatch, with_reader):
+    answer = opened(tmp_path, reviewers=1, ai_read=False)
+    assert answer['reader'] is None and answer['ai_read'] is False
+    assert 'reader' not in models_of(answer)
+    assert 'reader' not in {row['slot'] for row in answer['claim_codes']}
+
+    # The variable turns the reader off whatever the caller asks for: running
+    # without one is the user's choice about their own manuscript, and a
+    # workflow passing the default must not put one back.
+    monkeypatch.setenv('PEERREVIEW_AI_READ', '0')
+    assert opened(tmp_path, folder='two', reviewers=1, ai_read=True)['reader'] is None
+
+
+def test_an_unavailable_reader_model_is_refused_by_its_own_flag(tmp_path, with_reader):
+    refused = srv.ingest(str(FIXTURE), str(tmp_path / 'run'), reviewers=1,
+                         reader_model='claude-nonesuch-9')
+    assert 'claude-nonesuch-9' in refused['request_rejected']
+    assert '--reader-model' in refused['request_rejected']
+    assert not (tmp_path / 'run').exists()
 
 
 def test_a_blank_variable_leaves_the_defaults_alone(tmp_path, monkeypatch):

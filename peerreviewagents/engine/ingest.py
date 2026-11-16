@@ -8,8 +8,14 @@ import unicodedata
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
+from ..names import DRAFT_SCHEMA_VERSION
 from . import paper_base
-from .storage import digest, relative_name, write
+from .storage import digest, read, relative_name, write
+
+#: The converted pieces, before any of them has a line. It is deleted at the
+#: seal: a folder that holds both a draft and a base holds the manuscript
+#: twice, and the one an application opened would be a coin toss.
+DRAFT_FILE = 'draft.json'
 
 POPPLER_MISSING = ('Poppler (pdftotext) is not installed. Install it with `brew install poppler` '
                    'on macOS, `sudo apt install poppler-utils` on Debian or Ubuntu, or '
@@ -30,8 +36,11 @@ KNOWN_GAPS = {
 #: a reader of the folder never has to find this module to interpret the map.
 SOURCE_VALUES = {
     'text': "the document's own text layer, as the converter read it",
-    'ai': 'read from a page image by a model: no piece carries this yet',
-    'ai-reconstructed': 'not printed in the source, rebuilt from context: none yet',
+    'ai': ('written by a model from the page image, not printed as text in the source: a '
+           "figure's description, or a piece the converter dropped and the reader put back"),
+    'ai-reconstructed': ('printed in the source but mangled by the converter, and rewritten from '
+                         'the page image by a model: the row keeps what the converter had in '
+                         '`original`'),
 }
 
 #: How every piece's ``fingerprint`` in ``map.json`` was computed. It is in the
@@ -284,6 +293,13 @@ def write_manuscript(folder, documents, title=None, paper_id=None, source=None, 
                    **collections.Counter(row['kind'] for row in rows)},
         'pieces_per_source': dict(collections.Counter(row['source'] for row in rows)),
         'source_values': dict(SOURCE_VALUES),
+        # An application's own source needs no reader: its equations and
+        # tables are the ones the author wrote, not a converter's reading of a
+        # picture of them, so there is nothing for a model to repair and
+        # nothing it would be repairing against.
+        'ai_read': {'read': False,
+                    'reason': 'written from an application\'s own source, which needs no '
+                              'reading: every piece is the text the caller composed'},
         'assets': list(assets or []), 'statistics': stats,
         'warnings': list(warnings or []), 'known_gaps': gaps,
         'fingerprint_rule': FINGERPRINT_RULE,
@@ -338,7 +354,19 @@ def document_name(stem):
     return 'supplement-' + cleaned + '.md'
 
 
-def import_paper(pdf, output, xml=None, title=None, source_url='', supplements=None):
+def convert_paper(pdf, output, xml=None, title=None, source_url='', supplements=None):
+    """Convert a PDF into a draft: the pieces, before any of them has a line.
+
+    This is the first half of an import. It writes ``original/``,
+    ``converter.json`` and ``draft.json``, and no part of the base: no
+    ``paper.md``, no ``map.json``, no ``manifest.json``. Nothing cites a draft
+    and nothing can — a draft has no line numbers, which is the point. A piece
+    in it can still be rewritten, added or merged, and
+    :func:`seal_draft` turns whatever the draft holds at the end into the
+    manuscript, once.
+
+    A caller that wants both halves at once calls :func:`import_paper`.
+    """
     import rustypaper
     pdf, output = Path(pdf), Path(output)
     if (output / 'map.json').exists():
@@ -526,33 +554,100 @@ def import_paper(pdf, output, xml=None, title=None, source_url='', supplements=N
             assets.append({'id':path.stem,'label':path.name,'kind':'supplement','path':'supplements/'+path.name,'preview':'supplements/'+path.with_suffix('.png').name if path.suffix.lower() in ('.tif','.tiff') else None,'available':'file','document':name if path.suffix.lower()=='.docx' else None})
     documents = collections.OrderedDict([(paper_base.MAIN_DOCUMENT, pieces)])
     documents.update(supplement_pieces)
-    rows = paper_base.write_base(output, documents)
-    stats = statistics_of(output, documents, rows, references, len(raw_pages))
-    uncaptioned, captioned = missing_figures(pieces)
-    gaps = {}
-    if uncaptioned:
-        gaps['figure_captions'] = (
-            'The text points at ' + ', '.join('Figure ' + str(n) for n in uncaptioned)
-            + ', which no caption in this import carries. Captions were found for '
-            + (', '.join(str(n) for n in captioned) or 'no figures')
-            + '. A figure with no caption here may still be captioned in the PDF: read the page '
-              'before reporting it as undescribed.')
-    paper_id = digest(json.dumps({'pdf': digest(pdf.read_bytes()),
-                                  'xml': digest(Path(xml).read_bytes()) if xml else None},
-                                 sort_keys=True))[:16]
-    manifest = {
-        'schema_version': paper_base.BASE_SCHEMA_VERSION, 'paper_id': paper_id, 'title': title,
-        'source_url': source_url,
+    draft = {
+        'schema_version': DRAFT_SCHEMA_VERSION,
+        # The identity is the source file's, not the written text's, so it is
+        # the same manuscript whether or not a reader repaired anything. A run
+        # knows its `paper_id` before the base exists, which is what lets
+        # protocol.json be written during the Read stage.
+        'paper_id': digest(json.dumps({'pdf': digest(pdf.read_bytes()),
+                                       'xml': digest(Path(xml).read_bytes()) if xml else None},
+                                      sort_keys=True))[:16],
+        'title': title, 'source_url': source_url,
         'source': {'file': 'original/original.pdf', 'sha256': digest(pdf.read_bytes()),
                    'pages': len(raw_pages),
                    'xml': 'original/original.xml' if xml else None,
                    'xml_sha256': digest(Path(xml).read_bytes()) if xml else None},
         'parser': 'rustypaper ' + getattr(rustypaper, '__version__', 'unknown'),
-        'documents': list(documents),
+        'documents': documents,
+        'references': references,
+        'assets': assets,
+        'warnings': warnings,
         # Every page's size in the points the boxes are written in, so a viewer
         # can scale a box to the image it rendered of that page, and the unit
         # and origin those four numbers are in.
         'pages': page_geometry(pdf, len(raw_pages)),
+        'page_count': len(raw_pages),
+        'diagnostics': ['converter.json'],
+    }
+    write(output / DRAFT_FILE, draft)
+    return draft
+
+
+def seal_draft(output, draft=None, ai_read=None):
+    """Write the base from a draft, once, and return the manifest.
+
+    This is the only writer of ``paper.md``, ``map.json`` and
+    ``manifest.json``: an import with no AI read and an import a reader worked
+    over both end here, so there is one place where a line number comes into
+    existence. After it the lines never move again.
+
+    *ai_read* is the account of the Read stage — the model, the pages it
+    viewed, what it repaired — or ``None`` for a manuscript nothing read, which
+    the manifest then says in as many words.
+    """
+    output = Path(output)
+    if (output / 'map.json').exists():
+        raise ValueError('Workspace already contains an immutable manuscript')
+    if draft is None:
+        draft = read(output / DRAFT_FILE)
+    if draft.get('schema_version') != DRAFT_SCHEMA_VERSION:
+        raise ValueError('Not a ' + DRAFT_SCHEMA_VERSION + ' draft: '
+                         + str(draft.get('schema_version')))
+    documents = collections.OrderedDict(
+        (str(name), list(pieces)) for name, pieces in draft['documents'].items())
+    references = list(draft.get('references') or [])
+    page_count = int(draft.get('page_count') or 0)
+    rows = paper_base.write_base(output, documents)
+    stats = statistics_of(output, documents, rows, references, page_count)
+    uncaptioned, captioned = missing_figures(documents[paper_base.MAIN_DOCUMENT])
+    gaps = dict(KNOWN_GAPS)
+    read_account = dict(ai_read) if ai_read else {
+        'read': False,
+        'reason': 'no reader ran over this manuscript: its equations and tables are the '
+                  'converter\'s reading of the page, mangled where it misread one, and its '
+                  'figures are captions with no description of the image'}
+    if read_account.get('read'):
+        # The two gaps this stage closes. A figure now has a description and a
+        # low-confidence equation has been looked at, so leaving the import's
+        # wording in place would send a reviewer to the page image for work
+        # that has already been done.
+        gaps['figures'] = (
+            'The pinned converter returns no figure images, so there is no figures/ folder. A '
+            'figure is its caption line followed by a description of the image written by '
+            + str(read_account.get('reader_model') or 'a model') + ', which is a separate piece '
+            'whose source is "ai". The description is not the authors\' words.')
+        gaps['equation_confidence'] = (
+            'Displayed equations carry the converter\'s own confidence in the map. Every equation '
+            'was checked against the page image: one whose source is "ai-reconstructed" was '
+            'rewritten from that image and keeps the converter\'s LaTeX in `original`, and one '
+            'whose source is "text" was confirmed as the converter had it. The confidence is the '
+            'converter\'s and was not updated.')
+    if uncaptioned:
+        gaps['figure_captions'] = (
+            'The text points at ' + ', '.join('Figure ' + str(n) for n in uncaptioned)
+            + ', which no caption in this manuscript carries. Captions were found for '
+            + (', '.join(str(n) for n in captioned) or 'no figures')
+            + '. A figure with no caption here may still be captioned in the PDF: read the page '
+              'before reporting it as undescribed.')
+    manifest = {
+        'schema_version': paper_base.BASE_SCHEMA_VERSION,
+        'paper_id': draft['paper_id'], 'title': draft.get('title'),
+        'source_url': draft.get('source_url') or '',
+        'source': dict(draft.get('source') or {}),
+        'parser': draft.get('parser') or 'unknown',
+        'documents': list(documents),
+        'pages': list(draft.get('pages') or []),
         'box_convention': BOX_CONVENTION,
         # The captioned figures are counted on their own because the kinds do
         # not answer the question: a caption arrives as a `figure` piece or as
@@ -563,16 +658,36 @@ def import_paper(pdf, output, xml=None, title=None, source_url='', supplements=N
                    **collections.Counter(row['kind'] for row in rows)},
         'pieces_per_source': dict(collections.Counter(row['source'] for row in rows)),
         'source_values': dict(SOURCE_VALUES),
-        'assets': assets, 'statistics': stats, 'warnings': warnings,
-        'known_gaps': dict(KNOWN_GAPS, **gaps),
-        'diagnostics': ['converter.json'],
+        # Whether a model read this manuscript against its own pages, and which
+        # one. A folder that says `read: false` is the converter's output as it
+        # stood: its equations are whatever the converter made of them and its
+        # figures are captions with nothing behind them.
+        'ai_read': read_account,
+        'assets': list(draft.get('assets') or []), 'statistics': stats,
+        'warnings': list(draft.get('warnings') or []),
+        'known_gaps': gaps,
+        'diagnostics': list(draft.get('diagnostics') or []),
         'fingerprint_rule': FINGERPRINT_RULE,
     }
     write(output / 'references.json', references)
     write(output / 'statistics.json', stats)
+    (output / DRAFT_FILE).unlink(missing_ok=True)
     manifest['files'] = file_digests(output)
     write(output / 'manifest.json', manifest)
     # The manifest, which is the import's own account of what it wrote: the
     # manuscript itself is `paper.md` and its map, and a caller that wants the
     # text reads it with `paper_base.load`.
     return manifest
+
+
+def import_paper(pdf, output, xml=None, title=None, source_url='', supplements=None,
+                 ai_read=None):
+    """Convert a PDF and seal it in one call, with no stage in between.
+
+    The whole import for a caller that has no reader to run: the pieces the
+    converter produced become the manuscript exactly as they are, and the
+    manifest says the paper was not AI-read.
+    """
+    draft = convert_paper(pdf, output, xml=xml, title=title, source_url=source_url,
+                          supplements=supplements)
+    return seal_draft(output, draft, ai_read=ai_read)

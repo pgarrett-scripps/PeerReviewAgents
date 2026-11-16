@@ -7,7 +7,7 @@ from pathlib import Path
 from .annotations import verify_workspace
 from .calculator import calculate
 from .storage import digest, read
-from . import paper_base, paper_view
+from . import pages, paper_base, paper_view
 
 #: Tools that do not spend the allowance. Reading the manuscript is not an
 #: investigative step a reviewer should be rationing: a budget that counts it
@@ -135,11 +135,9 @@ class Investigation:
             return {'saved':True,'limitation':'A saved hypothesis is not a verified finding.'}
         if name=='view_page':
             page=args['page']
-            pages=(self.base.manifest.get('statistics') or {}).get('pdf_pages')
-            if type(page) is not int or not 1<=page<=(pages or 0):raise ValueError('Unknown page')
-            target=self.out/f'page_{page:03d}.png'
-            if not target.exists():
-                subprocess.run(['pdftoppm','-f',str(page),'-l',str(page),'-scale-to','1500','-singlefile','-png',str(self.root/'original'/'original.pdf'),str(target.with_suffix(''))],check=True,capture_output=True,timeout=30)
+            # The same renderer the reader used before the base was sealed, so
+            # a reviewer checking a repaired equation sees that page image.
+            target=pages.page_image(self.root,page,self.out,pages.page_count(self.base.manifest))
             return {'label':f'Original PDF page {page}','image':base64.b64encode(target.read_bytes()).decode()}
         if name=='view_supplement':
             from .supplement_view import supplement_page

@@ -29,11 +29,20 @@ PART_CHARACTERS = 48000
 #: ending in a character no sentence of the paper ends with.
 GUTTER = '{:>5}| '
 
-#: On every equation line, because the converter mangles sums and subscripts and
-#: a reviewer who trusts the text files a finding about algebra the authors
-#: never wrote. It is served, never written into paper.md: the file stays the
-#: manuscript.
+#: On every equation line the converter read and nobody checked, because it
+#: mangles sums and subscripts and a reviewer who trusts the text files a
+#: finding about algebra the authors never wrote. Markers are served, never
+#: written into paper.md: the file stays the manuscript.
 EQUATION_MARKER = '   [machine-read equation, may be garbled'
+
+#: On an equation or a table a reader rewrote from the page image. It says who
+#: read it and off which page, so a reviewer who doubts the transcription can
+#: open the same page and compare, and knows the line is not the converter's.
+READ_MARKER = '   [read from the page image'
+
+#: On a figure's description. It is not the authors' words and no reviewer
+#: should quote it as the paper's own: it is a model's account of an image.
+DESCRIPTION_MARKER = '   [AI description of the figure image'
 
 HEADER = """Read every line of this before anything else. A finding quotes this text, and the
 line numbers in the left column are what a citation records; quote the text, not
@@ -44,20 +53,66 @@ sometimes garbled — a sum, a subscript, or the word after an inline formula. E
 equation line below carries a marker saying so. Open the page with view_page and
 read the equation there before you write anything about an author's mathematics."""
 
+AI_READ_HEADER = """Read every line of this before anything else. A finding quotes this text, and the
+line numbers in the left column are what a citation records; quote the text, not
+the numbers.
+
+Before you were called, a model read every page of the PDF as an image and went
+through the converted text piece by piece. The markers on the lines below say what
+it did to each one:
+
+- no marker: the converter's text, as it came out of the PDF.
+- read from the page image: this equation or table was rewritten from the page,
+  because the converter garbled it. The converter's own reading is kept in the
+  map, so a transcription can be disputed; the page is named in the marker.
+- AI description of the figure image: not the authors' words. A model looked at
+  the figure and wrote what it shows. Never quote it as something the paper says,
+  and check it against the image before you build a finding on it.
+
+Inline $...$ maths inside a paragraph is still the converter's and was not
+rechecked. Open the page with view_page and read an equation there before you
+write anything about an author's mathematics."""
+
+
+def reader_model(base):
+    """The model that read this manuscript's pages, or ``''`` when none did."""
+    read = base.manifest.get('ai_read') or {}
+    return str(read.get('reader_model') or '') if read.get('read') else ''
+
 
 def line_width(base, document):
     """The served length of each line of a document, gutter and marker included."""
+    model = reader_model(base)
     widths = []
     for number, line in enumerate(base.lines.get(document, []), 1):
         piece = base.piece_at(number, document) or {}
-        marker = len(_marker(piece)) if piece.get('kind') == 'equation' else 0
+        marker = len(_marker(piece, model, number))
         widths.append(len(GUTTER.format(number)) + len(line) + marker + 1)
     return widths
 
 
-def _marker(piece):
+def _marker(piece, model='', number=None):
+    """What is served after one line, or ``''`` when the line needs no marker.
+
+    A table is many lines and the marker belongs on the first of them: repeated
+    down every row it would be read as part of the data.
+    """
+    kind = str(piece.get('kind') or '')
+    source = str(piece.get('source') or 'text')
     page = piece.get('page')
-    return EQUATION_MARKER + ('; view_page ' + str(page) + ']' if page else ']')
+    where = ' of page ' + str(page) if page else ''
+    by = ' by ' + model if model else ' by a model'
+    if number is not None and piece.get('lines') and int(piece['lines'][0]) != number:
+        return ''
+    if kind == 'figure-description':
+        return DESCRIPTION_MARKER + where + by + ']'
+    if source in ('ai-reconstructed', 'ai') and kind in ('equation', 'table'):
+        return (READ_MARKER + where + by
+                + ('; the converter\'s reading is in the map]' if source == 'ai-reconstructed'
+                   else '; the converter missed it]'))
+    if kind == 'equation':
+        return EQUATION_MARKER + ('; view_page ' + str(page) + ']' if page else ']')
+    return ''
 
 
 def parts(base, document=paper_base.MAIN_DOCUMENT, budget=None):
@@ -102,14 +157,16 @@ def render(base, document=paper_base.MAIN_DOCUMENT, part=1):
                          + str(part) + '.')
     start, end = ranges[part - 1]
     total = base.line_count(document)
+    model = reader_model(base)
     head = [document + ' - part ' + str(part) + ' of ' + str(len(ranges)) + ' - lines '
             + str(start) + '-' + str(end) + ' of ' + str(total)
-            + (' - ' + str(base.title) if base.title else ''), '', HEADER, '']
+            + (' - ' + str(base.title) if base.title else ''), '',
+            (AI_READ_HEADER if model else HEADER), '']
     body = []
     for number in range(start, end + 1):
         piece = base.piece_at(number, document) or {}
         line = GUTTER.format(number) + base.line_text(number, document)
-        body.append(line + (_marker(piece) if piece.get('kind') == 'equation' else ''))
+        body.append(line + _marker(piece, model, number))
     tail = ['']
     if part < len(ranges):
         tail.append('Lines ' + str(end + 1) + '-' + str(total) + ' are in part ' + str(part + 1)
@@ -149,4 +206,5 @@ def search(base, query, limit=20):
     return found, False
 
 
-__all__ = ['PART_CHARACTERS', 'EQUATION_MARKER', 'parts', 'render', 'search', 'served']
+__all__ = ['PART_CHARACTERS', 'EQUATION_MARKER', 'READ_MARKER', 'DESCRIPTION_MARKER',
+           'parts', 'render', 'reader_model', 'search', 'served']

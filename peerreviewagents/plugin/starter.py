@@ -48,6 +48,7 @@ from ..engine.storage import digest, read, write
 from ..names import BLOCKED, COMPLETE_STATUSES, FINDING_SCHEMA_VERSION
 from . import models as model_plan
 from .server import (
+    AI_READ_ENVIRONMENT,
     ARMS,
     CITATION_WORKERS,
     DEFAULT_ARM,
@@ -823,7 +824,7 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
            wall_timeout=WALL_TIMEOUT, directory=None, cwd=None,
            reviewer_models=None, specialist_model=None, editor_model=None,
            recorder_model=None, citation_workers=CITATION_WORKERS, citation_worker_model=None,
-           prior_issues=None):
+           reader_model=None, ai_read=True, prior_issues=None):
     """Run one review and return its summary.
 
     The summary is a dict, not an exit code: ``status``, ``blocked_reason``,
@@ -842,7 +843,16 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     workers judge the in-text citations against the sources the server
     resolved, and ``citation_worker_model`` is the model they run — Haiku by
     default, because a worker reads one sentence and one stored passage. They
-    exist only in an arm that runs the citations specialist. Anything not given here falls
+    exist only in an arm that runs the citations specialist.
+
+    ``reader_model`` is the model that reads the manuscript against its own
+    page images before the reviewers see it — repairing the equations and
+    tables the converter garbled, describing the figures it could only name —
+    and ``ai_read`` is whether one reads at all. With ``ai_read`` false the
+    manuscript is sealed as converted and its manifest says it was not AI-read:
+    that is a different manuscript to review, so the two are never pooled.
+
+    Anything not given here falls
     back to the ``PEERREVIEW_*_MODEL(S)`` variables in this process's
     environment, and only then to the defaults — one merge, in
     :func:`peerreviewagents.plugin.models.settle`, because the session this
@@ -894,7 +904,7 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     # and no argument given, this folder was written with the defaults and the
     # server then refused it for already holding a run under other models.
     settled = model_plan.settle(reviewer_models, specialist_model, editor_model, recorder_model,
-                                citation_worker_model)
+                                citation_worker_model, reader_model)
     reviewer_list = list(model_plan.parse_list(settled.get('reviewers'))
                          or model_plan.DEFAULT_REVIEWER_MODELS)
     # The citation workers are planned here too, so a login that cannot run the
@@ -908,8 +918,13 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     # reading the empty list as "no lane" is what sent the session off to plan
     # the server's default four.
     citation_lane = bool(citation_slots(arm, 1, tracks))
-    wanted = model_plan.assign((*plan_slots(arm, reviewers, tracks), *workers, 'recorder'),
-                               **settled)
+    # The reader is planned here too, and only where one runs: a login that
+    # cannot run the reader model is refused before the probe spends anything,
+    # and a run told to seal as converted is not refused over a model it will
+    # never ask for.
+    reader_slots = ('reader',) if ai_read else ()
+    wanted = model_plan.assign(
+        (*reader_slots, *plan_slots(arm, reviewers, tracks), *workers, 'recorder'), **settled)
     model_plan.refuse(wanted)
     # A variable that outranks the per-spawn override makes every slot one
     # model while the run records the plan. Refused, never unset: the variable
@@ -918,6 +933,12 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     if outranked:
         raise ValueError(outranked)
     chosen = model_plan.to_environment(**settled)
+    if not ai_read:
+        # Carried as a variable rather than as a sentence in the prompt: a run
+        # without a reader is a setting of the run, and the server reads it the
+        # same way it reads the models — not something a session could decide
+        # differently from the launcher that planned it.
+        chosen[AI_READ_ENVIRONMENT] = '0'
     review_dir.mkdir(parents=True, exist_ok=True)
     supersede(review_dir)
 
@@ -1055,6 +1076,15 @@ def build_parser(prog='peerreview review'):
     parser.add_argument('--citation-worker-model', default=None, metavar='MODEL',
                         help='the model every citation worker runs (default: '
                              + model_plan.DEFAULT_CITATION_WORKER_MODEL + ')')
+    parser.add_argument('--reader-model', default=None, metavar='MODEL',
+                        help='the model that reads the manuscript against its page images '
+                             'before the reviewers, repairing the equations and tables the '
+                             'converter garbled and describing the figures (default: '
+                             + model_plan.DEFAULT_READER_MODEL + ')')
+    parser.add_argument('--no-ai-read', dest='ai_read', action='store_false',
+                        help='seal the manuscript as the converter produced it: no reader, '
+                             'mangled equations left as they are and no figure descriptions. '
+                             'The manifest says the paper was not AI-read.')
     parser.add_argument('--prior-issues', default=None, metavar='PATH',
                         help="an earlier round's issues.json, or the run folder holding it: "
                              'the editor matches this round against it, keeps the matched ids '
@@ -1102,6 +1132,7 @@ def review_main(argv=None, prog='peerreview review'):
                          recorder_model=args.recorder_model,
                          citation_workers=args.citation_workers,
                          citation_worker_model=args.citation_worker_model,
+                         reader_model=args.reader_model, ai_read=args.ai_read,
                          prior_issues=args.prior_issues)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)

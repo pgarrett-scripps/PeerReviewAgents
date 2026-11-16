@@ -866,6 +866,7 @@ def test_the_stub_run_records_what_was_asked_for_beside_what_ran(tmp_path, monke
     out = tmp_path / 'run'
     summary = starter.review(str(FIXTURE), str(out), reviewers=3, arm='reviewers-only')
     assert summary['models_requested'] == {
+        'reader': 'claude-sonnet-5-5',
         'core-1': 'claude-sonnet-5-5', 'core-2': 'claude-opus-5-5',
         'core-3': 'claude-haiku-5-5', 'editor': 'claude-fable-5-2',
         'recorder': 'claude-haiku-5-5'}

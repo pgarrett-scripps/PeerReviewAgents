@@ -184,6 +184,15 @@ leaves the run `blocked`: that is an outcome recorded in `runtime.json` and
 
 - **Anchored or quarantined.** A finding's quotation must match the manuscript
   exactly. One that does not is quarantined by the server, not reported.
+- **The text was read against the pages before anyone reviewed it.** A PDF
+  converter mangles equations and tables and returns no figure image, so one
+  model reads the page images first: it repairs or confirms every equation,
+  table and figure, writes a description of each figure, and seals the
+  manuscript, after which no line moves. Every row says which it is — the
+  converter's own text, a reconstruction from the image with the converter's
+  reading kept beside it, or the model's own words — and a reviewer reading
+  one is told. A run without that stage says so in its manifest; it is a
+  setting, never a silent fallback.
 - **A basis the agent cannot assert.** The server labels each finding
   `computed` when a `calculate` receipt covers the numbers the cited lines
   print, `two-quotes` when a second anchored quotation corroborates it, and

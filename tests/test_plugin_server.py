@@ -1233,4 +1233,9 @@ def test_the_tool_list_is_the_one_the_agents_are_allowed_to_call(tmp_path):
             'list_findings', 'submit_issues', 'submit_editor', 'write_review', 'mark_blocked',
             'run_status'} <= names
     assert {'resolve_citations', *srv.LEDGER_TOOLS} <= names
-    assert len(srv.TOOLS) == len(names) == 28
+    assert set(srv.READER_TOOLS) <= names
+    # The fallback seal is the recorder's and is deliberately not one of the
+    # reader's tools: it writes the manuscript as converted when the reader
+    # did not, which is not a thing the reader may choose to do.
+    assert 'seal_as_converted' in names and 'seal_as_converted' not in srv.READER_TOOLS
+    assert len(srv.TOOLS) == len(names) == 37

@@ -13,10 +13,10 @@ can only ask it for text and hand it findings.
 
 | Part | Where | What it is |
 | --- | --- | --- |
-| `peerreview` server | `.mcp.json` → `peerreviewagents.plugin.server` | 28 tools, and every piece of state worth forging |
-| Agents | `agents/*.md` | `core-reviewer`, six specialists, `citation-worker`, `editor`, `recorder`; each pins `maxTurns:` and a fallback `model:`, and may call only server tools |
+| `peerreview` server | `.mcp.json` → `peerreviewagents.plugin.server` | 37 tools, and every piece of state worth forging |
+| Agents | `agents/*.md` | `core-reviewer`, six specialists, `citation-worker`, `reader`, `editor`, `recorder`; each pins `maxTurns:` and a fallback `model:`, and may call only server tools |
 | Models | `peerreviewagents/plugin/models.py` | which model each slot runs, and the refusal when one is not available |
-| Workflow | `workflows/review.js` | ingest → reviewers ∥ specialists (the citation lane first resolves, then fans out workers) → (revision) → editor → record |
+| Workflow | `workflows/review.js` | ingest → read → reviewers ∥ specialists (the citation lane first resolves, then fans out workers) → (revision) → editor → record |
 | Skills | `skills/*/SKILL.md` | `peer-review-manuscript` (a full review), `check-draft` (your own draft), `follow-up` (what changed since the last run) |
 | Starter | `peerreviewagents/plugin/starter.py` | probes, launches the headless session, enforces token budgets, records models and wall time |
 
@@ -26,7 +26,7 @@ can only ask it for text and hand it findings.
 peerreview review <manuscript.pdf> <run folder> [--reviewers N] [--arm NAME]
                   [--reviewer-models A,B,C] [--specialist-model M] [--editor-model M]
                   [--citation-workers N] [--citation-worker-model M]
-                  [--prior-issues PATH]
+                  [--reader-model M] [--no-ai-read] [--prior-issues PATH]
 ```
 
 That is the only way to run a review in 0.9: the Python orchestration the 0.8
@@ -113,6 +113,33 @@ for Opus could be recorded as an arm it was not. Both entry points check first
 manuscript is imported — and fail with one line naming the slot, the model and
 the flag that changes it. Availability is the `availableModels` allowlist in
 the settings files Claude Code reads, managed settings first.
+
+## The Read stage
+
+`ingest` writes a **draft**, not the manuscript: the converted pieces with no
+line numbers, which nothing can cite and no slot but `reader` can claim. One
+model then reads the page images — the converter mangled about half of the
+antenna paper's eleven equations, two of them at confidence `1.0`, and it
+produces no figure image at all — and for every equation, table and figure
+either repairs the piece from the page or confirms it as printed, having opened
+every page. `seal_manuscript` then writes `paper.md`, `map.json` and the
+manifest, once; it is refused, naming what is left, until nothing is
+outstanding, and after it the lines never move.
+
+What that changes for a reviewer: a repaired equation is marked as read from
+the page image by that model, with the page, and a figure has a description of
+its own under the caption, marked as an AI description of the image rather than
+the authors' words. `map.json` says per row whether the text is the
+converter's (`text`), rewritten from the image (`ai-reconstructed`, with the
+converter's reading kept in `original`) or written by the model (`ai`), and
+`manifest['ai_read']` names the reader model and counts what it did.
+
+`--no-ai-read` is the one way to run without it, and it is a setting rather
+than a fallback: the draft is sealed as converted, every equation keeps the
+marker telling the reviewer to open the page, no figure is described, and the
+manifest says the paper was not AI-read. A reader that fails twice ends the
+same way, through the recorder's `seal_as_converted`. One code path writes the
+manuscript either way.
 
 ## What the server owns
 

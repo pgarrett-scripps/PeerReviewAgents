@@ -22,7 +22,10 @@ So the base is a file a person can open:
     one row per piece, keyed by the line range it occupies, holding the kind,
     the section, the page, the box on that page, where the text came from and a
     fingerprint of its normal form. Pages and boxes live only here, so the text
-    a reviewer reads is the text and nothing else.
+    a reviewer reads is the text and nothing else. A row whose ``source`` is
+    not ``text`` was written or rewritten by a model reading the page image,
+    and carries ``original``: what the converter had in the fields the repair
+    replaced.
 
 A piece has no id, in the file or on the wire. Its identity is its line range
 while the manuscript is open, and its fingerprint across versions.
@@ -43,11 +46,12 @@ from .storage import read, write
 # modules keep reading them from the format they belong to.
 
 #: Where a piece's text came from. ``text`` is the document's own text layer as
-#: the converter read it. ``ai`` is a page image read by a model and
-#: ``ai-reconstructed`` is a passage not printed at all, rebuilt from context —
-#: both are values this format can hold, and nothing writes them yet. A
-#: consumer that treats every piece as printed text would be wrong later, so
-#: the field exists from the start.
+#: the converter read it. ``ai-reconstructed`` is an equation or a table the
+#: reader rewrote from the page image, so the manuscript did print it and the
+#: converter got it wrong; ``ai`` is text the manuscript never printed as text
+#: at all — a figure's description, or a piece the converter dropped and the
+#: reader put back. A row that is not ``text`` carries ``original``: what the
+#: converter had, so a repair can be audited against what it replaced.
 SOURCES = ('text', 'ai', 'ai-reconstructed')
 
 #: ``Figure 3``, ``Fig. 3`` at the start of a caption. Whether a figure's
@@ -118,6 +122,16 @@ def piece_lines(piece) -> list:
     if kind == 'caption':
         line = _one_line(text)
         return [('Figure: ' if FIGURE_CAPTION.match(line) else 'Caption: ') + line]
+    if kind == 'figure-description':
+        # A description of a figure image, written by a model that looked at
+        # the page. It is a piece of its own, after the caption it belongs to,
+        # so the caption keeps the authors' words and the row that says `ai`
+        # covers only the sentences no author wrote. The prefix is in the file
+        # rather than only in the reviewer's view: `paper.md` is read by
+        # applications too, and a paragraph of machine description that reads
+        # like the manuscript's own prose would be the one piece of this format
+        # that lies about itself.
+        return ['Figure description: ' + _one_line(text)]
     return [_one_line(text)]
 
 
@@ -183,6 +197,14 @@ def compose(pieces, document=MAIN_DOCUMENT):
         for extra in ('confidence', 'page_mapping'):
             if piece.get(extra) is not None:
                 row[extra] = piece[extra]
+        # What this piece held before a model repaired it, in the fields the
+        # repair replaced: `latex` for an equation, `rows` for a table, `text`
+        # for anything else, and an empty mapping for a piece the converter
+        # never produced. Keeping it is what makes a repair auditable — the two
+        # readings sit side by side and a person can see which one the page
+        # supports — and it is why `source` alone was not enough.
+        if row['source'] != 'text':
+            row['original'] = dict(piece.get('original') or {})
         # The reference ids a publisher's XML attached to this piece. They are
         # not in the text — a JATS paragraph carries its citations as markup
         # the Markdown cannot hold — and the citation ledger needs them to know
@@ -326,9 +348,12 @@ class PaperBase:
 def load(folder) -> PaperBase:
     """Read a base from a manuscript folder.
 
-    A folder in the shape this version does not write — the old ``paper.json``
-    with its blocks — is refused by name rather than half-read, because every
-    line number a run would record against it would be invented.
+    A folder in a shape this version does not write — the old ``paper.json``
+    with its blocks, or a ``paper-base-v1`` workspace — is refused by name
+    rather than half-read. Reading is forward only: ``v1`` has no ``original``
+    on a row and no ``ai_read`` in its manifest, so a consumer cannot tell a
+    piece the converter produced from one a model wrote, and there is no way to
+    infer the difference from what the folder holds.
     """
     folder = Path(folder)
     if not (folder / 'map.json').is_file() or not (folder / MAIN_DOCUMENT).is_file():
@@ -340,6 +365,14 @@ def load(folder) -> PaperBase:
                 'new folder.')
         raise ValueError('Not a manuscript folder: ' + str(folder)
                          + ' holds neither map.json nor ' + MAIN_DOCUMENT)
+    stamp = (read(folder / 'manifest.json') if (folder / 'manifest.json').is_file()
+             else {}).get('schema_version')
+    if stamp is not None and stamp != BASE_SCHEMA_VERSION:
+        raise ValueError(
+            'This manuscript folder is ' + str(stamp) + ' and this version reads '
+            + BASE_SCHEMA_VERSION + ' only. A ' + str(stamp) + ' map says where every piece sits '
+            'but not whether a model wrote it, so a review over it could not say which equations '
+            'and figures were read off the page. Re-import the manuscript into a new folder.')
     rows = read(folder / 'map.json')
     if not isinstance(rows, list):
         raise ValueError('map.json holds no list of pieces')
