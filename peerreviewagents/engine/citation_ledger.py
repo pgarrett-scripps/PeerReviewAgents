@@ -66,7 +66,7 @@ import unicodedata
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
-from . import paper_base
+from . import paper_base, quotes
 from .external_evidence import retrieve
 from .file_lock import exclusive_lock, shared_lock
 from .storage import digest, read, write
@@ -932,8 +932,39 @@ def _printed_year(reference):
 # -- stage 1: fill ----------------------------------------------------------
 
 
-def sentences(text):
-    """One piece's text as sentences, keeping abbreviations whole.
+def _squeezed(text):
+    """``(squeezed, origins)``: :func:`squeeze`'s string, and where each
+    character of it came from in ``text``.
+
+    The same normalization, kept reversible, because a sentence is reported
+    with the offsets it covers in the manuscript file and the sentences are cut
+    out of the squeezed form. A run of whitespace becomes one space whose origin
+    is the first character of the run.
+    """
+    body = str(text or '')
+    out, origins, cursor = [], [], 0
+    for found in _SPACE.finditer(body):
+        for index in range(cursor, found.start()):
+            out.append(body[index])
+            origins.append(index)
+        # A run at either end of the string is what ``strip`` takes off.
+        if out and found.end() < len(body):
+            out.append(' ')
+            origins.append(found.start())
+        cursor = found.end()
+    for index in range(cursor, len(body)):
+        out.append(body[index])
+        origins.append(index)
+    return ''.join(out), origins
+
+
+def sentence_spans(text):
+    """One piece's text as ``(sentence, start, end)``, offsets into ``text``.
+
+    The split :func:`sentences` makes, with where each sentence sits kept, so a
+    row about a citing sentence can say which characters of the manuscript it
+    is about instead of leaving a consumer to search the passage for the
+    sentence again.
 
     The abbreviation guard matches at a word boundary. Replacing the plain
     string put the guard inside every word that happens to end in one of them:
@@ -941,12 +972,32 @@ def sentences(text):
     the sentence ran on into the next one. Every citing sentence ending in
     *trial*, *total* or *clinical* was read joined to its neighbour.
     """
-    body = squeeze(text)
+    body, origins = _squeezed(text)
     if not body:
         return []
+    # The guard swaps one character for one character, so an offset into the
+    # guarded string is the same offset in the squeezed one.
     guarded = _ABBREVIATION_GUARD.sub(lambda found: found.group(0).replace('.', '\x00'), body)
-    return [part.replace('\x00', '.').strip()
-            for part in _SENTENCE_SPLIT.split(guarded) if part.strip()]
+    cuts, previous = [], 0
+    for found in _SENTENCE_SPLIT.finditer(guarded):
+        cuts.append((previous, found.start()))
+        previous = found.end()
+    cuts.append((previous, len(guarded)))
+    out = []
+    for low, high in cuts:
+        part = body[low:high]
+        if not part.strip():
+            continue
+        # The same ``strip`` the sentence list has always applied, as offsets.
+        low += len(part) - len(part.lstrip())
+        high -= len(part) - len(part.rstrip())
+        out.append((body[low:high], origins[low], origins[high - 1] + 1))
+    return out
+
+
+def sentences(text):
+    """One piece's text as sentences, keeping abbreviations whole."""
+    return [sentence for sentence, _, _ in sentence_spans(text)]
 
 
 def _numbers(group):
@@ -1069,13 +1120,38 @@ def reference_rows(references):
     return rows
 
 
+def _sentence_at(base, document, line, first, last):
+    """Where a span of a piece's text sits in the manuscript.
+
+    ``first`` and ``last`` are offsets into the text of the piece that starts
+    on ``line``, which :meth:`PaperBase.range_text` joins exactly as the file
+    holds it, so the piece's first line is all the arithmetic needs.
+    """
+    _, _, starts = base.projection(document)
+    at = starts[int(line) - 1]
+    return quotes.line_span(base, document, at + first, at + last)
+
+
 def use_rows(base, references):
     """One row per in-text use: the citing sentence, its lines, the reference.
 
-    A row is anchored on the document and the line the citing passage starts
-    on — the same anchor a finding carries — with the sentence's position
-    inside it, so a reviewer handed a row can read it in ``paper.md`` without
-    anything in between.
+    A row is anchored the way a finding is: the document, the line the citing
+    sentence starts on, the line it ends on, and the offsets it covers within
+    them, so that
+
+        ``peerreviewagents.cited_text(base, row)``
+
+    is the sentence as the manuscript file holds it — which for a sentence
+    inside one line is ``base.line_text(line, document)[start:end]``, and for
+    one that crosses a line break runs from ``start`` in ``line`` to ``end`` in
+    ``end_line``. The passage the sentence
+    was read out of is kept beside that as ``piece_lines``, because a row is
+    about a sentence and a reviewer reading it wants the paragraph.
+
+    The offsets are into the file, markup and all; ``sentence`` is the same
+    words as the page prints them. The two differ by the reader's link markup
+    (see below), which is why both are kept: one is what a worker is asked
+    about, the other is what a viewer underlines.
 
     Where the citations come from is recorded per row, because the paths
     differ. A manuscript imported from JATS carries the reference ids per
@@ -1112,7 +1188,8 @@ def use_rows(base, references):
         listed = [str(one) for one in (piece.get('citations') or []) if str(one) in known]
         seen_in_piece = set()
         placed = False
-        for position, sentence in enumerate(sentences(text), start=1):
+        for position, (sentence, first, last) in enumerate(sentence_spans(text), start=1):
+            line, end_line, within, ends = _sentence_at(base, document, start, first, last)
             for reference_id, derivation, marker in _uses_in(sentence, by_label, by_author,
                                                              ambiguous, listed):
                 row_id = 'use:' + where + ':' + str(position) + ':' + str(
@@ -1126,8 +1203,11 @@ def use_rows(base, references):
                     'row_id': row_id,
                     'reference_id': reference_id,
                     'document': document,
-                    'line': start,
-                    'end_line': end,
+                    'line': line,
+                    'end_line': end_line,
+                    'start': within,
+                    'end': ends,
+                    'piece_lines': [start, end],
                     'section': piece.get('section'),
                     'sentence_index': position,
                     'sentence': squeeze(_printed(sentence), 1_200),
@@ -1142,11 +1222,13 @@ def use_rows(base, references):
             # survived extraction. The whole passage is the citing one then,
             # which is a worse anchor than a sentence and is recorded as being
             # one.
+            whole = _sentence_at(base, document, start, 0, len(text))
             for reference_id in listed:
                 rows.append({
                     'kind': 'use', 'row_id': 'use:' + where + ':0:' + reference_id,
-                    'reference_id': reference_id, 'document': document, 'line': start,
-                    'end_line': end,
+                    'reference_id': reference_id, 'document': document, 'line': whole[0],
+                    'end_line': whole[1], 'start': whole[2], 'end': whole[3],
+                    'piece_lines': [start, end],
                     'section': piece.get('section'), 'sentence_index': 0,
                     'sentence': squeeze(_printed(text), 1_200), 'marker': None,
                     'derivation': 'listed-citations', 'stage': 'fill', 'filled_at': now(),
@@ -3787,13 +3869,23 @@ def reference_view(row):
 
 
 def use_view(row):
-    """One in-text use row and whatever verdict a worker left on it."""
+    """One in-text use row and whatever verdict a worker left on it.
+
+    ``line``, ``end_line``, ``start`` and ``end`` locate the citing sentence
+    the way every other citation in a run is located — see
+    :func:`use_rows` — and ``piece_lines`` is the passage it was read out of.
+    A row written before those offsets existed comes back with them ``null``
+    rather than with numbers nobody recorded.
+    """
     return {
         'row_id': row.get('row_id'),
         'reference_id': row.get('reference_id'),
         'document': row.get('document'),
         'line': row.get('line'),
         'end_line': row.get('end_line'),
+        'start': row.get('start'),
+        'end': row.get('end'),
+        'piece_lines': row.get('piece_lines'),
         'section': row.get('section'),
         'sentence': row.get('sentence'),
         'marker': row.get('marker'),

@@ -274,6 +274,41 @@ Keys: `status`, `complete`, `publishable`, `not_publishable_reasons`, `blocked`,
 back for every folder, in every state, so a consumer never has to test whether a
 key is there.
 
+#### Highlighting a citation
+
+Everything in a run that cites the manuscript says where it is the same way:
+a finding in `run["findings"]`, a member of an issue, a row of the citation
+ledger. Each carries `document`, `line`, `end_line`, `start` and `end`, and the
+rule they all keep is
+
+> `anchor_text == line_text(line)[start:end]`
+
+for the ordinary citation, which is inside one line. A quote that crosses a
+line break — a span of a table, two lines of an equation — has `end_line`
+greater than `line`; then `start` is where it begins in `line` and `end` where
+it ends in `end_line`, and it covers each line between them whole.
+`peerreviewagents.cited_text` is that read, both cases, against a workspace you
+loaded with `read_manuscript` or `verify_workspace`:
+
+```python
+from peerreviewagents import cited_text, read_manuscript, read_run
+
+base = read_manuscript("run-output/manuscript")
+for finding in read_run("run-output")["findings"]:
+    print(finding["line"], finding["start"], finding["end"],
+          cited_text(base, finding))     # == finding["anchor_text"]
+```
+
+Use it rather than searching the line for the words again: the engine already
+did that search, against the normal form, and a second implementation in the
+app gets the duplicate quote and the line break wrong. `anchor_text` is the
+manuscript's own characters, so it is what a viewer highlights; `quote` is what
+the reviewer typed, and may differ from it in a dash, a quotation mark or a
+letter's case. All of `line`, `end_line`, `start`, `end` and `anchor_text` are
+`null` on a citation that was never placed — a quarantined finding has words
+and no position — and `cited_text` returns `""` for one, rather than the top of
+the paper.
+
 ### The issues
 
 `issues` is the review: one row per problem with the paper, in the order
@@ -284,7 +319,8 @@ row is
 {"id": "i03", "name": "...", "severity": "major", "category": "statistics-and-inference",
  "rank": 1, "statement": "the paragraph the authors read", "raised_by": 2,
  "members": [{"finding_uid": "...", "slot": "core-2", "track": "core", "quote": "...",
-              "document": "paper.md", "line": 118, "end_line": None,
+              "document": "paper.md", "line": 118, "end_line": 118,
+              "start": 34, "end": 61, "anchor_text": "the words as the file holds them",
               "evidence_lines": [118, 121], "fingerprint": "9f2c…",
               "severity": "major", "kind": "issue", "basis": "two-quotes",
               "escalate": False, "title": "..."}],
@@ -298,7 +334,7 @@ row is
 **Every one of those seventeen fields is on every row**, live or closed, edited
 or synthesised, and a field that does not apply to a row is `None` — or `[]`
 where the field is a list. `peerreviewagents.issues.ISSUE_FIELDS` is that list
-and `MEMBER_FIELDS` is a member's fourteen, so a consumer reads a field by name
+and `MEMBER_FIELDS` is a member's seventeen, so a consumer reads a field by name
 and never tests whether a key is there. Earlier releases left the inapplicable
 ones out; 0.10 does not.
 
@@ -310,11 +346,13 @@ ones out; 0.10 does not.
   rank it had then is in `prior_rank` instead.
 - `members` are the findings the issue was raised from, kept as its evidence:
   the slot that filed each one, the quote it anchored, the document and line
-  the engine placed that quote on, and the lines it cited as evidence.
+  the engine placed that quote on, **where in that line the quote sits**
+  (`start`, `end`, `anchor_text` — see [Highlighting a
+  citation](#highlighting-a-citation)) and the lines it cited as evidence.
   `raised_by` is counted from them, so two reviewers raising one problem is one
   issue that says it was raised twice — never two rows. A closed row has no
   members and `raised_by` of zero.
-- The rest of a finding — `comment`, `start`, `end`, `page`, `bbox`,
+- The rest of a finding — `comment`, `page`, `bbox`,
   `basis_reason`, `counterevidence`, `source_urls` — is **not** copied onto the
   member. Join `members[*]["finding_uid"]` to `read_run()["findings"]` (or to
   `findings.jsonl`) for those, keyed on the same uid. The member carries what a
@@ -463,8 +501,11 @@ shows `REVIEW.md` are showing the same review.
 `read_run` is the supported way in, and these are the document's own top-level
 keys for anything that reads the file directly. `schema_version` is the one to
 check first: `peerreviewagents.ISSUES_SCHEMA_VERSION` is what this release
-writes (`review-issues-v2`), and a stamp this release does not know is refused
-by name rather than read as far as it happens to parse —
+writes (`review-issues-v3`, which added a member's `start`, `end` and
+`anchor_text`), and it is the only one it reads: every earlier stamp —
+`review-issues-v1`, and `review-issues-v2`, which was written and superseded
+inside this release and never shipped in one — is refused by name rather than
+read as far as it happens to parse.
 `issues.schema_problem(document)` is the rule the reader, the prior-round loader
 and the renderer all go through, so a consumer can use the same one.
 
@@ -917,11 +958,19 @@ object per line, and the last line written for a `row_id` is that row. A
 reference row is `{"kind": "reference", "row_id": "ref:<reference_id>",
 "reference_id": …, "label": …, "raw": …, "printed": {…}}` plus a `resolution`
 object once it was looked up; a use row is `{"kind": "use", "row_id":
-"use:<document>:<line>:<sentence>:<reference_id>", "reference_id": …,
-"document": …, "line": …, "end_line": …, "sentence": …, "marker": …}` plus a
+"use:<document>:<piece line>:<sentence>:<reference_id>", "reference_id": …,
+"document": …, "line": …, "end_line": …, "start": …, "end": …,
+"piece_lines": […, …], "sentence": …, "marker": …}` plus a
 `verdict` once a worker judged it — `document` is `paper.md` for the manuscript
-and the supplement's file name otherwise, and `line` is the line of that file
-the citing sentence starts on. The stage record beside
+and the supplement's file name otherwise, and `line`, `end_line`, `start` and
+`end` locate the **citing sentence** by the rule in [Highlighting a
+citation](#highlighting-a-citation), so a viewer underlines the sentence it is
+showing a verdict about. `piece_lines` is the first and last line of the
+passage the sentence was read out of — the paragraph a reader wants around it —
+and it is the piece's first line, not the sentence's, that `row_id` is built
+from, so a row keeps its identity. The offsets are into the file, markup and
+all, while `sentence` is the same words as the page prints them: the two differ
+by the reader's citation links, which is why both are kept. The stage record beside
 it, `citations/stages.json`, is what `complete` and `lookups` are read from:
 `{"fill": {"done": true}, "resolve": {"done": true, "lookups": 2}}`.
 `tests/test_ledger_consumer_surface.py` builds its fixtures exactly this way
@@ -1165,11 +1214,12 @@ and `statistics.pdf_pages` is `0`. In consequence
 * a finding's `page` and `bbox` are `null` too, so there is no region to draw
   on a page image;
 * **the citation is the line.** Every finding carries `document`, `line`,
-  `end_line` and a `start`/`end` offset pair into that line, and
-  `anchor_text` is exactly `line_text(line)[start:end]`. A viewer highlights
-  that span in the text it is showing. This is the same anchoring a
-  PDF-imported manuscript gets; the box is the extra a PDF has, not the
-  mechanism.
+  `end_line` and a `start`/`end` offset pair into it, and `anchor_text` is
+  exactly `line_text(line)[start:end]` — see [Highlighting a
+  citation](#highlighting-a-citation) for the rule and for the quote that
+  crosses a line break. A viewer highlights that span in the text it is
+  showing. This is the same anchoring a PDF-imported manuscript gets; the box
+  is the extra a PDF has, not the mechanism.
 
 #### Where a box is, and how big the page is
 

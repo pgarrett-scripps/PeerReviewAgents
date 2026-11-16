@@ -76,19 +76,64 @@ def _line_of(starts, offset):
     return bisect.bisect_right(starts, offset)
 
 
+def line_span(base, document, start, end):
+    """``(line, end_line, start, end)``: a span of file offsets, as a citation.
+
+    The one place the engine turns an offset into the numbers a consumer
+    highlights with, so that every citation in a run — a finding, an issue
+    member, a citation ledger row — says where it is the same way: ``start`` is
+    where the span begins within ``line`` and ``end`` where it ends within
+    ``end_line``. For the ordinary citation, which is inside one line, that is
+    ``base.line_text(line, document)[start:end]``; a span that crosses a line
+    break runs to the end of each line it covers and stops at ``end`` in the
+    last one. :func:`peerreviewagents.cited_text` is that reconstruction, and
+    ``docs/INTEGRATIONS.md`` prints it.
+    """
+    _, _, starts = base.projection(document)
+    first = _line_of(starts, start)
+    last = _line_of(starts, max(start, end - 1))
+    return first, last, start - starts[first - 1], end - starts[last - 1]
+
+
+def cited_text(base, citation):
+    """The manuscript's own characters for one citation, from its offsets.
+
+    One implementation of the rule :func:`line_span` records, for everything
+    that reads a citation out of a run: a finding from
+    :func:`peerreviewagents.read_run`, an issue member, a citation ledger row.
+    Each of them carries ``document``, ``line``, ``end_line``, ``start`` and
+    ``end``, and this is the text they point at — which for a finding is its
+    ``anchor_text`` and is what a viewer highlights.
+
+    ``''`` for a citation that was never placed, which is a row whose ``line``
+    or offsets are null: a quarantined finding has words and no position, and a
+    consumer asking where it is should get nothing rather than the top of the
+    paper.
+    """
+    citation = citation or {}
+    line, start, end = citation.get('line'), citation.get('start'), citation.get('end')
+    if line is None or start is None or end is None:
+        return ''
+    document = citation.get('document') or paper_base.MAIN_DOCUMENT
+    line, start, end = int(line), int(start), int(end)
+    last = int(citation.get('end_line') if citation.get('end_line') is not None else line)
+    if last <= line:
+        return base.line_text(line, document)[start:end]
+    middle = [base.line_text(number, document) for number in range(line + 1, last)]
+    return '\n'.join([base.line_text(line, document)[start:], *middle,
+                      base.line_text(last, document)[:end]])
+
+
 def _found_at(base, document, spans, exactly):
     """Turn normal-form spans into the placements a finding is recorded as."""
-    _, _, starts = base.projection(document)
     found = []
     for first_index, last_index in spans:
         start, end = _span(base, document, first_index, last_index - first_index + 1)
-        start_line = _line_of(starts, start)
-        end_line = _line_of(starts, end - 1)
+        start_line, end_line, within, ends = line_span(base, document, start, end)
         piece = base.piece_at(start_line, document) or {}
         found.append({
             'document': document, 'line': start_line, 'end_line': end_line,
-            'start': start - starts[start_line - 1],
-            'end': end - starts[end_line - 1],
+            'start': within, 'end': ends,
             'text': base.documents[document][start:end], 'quoted_exactly': exactly,
             'page': piece.get('page'), 'bbox': piece.get('bbox'),
             'section': piece.get('section'), 'kind': piece.get('kind'),
@@ -220,4 +265,5 @@ def _not_found(base, quote, line, end_line, document):
     return {'refused': '\n'.join(message), 'nearest': near}
 
 
-__all__ = ['NEAREST', 'anchor', 'longest_run', 'nearest_lines', 'placements']
+__all__ = ['NEAREST', 'anchor', 'cited_text', 'line_span', 'longest_run', 'nearest_lines',
+           'placements']

@@ -807,7 +807,8 @@ def read_run(path):
         ``moderate`` or ``minor``), ``category``, ``rank``, one paragraph of
         ``statement``, its ``status`` against the prior round, and its
         ``members`` — the findings it is raised from, each with its
-        ``finding_uid``, slot, quote and cited lines kept as evidence.
+        ``finding_uid``, slot, quote, the lines it was cited on and the offsets
+        of the quote within them, kept as evidence.
         ``raised_by`` is how many reviewer slots are among those members.
         Every row carries every field of
         :data:`peerreviewagents.issues.ISSUE_FIELDS`, and every member every
@@ -835,7 +836,16 @@ def read_run(path):
         Every finding the ledger kept, de-duplicated to the latest row per
         ``finding_uid``, in full. The ledger is the finding set: the editor
         places nothing out of sight, so a finding is in the review through the
-        issue that holds it. ``findings_source`` is ``issues`` when
+        issue that holds it. Each one says where it is in the manuscript the
+        same way an issue member does — ``document``, ``line``, ``end_line``,
+        ``start``, ``end`` and ``anchor_text``, where
+
+            ``anchor_text == base.line_text(line, document)[start:end]``
+
+        for the quote inside one line, and
+        :func:`peerreviewagents.cited_text` reads it for a quote that crosses a
+        line break too, so a viewer underlines the words without searching the
+        line for them again. ``findings_source`` is ``issues`` when
         ``issues.json`` could be read, including the empty review of a
         manuscript nobody raised anything about; ``ledger`` when it could not,
         or when it holds no issue over findings that are in the ledger — then
@@ -939,7 +949,10 @@ def read_run(path):
         source = 'ledger' if findings else 'none'
     if not findings:
         # A run whose ledger is gone still has the issues' own member rows, and
-        # they carry the uid, the slot, the quote and the cited lines.
+        # they carry the uid, the slot, the quote, the cited lines and the
+        # offsets within them — which is why the offsets are on a member: this
+        # path reports members as findings, and a consumer that highlights a
+        # finding must not get less here than it gets from the ledger.
         # Through the same guard as every other reader of this document: a
         # `members` held as a number was iterated here and raised a TypeError
         # out of `read_run` on the one path that had no ledger to fall back on.

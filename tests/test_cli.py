@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from peerreviewagents import ISSUES_SCHEMA_VERSION
 from peerreviewagents.cli import main as cli
 from peerreviewagents.plugin import starter
 from peerreviewagents.plugin.server import DEFAULT_ARM
@@ -148,7 +149,7 @@ def _run_folder(tmp_path) -> Path:
                     'model': 'claude-sonnet-5-5'}],
     }), encoding='utf-8')
     (review / 'issues.json').write_text(json.dumps({
-        'schema_version': 'review-issues-v2',
+        'schema_version': ISSUES_SCHEMA_VERSION,
         'summary': 'One issue.', 'limitations': [], 'escalation_rulings': [],
         'issues': [{'id': 'i01', 'name': 'The claim is not supported', 'rank': 1,
                     'severity': 'major', 'category': 'claims', 'status': 'new',

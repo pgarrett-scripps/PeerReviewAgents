@@ -47,6 +47,28 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A citation says where the quote is inside its line, everywhere a consumer
+  reads one.** An issue's members now carry `start`, `end` and `anchor_text`
+  beside the line, and a citation ledger use row carries `start`, `end` and
+  `end_line` for the citing sentence with `piece_lines` keeping the passage it
+  was read from. `read_run`'s findings already had them. So all three now keep
+  one rule — `anchor_text == line_text(line)[start:end]`, and from `start` in
+  `line` to `end` in `end_line` for a quote that crosses a line break — and
+  `peerreviewagents.cited_text(base, citation)` is that read, both cases, for
+  any of them. An app that had `issues.json` knew which line to open and then
+  had to search the line for the words again to underline them: the search the
+  engine had already done, done a second time by code that cannot refuse a
+  quote that occurs twice in the line. `issues.json` is stamped
+  `review-issues-v3`, and that is the only stamp this release reads: the
+  reading is forward only, as the manuscript base is, and `review-issues-v2`
+  — written and superseded inside this release, never shipped in one — is
+  refused by name like any other stamp it does not know. A ledger use row's
+  `line` now locates the citing sentence rather
+  than the paragraph around it, which is the point of the row; `row_id` is
+  still built from the paragraph's first line, so a row keeps its identity
+  across rounds. `docs/INTEGRATIONS.md` states the rule in one place and both
+  the finding path and the members-only path a run without a ledger is read
+  through are held against the characters of the file in the suite.
 - **The manuscript base is on the public surface.** `write_manuscript(folder,
   pieces, ...)` writes a whole manuscript workspace — the documents, `map.json`,
   `references.json`, `statistics.json` and a `manifest.json` whose `files`

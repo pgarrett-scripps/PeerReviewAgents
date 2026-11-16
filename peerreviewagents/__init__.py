@@ -75,6 +75,13 @@ Manuscripts and workspaces
     instead of producing line numbers that no longer mean anything.
     :func:`export_draft`
     applies the accepted anchored edits of a review to a copy of ``paper.md``.
+    :func:`cited_text` is the one way to turn a citation — a finding from
+    :func:`read_run`, an issue member, a citation ledger row — back into the
+    manuscript's own characters: each carries ``document``, ``line``,
+    ``end_line``, ``start`` and ``end``, and this reads that span off a
+    :class:`PaperBase`, including the case of a quote that crosses a line
+    break, so an app highlights the words without searching the line for them
+    again.
     :mod:`peerreviewagents.workspace` holds the smaller tools those are built
     from, for an app that writes files the engine reads back: the manifest
     digest, the atomic JSON read and write, the review normalisation and save,
@@ -131,6 +138,7 @@ if TYPE_CHECKING:  # Static tooling sees the real objects, not the fallback.
     from .engine.ingest import import_paper, write_manuscript
     from .engine.paper_base import PaperBase
     from .engine.paper_base import load as read_manuscript
+    from .engine.quotes import cited_text
     from .engine.run_report import write_reports
     from .plugin.starter import build_parser as review_parser
     from .plugin.starter import claude_version as claude_code_version
@@ -152,6 +160,7 @@ __all__ = [
     "write_manuscript",
     "read_manuscript",
     "PaperBase",
+    "cited_text",
     "write_reports",
     "verify_workspace",
     "export_draft",
@@ -204,6 +213,10 @@ _LAZY = {
     "write_manuscript": (".engine.ingest", "write_manuscript"),
     "read_manuscript": (".engine.paper_base", "load"),
     "PaperBase": (".engine.paper_base", "PaperBase"),
+    # The citation rule, executable: every consumer that highlights a quote was
+    # about to write this loop itself, and the line-crossing case is the one it
+    # would get wrong.
+    "cited_text": (".engine.quotes", "cited_text"),
     "write_reports": (".engine.run_report", "write_reports"),
     "verify_workspace": (".engine.annotations", "verify_workspace"),
     "export_draft": (".engine.annotations", "export_draft"),
