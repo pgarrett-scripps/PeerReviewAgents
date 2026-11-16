@@ -1243,6 +1243,16 @@ def folder_state(root):
             for path in sorted(Path(root).rglob('*')) if path.is_file()}
 
 
+def holds_path(text, machine):
+    """Whether one file names a path — as plain text, or escaped inside JSON.
+
+    A Windows path is written ``C:\\\\Users\\\\...`` inside a JSON string, so
+    scanning the raw file for ``str(path)`` finds nothing on the one OS where a
+    leaked path looks different from the path itself.
+    """
+    return machine in text or json.dumps(machine)[1:-1] in text
+
+
 def test_a_complete_folder_is_not_a_place_to_start_a_run(tmp_path):
     """Ingest into a written review was accepted, and undid it.
 
@@ -1368,19 +1378,23 @@ def test_the_paths_in_a_write_review_answer_are_in_no_file_of_the_run(tmp_path):
 
     refused = srv.write_review(recorder)
 
-    assert str(run.root) in json.dumps(refused), 'the answer is for a caller on this machine'
-    absolute = {}
+    assert refused['review'] == str(run.review / 'REVIEW.md'), 'the answer opens on this machine'
+    assert refused['issues'] == str(run.review / 'issues.json')
+    assert Path(refused['run']).is_absolute()
+    named_the_input = []
     for path in sorted(run.root.rglob('*')):
         if not path.is_file():
             continue
         text = path.read_text(encoding='utf-8', errors='ignore')
-        assert str(run.root) not in text, f'{relative_name(path, run.root)} names the run folder'
-        if str(Path.home()) in text:
-            absolute[relative_name(path, run.root)] = text
-    assert sorted(absolute) == ['review/manifest.json'], sorted(absolute)
-    manifest = json.loads(absolute['review/manifest.json'])
+        where = relative_name(path, run.root)
+        for machine in (str(run.root), str(tmp_path)):
+            assert not holds_path(text, machine), f'{where} names {machine}'
+        if holds_path(text, str(FIXTURE)):
+            named_the_input.append(where)
+    assert named_the_input == ['review/manifest.json'], named_the_input
+    manifest = json.loads((run.review / 'manifest.json').read_text(encoding='utf-8'))
     assert manifest['pdf'] == str(FIXTURE), 'the manuscript that was ingested'
-    assert str(Path.home()) not in json.dumps(
+    assert str(FIXTURE) not in json.dumps(
         {key: value for key, value in manifest.items() if key != 'pdf'})
 
 
