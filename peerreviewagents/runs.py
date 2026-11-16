@@ -587,6 +587,11 @@ def _manuscript(workspace, paper):
         # lines its transcription became. Empty for a manuscript that lost no
         # page, and for one sealed before this was recorded.
         'lost_pages': list(read.get('lost_pages') or []),
+        # What the model that read the pages left for whoever reads the
+        # manuscript: a table the converter dropped, a page whose order it had
+        # to choose. Its own account, not the authors' text, and empty unless
+        # it filed one.
+        'note': str(read.get('note') or ''),
         'documents': list(paper.get('documents') or []) if isinstance(paper, dict) else [],
         'folder': str(workspace) if state != MANUSCRIPT_ABSENT else None,
     }

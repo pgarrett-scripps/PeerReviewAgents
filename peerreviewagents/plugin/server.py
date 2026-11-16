@@ -104,8 +104,14 @@ LEDGER_TOOLS = ('citation_rows', 'claim_citation_batch', 'submit_citation_verdic
 #: exists for this stage alone. Granted in :meth:`Run.claim`, like the
 #: ledger's, because a draft is not something an investigation reads.
 READER_TOOLS = ('read_draft', 'view_page', 'replace_equation', 'replace_table',
-                'describe_figure', 'add_piece', 'merge_equations', 'confirm_piece',
-                'seal_manuscript')
+                'describe_figure', 'add_piece', 'reread_piece', 'withdraw_piece',
+                'merge_equations', 'confirm_piece', 'seal_manuscript')
+
+#: How much of the reader's note at the seal the manifest keeps. It is the few
+#: things a reviewer needs to know about the document as a document — a table
+#: the converter dropped, a page whose order had to be chosen — and a cap is
+#: what keeps it that rather than a second copy of the tool log.
+READER_NOTE_CHARACTERS = 2000
 
 TRACK_TOOLS = {
     'core': (*OFFLINE_TOOLS, *IMAGE_TOOLS, *NETWORK_TOOLS),
@@ -2138,20 +2144,61 @@ def describe_figure(agent_token: str, piece: str, page: int, description: str) -
 
 def add_piece(agent_token: str, after: str, kind: str, page: int, text: str = '',
               latex: str = '', number: str = '', rows: list = ()) -> dict:
-    """Add an equation, table or figure description the converter never produced.
+    """Add an equation, table, caption or figure description the converter missed.
 
     `after` is the piece it belongs behind. Use it for a table the converter
-    reduced to its caption, or an equation it dropped — not for anything the
-    page does not print.
+    reduced to its caption, an equation it dropped, or a caption it swallowed
+    into the table above it — not for anything the page does not print. A
+    caption you add is transcribed off the page like any other: check its
+    footnote letters against the table, letter by letter.
 
     On a page the converter returned nothing at all from — `read_draft` names
     them under `unconverted_pages` — this is the only way the page reaches the
-    manuscript, so `paragraph` and `caption` may be added there as well.
-    Transcribe what the page prints, in the order it prints it.
+    manuscript, so `paragraph` may be added there as well. Transcribe what the
+    page prints, in the order it prints it. To take out something you added
+    here and got wrong, withdraw_piece.
     """
     return _call(agent_token, 'add_piece',
                  {'after': after, 'kind': kind, 'page': page, 'text': text, 'latex': latex,
                   'number': number, 'rows': list(rows)})
+
+
+def reread_piece(agent_token: str, piece: str, page: int, pieces: list) -> dict:
+    """Re-read one converted piece as the pieces the page actually prints.
+
+    The converter emits one block per thing it thinks it found, and its `kind`
+    is a guess from the layout. Use this where that guess is wrong and the
+    shorter tools cannot reach it:
+
+    - a table or an equation it emitted as a paragraph, so nothing marked it as
+      one and the manuscript holds a line of run-together cells;
+    - one block that is really several — a table, its caption and the next
+      table — where replacing it with one piece would drop the rest;
+    - a paragraph left holding the debris of a displayed equation beside it.
+
+    `pieces` is a list, in printed order, of `{"kind": ..., ...}` with the same
+    fields the other tools take: `latex` and `number` for an equation, `rows`
+    for a table, `text` for a caption, a paragraph, a footnote or a heading.
+
+    An equation, a table and a caption you transcribe from the page image. A
+    paragraph you may only *shorten*: every character you keep has to be one
+    the converter read, in that order, so a displayed piece's debris can come
+    out of a paragraph and the authors' prose cannot be rewritten. Refused if
+    you have not viewed the page.
+    """
+    return _call(agent_token, 'reread_piece',
+                 {'piece': piece, 'page': page, 'pieces': list(pieces)})
+
+
+def withdraw_piece(agent_token: str, piece: str) -> dict:
+    """Take out a piece this stage added, having got it wrong.
+
+    Only one of your own: the converter's pieces are the authors' text, and
+    where one of those is wrong the answer is reread_piece and not a deletion.
+    Withdrawing a figure's description leaves that figure unaccounted for
+    again, so write it another one before sealing.
+    """
+    return _call(agent_token, 'withdraw_piece', {'piece': piece})
 
 
 def merge_equations(agent_token: str, pieces: list, page: int, latex: str,
@@ -2170,13 +2217,22 @@ def confirm_piece(agent_token: str, piece: str, page: int) -> dict:
     return _call(agent_token, 'confirm_piece', {'piece': piece, 'page': page})
 
 
-def seal_manuscript(agent_token: str) -> dict:
+def seal_manuscript(agent_token: str, note: str = '') -> dict:
     """Write the manuscript from the draft. Once, and nothing renumbers after it.
 
     It is refused while any equation, table or figure is unaccounted for or any
     page is unopened, and says which. What comes back is what the rest of the
     run reads: the statistics, the sections, the documents and the citation
     counts.
+
+    `note` is for what a reviewer should know about this manuscript as a
+    document and could not work out from reading it: a table the converter
+    dropped and you put back, a page whose layout you had to choose an order
+    for, a figure whose axis labels the image does not resolve. It is kept in
+    the manifest and shown above the manuscript wherever one is read. Write it
+    for the reviewer, in a sentence or two per thing, and leave it empty if
+    there is honestly nothing. It is not a report of your work: the tool log
+    already has that.
     """
     run = current()
     try:
@@ -2209,11 +2265,19 @@ def seal_manuscript(agent_token: str) -> dict:
                  'else. View each one and add what it prints with add_piece. '
                if left['lost_pages'] else '')
             + 'Finish those and seal again.', outstanding=left)
+    note = ' '.join(str(note or '').split())
+    if note and len(note) < 20:
+        return rejection('A note that short says nothing a reviewer can use. Either say what '
+                         'about this manuscript they should know, or leave `note` out.')
+    if len(note) > READER_NOTE_CHARACTERS:
+        return rejection('That note is ' + str(len(note)) + ' characters and the manifest keeps '
+                         + str(READER_NOTE_CHARACTERS) + '. It is the few things a reviewer needs '
+                         'to know about the document, not a report of the stage.')
     tally = engine_reader.tally(run.draft)
     account = {'read': True, 'reader_model': agent.observed or run.models.get('reader'),
                'reader_slot': agent.slot, 'attempt': agent.attempt,
                'pages_viewed': tally['pages_viewed'], 'pages': tally['pages'],
-               'actions': tally['pieces'], 'tool_calls': agent.calls}
+               'actions': tally['pieces'], 'tool_calls': agent.calls, 'note': note}
     try:
         manifest = run.seal(ai_read=account)
     except (ValueError, OSError) as exc:
@@ -4265,7 +4329,8 @@ def _fallback_issue(issue):
 TOOLS = (ingest, claim_agent, reissue_claim_code, read_paper, search, calculate, save_note,
          view_page, view_supplement,
          read_draft, replace_equation, replace_table, describe_figure, add_piece,
-         merge_equations, confirm_piece, seal_manuscript, seal_as_converted,
+         reread_piece, withdraw_piece, merge_equations, confirm_piece,
+         seal_manuscript, seal_as_converted,
          check_citation, search_literature, resolve_identifier,
          lookup_source, inspect_results, record_comparison, validate_synthesis, submit_finding,
          submit_report, list_findings, submit_issues, submit_editor, resolve_citations,

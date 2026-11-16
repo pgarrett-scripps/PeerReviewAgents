@@ -98,6 +98,24 @@ def reader_model(base):
     return str(read.get('reader_model') or '') if read.get('read') else ''
 
 
+def reader_note(base):
+    """What the model that read the pages left for whoever reads the manuscript.
+
+    It is served under the header rather than kept in the manifest alone,
+    because the things it holds are things a reviewer cannot find out by
+    reading: on the first real run the reader knew a table had been dropped by
+    the converter and that two others were garbled, and none of it reached
+    anything a reviewer sees. It is that model's account and not the paper's,
+    so it is served as such.
+    """
+    note = str((base.manifest.get('ai_read') or {}).get('note') or '').strip()
+    if not note:
+        return ''
+    return ('\n\nThe model that read the pages left this note about the document. It is '
+            'that model\'s account of what it found, not the authors\' text and not a '
+            'finding:\n\n' + note)
+
+
 def piece_model(base):
     """The model that wrote this manuscript's non-converter pieces, or ``''``.
 
@@ -211,7 +229,7 @@ def render(base, document=paper_base.MAIN_DOCUMENT, part=1):
     model = piece_model(base)
     was_read = bool(reader_model(base))
     if was_read:
-        header = AI_READ_HEADER
+        header = AI_READ_HEADER + reader_note(base)
     else:
         header = AI_PIECES_HEADER if composed_by_model(base) else HEADER
     head = [document + ' - part ' + str(part) + ' of ' + str(len(ranges)) + ' - lines '

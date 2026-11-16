@@ -112,6 +112,34 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   holds a half-written manuscript. `write_manuscript` from an app needs no
   reader and seals at once, as it did before — an app that parses its own Typst
   source already has the equation.
+- **The reader may re-read any piece on a page it has viewed, as the pieces
+  that page actually prints.** The first real run found the limit of a stage
+  whose tools could only reach what the converter had already labelled an
+  equation, a table or a figure: the converter emitted two of that paper's
+  tables as one-line paragraphs of run-together cells, a displayed equation as
+  a paragraph with the next equation's symbols left in the prose after it, and
+  one "table" that held a table, the next table's caption and that table too —
+  and `replace_table` wrote the first of those over the lot, which left the
+  rest in no file and nothing in the manifest saying so. So the kind gate is
+  gone from `replace_equation` and `replace_table`, and `reread_piece`
+  replaces one piece with several, in printed order, each keeping the
+  converter's whole reading in `original` with `part` and `of`. Prose is held
+  to deletion: a `paragraph`, `footnote`, `heading` or `title` a re-read writes
+  must be the converter's own characters with some removed and none added,
+  checked as a subsequence after normalising and dropping whitespace, so a
+  displayed piece's debris can leave a paragraph and a model still cannot write
+  one. A caption is never written over by a single replacement, because the
+  piece it names would be left without one. `withdraw_piece` takes out a piece
+  the stage added and refuses the converter's — a caption added with its text
+  in the wrong argument had rendered as `Caption:`, passed a check that was on
+  the rendered line rather than the content, and reached a sealed manuscript
+  with nothing able to remove it; `add_piece` now refuses an empty piece by
+  kind and takes a `caption` on any viewed page, since the converter loses
+  those. `seal_manuscript` takes a `note`: the reader's own account of the
+  document, served above the manuscript as that model's words, kept in
+  `manifest['ai_read']['note']` and on `read_run`'s `manuscript` key. That
+  run's reader knew a table had been dropped and two more were garbled, and
+  said it in a report that reached no file.
 - **A citation says where the quote is inside its line, everywhere a consumer
   reads one.** An issue's members now carry `start`, `end` and `anchor_text`
   beside the line, and a citation ledger use row carries `start`, `end` and

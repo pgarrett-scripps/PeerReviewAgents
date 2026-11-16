@@ -6,7 +6,7 @@ inside a session, so there is nothing to wire up twice.
 
 ```
 peerreview review     peerreviewagents/plugin/pra   peerreviewagents.plugin.server
-  (the command)      →     (workflow, agents,     →   (37 MCP tools, the ledger,
+  (the command)      →     (workflow, agents,     →   (39 MCP tools, the ledger,
                             skills, .mcp.json)         the run files)
 ```
 
@@ -111,6 +111,27 @@ invisible in the text and plain on the page. Then `seal_manuscript` writes
 `paper.md`, `map.json` and the manifest, in one call, once. **Line numbers
 never move after the seal**, which is what lets a finding cite one.
 
+**The converter's `kind` is a guess, and the stage is allowed to disagree with
+it.** Each block arrives labelled from the layout, and on the first real run it
+had emitted two tables as one-line paragraphs of run-together cells, a
+displayed equation as a paragraph with the next equation's symbols left in the
+prose after it, and one "table" that held a table, the next table's caption and
+that table too. None of those is reachable by a tool that first checks the
+piece is already an equation or a table, so the rule is the honest one: **the
+reader may re-read any piece on a page it has viewed, as the pieces that page
+actually prints, and the converter's whole reading is kept on every piece that
+comes out of it.** `reread_piece` replaces one piece with several, in printed
+order, each carrying `original` = the converter's reading plus `part` and `of`;
+`replace_equation` and `replace_table` take a piece of any kind and change it.
+Two things hold that to transcription. A `paragraph`, `footnote`, `heading` or
+`title` written by a re-read must be the converter's own characters with some
+**removed** and none added — checked, after normalising and dropping
+whitespace, as a subsequence — so a displayed piece's debris can leave a
+paragraph and the authors' prose cannot be rewritten; and a caption is never
+written over by a single replacement, because the piece it names would be left
+with none. `withdraw_piece` takes out a piece the stage itself added, and
+refuses the converter's.
+
 The stage is one slot, `reader`, planned with every other: `--reader-model`
 (default `claude-sonnet-5-5`, because the job is reading pictures),
 `PEERREVIEW_READER_MODEL`, or `reader_model` on `ingest`. Its tool allowance is
@@ -133,8 +154,9 @@ pages it got blocks from against Poppler's text layer and records every page
 that reads 25 words or more and converted to nothing. With the Read stage on
 those pages are outstanding items of their own: `read_draft` names them under
 `unconverted_pages`, the reader views each one and transcribes what it prints
-with `add_piece` — which may add a `paragraph` or a `caption` there, and only
-there — and `seal_manuscript` is refused while one of them still has nothing
+with `add_piece` — which may add a `paragraph` there and only there, a
+`caption` anywhere — and `seal_manuscript` is refused while one of them has
+nothing
 on it. The manifest then names the pages and the pieces added off them, in
 `ai_read['lost_pages']` and in `known_gaps['converter_pages']`, because that
 text is a model's transcription and not the converter's reading of anything.
@@ -156,12 +178,24 @@ off a page image. Its manifest records `{"read": false, "reason": …}` too.
             "reader_slot": "reader", "attempt": 1,
             "pages_viewed": 12, "pages": 12,
             "actions": {"repaired": 6, "confirmed": 5, "merged": 1,
-                        "described": 9, "added": 4},
+                        "described": 9, "added": 4, "reread": 3},
             "tool_calls": 47,
+            "note": "Table 4 was inside the converter's Table 3 and is now a "
+                    "table of its own. Figure 2's y-axis label is unreadable "
+                    "in the image.",
             "lost_pages": [{"page": 8, "words": 266, "rotation": 0,
                             "added": [{"piece": "p0211", "document": "paper.md",
                                        "lines": [120, 126]}]}]}
 ```
+
+**`ai_read['note']` is the reader's own account of the document**, in its
+words, capped at 2000 characters and empty when it filed none. It exists
+because the first real run's reader knew two things no reviewer could work out
+— that the converter had dropped a table, and that two others were garbled —
+and said them in a report that reached no file. It is served above the
+manuscript wherever one is read, labelled as that model's account rather than
+the authors' text, and `read_run(...)['manuscript']['note']` carries it for an
+application. It is not a log of the stage: `actions` and the tool log are that.
 
 **`ai_read['lost_pages']` is written on every seal**, empty list included, so
 a folder that lost no page says so rather than leaving a consumer to guess
@@ -221,7 +255,7 @@ Then ask for one of its three skills:
 | `follow-up` | what changed since a previous run of the same paper |
 
 The agents may call only the server's tools — the allow list the starter passes
-is `Workflow`, `Skill`, `TodoWrite` and the 37 `peerreview` tools, and nothing
+is `Workflow`, `Skill`, `TodoWrite` and the 39 `peerreview` tools, and nothing
 else. No `Read`, `Write`, `Edit`, `Bash`, `WebSearch` or `WebFetch` reaches a
 reviewer, which is why a quotation cannot come from anywhere but the
 manuscript the server served.
@@ -394,7 +428,8 @@ manuscript, or complete with none to show.
 
 Beside it: `sealed` (that question already answered), `reason`,
 `reader_model`, `lost_pages` — each page the converter returned nothing from,
-with the document and lines its transcription became — and `documents`. Before
+with the document and lines its transcription became — `note`, the reader's own
+account of the document if it left one, and `documents`. Before
 this, telling a run whose read stopped from one that never started meant
 looking for `draft.json` by name, which is this package's working file and not
 part of the folder a consumer is promised.
