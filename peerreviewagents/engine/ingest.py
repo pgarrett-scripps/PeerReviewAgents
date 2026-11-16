@@ -330,6 +330,29 @@ def page_text(pdf):
     return extracted.split('\f')
 
 
+#: A page the converter returned nothing from needs this many words in the text
+#: layer before the import calls it a loss. A full-page figure carries a running
+#: head, a page number and a caption the converter does read; a page of prose
+#: carries hundreds. The threshold is what sits between those two.
+LOST_PAGE_WORDS = 25
+
+
+def unconverted_pages(blocks, pages):
+    """Every page the PDF has text on that the converter returned no block from.
+
+    The pinned converter returns nothing at all for a page whose ``/Rotate`` is
+    not zero: the landscape table page of a paper comes back empty while every
+    upright page around it converts, and the loss is per page rather than per
+    document. Poppler's text layer, which the import already reads for its page
+    anchors, is the second opinion — a page it reads whole sentences off and
+    the converter returned nothing from is a page the conversion lost, and a
+    manuscript written from it would be missing a page with nothing to say so.
+    """
+    seen = {int(block.get('page') or 0) + 1 for block in blocks}
+    return [number for number, text in enumerate(pages, start=1)
+            if number not in seen and len(words(text)) >= LOST_PAGE_WORDS]
+
+
 def text_of(element):
     return re.sub(r'\s+', ' ', ''.join(element.itertext())).strip() if element is not None else ''
 
@@ -384,6 +407,26 @@ def convert_paper(pdf, output, xml=None, title=None, source_url='', supplements=
     if raw_pages and not raw_pages[-1].strip():
         raw_pages.pop()
     normalized_pages = [norm(page) for page in raw_pages]
+    geometry = page_geometry(pdf, len(raw_pages))
+    parser = 'rustypaper ' + getattr(rustypaper, '__version__', 'unknown')
+    if not xml:
+        # With publisher XML the pieces are the publisher's and the PDF is only
+        # consulted for page anchors, so a page the converter dropped costs an
+        # anchor rather than the text. Without it, the converter is the only
+        # reading of the paper there is.
+        lost = unconverted_pages(doc.get('blocks') or [], raw_pages)
+        if lost:
+            turned = {int(page['page']): int(page.get('rotation') or 0) for page in geometry}
+            raise ValueError(
+                parser + ' returned no text from page(s) '
+                + ', '.join(str(page) + ('(rotated ' + str(turned[page]) + '°)'
+                                         if turned.get(page) else '')
+                            for page in lost)
+                + ' of this PDF, which the text layer reads whole sentences from. The import is '
+                  'refused: a manuscript written from this conversion would be missing those '
+                  'pages, and nothing downstream could tell. This is the converter rather than '
+                  'the import — report it against ' + parser + ' and import again once it reads '
+                  'them.')
     pieces, references, assets, warnings = [], [], [], []
     supplement_pieces = collections.OrderedDict()
 
@@ -552,6 +595,15 @@ def convert_paper(pdf, output, xml=None, title=None, source_url='', supplements=
                 image.thumbnail((1800,1800))
                 image.convert('RGB').save(dest.with_suffix('.png'))
             assets.append({'id':path.stem,'label':path.name,'kind':'supplement','path':'supplements/'+path.name,'preview':'supplements/'+path.with_suffix('.png').name if path.suffix.lower() in ('.tif','.tiff') else None,'available':'file','document':name if path.suffix.lower()=='.docx' else None})
+    if not pieces:
+        # Every page empty rather than one of them: a scan with no text layer,
+        # or a PDF whose text neither the converter nor Poppler can reach. The
+        # draft would hold nothing, the reader would have nothing to repair,
+        # and the manuscript would be a file with no lines in it.
+        raise ValueError(
+            'Nothing was converted from this PDF: ' + parser + ' returned no text and the text '
+            'layer has none either, which is what a scan with no text layer reads like. The '
+            'import is refused rather than writing a manuscript with no lines in it.')
     documents = collections.OrderedDict([(paper_base.MAIN_DOCUMENT, pieces)])
     documents.update(supplement_pieces)
     draft = {
@@ -568,7 +620,7 @@ def convert_paper(pdf, output, xml=None, title=None, source_url='', supplements=
                    'pages': len(raw_pages),
                    'xml': 'original/original.xml' if xml else None,
                    'xml_sha256': digest(Path(xml).read_bytes()) if xml else None},
-        'parser': 'rustypaper ' + getattr(rustypaper, '__version__', 'unknown'),
+        'parser': parser,
         'documents': documents,
         'references': references,
         'assets': assets,
@@ -576,7 +628,7 @@ def convert_paper(pdf, output, xml=None, title=None, source_url='', supplements=
         # Every page's size in the points the boxes are written in, so a viewer
         # can scale a box to the image it rendered of that page, and the unit
         # and origin those four numbers are in.
-        'pages': page_geometry(pdf, len(raw_pages)),
+        'pages': geometry,
         'page_count': len(raw_pages),
         'diagnostics': ['converter.json'],
     }

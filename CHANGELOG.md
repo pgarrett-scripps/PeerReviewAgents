@@ -167,6 +167,18 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **An import that would lose a page of the paper is refused, by page.** The
+  pinned converter returns no block at all for a page whose `/Rotate` is not
+  zero, so a one-page PDF turned ninety degrees imported to a `paper.md` with
+  nothing in it, and a paper with one landscape table page imported without
+  that page and said nothing about it. The engine cannot repair this — the
+  text never reaches it — so `import_paper` now compares the pages the
+  converter returned blocks from against the pages Poppler's text layer reads
+  prose off, and refuses the import naming the pages and their rotation, with
+  the converter and its version to report it against. A conversion that
+  returned nothing at all is refused in the same way rather than written as a
+  manuscript with no lines in it. A page that carries only a running head or a
+  page number, as a full-page figure does, is not a lost page.
 - **A cancelled `resolve_citations` no longer ends the session.** A client that
   sent `notifications/cancelled` while a lookup was in flight took the whole MCP
   session down when the pass finished: the cancellation completed the request's
