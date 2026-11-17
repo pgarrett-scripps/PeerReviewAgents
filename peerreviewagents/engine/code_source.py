@@ -11,13 +11,15 @@ repository.
 So the code is copied in once, at the import, and never executed. What lands
 in the run folder is text source and nothing else: a suffix allowlist, a skip
 list for the folders that hold dependencies and data, a name rule that keeps
-out the files that hold credentials, and three caps — per file, in total, and
-in number of files. A notebook is stored as its cells, because the outputs in
-one are both most of its bytes and none of its method. Line endings are folded
-to LF on the way in and the copy is written and read back with the platform's
-own translation turned off, so a CRLF repository is numbered the way its
-author's editor numbers it, on whatever machine the review runs on.
-:func:`snapshot` writes that copy
+out the files that hold credentials, a rule that leaves out this package's own
+run folders — a review is normally run from inside the repository it reviews,
+and a run folder under it is this tool's output rather than the authors' work —
+and three caps — per file, in total, and in number of files. A notebook is
+stored as its cells, because the outputs in one are both most of its bytes and
+none of its method. Line endings are folded to LF on the way in and the copy
+is written and read back with the platform's own translation turned off, so a
+CRLF repository is numbered the way its author's editor numbers it, on
+whatever machine the review runs on. :func:`snapshot` writes that copy
 under ``<run>/code/files`` and a ``manifest.json`` beside it recording where
 the code came from, which commit it was, every file included with its hash and
 line count, and every file skipped with the reason. A reader of the run can
@@ -48,6 +50,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from ..names import RUN_DIRECTORY, RUN_MARKERS
 from .storage import digest, read, write
 
 #: The file the snapshot's record is written to, inside the snapshot folder.
@@ -108,6 +111,27 @@ SECRET_REASON = 'may hold secrets'
 #: never looked at without listing a dependency tree file by file.
 DIRECTORY_REASON = 'not looked at: a folder this snapshot does not walk into'
 LINK_REASON = 'not looked at: a symbolic link out of the snapshot'
+
+#: Why a run folder of this package is not in the snapshot, recorded once for
+#: the folder like any other folder never walked into. A run folder is text —
+#: ``protocol.json``, ``findings.jsonl``, the manuscript's Markdown, the
+#: snapshot of the code itself — and the normal way to review a repository is
+#: from inside it, with the run folder under the repository root. Without this,
+#: reviewing a repository from inside itself copies this run, and every run
+#: before it, into the code the reviewer then reads as the authors' own, and a
+#: finding could cite a line of an earlier review as a line of the pipeline.
+#: Recognised by what the engine writes in a run folder — :data:`RUN_MARKERS`
+#: in a ``review/`` folder, the same files :func:`peerreviewagents.runs.locate`
+#: looks for — and not by what it is called, because the folder's name is the
+#: caller's to choose.
+RUN_FOLDER_REASON = 'not looked at: a PeerReviewAgents run folder'
+
+#: Why the folder *this* run is being written into is not in the snapshot of
+#: the code it was given. The same thing as :data:`RUN_FOLDER_REASON` one
+#: moment earlier: the snapshot is taken while the run folder is still almost
+#: empty, so this run is named by the caller rather than recognised by its
+#: files.
+THIS_RUN_REASON = 'not looked at: the run folder this review is being written into'
 
 #: Files copied in whatever their suffix, because a build or a pipeline is
 #: often in a file that has none.
@@ -358,7 +382,41 @@ def _text(data):
         return None
 
 
-def _walk(root):
+def is_run_folder(path):
+    """Whether *path* is a run folder of this package, by what the engine wrote.
+
+    A run folder holds ``review/`` with one of :data:`RUN_MARKERS` in it; a
+    review folder holds them directly. Both spellings are checked, which is
+    what :func:`peerreviewagents.runs.locate` accepts, so a snapshot skips a
+    run folder whether it meets the run or the review folder inside it.
+
+    By the files and not by the name on purpose. The run folder's name is
+    whatever the caller passed as the out folder, and a rule that skipped
+    ``run-output`` or ``review`` by name would skip a directory of the authors'
+    code that happened to be called that, and would miss every run folder
+    called anything else.
+    """
+    path = Path(path)
+    if any((path / name).is_file() for name in RUN_MARKERS):
+        return True
+    inside = path / RUN_DIRECTORY
+    return inside.is_dir() and any((inside / name).is_file() for name in RUN_MARKERS)
+
+
+def _whole_paths(paths):
+    """*paths* as a set to compare a walked directory against.
+
+    Compared as whole paths, never as prefixes: the folder a snapshot is
+    written into is *inside* the run folder, and for a repository URL the
+    checkout the walk is rooted at is inside it too, so a prefix rule would
+    skip every directory of a cloned repository as "the run folder".
+    ``normcase`` because this has to hold on Windows, where two spellings of
+    one path differ only in case.
+    """
+    return {os.path.normcase(str(Path(one).resolve())) for one in paths if one is not None}
+
+
+def _walk(root, excluded=()):
     """The files under *root* to consider, and what was never looked at.
 
     Returns ``(files, left_out)``. Symbolic links are not followed, for files
@@ -366,6 +424,10 @@ def _walk(root):
     given. A skipped folder and a link are each recorded once, by their own
     path rather than by the files inside them, so the record can say what was
     not looked at without a vendored dependency filling it.
+
+    *excluded* is the set from :func:`_whole_paths`: the run folder this
+    snapshot is being taken for, and the snapshot folder itself. A run folder met any other
+    way is recognised by :func:`is_run_folder` and left out the same way.
     """
     found, left_out = [], []
     for folder, directories, files in os.walk(root, followlinks=False):
@@ -375,8 +437,12 @@ def _walk(root):
             relative = path.relative_to(root).as_posix()
             if path.is_symlink():
                 left_out.append({'path': relative, 'reason': LINK_REASON})
+            elif os.path.normcase(str(path)) in excluded:
+                left_out.append({'path': relative, 'reason': THIS_RUN_REASON})
             elif name in SKIPPED_DIRECTORIES:
                 left_out.append({'path': relative, 'reason': DIRECTORY_REASON})
+            elif is_run_folder(path):
+                left_out.append({'path': relative, 'reason': RUN_FOLDER_REASON})
             else:
                 kept.append(name)
         directories[:] = kept
@@ -390,13 +456,27 @@ def _walk(root):
     return found, left_out
 
 
-def snapshot(source, folder, *, limits=None):
+def snapshot(source, folder, *, limits=None, run=None):
     """Copy the text source of *source* into *folder* and write its manifest.
 
     *source* is a local folder or a repository URL; a URL is cloned first, into
     a temporary checkout beside the snapshot that is removed once the text is
     copied, so what the run folder keeps is the text and the record of it and
-    not a working tree. Returns the manifest, which is also written to
+    not a working tree.
+
+    *run* is the run folder this snapshot is being taken for, when there is
+    one. The normal way to review a repository is from inside it — the out
+    folder under the repository root, which is where a workspace keeps its runs
+    — so the folder being walked usually *contains* this run, and a snapshot
+    that copied it in would hand the reviewer this review as the authors' code.
+    It is named rather than recognised because at this moment the run folder
+    holds almost nothing yet; every other run folder under *source*, including
+    the earlier runs of the same workspace, is recognised by
+    :func:`is_run_folder` and left out with :data:`RUN_FOLDER_REASON`. A
+    *source* that is the run folder, or inside it, is refused outright: there
+    would be no code in the snapshot but this package's own output.
+
+    Returns the manifest, which is also written to
     ``<folder>/manifest.json``:
 
     ``origin``
@@ -427,6 +507,14 @@ def snapshot(source, folder, *, limits=None):
             'max_files': MAX_FILES, **(limits or {})}
     folder.mkdir(parents=True, exist_ok=True)
     files_root = folder / FILES_DIRECTORY
+    # The run folder and the snapshot folder, as whole paths: what the walk
+    # must leave out when it meets them. For a URL this is the one that would
+    # go wrong if it were a prefix rule — the checkout the walk is rooted at
+    # lies *inside* the snapshot folder, and so inside the run folder, and a
+    # prefix rule would leave out the whole clone as "the run folder". It is a
+    # whole-path comparison, so the clone is walked and only a run folder
+    # committed to that repository is skipped, by its own files.
+    excluded = _whole_paths((run, folder))
     if is_url(source):
         checkout = folder / '.checkout'
         if checkout.exists():
@@ -438,10 +526,20 @@ def snapshot(source, folder, *, limits=None):
         if not root.is_dir():
             raise CodeRefused('No code folder at ' + str(root)
                               + '. Give a folder that exists or a repository URL.')
+        # Only for a folder. The checkout of a URL is inside the run folder by
+        # design, and refusing that would refuse every clone.
+        if run is not None:
+            within = Path(run).resolve()
+            if root == within or within in root.parents:
+                raise CodeRefused(
+                    str(root) + ' is inside the run folder ' + str(within)
+                    + ', which is where this review writes its own files: the snapshot would '
+                    'hold this run rather than the code behind the paper. Give the folder the '
+                    'code is in — a run folder inside it is left out of the snapshot.')
         origin = {'kind': 'folder', 'source': str(root), **_git_state(root)}
         temporary = False
     try:
-        record = _copy(root, files_root, caps)
+        record = _copy(root, files_root, caps, excluded)
     finally:
         if temporary:
             shutil.rmtree(root, ignore_errors=True)
@@ -513,9 +611,9 @@ def _notebook_contents(path, caps):
             'extracted': 'notebook cells'}
 
 
-def _copy(root, files_root, caps):
+def _copy(root, files_root, caps, excluded=()):
     """The walk itself: what was copied, what was skipped, and why."""
-    found, left_out = _walk(root)
+    found, left_out = _walk(root, excluded)
     files, skipped = [], list(left_out)
     total = 0
     truncated = ''
@@ -780,7 +878,7 @@ def origin_name(source):
     return text if is_url(text) else str(Path(text).expanduser().resolve())
 
 
-def attach(source, folder):
+def attach(source, folder, *, run=None):
     """The desk on *source* snapshotted in *folder*, taken once and reused after.
 
     A run folder is re-opened: ``ingest`` is safe to call twice, and a killed
@@ -790,6 +888,9 @@ def attach(source, folder):
     already hold findings citing the lines of the first one — so a folder that
     already holds a snapshot of the same code keeps it, and a folder holding a
     snapshot of *different* code is refused rather than overwritten.
+
+    *run* is the run folder, passed through to :func:`snapshot`: the one folder
+    under the code that is this review's own and not the authors'.
     """
     folder = Path(folder)
     asked = origin_name(source)
@@ -805,5 +906,5 @@ def attach(source, folder):
         if not (manifest.get('files') or []):
             raise CodeRefused('The code snapshot in ' + str(folder) + ' holds no files.')
         return CodeDesk(folder)
-    snapshot(source, folder)
+    snapshot(source, folder, run=run)
     return CodeDesk(folder)

@@ -912,6 +912,18 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     if code and not code_source.is_url(code) and not Path(code).expanduser().is_dir():
         raise ValueError('No code folder at ' + str(Path(code).expanduser())
                          + '. Give a folder that exists or a repository URL.')
+    if code and not code_source.is_url(code):
+        # The out folder is where this run writes its own files, so a snapshot
+        # of it would hold the review and not the code. A code folder that
+        # *contains* the out folder is the normal case — a run folder under the
+        # repository being reviewed — and the snapshot leaves that one folder
+        # out rather than refusing the review.
+        given, within = Path(code).expanduser().resolve(), Path(out).resolve()
+        if given == within or within in given.parents:
+            raise ValueError(str(given) + ' is inside the out folder ' + str(within)
+                             + ', which is where this run writes its own files: the snapshot '
+                             'would hold the run rather than the code. Give the folder the code '
+                             'is in — a run folder inside it is left out of the snapshot.')
     prior_path, _prior, _prior_provenance = load_prior_issues(prior_issues)
     root = Path(out).resolve()
     review_dir = root / RUN_DIRECTORY

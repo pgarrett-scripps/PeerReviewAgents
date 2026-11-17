@@ -17,6 +17,13 @@ Running a review
     :func:`review_main` and :func:`report_main` are the two commands as
     functions — argument list in, JSON on stdout, exit code returned — so a
     wrapper does not have to reach into the starter or the CLI module.
+    :func:`review_arms` is what each arm runs, one row per arm: how many core
+    reviewers it fixes, whether it runs the specialist tracks, an editor, a
+    revision pass, whether it can keep a citation ledger, which arm is the
+    default, and whether it accepts ``code=`` at all. The code review is a
+    specialist lane, so an arm that runs none refuses code rather than
+    reviewing it silently — ask this instead of holding a list of arm names of
+    your own.
 
 Reading a run
     :func:`read_run` reads any run folder: complete, complete without
@@ -165,6 +172,7 @@ if TYPE_CHECKING:  # Static tooling sees the real objects, not the fallback.
     from .engine.paper_base import load as read_manuscript
     from .engine.quotes import cited_text
     from .engine.run_report import write_reports
+    from .plugin.server import review_arms
     from .plugin.starter import build_parser as review_parser
     from .plugin.starter import claude_version as claude_code_version
     from .plugin.starter import plugin_dir as plugin_directory
@@ -177,6 +185,7 @@ __all__ = [
     "review",
     "review_main",
     "report_main",
+    "review_arms",
     "read_run",
     "read_citation_ledger",
     "validate_prior_issues",
@@ -218,6 +227,10 @@ _LAZY = {
     "review": (".plugin.starter", "review"),
     "review_main": (".plugin.starter", "review_main"),
     "report_main": (".cli.main", "report_main"),
+    # What each arm runs, for a caller deciding before a run exists: which
+    # arms accept `code=`, which keep a citation ledger, which is the default.
+    # Lazy like the rest, so an app that only reads runs never imports it.
+    "review_arms": (".plugin.server", "review_arms"),
     "read_run": (".runs", "read_run"),
     # The ledger rows themselves, for the consumers that were re-implementing
     # "the last row for a row_id is the row" against the engine module.

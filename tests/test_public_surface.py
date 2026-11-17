@@ -394,6 +394,45 @@ def test_the_public_constants_are_what_the_server_writes():
     assert peerreviewagents.COMPLETE_STATUSES == ('complete', 'complete-without-findings')
 
 
+def test_review_arms_says_what_each_arm_runs_before_a_run_exists():
+    """The answer to "will this arm take code?", asked without starting a run.
+
+    An app offering a review against the code had no way to ask: the arm table
+    is private, so it hard-coded the arm names that run specialists and went
+    stale the next time one was added. Each flag here is checked against what
+    the engine does with that arm rather than against the table it is read
+    from, which is the only way this test can fail when the two disagree.
+    """
+    arms = peerreviewagents.review_arms()
+
+    assert set(arms) == set(srv.ARMS), 'an arm an application cannot see'
+    assert list(arms) == sorted(arms)
+    assert [name for name, row in arms.items() if row['default']] == [srv.DEFAULT_ARM]
+    for name, row in arms.items():
+        settings = srv.ARMS[name]
+        assert row['reviewers'] == settings['reviewers'], name
+        assert (row['specialists'], row['editor'], row['revision']) \
+            == (settings['specialists'], settings['editor'], settings['revision']), name
+        assert row['summary'] == settings['summary'], name
+        # The code review is a specialist lane, so `code` is whether the arm
+        # plans specialists — pinned against the plan, and against the refusal
+        # a caller would have met instead of an answer.
+        planned = srv.plan_slots(name, 2, code=True)
+        assert ('spec-code' in planned) is row['code'], name
+        if not row['code']:
+            with pytest.raises(ValueError, match='runs no specialists'):
+                starter.review(FIXTURE, Path('nowhere'), arm=name, code=str(FIXTURE.parent))
+        assert row['citations'] is bool(settings['specialists']
+                                        and 'check_citation' in settings['tools']), name
+    # What each lane is given is not on this surface: the call budgets and the
+    # tool lists are the engine's, and an app that branched on them would be
+    # pinned to them.
+    assert 'tools' not in arms[srv.DEFAULT_ARM]
+
+    arms[srv.DEFAULT_ARM]['code'] = 'edited by the caller'
+    assert peerreviewagents.review_arms()[srv.DEFAULT_ARM]['code'] is True
+
+
 def test_read_run_statuses_are_all_in_the_published_tuple(tmp_path):
     folders = [complete_run(tmp_path / 'one'),
                complete_run(tmp_path / 'two', status='complete-without-findings'),

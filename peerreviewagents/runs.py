@@ -41,6 +41,7 @@ from .names import (
     MANUSCRIPT_SEALED_BY_READER,
     MANUSCRIPT_SEALED_WITHOUT_READ,
     RUN_DIRECTORY,
+    RUN_MARKERS,
     RUN_STATUSES,
 )
 
@@ -48,10 +49,11 @@ from .names import (
 # as a different model, which is what this reader has to compare.
 from .plugin import models as model_plan
 
-#: The files that make a folder a review folder. A run that was killed before
-#: the server wrote anything still has ``startup.json`` from the probe.
-RUN_MARKERS = ('protocol.json', 'progress.json', 'runtime.json', 'startup.json',
-               'findings.jsonl', 'issues.json')
+# ``RUN_MARKERS`` — the files that make a folder a review folder — is imported
+# above and stays in this module's `__all__`, which is the name consumers
+# already read it by. It is defined in `peerreviewagents.names` because the
+# code snapshot recognises a run folder by the same files, and that walk is in
+# the engine, which cannot import this module.
 
 #: The status reported for a folder whose status file was never written, or
 #: whose status is a word this version does not know.

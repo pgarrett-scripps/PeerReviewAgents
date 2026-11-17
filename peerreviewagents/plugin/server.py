@@ -334,6 +334,45 @@ ARMS = {
 DEFAULT_ARM = 'full-two-track'
 
 
+def review_arms():
+    """What every arm runs, by name — the public answer to "can this arm do X".
+
+    One row per arm, in name order, each a plain dict of facts a caller can
+    decide on *before* a run exists:
+
+    ``reviewers``
+        How many core reviewers the arm fixes, or ``None`` where the count is
+        the caller's to choose.
+    ``specialists``, ``editor``, ``revision``
+        Whether the arm runs the specialist tracks, pools the findings through
+        an editor, and gives the reviewer a revision pass.
+    ``code``
+        Whether this arm accepts ``code=``. The code review is a specialist
+        lane, so an arm that runs no specialists refuses code outright rather
+        than reviewing none of it — and that refusal is the reason this
+        function is public: an application offering a "review against the
+        code" button had no way to ask, and was hard-coding the arm names out
+        of this module instead.
+    ``citations``
+        Whether the arm can keep a citation ledger at all. ``citations`` must
+        also be among the chosen ``tracks``, which is the caller's own
+        argument, so this is the arm's half of that question.
+    ``default``
+        Whether this is the arm a review runs when none is named.
+    ``summary``
+        The one line the ``--arm`` help prints.
+
+    Fresh dicts every call: the table they are built from is this module's
+    settings, and a caller is free to keep, filter or render what it gets.
+    """
+    return {name: {'reviewers': one['reviewers'], 'specialists': one['specialists'],
+                   'editor': one['editor'], 'revision': one['revision'],
+                   'code': one['specialists'],
+                   'citations': bool(one['specialists'] and 'check_citation' in one['tools']),
+                   'default': name == DEFAULT_ARM, 'summary': one['summary']}
+            for name, one in sorted(ARMS.items())}
+
+
 def now():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
@@ -729,7 +768,11 @@ class Run:
         # is refused here, as the import of an unreadable PDF is.
         self.code = None
         if self.code_given:
-            self.code = code_source.attach(code, self.root / CODE_DIRECTORY)
+            # The run folder is named, because reviewing a repository from
+            # inside it — the out folder under the repository root — would
+            # otherwise copy this run, and the runs before it, into the code
+            # the lane reads as the authors' own.
+            self.code = code_source.attach(code, self.root / CODE_DIRECTORY, run=self.root)
         # The manuscript in two states, never both. A *draft* is the converted
         # pieces with no line numbers: the reader repairs it, and nothing else
         # in the run can see it. A *base* is paper.md, its supplements and the

@@ -364,6 +364,7 @@ this list and say so, because those modules change without notice.
 ```python
 from peerreviewagents import (
     review, review_main, report_main,      # run a review; the two commands
+    review_arms,                           # what each arm runs, before a run exists
     read_run, write_reports,               # read and re-render a run folder
     read_citation_ledger,                  # the citation table's own rows
     validate_prior_issues,                 # check an issues file before publishing it
@@ -417,6 +418,47 @@ raise SystemExit(report_main(argv, prog="workbench report"))
 That is the whole reason they exist. Copying `starter.main`, or reaching into
 `plugin.starter` for the parser, means your wrapper breaks when an option is
 added; these two do not.
+
+### What each arm runs: `review_arms()`
+
+An arm is a setting of one workflow, and what it runs decides which arguments
+it accepts. `review_arms()` answers that before a run exists — one row per
+arm, in name order:
+
+```python
+from peerreviewagents import review, review_arms
+
+arms = review_arms()
+if arms[chosen]["code"]:                   # will this arm review code at all?
+    review(pdf, out, arm=chosen, code="~/analysis")
+else:
+    review(pdf, out, arm=chosen)           # and grey out the button, don't guess
+```
+
+| Key | What it says |
+| --- | --- |
+| `reviewers` | how many core reviewers the arm fixes, or `None` where the count is yours to choose with `reviewers=` |
+| `specialists`, `editor`, `revision` | whether it runs the specialist tracks, pools findings through an editor, gives the reviewer a revision pass |
+| `code` | whether it accepts `code=` |
+| `citations` | whether it can keep a citation ledger at all |
+| `default` | whether this is the arm a review runs when none is named |
+| `summary` | the one line `--arm` prints for it |
+
+`code` is the one that was unaskable before. The code review is a specialist
+lane, so an arm that runs no specialists refuses `code=` outright — with
+`ValueError` from `review`, and a rejection from `ingest` — rather than
+accepting it and reviewing none of it. That is deliberate: a run given code and
+reviewing none would report a code review that never happened. Ask this instead
+of keeping a list of arm names of your own, which is what every wrapper was
+doing and what goes stale the next time an arm is added.
+
+`citations` is the arm's half of whether `run["citations"]["enabled"]` can be
+true; the other half is yours, since the `citations` track must also be among
+the `tracks` you chose.
+
+The rows are fresh dicts, so filter, render or keep them as you like. What they
+are built from — the tools each lane is given, the call budgets — is not on
+this surface.
 
 ### Checking the installation and your own commands
 
@@ -526,7 +568,7 @@ keys.
 | `kind`, `source` | `git-clone` or `folder`, and where it came from as the caller named it: the URL for a clone, the resolved path for a folder |
 | `commit`, `branch`, `dirty` | the state the code was in. `dirty` is `None` for a snapshot of something that is not a repository |
 | `snapshot` | the absolute path of `<run>/code/`, which holds `manifest.json` and the text under `files/` |
-| `files_in_snapshot`, `files_skipped` | what was taken, and how many paths were left out — a binary, a data file, one over the size caps, one that may hold secrets, or a whole folder or symbolic link never walked into, which each count once |
+| `files_in_snapshot`, `files_skipped` | what was taken, and how many paths were left out — a binary, a data file, one over the size caps, one that may hold secrets, a run folder of this package, or a whole folder or symbolic link never walked into, which each count once |
 | `truncated` | why the snapshot stopped early, in words; empty for one that holds the whole of what it was pointed at |
 | `manifest` | the snapshot's own manifest, which names everything either way, with a digest per file taken and a reason per path skipped |
 | `files_opened`, `opened`, `searches` | what a reviewer actually did with it |
@@ -535,6 +577,18 @@ The last row is the one worth printing beside the first. A lane that opened no
 file read the paper and nothing else, and a page that said only "code:
 reviewed" could not have told anyone so. `REVIEW.md` prints the same line from
 the same record.
+
+**Reviewing a repository from inside it is the normal case, and the snapshot
+holds none of this tool's own output.** A workspace keeps its run folders under
+the repository it reviews, so the folder passed as `code` usually contains
+them. The run being written is left out of the snapshot, and so is every other
+run folder under that path — recognised by what the engine writes in one
+(`review/protocol.json`, `review/startup.json`, `review/findings.jsonl` and the
+rest of `RUN_MARKERS`) rather than by what it is called, since the name is the
+caller's. Each is one row in `manifest["skipped"]`, with the reason, like any
+other folder never walked into. A `code` path that *is* a run folder, or is
+inside the out folder, is refused instead: there would be no code in that
+snapshot, only the review.
 
 A finding from that lane carries `code_evidence` — `path`, `start_line`,
 `end_line` and `text` — and its `basis` is `code-checked`: the server found
@@ -1025,8 +1079,8 @@ if cites["enabled"]:
 
 - `enabled` is `False` — and `ledger` `None`, `counts` `{}` — for an arm that
   keeps no ledger. Only an arm running the `citations` specialist with network
-  tools does: `full-two-track`, and `draft-check` when `citations` is one of the
-  chosen tracks. **Absent is not zero.** A run with `enabled: False` checked no
+  tools does — `review_arms()[arm]["citations"]`, and then only when
+  `citations` is one of the tracks you chose. **Absent is not zero.** A run with `enabled: False` checked no
   citations; a run with `references: 0` had no reference list to check.
   The third case reads differently on purpose: an arm that planned a citations
   lane and left no table behind has `enabled: True`, `ledger: None`, `counts:

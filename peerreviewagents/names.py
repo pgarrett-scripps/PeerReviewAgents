@@ -26,6 +26,20 @@ MANUSCRIPT_DIRECTORY = 'manuscript'
 #: ``manifest.json``. Absent from a run that reviewed no code.
 CODE_DIRECTORY = 'code'
 
+#: The files that make a folder a review folder, and so make the folder holding
+#: one a run of this package. A run that was killed before the server wrote
+#: anything still has ``startup.json`` from the probe, which is why the list is
+#: this long: a reader cannot ask for the file a finished run has.
+#:
+#: Here rather than in :mod:`peerreviewagents.runs`, which is where the reader
+#: that uses them lives, because the code snapshot has to recognise a run
+#: folder as well. It walks whatever folder it was pointed at, a workspace
+#: keeps its runs inside the repository it is reviewing, and a run folder it
+#: walked into is this package's own output rather than the authors' code —
+#: and that walk is in the engine, which cannot import the reader.
+RUN_MARKERS = ('protocol.json', 'progress.json', 'runtime.json', 'startup.json',
+               'findings.jsonl', 'issues.json')
+
 #: The schema every stored finding is stamped with, in its ``schema_version``.
 FINDING_SCHEMA_VERSION = 'review-finding-v4'
 
@@ -91,7 +105,8 @@ COMPLETE_STATUSES = (COMPLETE, COMPLETE_WITHOUT_FINDINGS)
 #: :func:`peerreviewagents.report_parser`.
 CLI_COMMANDS = ('review', 'report')
 
-__all__ = ['RUN_DIRECTORY', 'MANUSCRIPT_DIRECTORY', 'CODE_DIRECTORY', 'FINDING_SCHEMA_VERSION',
+__all__ = ['RUN_DIRECTORY', 'MANUSCRIPT_DIRECTORY', 'CODE_DIRECTORY', 'RUN_MARKERS',
+           'FINDING_SCHEMA_VERSION',
            'BASE_SCHEMA_VERSION', 'DRAFT_SCHEMA_VERSION',
            'MAIN_DOCUMENT', 'RUN_STATUSES', 'COMPLETE_STATUSES', 'MANUSCRIPT_STATES',
            'MANUSCRIPT_DRAFT', 'MANUSCRIPT_SEALED_BY_READER', 'MANUSCRIPT_SEALED_WITHOUT_READ',
