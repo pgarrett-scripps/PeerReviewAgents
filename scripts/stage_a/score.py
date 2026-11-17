@@ -217,6 +217,13 @@ DISPLAY_KINDS = ('table', 'equation', 'figure', 'figure-description')
 WROTE = {'text': 'the converter', 'ai': 'written by the reader',
          'ai-reconstructed': 'repaired by the reader'}
 
+#: What the reader did to a piece, in the words a results table reports.
+#: ``source`` alone does not say it: a rebuilt equation and a paragraph the
+#: reader only cut a page header off are both ``ai-reconstructed``, and they are
+#: not the same contribution.
+DID = {'rebuilt': 'rebuilt by the reader', 'cut': 'trimmed by the reader',
+       'rewrote': 'rewritten by the reader', '': ''}
+
 #: One loaded manuscript per run folder, as ``(base, refusal)``. A score walks
 #: every finding of a run and every finding names a line, so the base is read
 #: once and asked many times rather than re-read per finding.
@@ -274,6 +281,50 @@ def reader_of(base) -> dict:
             'note': str(read.get('note') or read.get('reason') or '')}
 
 
+def _words(text: str) -> list:
+    """The words of a passage, for comparing one reading of it against another."""
+    return re.findall(r'[0-9a-z]+', str(text or '').lower())
+
+
+def _is_subsequence(part: list, whole: list) -> bool:
+    """Is every word of *part* in *whole*, in that order and nothing added?"""
+    rest = iter(whole)
+    return all(any(word == other for other in rest) for word in part)
+
+
+def reader_did(base, row, document=MAIN_DOCUMENT) -> str:
+    """What the reader did to this piece: rebuilt it, cut it, or rewrote it.
+
+    ``source`` says a model wrote the line and the converter did not, which
+    counts a rebuilt equation and a paragraph the reader cut a running header
+    off as the same act. They are not: one is a piece of the paper the reviewers
+    could not see before, and the other is the converter's own sentences with
+    debris removed.
+
+    The three answers are read from the piece rather than from the reader's
+    account of itself, because the account is per act and this is per piece.
+    ``rebuilt`` is a displayed piece — a table, an equation, a figure's
+    description — or a piece the converter never had at all, which is the
+    reader's own text either way. Of what is left, prose whose every word is
+    the converter's, in the converter's order, is ``cut``: the reader took
+    something away and added nothing. Prose with a word in it the converter did
+    not have is ``rewrote``. A piece the converter wrote is ``''``.
+    """
+    source = str((row or {}).get('source') or 'text')
+    if source == 'text':
+        return ''
+    kind = str((row or {}).get('kind') or '')
+    if kind in DISPLAY_KINDS or source == 'ai':
+        return 'rebuilt'
+    original = row.get('original') if isinstance(row.get('original'), dict) else {}
+    lines = (row or {}).get('lines') or []
+    now = base.range_text(lines[0], lines[1], document) if base is not None and lines else ''
+    before = original.get('text')
+    if before is None:
+        return 'rewrote'
+    return 'cut' if _is_subsequence(_words(now), _words(before)) else 'rewrote'
+
+
 def piece_at_line(base, line, document=MAIN_DOCUMENT, how='anchor') -> dict:
     """The piece holding this line, as a results row records a location.
 
@@ -281,6 +332,10 @@ def piece_at_line(base, line, document=MAIN_DOCUMENT, how='anchor') -> dict:
     its quote, an evidence line, a corroborating passage — and it is kept
     because a piece found by searching for an unanchored quote is a weaker
     location than one the engine anchored when it recorded the finding.
+
+    ``did`` is what the reader did to the piece, by :func:`reader_did`, which is
+    what separates a finding resting on an equation the reader rebuilt from one
+    resting on a paragraph it only cut debris from.
     """
     row = base.piece_at(line, document) if base is not None and line else None
     if not row:
@@ -289,14 +344,19 @@ def piece_at_line(base, line, document=MAIN_DOCUMENT, how='anchor') -> dict:
     original = row.get('original') if isinstance(row.get('original'), dict) else {}
     folded = [one for field in ('absorbed', 'merged')
               for one in (original.get(field) or []) if isinstance(one, dict)]
+    did = reader_did(base, row, document)
     piece = {'document': document, 'line': int(line), 'located_by': str(how),
              'lines': [int(row['lines'][0]), int(row['lines'][1])],
              'kind': str(row.get('kind') or ''), 'page': row.get('page'),
              'section': row.get('section'), 'source': source,
              'written': WROTE.get(source, source),
+             'did': did, 'reader_did': DID.get(did, did),
              'from_reader': source != 'text',
              'reader_wrote': source == 'ai',
              'reader_repaired': source == 'ai-reconstructed',
+             'reader_rebuilt': did == 'rebuilt',
+             'reader_cut': did == 'cut',
+             'reader_rewrote': did == 'rewrote',
              'display': str(row.get('kind') or '') in DISPLAY_KINDS}
     # What the converter had here before a model repaired it: the kind it read
     # the piece as, which is how a paragraph re-read as an equation shows up,
@@ -417,6 +477,14 @@ def brief(finding: dict, base=None) -> dict:
     repaired rather than the converter's extraction. Without a base the row is
     the finding alone, because an unreadable manuscript is not an answer of
     ``false`` to any of those questions.
+
+    What the reader did is split three ways beside that total, by
+    :func:`reader_did`: ``cites_reader_rebuilt`` is a finding resting on a
+    displayed piece the reader rebuilt or a piece it added, which is the
+    contribution a reader is for, and ``cites_reader_cut`` one resting on prose
+    it only took debris out of, which is the same sentences the converter
+    already had. A single number over both of those would read as reader-written
+    evidence when most of it is a cut running header.
     """
     row = {field: finding.get(field) for field in
            ('finding_uid', 'title', 'slot', 'role', 'track', 'severity', 'kind', 'basis',
@@ -430,6 +498,9 @@ def brief(finding: dict, base=None) -> dict:
     row['cites_reader_text'] = any(piece.get('from_reader') for piece in cited)
     row['cites_reader_written'] = any(piece.get('reader_wrote') for piece in cited)
     row['cites_reader_repaired'] = any(piece.get('reader_repaired') for piece in cited)
+    row['cites_reader_rebuilt'] = any(piece.get('reader_rebuilt') for piece in cited)
+    row['cites_reader_cut'] = any(piece.get('reader_cut') for piece in cited)
+    row['cites_reader_rewritten'] = any(piece.get('reader_rewrote') for piece in cited)
     return row
 
 
@@ -503,6 +574,14 @@ def piece_counts(rows: list) -> dict:
     ``unlocated`` is the number whose quote could not be put in a piece, and it
     is reported beside the others because a run whose findings cite nothing
     locatable has to look different from one whose findings all cite prose.
+
+    ``on_reader_text`` is every finding resting on a piece the reader wrote or
+    repaired, and the three numbers under it say what that was worth:
+    ``on_reader_rebuilt`` for a displayed piece the reader rebuilt or a piece it
+    added, ``on_reader_cut`` for prose it only cut debris from, and
+    ``on_reader_rewritten`` for prose it put a word of its own into. A finding
+    citing two pieces counts in each bucket its pieces fall in, so the three do
+    not have to add up to the total.
     """
     kinds = {}
     for row in rows:
@@ -514,6 +593,9 @@ def piece_counts(rows: list) -> dict:
         'on_reader_text': sum(1 for row in rows if row.get('cites_reader_text')),
         'on_reader_written': sum(1 for row in rows if row.get('cites_reader_written')),
         'on_reader_repaired': sum(1 for row in rows if row.get('cites_reader_repaired')),
+        'on_reader_rebuilt': sum(1 for row in rows if row.get('cites_reader_rebuilt')),
+        'on_reader_cut': sum(1 for row in rows if row.get('cites_reader_cut')),
+        'on_reader_rewritten': sum(1 for row in rows if row.get('cites_reader_rewritten')),
         'unlocated': sum(1 for row in rows if not (row.get('piece') or {}).get('kind')),
     }
 

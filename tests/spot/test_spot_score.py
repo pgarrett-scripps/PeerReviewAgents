@@ -34,15 +34,25 @@ REPAIRED = {'kind': 'paragraph', 'source': 'ai-reconstructed',
 WRITTEN = {'kind': 'figure-description', 'source': 'ai',
            'text': 'Figure 1 shows the concentration-time curve falling below the limit of '
                    'quantification by 24 hours.', 'section': 'Results'}
+#: A paragraph the reader only cut a running header out of: the source says
+#: ai-reconstructed, and every word of it is the converter's own, in the
+#: converter's order. Counting it as reader-contributed evidence beside a
+#: rebuilt equation is what ``reader_did`` exists to stop.
+TRIMMED = {'kind': 'paragraph', 'source': 'ai-reconstructed',
+           'text': 'Clearance was estimated by non-linear regression.',
+           'original': {'kind': 'paragraph', 'part': 1, 'of': 1,
+                        'text': 'J Vet Pharmacol 2019 Clearance was estimated by '
+                                'non-linear regression. 1427'},
+           'section': 'Methods'}
 
 
 def manuscript(folder):
     """The sealed manuscript a run was reviewed against, read by the reader."""
-    return build_base(folder / 'manuscript', [PROSE, TABLE, REPAIRED, WRITTEN],
+    return build_base(folder / 'manuscript', [PROSE, TABLE, REPAIRED, WRITTEN, TRIMMED],
                       ai_model='claude-opus-5', manifest={
         'ai_read': {'read': True, 'reader_model': 'claude-opus-5', 'reader_slot': 'reader',
                     'attempt': 1, 'pages_viewed': 1, 'pages': [1],
-                    'actions': {'repaired': 1, 'described': 1}, 'gone': {},
+                    'actions': {'repaired': 2, 'described': 1}, 'gone': {},
                     'tool_calls': 4, 'note': '', 'lost_pages': []}})
 
 
@@ -139,7 +149,35 @@ def test_a_finding_on_a_repaired_piece_says_so(tmp_path):
     assert row['finding_pieces']['on_reader_repaired'] == 1
     assert row['finding_pieces']['on_reader_written'] == 1
     assert row['reader']['read'] is True
-    assert row['reader']['actions'] == {'repaired': 1, 'described': 1}
+    assert row['reader']['actions'] == {'repaired': 2, 'described': 1}
+
+
+def test_a_cut_paragraph_is_not_a_rebuilt_equation(tmp_path):
+    """``ai-reconstructed`` is two different acts, and the split says which.
+
+    The reader rebuilt the figure description and rewrote the sampling
+    sentence; on the third paragraph it only took a journal running header
+    out, leaving the converter's own words. All three say ``on_reader_text``,
+    and a single number over them would read as reader-written evidence when
+    one of them is a cut header.
+    """
+    run = tmp_path / 'run'
+    base = manuscript(run)
+    write_review(run, [
+        finding(base, 4, finding_uid='f1', title='Clearance has no stated model'),
+        finding(base, 3, finding_uid='f2', title='The curve is described, not shown'),
+        finding(base, 2, finding_uid='f3', title='The sampling schedule is incomplete')])
+    row = spot_score.score_one(run, 'medicine-oxytetracycline')
+    cut, rebuilt, rewritten = row['all_findings']
+    assert cut['piece']['did'] == 'cut' and cut['piece']['reader_did'] == 'trimmed by the reader'
+    assert cut['cites_reader_cut'] is True and cut['cites_reader_rebuilt'] is False
+    assert rebuilt['piece']['did'] == 'rebuilt' and rebuilt['cites_reader_rebuilt'] is True
+    assert rewritten['piece']['did'] == 'rewrote' and rewritten['cites_reader_rewritten'] is True
+    pieces = row['finding_pieces']
+    assert pieces['on_reader_text'] == 3
+    assert pieces['on_reader_rebuilt'] == 1
+    assert pieces['on_reader_cut'] == 1
+    assert pieces['on_reader_rewritten'] == 1
 
 
 def test_a_run_whose_manuscript_cannot_be_read_is_not_scored(tmp_path):
@@ -159,6 +197,20 @@ def test_a_run_whose_manuscript_cannot_be_read_is_not_scored(tmp_path):
     assert row['findings_total'] == 1 and row['findings_major'] == 1
     assert row['manuscript_refusal']
     assert row['reader']['read'] is False
+
+
+def test_scoring_a_second_run_does_not_take_the_first_one_s_line(tmp_path):
+    """``--out`` appends, because a comparison is scored one arm at a time."""
+    run = tmp_path / 'run'
+    base = manuscript(run)
+    write_review(run, [finding(base, 1, title='Two reported parameters are negative')])
+    out = tmp_path / 'results' / 'results.jsonl'
+    for _ in range(2):
+        assert spot_score.main([str(run), '--slug', 'medicine-oxytetracycline',
+                                '--out', str(out)]) == 0
+    rows = [json.loads(line) for line in out.read_text(encoding='utf-8').splitlines()]
+    assert len(rows) == 2
+    assert {row['paper'] for row in rows} == {'medicine-oxytetracycline'}
 
 
 def test_the_folder_name_is_only_a_fallback_for_the_slug(tmp_path):

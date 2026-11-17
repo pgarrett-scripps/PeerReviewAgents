@@ -77,6 +77,16 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   rather than as a paper in which every finding is nowhere. Candidates are
   still candidates: no verdict is computed, and the cost numbers come from the
   run.
+  What the reader contributed is counted per act rather than per source, because
+  `ai-reconstructed` covers both a rebuilt equation and a paragraph the reader
+  only cut a journal running header out of. A finding's piece now says which of
+  the two it rests on, and the row splits the total three ways:
+  `on_reader_rebuilt` for displayed pieces the reader rebuilt and pieces it
+  added, `on_reader_cut` for prose whose every word is still the converter's in
+  the converter's order, and `on_reader_rewritten` for prose the reader put a
+  word of its own into. On the first antenna pair ten of the eleven findings
+  resting on reader text were cut paragraphs, which the single number had
+  reported as reader-written evidence.
 - **The Read stage driven in code, for a consumer's tests:
   `peerreviewagents.scripted_read(paper, folder, pieces)`.** It opens a real
   run on a PDF, claims the reader's slot and hands back a handle whose methods
@@ -326,6 +336,9 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`scripts/spot/score.py --out` appends, as its help always said it did.** It
+  wrote the file, so scoring the second arm of a comparison left one line where
+  two scorings had happened and the first arm's row was gone.
 - **Every served line whose source is not the converter's text carries a
   marker.** The marker was written for equations, tables and figure
   descriptions — the pieces a reader repairs — so a paragraph or a caption the

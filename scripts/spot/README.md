@@ -20,7 +20,7 @@ and scores live under `~/pra-spot/`.
 |---|---|
 | `fetch.py` | Fetches each candidate — PMC's Open Access bucket, then the publisher's own path, then OpenAlex — keeping only bodies that start with `%PDF`, and copies the two Stage A controls byte for byte. |
 | `check.py` | Records, per candidate, whether the annotated error is still in the PDF that is served today, and what was read to decide that. `--verify` re-checks the anchors that live in the text layer. |
-| `score.py` | Reads a finished run with the Stage A scorer and reports, for every finding, which piece of the paper it cites and who wrote that piece; the findings that land at the annotated location, sit in the annotated kind of piece, or carry the key's words; the citation ledger's counts by state; the Read stage's own account of itself; and the run's own cost. |
+| `score.py` | Reads a finished run with the Stage A scorer and reports, for every finding, which piece of the paper it cites, who wrote that piece and — when the reader did — whether it rebuilt the piece or only cut debris out of it; the findings that land at the annotated location, sit in the annotated kind of piece, or carry the key's words; the citation ledger's counts by state; the Read stage's own account of itself; and the run's own cost. |
 
 ## The corrected-copy trap
 
@@ -62,6 +62,17 @@ never writes "Table 1" is a finding in Table 1, and a finding that writes
 the two counts the reader comparison is for: findings that cite a table, an
 equation or a figure, and findings that rest on text the reader wrote or
 repaired.
+
+That second count is reported split three ways, because `ai-reconstructed` is
+two different acts. A rebuilt equation or a figure the reader described is a
+piece of the paper the reviewers could not see before; a paragraph the reader
+only cut a running header out of is the converter's own sentences with debris
+gone. So the row carries `on_reader_rebuilt` for displayed pieces the reader
+rebuilt and pieces it added, `on_reader_cut` for prose whose every word is still
+the converter's, and `on_reader_rewritten` for prose the reader put a word of
+its own into. On the first antenna pair, ten of the eleven findings resting on
+reader text were cut paragraphs, which a single number would have reported as
+reader-written evidence.
 
 ## Running it
 
