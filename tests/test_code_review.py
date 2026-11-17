@@ -33,6 +33,7 @@ from manuscripts import seal_converted
 
 from peerreviewagents.engine import code_source
 from peerreviewagents.engine.run_report import report_blocks
+from peerreviewagents.names import CODE_DIRECTORY, RUN_DIRECTORY, RUN_MARKERS
 from peerreviewagents.plugin import server as srv
 from peerreviewagents.plugin import starter
 from peerreviewagents.runs import read_run
@@ -252,6 +253,131 @@ def test_a_cap_that_cuts_the_snapshot_short_says_so(tmp_path, code_folder):
                                limits={'max_file_bytes': 40})
     left = {one['path']: one['reason'] for one in big['skipped']}
     assert 'larger than 40 bytes' in left['analysis/pipeline.py']
+
+
+def write_run_folder(folder, marker='protocol.json'):
+    """A folder that is a run of this package, by what the engine writes in one.
+
+    Not by its name: the name is whatever the caller passed as the out folder.
+    What makes it recognisable is *marker* in its ``review/`` folder — one of
+    the files :func:`peerreviewagents.runs.locate` looks for — beside the
+    manuscript text and the report that a run also leaves there, which are the
+    Markdown a snapshot would otherwise happily copy as source.
+    """
+    folder = Path(folder)
+    (folder / RUN_DIRECTORY).mkdir(parents=True, exist_ok=True)
+    (folder / RUN_DIRECTORY / marker).write_text('{}\n', encoding='utf-8')
+    (folder / 'paper.md').write_text('# The paper\n\nAs the reader read it.\n', encoding='utf-8')
+    (folder / 'REVIEW.md').write_text('# Review\n\nA finding from last time.\n',
+                                      encoding='utf-8')
+    return folder
+
+
+def test_a_run_folder_under_the_code_is_left_out_by_what_is_in_it(tmp_path, code_folder):
+    """A workspace keeps its runs under the repository, so the walk meets them.
+
+    A snapshot that copied one would hand the reviewer this tool's own output
+    — the manuscript text, the reports, the findings of an earlier review, and
+    the earlier snapshot of the same code — as the authors' source. Every
+    marker is checked, because a run is recognised by what the engine writes
+    and not by what the out folder was called: a directory of the authors'
+    that happens to be named ``review`` is still their code.
+    """
+    for marker in RUN_MARKERS:
+        write_run_folder(code_folder / ('out-' + marker), marker=marker)
+    # Named like a run, but nothing in it this engine wrote: the authors'.
+    write_code(code_folder / 'review', {'runner.py': 'WIDTH = 1\n'})
+
+    manifest = code_source.snapshot(str(code_folder), tmp_path / 'snapshot')
+
+    copied = {row['path'] for row in manifest['files']}
+    skipped = {one['path']: one['reason'] for one in manifest['skipped']}
+    for marker in RUN_MARKERS:
+        name = 'out-' + marker
+        assert skipped[name] == code_source.RUN_FOLDER_REASON, marker
+        assert not [path for path in copied if path.startswith(name + '/')], marker
+    assert 'review/runner.py' in copied, 'a folder was skipped by its name'
+    assert 'analysis/pipeline.py' in copied
+    # A review folder met on its own counts too: a caller may point `--code` at
+    # the repository a run folder is in, or at one directly.
+    alone = code_source.snapshot(str(write_code(tmp_path / 'held', {
+        'pipeline.py': 'WIDTH = 2\n',
+        'runs/findings.jsonl': '{"finding": 1}\n',
+    })), tmp_path / 'held-snapshot')
+    assert {one['path']: one['reason'] for one in alone['skipped']}['runs'] == \
+        code_source.RUN_FOLDER_REASON
+
+
+def test_the_run_being_written_is_not_the_code_it_is_reviewing(tmp_path, code_folder):
+    """The normal case: the out folder is inside the repository under review.
+
+    This run cannot be recognised by its files — the snapshot is taken while
+    its folder holds almost nothing — so the run folder is named to the
+    snapshot, and left out whether or not anything has been written in it yet.
+    """
+    older = write_run_folder(code_folder / 'review-2025-03-02')
+    out = code_folder / 'peer-review'
+    opened = srv.ingest(str(FIXTURE), str(out), code=str(code_folder))
+    assert 'request_rejected' not in opened, opened
+
+    manifest = json.loads((out / CODE_DIRECTORY / code_source.MANIFEST_FILE).read_text(
+        encoding='utf-8'))
+    copied = {row['path'] for row in manifest['files']}
+    skipped = {one['path']: one['reason'] for one in manifest['skipped']}
+    assert skipped[out.name] == code_source.THIS_RUN_REASON
+    assert skipped[older.name] == code_source.RUN_FOLDER_REASON
+    assert not [path for path in copied if path.split('/')[0] in {out.name, older.name}]
+    assert 'analysis/pipeline.py' in copied
+    assert srv.current().code.origin['source'] == str(code_folder.resolve())
+
+
+def test_the_code_may_not_be_the_run_folder_itself(tmp_path, code_folder):
+    """Nothing in that snapshot would be code, so it is refused, not reviewed.
+
+    Both halves refuse it, as with an arm that runs no specialists: the
+    launcher before it spends a probe, and the server, which is what takes the
+    snapshot.
+    """
+    out = tmp_path / 'run'
+    refused = srv.ingest(str(FIXTURE), str(out), code=str(out))
+    assert 'inside the run folder' in refused['request_rejected']
+
+    srv.STATE['run'] = None
+    inside = write_code(out / 'working-copy')
+    deeper = srv.ingest(str(FIXTURE), str(out), code=str(inside))
+    assert 'inside the run folder' in deeper['request_rejected']
+
+    launch = tmp_path / 'launch'
+    launch.mkdir()
+    with pytest.raises(ValueError, match='inside the out folder'):
+        starter.review(FIXTURE, launch, code=str(launch))
+
+
+def test_a_cloned_repository_is_not_mistaken_for_the_run_folder(tmp_path, monkeypatch):
+    """The checkout of a URL lives *inside* the run folder, by design.
+
+    So the run folder is compared as a whole path and never as a prefix: a
+    prefix rule would leave out every directory of the clone as "the run
+    folder" and snapshot an empty repository. A run folder *committed to* that
+    repository is still skipped, by its own files.
+    """
+    def clone(source, into):
+        write_code(into)
+        write_run_folder(Path(into) / 'docs/example-review')
+        return {'kind': 'git-clone', 'source': str(source), 'commit': 'a' * 40,
+                'branch': 'trunk', 'dirty': False}
+
+    monkeypatch.setattr(code_source, 'clone', clone)
+    out = tmp_path / 'run'
+    manifest = code_source.snapshot('https://example.invalid/analysis.git',
+                                    out / CODE_DIRECTORY, run=out)
+
+    copied = {row['path'] for row in manifest['files']}
+    assert 'analysis/pipeline.py' in copied and 'requirements.txt' in copied
+    assert {one['path']: one['reason'] for one in manifest['skipped']}[
+        'docs/example-review'] == code_source.RUN_FOLDER_REASON
+    assert not [path for path in copied if path.startswith('docs/example-review/')]
+    assert not (out / CODE_DIRECTORY / '.checkout').exists(), 'the checkout was left behind'
 
 
 def notebook(cells, outputs=True):

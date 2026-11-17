@@ -58,6 +58,17 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`review_arms()`: what each arm runs, asked before a run exists.** One row
+  per arm — how many core reviewers it fixes (or `None` where the count is the
+  caller's), whether it runs the specialist tracks, an editor and a revision
+  pass, whether it can keep a citation ledger, which arm is the default, and
+  the line `--arm` prints for it. The row that was unaskable is `code`: the
+  code review is a specialist lane, so an arm that runs no specialists refuses
+  `code=` outright rather than accepting it and reviewing none of it, and an
+  application offering a review against the code had to hard-code the arm
+  names out of `plugin.server` to know which. Documented in
+  `docs/INTEGRATIONS.md`, and the citation-ledger note there now points at
+  this function instead of naming two arms that would go stale.
 - **A review can read the code behind the paper: `--code <folder or
   repository URL>`, `code=` on `review()` and on `ingest`.** A URL is cloned
   shallow with hooks and submodules off; either way the *text* of that code —
@@ -389,6 +400,25 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A code snapshot never copies a run folder of this package.** Reviewing a
+  repository from inside it is the normal way to do it — a workspace keeps its
+  runs under the repository root, and `--code .` was the documented call — and
+  the snapshot walked straight into them: this run's own folder, the sealed
+  manuscript it had just written there, the reports and findings of every
+  earlier run, and the earlier snapshot of the same code, all served to the
+  code lane as the authors' source. The run being written is left out by name,
+  because the snapshot is taken while its folder is still almost empty; every
+  other run folder is left out by what the engine writes in one — a
+  `review/protocol.json`, `review/findings.jsonl` or another of the markers
+  `runs.locate` looks for — and never by what the folder is called, since the
+  name is the caller's and a directory of the authors' called `review` is
+  still their code. Each is one row in `manifest["skipped"]` with the reason,
+  like any other folder never walked into. A `--code` path that *is* the run
+  folder, or inside it, is refused in words by both the launcher and the
+  server rather than snapshotted: nothing in it would be code. A repository
+  URL is unaffected, which is the case the fix had to be written around — its
+  checkout lives inside the run folder by design, so the run folder is
+  compared as a whole path and never as a prefix.
 - **A reader slot is planned only where there is a draft to read.** A run
   opened over a folder that already holds a sealed manuscript — an
   application's own source through `write_manuscript`, or a folder a run
