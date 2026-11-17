@@ -16,7 +16,23 @@ run folders — a review is normally run from inside the repository it reviews,
 and a run folder under it is this tool's output rather than the authors' work —
 and three caps — per file, in total, and in number of files. A notebook is
 stored as its cells, because the outputs in one are both most of its bytes and
-none of its method. Line endings are folded to LF on the way in and the copy
+none of its method.
+
+Which files are the authors' own is a question a repository already answers,
+so a checkout is snapshotted from the files git tracks: a build cache, a
+results folder, an environment, anything ``.gitignore`` names is out, counted
+in ``skipped`` as one row per top-level folder rather than thousands. A folder
+that is no checkout is walked instead, leaving hidden and cache folders alone.
+And when there is more text than the caps hold, what is kept is chosen by what
+a reviewer needs — program source first, then build and environment files,
+then configuration and prose, and data-like text last, shallower paths before
+deeper ones — because a cap that cut in walk order kept whatever came first
+alphabetically. The manifest says how many files of each kind a cap left out,
+and when program source itself was cut it says so in words, in the manifest,
+in the review and in the code lane's brief: a reader who cannot see every
+script cannot report that no script does a thing.
+
+Line endings are folded to LF on the way in and the copy
 is written and read back with the platform's own translation turned off, so a
 CRLF repository is numbered the way its author's editor numbers it, on
 whatever machine the review runs on. :func:`snapshot` writes that copy
@@ -154,7 +170,84 @@ SKIPPED_DIRECTORIES = (
     'build', 'dist', 'target', '.next', '.cache', 'renv',
     'data', 'Data', 'datasets', 'raw', 'results', 'output', 'outputs',
     'figures', 'figs', 'logs', '.ipynb_checkpoints',
+    'coverage', 'htmlcov', '_build', 'cmake-build-debug', 'cmake-build-release',
 )
+
+#: Why a hidden folder is not in the snapshot, outside a git checkout. A dot
+#: folder at the root of a project is where tooling keeps its state — a build
+#: cache, a lock database, a per-tool index — and the one that mattered,
+#: ``.github``, is in :data:`SKIPPED_DIRECTORIES` already. Inside a checkout
+#: this rule is not needed and not applied: git's own tracked list already
+#: says what is the project's and what is a cache, and a repository that
+#: tracks a dot folder on purpose is tracking something its authors wrote.
+HIDDEN_REASON = 'not looked at: a hidden folder'
+
+#: Why the files of a git checkout that it does not track are not in the
+#: snapshot, as one row per top-level folder with a count rather than one row
+#: per file: a build cache is thousands of paths, and a ``skipped`` list of
+#: thousands of rows is a list nobody reads. ``{count}`` is filled in.
+UNTRACKED_REASON = '{count} file(s) git does not track'
+IGNORED_REASON = '{count} file(s) git ignores'
+
+#: The prefix the two above are said with, the same words every other
+#: never-looked-at reason uses.
+NOT_LOOKED_AT = 'not looked at: '
+
+#: What kind of file one path is, which is the order the caps cut in. A
+#: repository holds more text than a snapshot can carry, and what a reviewer
+#: checking the methods against the code needs first is the program source:
+#: the scripts, the pipeline, the notebooks. Build and environment files come
+#: next, because what the code was run with is part of the method;
+#: configuration and prose after that; and data-like text last, because a
+#: folder of JSON results is the thing most likely to be large and least
+#: likely to be the method. Without this the cap cut in walk order, which is
+#: alphabetical, so a repository with a ``.build-state`` cache filled the
+#: snapshot with the cache and left out every analysis script.
+KIND_SOURCE = 'program source'
+KIND_BUILD = 'build and environment'
+KIND_CONFIG = 'configuration and prose'
+KIND_DATA = 'data-like text'
+
+#: The kinds in the order they are kept in.
+KIND_ORDER = (KIND_SOURCE, KIND_BUILD, KIND_CONFIG, KIND_DATA)
+
+#: What has to be said, wherever the snapshot is described, when a cap cut
+#: program source itself. Everything else a cap leaves out narrows what the
+#: review covers; this one changes what the review may claim, because a
+#: reader who cannot see every script cannot report that no script does a
+#: thing.
+SOURCE_CUT_WARNING = (
+    'Program source itself was left out, so this snapshot is not the whole of the code: '
+    'a finding may not say the code never does something.')
+
+#: Suffixes that make a file :data:`KIND_SOURCE`: a language a method is
+#: written in, including the workflow languages a pipeline is written in.
+SOURCE_SUFFIXES = frozenset({
+    '.py', '.pyi', '.R', '.r', '.Rmd', '.jl', '.m', '.do', '.sas',
+    '.c', '.h', '.cc', '.cpp', '.hpp', '.cu', '.rs', '.go', '.java', '.kt',
+    '.js', '.jsx', '.ts', '.tsx', '.sh', '.bash', '.zsh', '.pl', '.rb', '.lua',
+    '.sql', '.f', '.f90', '.for', '.nf', '.smk', '.snakefile', '.ipynb',
+})
+
+#: Names that make a file :data:`KIND_SOURCE` whatever their suffix: the
+#: pipeline of a project is often in a file that has none.
+SOURCE_NAMES = frozenset({'Snakefile', 'Makefile', 'makefile', 'GNUmakefile',
+                          'Justfile', 'justfile', 'Rakefile'})
+
+#: What makes a file :data:`KIND_BUILD`: how the code is built, and what it
+#: was built and run with.
+BUILD_SUFFIXES = frozenset({'.mk', '.cmake'})
+BUILD_NAMES = frozenset({
+    'Dockerfile', 'Containerfile', 'CMakeLists.txt', 'nextflow.config',
+    'pyproject.toml', 'setup.cfg', 'environment.yml', 'environment.yaml',
+    'requirements.txt', 'DESCRIPTION', 'NAMESPACE', 'Pipfile',
+})
+
+#: What makes a file :data:`KIND_DATA`: text that holds values rather than
+#: instructions. A lock file is here for the same reason — it is a resolved
+#: list of versions, and the file that asked for them is the build file.
+DATA_SUFFIXES = frozenset({'.json', '.yaml', '.yml', '.toml', '.csv', '.tsv',
+                           '.lock', '.ndjson', '.jsonl'})
 
 #: The caps. A file over :data:`MAX_FILE_BYTES` is skipped as too large — a
 #: generated table with a ``.txt`` suffix is not source — and the walk stops
@@ -306,6 +399,42 @@ def _wanted(path):
     return 'not text source: ' + (path.suffix or 'no suffix')
 
 
+def kind(path):
+    """Which of :data:`KIND_ORDER` one file is, by its name and suffix.
+
+    Public, because it is the order the caps cut in and an application
+    reading ``left_out_kinds`` off a manifest is reading these names.
+
+    The name is looked at before the suffix, so a ``Snakefile`` is program
+    source and a ``pyproject.toml`` is a build file rather than data-like
+    text. Anything the allowlist let in that is neither source, build nor
+    data — a README, a ``.tex``, an ``.ini`` — is configuration and prose.
+    """
+    path = Path(path)
+    if path.name in SOURCE_NAMES:
+        return KIND_SOURCE
+    if path.name in BUILD_NAMES:
+        return KIND_BUILD
+    if path.suffix in SOURCE_SUFFIXES:
+        return KIND_SOURCE
+    if path.suffix in BUILD_SUFFIXES:
+        return KIND_BUILD
+    if path.suffix in DATA_SUFFIXES:
+        return KIND_DATA
+    return KIND_CONFIG
+
+
+def _order(relative):
+    """The key one candidate file is chosen by when the caps cannot hold all.
+
+    Its kind first, then how deep it sits, then its path. Shallower before
+    deeper because the script at the root of a repository is the one a reader
+    starts at, and a path order last so that a snapshot of the same tree is
+    the same snapshot twice.
+    """
+    return (KIND_ORDER.index(kind(relative)), relative.count('/'), relative)
+
+
 def notebook_source(raw):
     """The cells of a notebook as text: code and markdown in order, no outputs.
 
@@ -416,7 +545,28 @@ def _whole_paths(paths):
     return {os.path.normcase(str(Path(one).resolve())) for one in paths if one is not None}
 
 
-def _walk(root, excluded=()):
+def _folder_left_out(path, excluded, hidden):
+    """Why one folder is not walked into, or ``''`` when it is.
+
+    The one rule, used by the walk and by the tracked-file list alike, so
+    that a repository and a plain folder leave the same things out for the
+    same stated reasons. *hidden* turns on the dot-folder rule, which applies
+    outside a checkout only — see :data:`HIDDEN_REASON`.
+    """
+    if path.is_symlink():
+        return LINK_REASON
+    if os.path.normcase(str(path)) in excluded:
+        return THIS_RUN_REASON
+    if path.name in SKIPPED_DIRECTORIES:
+        return DIRECTORY_REASON
+    if hidden and path.name.startswith('.'):
+        return HIDDEN_REASON
+    if is_run_folder(path):
+        return RUN_FOLDER_REASON
+    return ''
+
+
+def _walk(root, excluded=(), hidden=True):
     """The files under *root* to consider, and what was never looked at.
 
     Returns ``(files, left_out)``. Symbolic links are not followed, for files
@@ -428,21 +578,19 @@ def _walk(root, excluded=()):
     *excluded* is the set from :func:`_whole_paths`: the run folder this
     snapshot is being taken for, and the snapshot folder itself. A run folder met any other
     way is recognised by :func:`is_run_folder` and left out the same way.
+
+    This is the walk for a folder that is not a checkout. A checkout is read
+    from :func:`_tracked` instead, because there git itself says which files
+    are the project's.
     """
     found, left_out = [], []
     for folder, directories, files in os.walk(root, followlinks=False):
         kept = []
         for name in sorted(directories):
             path = Path(folder, name)
-            relative = path.relative_to(root).as_posix()
-            if path.is_symlink():
-                left_out.append({'path': relative, 'reason': LINK_REASON})
-            elif os.path.normcase(str(path)) in excluded:
-                left_out.append({'path': relative, 'reason': THIS_RUN_REASON})
-            elif name in SKIPPED_DIRECTORIES:
-                left_out.append({'path': relative, 'reason': DIRECTORY_REASON})
-            elif is_run_folder(path):
-                left_out.append({'path': relative, 'reason': RUN_FOLDER_REASON})
+            reason = _folder_left_out(path, excluded, hidden)
+            if reason:
+                left_out.append({'path': path.relative_to(root).as_posix(), 'reason': reason})
             else:
                 kept.append(name)
         directories[:] = kept
@@ -454,6 +602,116 @@ def _walk(root, excluded=()):
             else:
                 found.append(path)
     return found, left_out
+
+
+def _git_paths(folder, *arguments):
+    """The NUL-separated paths one read-only git command lists.
+
+    ``None`` when git refused or is not there, which is a different thing
+    from a repository that tracks nothing.
+    """
+    try:
+        done = subprocess.run(['git', '-C', str(folder), *arguments, '-z'],
+                              capture_output=True, text=True, timeout=60, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    return [one for one in done.stdout.split('\0') if one]
+
+
+def _untracked_rows(others, ignored):
+    """What a checkout does not track, as one summary row per top-level entry.
+
+    One row per first path element with the counts in its reason, rather than
+    a row per file: the folder this was written for had 582 ignored files in
+    one build cache, and a ``skipped`` list that spelled them out would be a
+    list nobody reads. Untracked and ignored are counted separately in the
+    one row, because "the authors have not committed this yet" and "the
+    authors told git to leave this out" are different facts about a folder.
+    """
+    counts = {}
+    for paths, key in ((others, 'others'), (ignored, 'ignored')):
+        for one in paths:
+            top = one.strip('/').split('/')[0]
+            if top:
+                counts.setdefault(top, {'others': 0, 'ignored': 0})[key] += 1
+    rows = []
+    for top, found in sorted(counts.items()):
+        said = []
+        if found['others']:
+            said.append(UNTRACKED_REASON.format(count=found['others']))
+        if found['ignored']:
+            said.append(IGNORED_REASON.format(count=found['ignored']))
+        rows.append({'path': top, 'reason': NOT_LOOKED_AT + ', '.join(said)})
+    return rows
+
+
+def _tracked(root, excluded):
+    """The files a checkout tracks, and what was left out, or ``None``.
+
+    ``None`` when *root* is not a git work tree, which is the signal to walk
+    it instead.
+
+    A repository says which files are the authors' own: the tracked list.
+    Everything else under the root is a build cache, a result, an
+    environment, an output — the things ``.gitignore`` exists to name — and
+    before this the walk copied them in, so a snapshot of a real paper
+    repository held 582 files of a build cache and none of the analysis
+    scripts. The folder rules still apply on top of the tracked list: a
+    committed vendored dependency, a committed run folder of this package and
+    a symbolic link are left out of a checkout exactly as they are out of a
+    plain folder.
+    """
+    if not _git(root, 'rev-parse', '--is-inside-work-tree'):
+        return None
+    tracked = _git_paths(root, 'ls-files')
+    if tracked is None:
+        return None
+    found, left_out, decided = [], [], {}
+    for relative in sorted(tracked):
+        parts = relative.split('/')
+        reason, folder = '', ''
+        for name in parts[:-1]:
+            folder = folder + '/' + name if folder else name
+            if folder not in decided:
+                decided[folder] = _folder_left_out(root / folder, excluded, False)
+            if decided[folder]:
+                reason = decided[folder]
+                break
+        if reason:
+            # Recorded once for the folder, like any other folder never
+            # walked into, however many tracked files are under it.
+            if not any(one['path'] == folder for one in left_out):
+                left_out.append({'path': folder, 'reason': reason})
+            continue
+        path = root / relative
+        if path.is_symlink():
+            left_out.append({'path': relative, 'reason': LINK_REASON})
+        elif path.is_file():
+            found.append(path)
+        else:
+            # A submodule is a tracked path that is not a file here: its
+            # contents are another repository, which this run was not given.
+            left_out.append({'path': relative, 'reason': DIRECTORY_REASON})
+    left_out.extend(_untracked_rows(
+        _git_paths(root, 'ls-files', '--others', '--exclude-standard') or [],
+        _git_paths(root, 'ls-files', '--others', '--ignored', '--exclude-standard') or []))
+    return found, left_out
+
+
+def _select(root, excluded=()):
+    """The candidate files under *root*, and whether git chose them.
+
+    Returns ``(files, left_out, tracked)``. A checkout is read from its
+    tracked files, so ``.gitignore`` is honoured; anything else is walked,
+    with hidden and cache folders left alone.
+    """
+    chosen = _tracked(Path(root), excluded)
+    if chosen is not None:
+        return chosen[0], chosen[1], True
+    found, left_out = _walk(root, excluded, hidden=True)
+    return found, left_out, False
 
 
 def snapshot(source, folder, *, limits=None, run=None):
@@ -493,11 +751,22 @@ def snapshot(source, folder, *, limits=None, run=None):
         text source, may hold secrets, too large, not decodable as text, past
         one of the caps, or a folder or symbolic link never looked at — those
         two recorded once each, by the folder or the link and not by the files
-        under it.
+        under it. What a checkout does not track is one row per top-level
+        entry with a count, not a row per file.
+    ``tracked``
+        Whether git's own tracked list chose the files, which is the case for
+        every checkout and for a clone. A folder that is not a checkout is
+        walked instead, with hidden and cache folders left alone.
     ``counts``, ``limits``, ``truncated``
-        How many files and bytes were copied, the caps in force, and whether a
-        cap stopped the walk — a reviewer reading a snapshot that was cut short
-        has to be told so.
+        How many files and bytes were copied and how many of each kind
+        (``counts['kinds']``), the caps in force, and whether a cap stopped
+        the selection — a reviewer reading a snapshot that was cut short has
+        to be told so.
+    ``left_out_kinds``, ``source_cut``
+        How many files of each of :data:`KIND_ORDER` a cap left out, and the
+        count for program source on its own. Program source is kept first, so
+        ``source_cut`` above zero means the snapshot is not the whole of the
+        code and :data:`SOURCE_CUT_WARNING` is in ``truncated`` as well.
 
     Raises :class:`CodeRefused` when there is nothing to review: a folder that
     is not there, a URL git refuses, or a repository holding no text source.
@@ -544,9 +813,12 @@ def snapshot(source, folder, *, limits=None, run=None):
         if temporary:
             shutil.rmtree(root, ignore_errors=True)
     if not record['files']:
-        raise CodeRefused('No text source in ' + str(origin['source'])
-                          + ': every file in it was skipped, so there is no code to review. '
-                          + 'Left out ' + str(len(record['skipped'])) + ' path(s).')
+        raise CodeRefused(
+            'No text source in ' + str(origin['source'])
+            + ': every file in it was skipped, so there is no code to review. '
+            + 'Left out ' + str(len(record['skipped'])) + ' path(s).'
+            + (' A git repository is snapshotted from the files it tracks, so code that is '
+               'untracked or ignored is not in it.' if record['tracked'] else ''))
     manifest = {'schema_version': SCHEMA_VERSION, 'origin': origin,
                 'limits': caps, **record}
     write(folder / MANIFEST_FILE, manifest)
@@ -612,29 +884,49 @@ def _notebook_contents(path, caps):
 
 
 def _copy(root, files_root, caps, excluded=()):
-    """The walk itself: what was copied, what was skipped, and why."""
-    found, left_out = _walk(root, excluded)
+    """The selection itself: what was copied, what was skipped, and why.
+
+    The candidates are taken in :func:`_order` and not in walk order, so that
+    when there is more text than the caps hold what survives is what a
+    reviewer needs rather than whatever came first alphabetically. Both caps
+    cut in that order, the file count and the byte total alike, and what each
+    one cut is counted by kind so the manifest can say so plainly.
+    """
+    root = Path(root)
+    found, left_out, tracked = _select(root, excluded)
     files, skipped = [], list(left_out)
-    total = 0
-    truncated = ''
+    candidates = []
     for path in found:
         relative = path.relative_to(root).as_posix()
         reason = _wanted(path)
         if reason:
             skipped.append({'path': relative, 'reason': reason})
+        else:
+            candidates.append(relative)
+    candidates.sort(key=_order)
+    cut = {name: 0 for name in KIND_ORDER}
+    held_kinds = {name: 0 for name in KIND_ORDER}
+    total = 0
+    truncated = ''
+    for relative in candidates:
+        path = root / relative
+        # The count cap is read before the file is, so that a repository of
+        # ten thousand candidates is not read in full to be told it is past
+        # the cap.
+        if len(files) >= caps['max_files']:
+            truncated = truncated or ('more than ' + str(caps['max_files'])
+                                      + ' files of text source')
+            cut[kind(relative)] += 1
+            skipped.append({'path': relative, 'reason': 'past the file count cap'})
             continue
         held = _contents(path, caps)
         if 'reason' in held:
             skipped.append({'path': relative, 'reason': held['reason']})
             continue
-        if len(files) >= caps['max_files']:
-            truncated = truncated or ('more than ' + str(caps['max_files'])
-                                      + ' files of text source')
-            skipped.append({'path': relative, 'reason': 'past the file count cap'})
-            continue
         if total + held['bytes'] > caps['max_total_bytes']:
             truncated = truncated or ('more than ' + str(caps['max_total_bytes'])
                                       + ' bytes of text source')
+            cut[kind(relative)] += 1
             skipped.append({'path': relative, 'reason': 'past the total size cap'})
             continue
         destination = files_root / relative
@@ -653,9 +945,21 @@ def _copy(root, files_root, caps, excluded=()):
             # are lines of the cells and not of the file on disk.
             row['extracted'] = held['extracted']
         files.append(row)
+        held_kinds[kind(relative)] += 1
+    files.sort(key=lambda one: one['path'])
     skipped.sort(key=lambda one: one['path'])
-    return {'files': files, 'skipped': skipped, 'truncated': truncated,
-            'counts': {'files': len(files), 'bytes': total, 'skipped': len(skipped)}}
+    if truncated:
+        truncated += ': left out ' + ', '.join(
+            str(cut[name]) + ' ' + name for name in KIND_ORDER if cut[name]) + ' file(s)'
+        if cut[KIND_SOURCE]:
+            # Said in the manifest, in the review and in the code lane's
+            # brief, because a snapshot that is missing program source is one
+            # no reader may conclude "the code never does that" from.
+            truncated += '. ' + SOURCE_CUT_WARNING
+    return {'files': files, 'skipped': skipped, 'truncated': truncated, 'tracked': tracked,
+            'counts': {'files': len(files), 'bytes': total, 'skipped': len(skipped),
+                       'kinds': held_kinds},
+            'left_out_kinds': cut, 'source_cut': cut[KIND_SOURCE]}
 
 
 def _clip(line):
@@ -708,6 +1012,10 @@ class CodeDesk:
             'files_in_snapshot': len(self.rows),
             'files_skipped': len(self.manifest.get('skipped') or []),
             'truncated': str(self.manifest.get('truncated') or ''),
+            # On its own as a number, because the review has to say it: a
+            # snapshot missing program source is one no finding may claim the
+            # code never does something from.
+            'source_cut': int(self.manifest.get('source_cut') or 0),
             'files_opened': sorted(self.opened),
             'opened': len(self.opened),
             'searches': len(self.searches),
@@ -769,6 +1077,11 @@ class CodeDesk:
             'skipped': [dict(one) for one in (self.manifest.get('skipped') or [])[:40]],
             'skipped_count': len(self.manifest.get('skipped') or []),
             'truncated': str(self.manifest.get('truncated') or ''),
+            # What a cap left out, by kind, and program source on its own:
+            # the lane is told plainly when the code it is reading is not all
+            # of the code there was.
+            'left_out_kinds': dict(self.manifest.get('left_out_kinds') or {}),
+            'source_cut': int(self.manifest.get('source_cut') or 0),
         }
 
     def read_code(self, path, part=1):

@@ -613,7 +613,8 @@ def _code_reviewed(progress, manifest, problems):
     """
     empty = {'reviewed': False, 'kind': '', 'source': '', 'commit': '', 'branch': '',
              'dirty': None, 'snapshot': None, 'files_in_snapshot': 0, 'files_skipped': 0,
-             'truncated': '', 'files_opened': [], 'opened': 0, 'searches': 0, 'manifest': None}
+             'truncated': '', 'source_cut': 0, 'files_opened': [], 'opened': 0,
+             'searches': 0, 'manifest': None}
     progress, manifest = progress or {}, manifest or {}
     record = progress.get('code')
     if record is None or record == {}:
@@ -643,6 +644,11 @@ def _code_reviewed(progress, manifest, problems):
         # file count, a byte total. Empty for a snapshot that holds the whole
         # of what it was pointed at, which is the ordinary case.
         'truncated': str(record.get('truncated') or ''),
+        # How many program source files a cap left out. Above zero, the
+        # snapshot is not the whole of the code and a finding from it may not
+        # say the code never does something — a different fact from the file
+        # count, which is why it is a number of its own here.
+        'source_cut': _count(record.get('source_cut')),
         # Which files a reviewer actually opened, out of the snapshot. A lane
         # that opened none read the paper and nothing else, and a reading that
         # reported only "code: reviewed" could not say so.
@@ -1002,8 +1008,11 @@ def read_run(path):
         it was in, and ``snapshot`` is the folder under the run that holds the
         text of it. ``files_in_snapshot`` and ``files_skipped`` are what was
         taken and what was left out — a binary, a data file, one over the size
-        cap — ``truncated`` says in words where the snapshot stopped early and
-        is empty when it did not, and ``manifest`` is the snapshot's own
+        cap, a file a repository does not track — ``truncated`` says in words
+        where the snapshot stopped early and is empty when it did not,
+        ``source_cut`` is how many program source files a cap left out and is
+        the one number that limits what the review may claim, and
+        ``manifest`` is the snapshot's own
         manifest, which names every file either way. ``files_opened``,
         ``opened`` and ``searches`` are what a reviewer actually did with it: a
         lane that opened no file read the paper and nothing else, and a reading

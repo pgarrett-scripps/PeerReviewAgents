@@ -18,7 +18,7 @@ from pathlib import Path
 from .. import issues as issue_model
 from ..names import RUN_DIRECTORY
 from ..plugin import models as model_plan
-from . import citation_ledger, paper_base
+from . import citation_ledger, code_source, paper_base
 from .storage import read, relative_name
 from .usage import agent_rows, observed_usage, runtime_usage
 
@@ -565,6 +565,13 @@ def _code_line(progress):
     truncated = str(record.get('truncated') or '')
     if truncated:
         line += f' ({truncated})'
+    source_cut = record.get('source_cut')
+    warning = code_source.SOURCE_CUT_WARNING
+    if isinstance(source_cut, int) and source_cut and warning not in truncated:
+        # A cap that cut program source changes what the review may claim, so
+        # the line that says what was reviewed says it even where the
+        # snapshot's own words did not.
+        line += f' — {source_cut} program source file(s) left out: ' + warning
     return line
 
 

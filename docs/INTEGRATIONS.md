@@ -568,8 +568,9 @@ keys.
 | `kind`, `source` | `git-clone` or `folder`, and where it came from as the caller named it: the URL for a clone, the resolved path for a folder |
 | `commit`, `branch`, `dirty` | the state the code was in. `dirty` is `None` for a snapshot of something that is not a repository |
 | `snapshot` | the absolute path of `<run>/code/`, which holds `manifest.json` and the text under `files/` |
-| `files_in_snapshot`, `files_skipped` | what was taken, and how many paths were left out — a binary, a data file, one over the size caps, one that may hold secrets, a run folder of this package, or a whole folder or symbolic link never walked into, which each count once |
-| `truncated` | why the snapshot stopped early, in words; empty for one that holds the whole of what it was pointed at |
+| `files_in_snapshot`, `files_skipped` | what was taken, and how many paths were left out — a binary, a data file, one over the size caps, one that may hold secrets, a run folder of this package, or a whole folder or symbolic link never walked into, which each count once. What a repository does not track is one row per top folder with a count, not a row per file |
+| `truncated` | why the snapshot stopped early, in words, including how many files of each kind a cap left out; empty for one that holds the whole of what it was pointed at |
+| `source_cut` | how many program source files a cap left out. Above zero, the snapshot is not the whole of the code and no finding may say the code never does something |
 | `manifest` | the snapshot's own manifest, which names everything either way, with a digest per file taken and a reason per path skipped |
 | `files_opened`, `opened`, `searches` | what a reviewer actually did with it |
 
@@ -589,6 +590,27 @@ caller's. Each is one row in `manifest["skipped"]`, with the reason, like any
 other folder never walked into. A `code` path that *is* a run folder, or is
 inside the out folder, is refused instead: there would be no code in that
 snapshot, only the review.
+
+**A git repository is snapshotted from the files it tracks.** `.gitignore` is
+what a repository uses to say which files are not its own, so a build cache, a
+results folder or an environment under the `code` path is left out of the
+snapshot, as one `skipped` row per top-level folder with a count of the files
+git does not track and the files git ignores. `manifest["tracked"]` says when
+git's list chose the files, which is the case for a checkout and for a clone of
+a URL. A folder that is no checkout is walked instead, and the walk leaves
+hidden folders and known cache and build folders alone.
+
+**When there is more text than the caps hold, the snapshot keeps what a
+reviewer needs.** The order is program source (scripts, pipelines, notebooks),
+then build and environment files, then configuration and prose, and data-like
+text (JSON, YAML, TOML, CSV-like, lock files) last; inside a kind, shallower
+paths before deeper ones. Both caps cut in that order, the file count and the
+byte total alike. `manifest["counts"]["kinds"]` is what was taken per kind,
+`manifest["left_out_kinds"]` what a cap left out per kind, and
+`manifest["source_cut"]` the program source count on its own — the one that
+limits what the review may claim, which is why it is repeated in `truncated`,
+in the `REVIEW.md` line that says what was reviewed, and in what the lane's own
+`list_code` answers.
 
 A finding from that lane carries `code_evidence` — `path`, `start_line`,
 `end_line` and `text` — and its `basis` is `code-checked`: the server found

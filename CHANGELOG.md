@@ -400,6 +400,30 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A code snapshot of a repository holds the files it tracks, and a cap cuts
+  data before code.** Pointed at a real paper repository — 1,998 tracked
+  files, 113 of them Python — the snapshot filled its 600-file cap with 582
+  files of a gitignored build cache and none of the analysis scripts, so the
+  code reviewer would have read a build cache and reported on it as the
+  authors' method. Two causes, both fixed. A git checkout is now snapshotted
+  from `git ls-files`, so `.gitignore` is honoured and caches, outputs and
+  environments stay out; what git does not track is one `skipped` row per
+  top-level folder with a count rather than thousands of rows, and
+  `manifest["tracked"]` says when git chose the files, which it does for a
+  clone of a URL as well. Outside a checkout the walk leaves hidden folders
+  and known cache and build folders alone. And the caps no longer cut in walk
+  order, which was alphabetical and therefore arbitrary: candidates are kept
+  in the order a reviewer needs them — program source, then build and
+  environment files, then configuration and prose, then data-like text, with
+  shallower paths first inside a kind — and both the file count and the byte
+  total cut in that order. The manifest says how many files of each kind a cap
+  left out (`left_out_kinds`, `counts["kinds"]`), and when program source
+  itself was cut, `source_cut` and the words of `truncated` say so, in the
+  manifest, in `read_run`, in the `REVIEW.md` line that says what was
+  reviewed, and in what the code lane's `list_code` answers — because a
+  reviewer who has not seen every script may not report that no script does a
+  thing. On the repository that found this, the snapshot now holds all 113
+  tracked Python files and nothing of the cache.
 - **A code snapshot never copies a run folder of this package.** Reviewing a
   repository from inside it is the normal way to do it — a workspace keeps its
   runs under the repository root, and `--code .` was the documented call — and
