@@ -945,9 +945,16 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     # the server's default four.
     citation_lane = bool(citation_slots(arm, 1, tracks))
     # The reader is planned here too, so a login that cannot run the reader
-    # model is refused before the probe spends anything.
+    # model is refused before the probe spends anything — except where there is
+    # no Read stage to run. A folder that already holds a sealed manuscript
+    # (an application's own source through `write_manuscript`, or a run picked
+    # up after its own seal) has no draft to repair, the server plans no reader
+    # slot for it, and refusing the session over a model nothing would run is a
+    # refusal about a stage that does not exist.
+    reader_slots = (() if (root / MANUSCRIPT_DIRECTORY / 'manifest.json').is_file()
+                    else ('reader',))
     wanted = model_plan.assign(
-        ('reader', *plan_slots(arm, reviewers, tracks, bool(code)), *workers, 'recorder'),
+        (*reader_slots, *plan_slots(arm, reviewers, tracks, bool(code)), *workers, 'recorder'),
         **settled)
     model_plan.refuse(wanted)
     # A variable that outranks the per-spawn override makes every slot one

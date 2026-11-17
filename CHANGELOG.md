@@ -389,6 +389,18 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A reader slot is planned only where there is a draft to read.** A run
+  opened over a folder that already holds a sealed manuscript — an
+  application's own source through `write_manuscript`, or a folder a run
+  already read and sealed — planned a `reader` anyway: `ingest` handed back a
+  claim code and a model for a stage that could not run, and claiming the slot
+  raised an `AttributeError` out of `number_pieces(None)` instead of answering.
+  Such a run now plans no reader at all — no claim code, no model, `reader`
+  comes back `null`, and the launcher no longer refuses the session over a
+  reader model nothing would run — and asking for the slot is refused in words
+  that name the seal. A reader that claims late, after the manuscript was
+  sealed around it, is refused the same way rather than raising: a claim is the
+  first call an agent makes, and an exception tells it nothing about the run.
 - **A run refused at the import says why it was refused.** `ingest` now
   records the server's own refusal in the run folder's `progress.json`, and the
   starter reads a recorded cause ahead of the session's exit, so a manuscript

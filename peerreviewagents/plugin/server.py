@@ -644,6 +644,19 @@ class Run:
                 'run specialists: '
                 + ', '.join(sorted(name for name, one in ARMS.items() if one['specialists']))
                 + '.')
+        # Whether this run has a Read stage at all. A folder that already holds
+        # a sealed manuscript has no draft to repair: an application that wrote
+        # its own source through `write_manuscript`, or a folder a run already
+        # read and sealed, arrives with paper.md, map.json and citable lines.
+        # The reader works on a draft and nothing else, so there is no reader
+        # slot in such a run — and a slot that can never be claimed is not
+        # planned, because the codes `ingest` hands back are a statement of
+        # which slots exist. Settled here, before the models are assigned per
+        # slot, so a login that cannot run the reader is not refused over a
+        # stage this run does not have.
+        self.read_stage = not (Path(root).resolve()
+                               / MANUSCRIPT_DIRECTORY / 'manifest.json').is_file()
+        self.reader_slots = ('reader',) if self.read_stage else ()
         # Which model runs in which slot, settled before anything is imported
         # or written: a model this login cannot run is refused here, rather
         # than quietly substituted halfway through a run and recorded as the
@@ -676,9 +689,11 @@ class Run:
         # picture of them, a figure is a caption with no image behind it, and a
         # page the text layer returns nothing from cannot be imported at all
         # without a reader to transcribe it off the page. What the stage did to
-        # this manuscript is the manifest's own ``ai_read`` account.
+        # this manuscript is the manifest's own ``ai_read`` account. The one
+        # run without the stage is the one that was handed a manuscript already
+        # sealed, which is what ``read_stage`` above settles.
         self.models = model_plan.refuse(model_plan.assign(
-            ('reader', *self.required_slots(), *self.citation_workers, 'recorder'),
+            (*self.reader_slots, *self.required_slots(), *self.citation_workers, 'recorder'),
             reviewers=self.reviewer_models, specialist=specialist_model,
             editor=editor_model, recorder=recorder_model,
             citation_worker=citation_worker_model, reader=reader_model))
@@ -776,7 +791,7 @@ class Run:
         # else. Without this a reviewer that knows a slot name is that slot.
         self.recorder_key = secrets.token_hex(16)
         self.claim_codes = {slot: secrets.token_hex(8)
-                            for slot in ('reader', *self.required,
+                            for slot in (*self.reader_slots, *self.required,
                                          *self.citation_workers, 'recorder')}
         self.write_progress()
         # Identity at ingest, not only at the end. A run that is killed — a
@@ -845,6 +860,15 @@ class Run:
             except (ValueError, OSError):
                 before = {}
             kept_models = before.get('models')
+            if isinstance(kept_models, dict) and not self.read_stage:
+                # The reader is in this folder's record because the stage ran
+                # here, and it is not in this run's plan because the manuscript
+                # is sealed and there is no stage left to run. That is not two
+                # model configurations in one folder: it is one folder whose
+                # Read stage is over, which is exactly the folder a killed run
+                # is resumed from.
+                kept_models = {slot: model for slot, model in kept_models.items()
+                               if slot != 'reader'}
             if isinstance(kept_models, dict) and kept_models and kept_models != self.models:
                 differs = sorted(slot for slot in set(kept_models) | set(self.models)
                                  if kept_models.get(slot) != self.models.get(slot))
@@ -923,7 +947,16 @@ class Run:
         the specialists exist, and reviewer isolation is one of the things the
         study arms compare.
         """
-        if slot not in ('reader', *self.required, *self.citation_workers, 'recorder'):
+        if slot == 'reader' and not self.read_stage:
+            # Named rather than lumped in with an unknown slot: the caller
+            # asked for a stage this manuscript is past, and that is a
+            # different thing from asking for a slot that does not exist.
+            raise ValueError(
+                'This manuscript was already sealed when the run opened: paper.md and map.json '
+                'are written and every line is citable. The reader repairs a draft, this run was '
+                'handed none, and so it planned no reader slot and no Read stage. There is '
+                'nothing to read.')
+        if slot not in (*self.reader_slots, *self.required, *self.citation_workers, 'recorder'):
             raise ValueError('Slot ' + slot + ' is not part of this run.')
         if slot == 'recorder':
             return 'recorder', 'recorder', tuple(self.required)
@@ -1054,6 +1087,18 @@ class Run:
                 'against the pages and it has no line numbers yet. The reader slot seals it, and '
                 'until it does there is nothing for ' + slot + ' to cite. Run the Read stage '
                 'first, or ingest with the reader turned off.')
+        # And the other way about: the reader holds a slot only while there is
+        # a draft. Past the seal — the reader's own, or `seal_as_converted`
+        # after a reader that could not run — the draft is gone, and a desk
+        # built over it used to raise an AttributeError out of
+        # `number_pieces(None)` instead of answering the claim. A slot that
+        # cannot be served is refused in words, because a claim is the first
+        # call an agent makes and an exception tells it nothing about the run.
+        if role == 'reader' and self.base is not None:
+            raise ValueError(
+                'This manuscript is sealed: paper.md and map.json are written and every line is '
+                'citable. The reader works on a draft and there is no longer one, so there is '
+                'nothing to read and nothing to repair. The Read stage is over.')
         if role == 'editor':
             beyond = self.editor_capacity()
             if beyond:
@@ -1884,9 +1929,12 @@ def summary_of(run):
         'slots': list(run.required) + ['recorder'],
         # The Read stage, apart from the review stages on purpose: the reader
         # works before them, on a draft, and files no report, so it is never
-        # one of the slots `write_review` waits for.
-        'reader': {'slot': 'reader', 'model': run.models.get('reader'),
-                   'allowance': run.reader_allowance()},
+        # one of the slots `write_review` waits for. ``None`` where the run was
+        # handed a manuscript already sealed: there is no stage to run and no
+        # slot to spawn, and a workflow reads this rather than claiming a slot
+        # to find out.
+        'reader': ({'slot': 'reader', 'model': run.models.get('reader'),
+                    'allowance': run.reader_allowance()} if run.read_stage else None),
         # The citation workers, apart from the stages on purpose: they are
         # fanned out over the ledger and none of them is required to report.
         'citation_workers': list(run.citation_workers),
