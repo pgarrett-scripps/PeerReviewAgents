@@ -543,7 +543,10 @@ of the JSON: the manifest row and `read_code` both carry `extracted`
 (`"notebook cells"`, or empty for a file stored as it is), and a `# %% notebook
 cell N (code)` marker in the text is where each cell begins. An application
 showing code evidence reads it out of `<run>/code/files/<path>`, which is the
-text the lines were counted in.
+text the lines were counted in: line endings are folded to LF on the way into
+the snapshot, so a CRLF repository is numbered the way its author's editor
+numbers it, and the manifest row's `bytes` and `sha256` are of that stored
+copy rather than of the original file.
 
 #### Highlighting a citation
 

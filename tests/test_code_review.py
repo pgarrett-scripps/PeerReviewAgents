@@ -380,6 +380,67 @@ def test_a_vendored_folder_or_a_link_is_left_out_once_and_said_once(tmp_path):
     assert not [row for row in manifest['files'] if 'node_modules' in row['path']]
 
 
+#: One file as a Windows editor saves it and one as an old Mac editor did.
+#: Written as bytes rather than as text, because a text-mode write would put
+#: the host's own line endings in and the fixture would only be CRLF on
+#: Windows, which is the one platform this bug was found on.
+CRLF_SOURCE = ('"""The pipeline behind the paper."""\n'
+               '\n'
+               'FDR_THRESHOLD = 0.05\n'
+               'MIN_WIDGETS = 3\n')
+
+
+def test_a_file_with_windows_line_endings_is_numbered_as_an_editor_numbers_it(tmp_path):
+    """A CRLF file is one break per line, on every platform the review runs on.
+
+    A repository of CRLF files is ordinary, and a review of one has to count
+    its lines the way the author's editor does. Storing the endings as they
+    arrived put a blank line between every line of code — doubling every
+    number `read_code` served — and the code quote copied out of that answer
+    was then refused as not what the file holds, which is the one refusal that
+    must never be wrong.
+    """
+    folder = tmp_path / 'windows-code'
+    folder.mkdir()
+    (folder / 'pipeline.py').write_bytes(CRLF_SOURCE.replace('\n', '\r\n').encode('utf-8'))
+    # A lone carriage return is a line break too, and not two of them.
+    (folder / 'plot.R').write_bytes(b'widths <- read.csv("w.csv")\rplot(widths$mm)\r')
+
+    run, token = code_run(tmp_path, folder)
+    stored = run.code.files_root / 'pipeline.py'
+    assert stored.read_bytes() == CRLF_SOURCE.encode('utf-8'), \
+        'the snapshot holds the text with LF endings, whatever it was given'
+    row = next(one for one in run.code.manifest['files'] if one['path'] == 'pipeline.py')
+    assert row['lines'] == 4
+    # The digest and the byte count are of the copy, so a reader can recompute
+    # them from the file under files/ rather than from the original.
+    assert row['bytes'] == len(CRLF_SOURCE.encode('utf-8'))
+    assert row['sha256'] == code_source.digest(CRLF_SOURCE.encode('utf-8'))
+    assert next(one['lines'] for one in run.code.manifest['files']
+                if one['path'] == 'plot.R') == 2
+
+    served = srv.read_code(token, 'pipeline.py')
+    assert served['lines'] == 4 and served['of'] == 1
+    assert served['text'] == ('1\t"""The pipeline behind the paper."""\n'
+                              '2\t\n'
+                              '3\tFDR_THRESHOLD = 0.05\n'
+                              '4\tMIN_WIDGETS = 3')
+    assert srv.search_code(token, 'FDR_THRESHOLD')['matches'] == [
+        {'path': 'pipeline.py', 'line': 3, 'text': 'FDR_THRESHOLD = 0.05'}]
+
+    # And the quote that answer served verifies at the lines it was served at.
+    line, quote = quote_from(run)
+    stored_finding = srv.submit_finding(
+        token, title='The threshold in the methods is not the threshold in the code',
+        line=line, quote=quote, severity='major',
+        comment='The paper names one false-discovery threshold and the pipeline uses another.',
+        code_path='pipeline.py', code_start_line=3, code_end_line=3,
+        code_quote='FDR_THRESHOLD = 0.05')
+    assert 'request_rejected' not in stored_finding, stored_finding
+    assert stored_finding['basis'] == 'code-checked'
+    assert stored_finding['code_evidence']['text'] == 'FDR_THRESHOLD = 0.05'
+
+
 def test_code_that_cannot_be_reviewed_is_refused_rather_than_reviewed_empty(tmp_path):
     with pytest.raises(code_source.CodeRefused, match='No code folder at'):
         code_source.snapshot(str(tmp_path / 'nowhere'), tmp_path / 'out')

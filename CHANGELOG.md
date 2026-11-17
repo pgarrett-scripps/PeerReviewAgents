@@ -79,7 +79,11 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   credential copied into it is a credential handed out. And a folder the walk
   refuses or a symbolic link out of the snapshot is recorded once, by its own
   path rather than by the files under it, so the record says what was never
-  looked at without a dependency tree filling it.
+  looked at without a dependency tree filling it. Line endings are folded to
+  LF on the way in and the copy is written and read back with the platform's
+  translation off: a CRLF repository is numbered the way its author's editor
+  numbers it on whatever machine the review runs on, and `bytes` and `sha256`
+  are of the stored copy, so a reader can recompute them from `files/`.
   One more specialist is planned when, and only when, there is a snapshot:
   `spec-code`, which reads the whole manuscript first and then audits what the
   methods say was done against what the code does — thresholds, filters, the

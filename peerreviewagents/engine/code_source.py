@@ -13,7 +13,10 @@ in the run folder is text source and nothing else: a suffix allowlist, a skip
 list for the folders that hold dependencies and data, a name rule that keeps
 out the files that hold credentials, and three caps — per file, in total, and
 in number of files. A notebook is stored as its cells, because the outputs in
-one are both most of its bytes and none of its method.
+one are both most of its bytes and none of its method. Line endings are folded
+to LF on the way in and the copy is written and read back with the platform's
+own translation turned off, so a CRLF repository is numbered the way its
+author's editor numbers it, on whatever machine the review runs on.
 :func:`snapshot` writes that copy
 under ``<run>/code/files`` and a ``manifest.json`` beside it recording where
 the code came from, which commit it was, every file included with its hash and
@@ -312,7 +315,37 @@ def notebook_source(raw):
         pieces.append(CELL_MARK.format(number=number, kind=kind) + '\n' + body.rstrip('\n'))
     if not pieces:
         raise ValueError('not a readable notebook: it holds no code or markdown cells')
-    return '\n\n'.join(pieces) + '\n'
+    # A cell's own source can hold CRLF even in a notebook file that does not,
+    # because the line endings are inside JSON strings.
+    return _normalize('\n\n'.join(pieces) + '\n')
+
+
+def _normalize(text):
+    """*text* with every line ending as one ``\\n``.
+
+    Repositories hold CRLF files, and a snapshot of one has to number its
+    lines the way the author's editor does: ``\\r\\n`` and a lone ``\\r`` are
+    each one line break, not two and not a blank line in between. Every line
+    ending is folded here, at the one point text enters the snapshot, so the
+    copy under ``files/`` holds LF alone and the line a finding cites is the
+    same line on every platform the review runs on.
+    """
+    return text.replace('\r\n', '\n').replace('\r', '\n')
+
+
+def _split(text):
+    """*text* as its lines, broken on line endings and nothing else.
+
+    ``str.splitlines`` also breaks on a form feed, a vertical tab and a few
+    Unicode separators, which an editor shows as a character inside a line. A
+    file holding one would be numbered here differently from the editor the
+    author quoted it out of, so the count and the numbering both come from
+    this.
+    """
+    lines = _normalize(text).split('\n')
+    if lines and lines[-1] == '':
+        lines.pop()
+    return lines
 
 
 def _text(data):
@@ -320,7 +353,7 @@ def _text(data):
     if b'\0' in data[:4096]:
         return None
     try:
-        return data.decode('utf-8')
+        return _normalize(data.decode('utf-8'))
     except UnicodeDecodeError:
         return None
 
@@ -445,7 +478,11 @@ def _contents(path, caps):
     text = _text(data)
     if text is None:
         return {'reason': 'not decodable as UTF-8 text'}
-    return {'text': text, 'bytes': size, 'sha256': digest(data), 'extracted': ''}
+    # The digest and the byte count are of the text as the snapshot stores it,
+    # which is the file with its line endings folded to LF: a reader can
+    # recompute them from the copy under ``files/``.
+    stored = text.encode('utf-8')
+    return {'text': text, 'bytes': len(stored), 'sha256': digest(stored), 'extracted': ''}
 
 
 def _notebook_contents(path, caps):
@@ -504,10 +541,14 @@ def _copy(root, files_root, caps):
             continue
         destination = files_root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(held['text'], encoding='utf-8')
+        # ``newline`` pinned to LF: the default translates every ``\n`` to the
+        # platform's ending, which on Windows turned a CRLF file into one
+        # blank line between every line of code and doubled the numbers a
+        # finding has to cite.
+        destination.write_text(held['text'], encoding='utf-8', newline='\n')
         total += held['bytes']
         row = {'path': relative, 'bytes': held['bytes'],
-               'lines': len(held['text'].splitlines()), 'sha256': held['sha256']}
+               'lines': len(_split(held['text'])), 'sha256': held['sha256']}
         if held['extracted']:
             # A reader of the manifest has to know the lines a finding cites
             # are lines of the cells and not of the file on disk.
@@ -604,7 +645,10 @@ class CodeDesk:
         return row
 
     def _lines(self, row):
-        return (self.files_root / row['path']).read_text(encoding='utf-8').splitlines()
+        # Read with the newline translation off and split here, so one rule
+        # numbers the lines however the file reached the snapshot.
+        held = (self.files_root / row['path']).read_text(encoding='utf-8', newline='')
+        return _split(held)
 
     def list_code(self, path='', pattern=''):
         """The files in the snapshot, with their sizes, and what was left out."""
@@ -710,7 +754,7 @@ class CodeDesk:
             raise ValueError('A code finding quotes at most ' + str(MAX_EVIDENCE_LINES)
                              + ' lines. Quote the lines the finding is about.')
         held = lines[start_line - 1:end_line]
-        given = str(text or '').replace('\r\n', '\n').split('\n')
+        given = _split(str(text or ''))
         if [one.rstrip() for one in given] != [one.rstrip() for one in held]:
             raise ValueError(
                 'The code you quoted is not what ' + row['path'] + ' holds at lines '
