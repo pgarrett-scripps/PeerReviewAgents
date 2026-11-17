@@ -95,6 +95,16 @@ Manuscripts and workspaces
     ``docs/INTEGRATIONS.md`` documents what a piece is on the way in and what a
     map row says on the way out.
 
+Building a fixture to test against
+    :func:`scripted_read` is the Read stage driven in code, with no model and
+    nothing launched: it opens a run on a PDF, claims the reader's slot and
+    hands back a :class:`ScriptedRead` whose methods are the reader's own
+    tools, so a consumer's test fixture for what that stage writes — a re-read
+    part's ``part`` and ``of``, an absorbed piece's reading, the reader's note
+    in the manifest — is written by the engine instead of by hand.
+    :class:`ReaderRefused` is what a refused call raises. It is for tests; a
+    review's Read stage is a model stage and :func:`review` is what runs one.
+
 Names
     :data:`RUN_DIRECTORY` and :data:`MANUSCRIPT_DIRECTORY` are the two folders
     inside a run, :data:`RUN_STATUSES` and :data:`COMPLETE_STATUSES` are the
@@ -154,6 +164,7 @@ if TYPE_CHECKING:  # Static tooling sees the real objects, not the fallback.
     from .plugin.starter import review, review_main
     from .runs import NotARunFolder, read_citation_ledger, read_run
     from .runs import locate as locate_run
+    from .scripted import ReaderRefused, ScriptedRead, scripted_read
 
 __all__ = [
     "review",
@@ -173,6 +184,9 @@ __all__ = [
     "write_reports",
     "verify_workspace",
     "export_draft",
+    "scripted_read",
+    "ScriptedRead",
+    "ReaderRefused",
     "plugin_directory",
     "claude_code_version",
     "review_parser",
@@ -234,6 +248,12 @@ _LAZY = {
     "write_reports": (".engine.run_report", "write_reports"),
     "verify_workspace": (".engine.annotations", "verify_workspace"),
     "export_draft": (".engine.annotations", "export_draft"),
+    # The Read stage in code, for a consumer's tests: a fixture holding what
+    # that stage writes, written by the stage. Lazy like the rest, so a
+    # consumer that only reads runs never imports the server for it.
+    "scripted_read": (".scripted", "scripted_read"),
+    "ScriptedRead": (".scripted", "ScriptedRead"),
+    "ReaderRefused": (".scripted", "ReaderRefused"),
 }
 
 

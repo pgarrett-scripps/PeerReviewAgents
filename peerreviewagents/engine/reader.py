@@ -449,7 +449,15 @@ def outstanding(draft):
 
 
 def tally(draft):
-    """How the stage went: pieces by what was done to them, and pages opened."""
+    """How the stage went: pieces by what was done to them, and pages opened.
+
+    ``pieces`` is what the documents hold, counted by the action on each, so it
+    is a count of the manuscript. ``gone`` is the pieces that left it — folded
+    into another piece or withdrawn — counted as they went, by
+    :meth:`Desk.went`, because they are in no document to be walked here. The
+    two do not add up: one fold takes a piece out of ``pieces`` and puts it in
+    ``gone``.
+    """
     counts = {}
     for pieces in draft.get('documents', {}).values():
         for piece in pieces:
@@ -457,7 +465,9 @@ def tally(draft):
             if action:
                 counts[action] = counts.get(action, 0) + 1
     return {'pieces': counts, 'pages_viewed': len(viewed(draft)),
-            'pages': int(draft.get('page_count') or 0)}
+            'pages': int(draft.get('page_count') or 0),
+            'gone': {str(why): int(many)
+                     for why, many in (draft.get('gone') or {}).items() if many}}
 
 
 class Desk:
@@ -657,12 +667,31 @@ class Desk:
                              'would take them out with the debris.')
         return taken
 
-    def shed(self, document, taken):
-        """Take the absorbed pieces out of the document, now something else holds them."""
+    def shed(self, document, taken, why='absorbed'):
+        """Take the folded pieces out of the document, now something else holds them.
+
+        *why* is which count this is: ``absorbed`` for debris folded into the
+        piece it was printed as part of, ``merged`` for the other halves of an
+        equation put back together.
+        """
         dropped = {one.get('piece_id') for one in taken}
         self.draft['documents'][document] = [one for one in self.draft['documents'][document]
                                              if one.get('piece_id') not in dropped]
+        self.went(why, len(dropped))
         return sorted(str(one) for one in dropped)
+
+    def went(self, why, many=1):
+        """Count pieces that have left the manuscript, as they go.
+
+        :func:`tally` walks the pieces the documents still hold, so a piece
+        folded into another or withdrawn is not in it: a stage that folded
+        three headings away left no number anywhere saying it had. These are
+        kept at the act instead, on the draft, which is what survives a claim
+        ending and the next one reading it back.
+        """
+        if many:
+            gone = self.draft.setdefault('gone', {})
+            gone[why] = int(gone.get(why) or 0) + int(many)
 
     # --- the tools --------------------------------------------------------
 
@@ -943,10 +972,13 @@ class Desk:
 
         *absorb* is for the debris that is not inside a paragraph but beside
         it, as a piece of its own that no span can reach. Each piece named
-        there is folded into this re-read and its converter reading is kept on
-        what this call writes — see :meth:`absorb`. Because that is where the
-        reading goes, a re-read that absorbs has to write something the debris
-        can be part of: a table, an equation or a caption.
+        there is folded into this re-read and its converter reading is kept in
+        ``original`` on one of the parts this call writes — the first that is
+        not prose, which is the displayed piece the debris was part of, and not
+        on each part, because one fold is one fold. See :meth:`absorb`.
+        Because that is where the reading goes, a re-read that absorbs has to
+        write something the debris can be part of: a table, an equation or a
+        caption.
         """
         page = self.off_page(page)
         parts = [dict(part or {}) for part in parts]
@@ -974,6 +1006,14 @@ class Desk:
                              'the table, equation or caption the debris belongs to.')
         taken = self.absorb(document, [piece_id], absorb, page, 'reread_piece')
         folded = [absorbed_of(one) for one in taken]
+        # One fold is recorded once, on the part that accounts for it: the
+        # first part of this re-read that is not prose, which is the displayed
+        # piece the debris was printed as part of. Written on every part, the
+        # same folded debris reads to a consumer of the map as one fold per
+        # part — three parts, three copies of one heading — and `part` and
+        # `of` already say the parts are one piece between them.
+        holder = next((at for at, part in enumerate(parts, 1)
+                       if str(part.get('kind') or '') not in PROSE_KINDS), 0) if folded else 0
         written = []
         for at, part in enumerate(parts, 1):
             kind = str(part.get('kind') or '')
@@ -998,7 +1038,7 @@ class Desk:
             made['source'] = 'ai-reconstructed'
             made['original'] = {**original_of(piece), 'piece': piece_id,
                                 'part': at, 'of': len(parts)}
-            if folded:
+            if at == holder:
                 made['original']['absorbed'] = folded
             if len(parts) == 1:
                 made['bbox'] = piece.get('bbox')
@@ -1041,6 +1081,7 @@ class Desk:
                 'reread_piece.')
         self.draft['documents'][document] = [one for one in self.draft['documents'][document]
                                              if one.get('piece_id') != piece_id]
+        self.went('withdrawn')
         unsettled = ''
         if describes:
             try:
@@ -1107,7 +1148,7 @@ class Desk:
         keeper['text'] = latex
         keeper['source'] = 'ai-reconstructed'
         settle(keeper, 'merged', page)
-        removed = self.shed(document, [*halves, *taken])
+        removed = sorted(self.shed(document, halves, 'merged') + self.shed(document, taken))
         self.save()
         return {'piece': keeper['piece_id'], 'removed': removed, 'source': keeper['source'],
                 'text': rendered(keeper), 'replaced': keeper['original'],

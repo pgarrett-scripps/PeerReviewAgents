@@ -2326,7 +2326,8 @@ def seal_manuscript(agent_token: str, note: str = '') -> dict:
     account = {'read': True, 'reader_model': agent.observed or run.models.get('reader'),
                'reader_slot': agent.slot, 'attempt': agent.attempt,
                'pages_viewed': tally['pages_viewed'], 'pages': tally['pages'],
-               'actions': tally['pieces'], 'tool_calls': agent.calls, 'note': note}
+               'actions': tally['pieces'], 'gone': tally['gone'],
+               'tool_calls': agent.calls, 'note': note}
     try:
         manifest = run.seal(ai_read=account)
     except (ValueError, OSError) as exc:
