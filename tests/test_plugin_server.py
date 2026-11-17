@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 
 import pytest
+from manuscripts import seal_converted
 
 from peerreviewagents import issues as issue_model
 from peerreviewagents import names
@@ -51,11 +52,15 @@ def fresh_state():
     srv.STATE['run'] = None
 
 
-def open_run(tmp_path, **kwargs):
+def open_run(tmp_path, seal=True, **kwargs):
     opened = srv.ingest(str(FIXTURE), str(tmp_path / 'run'), **kwargs)
     assert 'request_rejected' not in opened, opened
     CODES.update({row['slot']: row['claim_code'] for row in opened.get('claim_codes', [])})
     CODES['recorder_key'] = opened.get('recorder_key', '')
+    if seal:
+        # ingest leaves a draft, because the Read stage writes the lines. No
+        # model reads anything here, so the run is sealed as converted.
+        seal_converted(opened)
     return opened
 
 
@@ -159,6 +164,48 @@ def test_draft_check_runs_chosen_specialists_and_no_core_track(tmp_path):
 
 def test_an_unknown_arm_is_refused(tmp_path):
     assert 'request_rejected' in srv.ingest(str(FIXTURE), str(tmp_path / 'run'), arm='debate')
+
+
+def test_a_refused_import_is_recorded_so_the_run_report_says_why(tmp_path):
+    """The blocked reason is the server's own words about the manuscript.
+
+    The starter makes the review folder and the workflow calls `ingest` from
+    inside the session, where a rejection goes back to a model and nowhere
+    else. Without this the folder said only that no plan reached the workflow,
+    so a paper the server refused to import — a page the converter lost, an
+    argument it would not take — read as a workflow that assigned no stage.
+    """
+    out = tmp_path / 'run'
+    (out / names.RUN_DIRECTORY).mkdir(parents=True)  # the folder the starter makes
+    refused = srv.ingest(str(FIXTURE), str(out), arm='debate')
+    assert 'request_rejected' in refused
+
+    recorded = json.loads((out / names.RUN_DIRECTORY / 'progress.json')
+                          .read_text(encoding='utf-8'))
+    assert recorded['status'] == 'blocked'
+    assert recorded['error'] == refused['request_rejected']
+    run = read_run(out)
+    assert run['status'] == 'blocked'
+    assert run['cause'] == refused['request_rejected']
+
+
+def test_a_refusal_before_the_folder_exists_still_leaves_nothing_behind(tmp_path):
+    """An argument no run can be made from is not a run that stopped."""
+    assert 'request_rejected' in srv.ingest(str(FIXTURE), str(tmp_path / 'run'), arm='debate')
+    assert not (tmp_path / 'run').exists()
+
+
+def test_a_refusal_leaves_a_run_s_own_stage_ledger_alone(tmp_path):
+    """A folder another process is serving keeps its progress file."""
+    open_run(tmp_path)
+    standing = tmp_path / 'run' / names.RUN_DIRECTORY / 'progress.json'
+    before = standing.read_text(encoding='utf-8')
+    assert 'stages' in json.loads(before), 'this test is not looking at a run ledger'
+    srv.STATE['run'] = None  # a fresh server process, pointed at the same folder
+    other = tmp_path / 'other.pdf'
+    other.write_bytes(FIXTURE.read_bytes() + b'\n% a different file\n')
+    assert 'request_rejected' in srv.ingest(str(other), str(tmp_path / 'run'))
+    assert standing.read_text(encoding='utf-8') == before
 
 
 def test_a_second_ingest_of_the_same_folder_attaches_to_the_run(tmp_path):
@@ -593,6 +640,8 @@ def test_a_revision_shares_no_finding_uid_with_the_run_it_revises(tmp_path):
     opened = srv.ingest(str(revision), str(tmp_path / 'second' / 'run'), arm='single')
     assert 'request_rejected' not in opened, opened
     CODES.update({row['slot']: row['claim_code'] for row in opened.get('claim_codes', [])})
+    CODES['recorder_key'] = opened.get('recorder_key', '')
+    seal_converted(opened)
     again = srv.current()
     assert quote_from(again) == (line, quote), 'the revision was meant to read the same'
     after = srv.submit_finding(token_for('core-1'), title='The sample size is unclear',

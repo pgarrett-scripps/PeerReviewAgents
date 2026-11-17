@@ -48,7 +48,6 @@ from ..engine.storage import digest, read, write
 from ..names import BLOCKED, COMPLETE_STATUSES, FINDING_SCHEMA_VERSION
 from . import models as model_plan
 from .server import (
-    AI_READ_ENVIRONMENT,
     ARMS,
     CITATION_WORKERS,
     DEFAULT_ARM,
@@ -824,7 +823,7 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
            wall_timeout=WALL_TIMEOUT, directory=None, cwd=None,
            reviewer_models=None, specialist_model=None, editor_model=None,
            recorder_model=None, citation_workers=CITATION_WORKERS, citation_worker_model=None,
-           reader_model=None, ai_read=True, prior_issues=None):
+           reader_model=None, prior_issues=None):
     """Run one review and return its summary.
 
     The summary is a dict, not an exit code: ``status``, ``blocked_reason``,
@@ -847,10 +846,9 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
 
     ``reader_model`` is the model that reads the manuscript against its own
     page images before the reviewers see it — repairing the equations and
-    tables the converter garbled, describing the figures it could only name —
-    and ``ai_read`` is whether one reads at all. With ``ai_read`` false the
-    manuscript is sealed as converted and its manifest says it was not AI-read:
-    that is a different manuscript to review, so the two are never pooled.
+    tables the converter garbled, describing the figures it could only name.
+    Every review of a PDF has that stage; there is no way to review the
+    converter's text on its own.
 
     Anything not given here falls
     back to the ``PEERREVIEW_*_MODEL(S)`` variables in this process's
@@ -918,13 +916,10 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     # reading the empty list as "no lane" is what sent the session off to plan
     # the server's default four.
     citation_lane = bool(citation_slots(arm, 1, tracks))
-    # The reader is planned here too, and only where one runs: a login that
-    # cannot run the reader model is refused before the probe spends anything,
-    # and a run told to seal as converted is not refused over a model it will
-    # never ask for.
-    reader_slots = ('reader',) if ai_read else ()
+    # The reader is planned here too, so a login that cannot run the reader
+    # model is refused before the probe spends anything.
     wanted = model_plan.assign(
-        (*reader_slots, *plan_slots(arm, reviewers, tracks), *workers, 'recorder'), **settled)
+        ('reader', *plan_slots(arm, reviewers, tracks), *workers, 'recorder'), **settled)
     model_plan.refuse(wanted)
     # A variable that outranks the per-spawn override makes every slot one
     # model while the run records the plan. Refused, never unset: the variable
@@ -933,12 +928,6 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     if outranked:
         raise ValueError(outranked)
     chosen = model_plan.to_environment(**settled)
-    if not ai_read:
-        # Carried as a variable rather than as a sentence in the prompt: a run
-        # without a reader is a setting of the run, and the server reads it the
-        # same way it reads the models — not something a session could decide
-        # differently from the launcher that planned it.
-        chosen[AI_READ_ENVIRONMENT] = '0'
     review_dir.mkdir(parents=True, exist_ok=True)
     supersede(review_dir)
 
@@ -968,11 +957,19 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     result = accounting.last_result()
     recorded = recorded_progress(review_dir)
     written = str(recorded.get('status') or '') in COMPLETE_STATUSES
+    recorded_cause = str(recorded.get('error') or '') or None
     blocked = None
     if accounting.rate_limits:
         blocked = accounting.rate_limits[-1]['reason']
     elif stop and stop not in SETTLED:
         blocked = stop
+    elif recorded_cause and not written:
+        # The server's own words for why the run stopped — the manuscript it
+        # refused to import, the stage it marked blocked — rather than the
+        # session's exit, which is often only the consequence of them. A
+        # workflow that cannot open a run ends its turn badly; what the user
+        # needs to read is why the paper was refused.
+        blocked = recorded_cause
     elif result and result.get('is_error') and not written:
         # The orchestrating session's own turn ending badly is not the review
         # failing, because the review outlives that turn: it is a cause only
@@ -1081,10 +1078,6 @@ def build_parser(prog='peerreview review'):
                              'before the reviewers, repairing the equations and tables the '
                              'converter garbled and describing the figures (default: '
                              + model_plan.DEFAULT_READER_MODEL + ')')
-    parser.add_argument('--no-ai-read', dest='ai_read', action='store_false',
-                        help='seal the manuscript as the converter produced it: no reader, '
-                             'mangled equations left as they are and no figure descriptions. '
-                             'The manifest says the paper was not AI-read.')
     parser.add_argument('--prior-issues', default=None, metavar='PATH',
                         help="an earlier round's issues.json, or the run folder holding it: "
                              'the editor matches this round against it, keeps the matched ids '
@@ -1132,7 +1125,7 @@ def review_main(argv=None, prog='peerreview review'):
                          recorder_model=args.recorder_model,
                          citation_workers=args.citation_workers,
                          citation_worker_model=args.citation_worker_model,
-                         reader_model=args.reader_model, ai_read=args.ai_read,
+                         reader_model=args.reader_model,
                          prior_issues=args.prior_issues)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)

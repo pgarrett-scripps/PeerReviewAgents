@@ -39,7 +39,6 @@ written by the engine rather than by hand.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 from . import names
@@ -216,26 +215,12 @@ def scripted_read(paper, folder, pieces=(), *, title='', reviewers=1, arm='singl
     write(workspace / DRAFT_FILE, draft)
     held = srv.STATE['run']
     srv.STATE['run'] = None
-    # The one setting this touches, and only across the import: the
-    # environment can turn a reader off, so that a workflow cannot put one
-    # back into a run its user said to do without. A caller of this function
-    # is not that workflow — it is the reader — and a run with no Read stage
-    # has nothing for it to drive.
-    said = os.environ.pop(srv.AI_READ_ENVIRONMENT, None)
-    try:
-        opened = srv.ingest(str(paper), str(folder), reviewers=reviewers, arm=arm,
-                            title=title, ai_read=True, **plan)
-    finally:
-        if said is not None:
-            os.environ[srv.AI_READ_ENVIRONMENT] = said
+    opened = srv.ingest(str(paper), str(folder), reviewers=reviewers, arm=arm,
+                        title=title, **plan)
     if 'request_rejected' in opened:
         srv.STATE['run'] = held
         raise ReaderRefused('ingest', opened)
     codes = {row['slot']: row['claim_code'] for row in opened.get('claim_codes') or []}
-    if 'reader' not in codes:
-        srv.STATE['run'] = held
-        raise ReaderRefused('ingest', {'request_rejected': 'This run has no Read stage, so there '
-                                       'is no reader slot to claim.', 'slots': sorted(codes)})
     taken = srv.claim_agent('reader', codes['reader'])
     if 'request_rejected' in taken:
         srv.STATE['run'] = held

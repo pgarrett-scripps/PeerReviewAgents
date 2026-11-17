@@ -318,6 +318,6 @@ tell them which.
 python scripts/spot/fetch.py --root ~/pra-spot            # fetch and verify
 python scripts/spot/check.py --root ~/pra-spot --verify   # re-check the anchors
 peerreview review ~/pra-spot/papers/<slug>.pdf ~/pra-spot/runs/<slug> \
-    --arm full-two-track --reviewers 3 --per-run-tokens 1200000
+    --arm full-two-track --reviewers 3 --per-run-tokens 2000000
 python scripts/spot/score.py --root ~/pra-spot --all      # score every run
 ```

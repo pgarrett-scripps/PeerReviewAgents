@@ -23,6 +23,27 @@ from __future__ import annotations
 
 from peerreviewagents import read_manuscript, write_manuscript
 from peerreviewagents.engine.storage import write
+from peerreviewagents.plugin import server as srv
+
+#: Why a test's manuscript was sealed with nothing read. The reason reaches the
+#: manifest, so it says what it is rather than naming a test.
+NOTHING_READ = 'no model reads anything in this suite, so the draft is sealed as converted'
+
+
+def seal_converted(opened):
+    """Seal a freshly ingested run as converted, and return the server's answer.
+
+    Every PDF review plans a Read stage, and ``ingest`` leaves the manuscript a
+    draft: there is no paper.md and no line to cite until a reader seals it. No
+    test here runs a model, so a test about anything downstream of the seal
+    writes the lines the one other way a run can — the recorder's
+    ``seal_as_converted``, the path a run takes when its reader failed. The
+    Read stage's own tests drive the reader's tools instead, and
+    ``peerreviewagents.scripted_read`` is that path for an application's tests.
+    """
+    sealed = srv.seal_as_converted(opened['recorder_key'], reason=NOTHING_READ)
+    assert 'request_rejected' not in sealed, sealed
+    return sealed
 
 
 def build_base(folder, pieces, documents=None, references=None, manifest=None, ai_model=''):

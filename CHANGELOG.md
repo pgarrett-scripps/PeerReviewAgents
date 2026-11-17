@@ -158,11 +158,16 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   `paper-base-v1` is refused by name, since nothing in it says which pieces
   were the converter's own. Supplements go through the same stage under the same
   rules, as documents of their own.
-  **Running without a reader is one setting, not a fallback path**:
-  `--no-ai-read`, `PEERREVIEW_AI_READ=0` or `ai_read=false` on `ingest` seals
-  the draft as converted, with today's garbled-equation markers and no figure
-  described, and `manifest['ai_read']` is `{"read": false, "reason": …}`. A
-  reader that fails twice ends the same way, through the recorder's new
+  **Every PDF review runs the stage, and there is no way to turn it off**:
+  the reader is planned with every other slot, and a paper with a page the
+  converter returned nothing from cannot be imported at all without a reader
+  to transcribe that page — measured on the exosome paper, whose page 8 the
+  converter loses. Reader-on and reader-off runs over three papers caught the
+  same known problems, so one path is kept rather than two manuscripts that
+  cannot be pooled. A manuscript sealed from the converter's own text, with
+  today's garbled-equation markers, no figure described and
+  `manifest['ai_read']` as `{"read": false, "reason": …}`, is now reached only
+  by a reader that fails twice, through the recorder's new
   `seal_as_converted`; one code path writes the base either way, so a run never
   holds a half-written manuscript. `write_manuscript` from an app needs no
   reader and seals at once, as it did before — an app that parses its own Typst
@@ -329,13 +334,21 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   run whose Read stage stopped partway from one that never imported a paper
   without looking for `draft.json`, which is this package's working file and
   not part of the folder a consumer is promised. `sealed-without-read` is the
-  one state that covers three roads to the same folder — `--no-ai-read`, a
-  reader that failed and sealed as converted, and an application's own source
-  through `write_manuscript` — and `reason` is the manifest's own words for
-  which of them it was.
+  one state that covers two roads to the same folder — a reader that failed and
+  sealed as converted, and an application's own source through
+  `write_manuscript` — and `reason` is the manifest's own words for which of
+  them it was.
 
 ### Fixed
 
+- **A run refused at the import says why it was refused.** `ingest` now
+  records the server's own refusal in the run folder's `progress.json`, and the
+  starter reads a recorded cause ahead of the session's exit, so a manuscript
+  the engine would not import — a page the converter lost, a model the login
+  cannot run — reaches `blocked_reason` in those words. The summary used to say
+  only that the session had ended in an error, or that the workflow had
+  returned no plan, while the refusal survived nowhere but the orchestrating
+  model's own prose.
 - **`scripts/spot/score.py --out` appends, as its help always said it did.** It
   wrote the file, so scoring the second arm of a comparison left one line where
   two scorings had happened and the first arm's row was gone.

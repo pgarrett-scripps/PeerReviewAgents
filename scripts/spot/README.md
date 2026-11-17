@@ -80,11 +80,17 @@ reader-written evidence.
 python scripts/spot/fetch.py --root ~/pra-spot            # fetch and verify
 python scripts/spot/check.py --root ~/pra-spot --verify   # re-check the anchors
 peerreview review ~/pra-spot/papers/<slug>.pdf ~/pra-spot/runs/<slug> \
-    --arm full-two-track --reviewers 3 --per-run-tokens 1200000
+    --arm full-two-track --reviewers 3 --per-run-tokens 2000000
 python scripts/spot/score.py ~/pra-spot/runs/cmp-antenna-on \
     --slug network-beamforming                            # score one run
 python scripts/spot/score.py --root ~/pra-spot --all      # score every run
 ```
+
+The ceiling in that command is the pilot's, not the library's: the default
+`--per-run-tokens` is 6,000,000. A three-reviewer `full-two-track` run with the
+Read stage spent 926k–976k tokens over the SPOT papers, and the one run capped
+at 1,200,000 hit the cap in its last stage, so the pilot asks for 2,000,000 —
+about twice the largest run measured, and still a cap a runaway would hit.
 
 A run folder's name is whatever the person who made the run chose — a
 comparison makes one folder per arm, `cmp-antenna-on` and `cmp-antenna-off` —
