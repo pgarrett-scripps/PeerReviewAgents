@@ -238,8 +238,24 @@ A URL is cloned shallow, with hooks and submodules off. Either way the **text**
 of the code is snapshotted into `<run>/code/` — source, configuration, notebooks
 and documentation, skipping binaries, data files and anything over the size caps
 — beside a manifest naming the origin, the commit, every file taken with its
-digest, and every file left out with the reason. The snapshot is what the review
+digest, and everything left out with the reason. The snapshot is what the review
 reads, so the finding you get back cites code that is still there a year later.
+
+Three rules about what lands there, because a snapshot nobody can describe is
+not evidence:
+
+- **A notebook is stored as its cells**, code and markdown in order, each marked
+  with its cell number, every output dropped — and the size cap is applied to
+  those cells, not to the megabytes of base64 a single figure puts in the file.
+  Code evidence cites lines of that stored form.
+- **Nothing that may hold secrets is copied.** `.env` and `*.env`, keys and
+  certificates, `credentials*`, `secrets*`, `.netrc`, `.npmrc`, `.pypirc` are
+  skipped by name, with that as the reason. The snapshot is served to a model,
+  so a credential copied into it is a credential handed out.
+- **What was never looked at is named once.** A folder the walk refuses —
+  `node_modules`, `data`, `.git` — and a symbolic link out of the snapshot are
+  each one row of the manifest rather than none, so "the code never does that"
+  is never read off a tree nobody opened.
 
 The lane's three tools list, read and search that snapshot and nothing else.
 None of them executes anything, reaches the network, or can name a path outside

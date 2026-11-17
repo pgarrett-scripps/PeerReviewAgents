@@ -206,10 +206,12 @@ def test_the_snapshot_holds_the_text_source_and_names_what_it_left_out(tmp_path,
     skipped = {one['path']: one['reason'] for one in manifest['skipped']}
     assert 'not text source: .csv' in skipped['measurements.csv']
     assert 'not text source: .dat' in skipped['notes.dat']
-    # A folder that holds data is never walked at all, so its files are
-    # neither copied nor listed one by one: a directory of ten thousand
-    # readings would otherwise be ten thousand rows of manifest.
+    # A folder that holds data is never walked into, so it is one row of the
+    # manifest and its files are neither copied nor listed one by one: a
+    # directory of ten thousand readings would otherwise be ten thousand rows.
+    assert skipped['data'] == code_source.DIRECTORY_REASON
     assert 'data/every-reading.csv' not in skipped and 'data/every-reading.csv' not in copied
+    assert [one['path'] for one in manifest['skipped']] == sorted(skipped)
     assert manifest['counts']['files'] == 4
     assert manifest['truncated'] == ''
     assert json.loads((taken / code_source.MANIFEST_FILE).read_text(
@@ -250,6 +252,132 @@ def test_a_cap_that_cuts_the_snapshot_short_says_so(tmp_path, code_folder):
                                limits={'max_file_bytes': 40})
     left = {one['path']: one['reason'] for one in big['skipped']}
     assert 'larger than 40 bytes' in left['analysis/pipeline.py']
+
+
+def notebook(cells, outputs=True):
+    """A notebook as a notebook is on disk: cells, and the kernel's answers."""
+    held = {'nbformat': 4, 'nbformat_minor': 5, 'metadata': {}, 'cells': []}
+    for kind, source in cells:
+        cell = {'cell_type': kind, 'metadata': {}, 'source': source.splitlines(keepends=True)}
+        if kind == 'code':
+            cell['execution_count'] = 1
+            cell['outputs'] = ([{'output_type': 'display_data',
+                                 'data': {'image/png': 'iVBORw0KGgo' + 'A' * 400},
+                                 'metadata': {}}] if outputs else [])
+        held['cells'].append(cell)
+    return json.dumps(held, indent=1)
+
+
+def test_a_notebook_is_snapshotted_as_its_cells_and_not_as_its_outputs(tmp_path):
+    """Much analysis lives in notebooks, and none of it lives in the outputs.
+
+    Raw, a notebook with one figure in it is megabytes of base64 around a
+    dozen lines of code: over the file cap, so skipped, and under it, served
+    as JSON noise. So the snapshot stores the cells — in order, each marked
+    with its own number, every output dropped — and the file cap is applied to
+    those cells rather than to the file they were in.
+    """
+    folder = write_code(tmp_path / 'notebook-code', {
+        'analysis/fit.ipynb': notebook([
+            ('markdown', '# Fitting the curve\n'),
+            ('code', 'import numpy as np\n\nFDR_THRESHOLD = 0.01\n'),
+        ]),
+        'requirements.txt': 'numpy==1.26.4\n',
+    })
+    raw = (folder / 'analysis' / 'fit.ipynb').stat().st_size
+    manifest = code_source.snapshot(str(folder), tmp_path / 'snapshot',
+                                    limits={'max_file_bytes': raw // 2})
+
+    row = next(one for one in manifest['files'] if one['path'] == 'analysis/fit.ipynb')
+    assert row['extracted'] == 'notebook cells', 'the manifest does not say it was extracted'
+    assert row['bytes'] < raw // 2, 'the cap was applied to the file, not to the cells kept'
+    stored = (tmp_path / 'snapshot' / code_source.FILES_DIRECTORY
+              / 'analysis' / 'fit.ipynb').read_text(encoding='utf-8')
+    assert stored == (
+        '# %% notebook cell 1 (markdown)\n'
+        '# Fitting the curve\n'
+        '\n'
+        '# %% notebook cell 2 (code)\n'
+        'import numpy as np\n'
+        '\n'
+        'FDR_THRESHOLD = 0.01\n')
+    assert 'iVBORw0KGgo' not in stored and 'execution_count' not in stored
+    assert row['lines'] == len(stored.splitlines())
+
+    # And the lines a finding would cite are the lines of the cells, which is
+    # what read_code serves and says it is serving.
+    desk = code_source.CodeDesk(tmp_path / 'snapshot')
+    served = desk.read_code('analysis/fit.ipynb')
+    assert served['extracted'] == 'notebook cells'
+    assert '7\tFDR_THRESHOLD = 0.01' in served['text']
+    assert desk.verify('analysis/fit.ipynb', 7, 7, 'FDR_THRESHOLD = 0.01')['end_line'] == 7
+
+
+def test_a_notebook_is_skipped_only_for_its_cells_or_for_not_parsing(tmp_path):
+    folder = write_code(tmp_path / 'notebook-code', {
+        'analysis/long.ipynb': notebook([('code', 'x = 1\n' * 400)], outputs=False),
+        'analysis/broken.ipynb': '{"cells": [',
+        'analysis/empty.ipynb': '{"nbformat": 4, "cells": []}',
+        'requirements.txt': 'numpy==1.26.4\n',
+    })
+    manifest = code_source.snapshot(str(folder), tmp_path / 'snapshot',
+                                    limits={'max_file_bytes': 500})
+    left = {one['path']: one['reason'] for one in manifest['skipped']}
+    assert 'even with its outputs dropped' in left['analysis/long.ipynb']
+    assert left['analysis/broken.ipynb'].startswith('not a readable notebook')
+    assert 'no code or markdown cells' in left['analysis/empty.ipynb']
+    assert [one['path'] for one in manifest['files']] == ['requirements.txt']
+
+
+def test_a_file_that_may_hold_secrets_is_never_copied_into_the_run_folder(tmp_path):
+    """A repository with a deployment key in it is common. The snapshot is
+    served to a model, so a credential copied into it is a credential handed
+    out — and these are skipped by name, said plainly, so a reviewer can tell
+    "there is no configuration here" from "it was not copied in".
+    """
+    secrets = {
+        '.env': 'API_TOKEN=live-token\n',
+        'prod.env': 'API_TOKEN=live-token\n',
+        '.env.production': 'API_TOKEN=live-token\n',
+        'deploy/server.pem': '-----BEGIN PRIVATE KEY-----\n',
+        'deploy/signing.key': 'kkkk\n',
+        'deploy/id_rsa': 'ssh-rsa\n',
+        'deploy/id_ed25519.pub': 'ssh-ed25519 AAAA\n',
+        'credentials.json': '{"token": "live-token"}\n',
+        'secrets.yaml': 'token: live-token\n',
+        '.netrc': 'machine example.com login t password p\n',
+        '.npmrc': '//registry.npmjs.org/:_authToken=live\n',
+        '.pypirc': '[pypi]\npassword = live\n',
+    }
+    folder = write_code(tmp_path / 'leaky-code', {**secrets, 'run.py': 'print(1)\n'})
+    manifest = code_source.snapshot(str(folder), tmp_path / 'snapshot')
+
+    assert [one['path'] for one in manifest['files']] == ['run.py']
+    left = {one['path']: one['reason'] for one in manifest['skipped']}
+    for path in secrets:
+        assert left.get(path) == code_source.SECRET_REASON, path
+    copied = tmp_path / 'snapshot' / code_source.FILES_DIRECTORY
+    assert not list(copied.rglob('*.pem')) and not (copied / '.env').exists()
+    assert 'live-token' not in '\n'.join(
+        path.read_text(encoding='utf-8') for path in copied.rglob('*') if path.is_file())
+
+
+def test_a_vendored_folder_or_a_link_is_left_out_once_and_said_once(tmp_path):
+    """What was not looked at, named once each rather than file by file."""
+    folder = write_code(tmp_path / 'linked-code')
+    vendored = folder / 'node_modules' / 'left-pad'
+    vendored.mkdir(parents=True)
+    (vendored / 'index.js').write_text('module.exports = 1\n', encoding='utf-8')
+    (folder / 'elsewhere.py').symlink_to(tmp_path / 'outside.py')
+    (folder / 'linked-tree').symlink_to(tmp_path, target_is_directory=True)
+
+    manifest = code_source.snapshot(str(folder), tmp_path / 'snapshot')
+    left = {one['path']: one['reason'] for one in manifest['skipped']}
+    assert left['node_modules'] == code_source.DIRECTORY_REASON
+    assert 'node_modules/left-pad' not in left
+    assert left['elsewhere.py'] == code_source.LINK_REASON
+    assert left['linked-tree'] == code_source.LINK_REASON
+    assert not [row for row in manifest['files'] if 'node_modules' in row['path']]
 
 
 def test_code_that_cannot_be_reviewed_is_refused_rather_than_reviewed_empty(tmp_path):
@@ -355,7 +483,7 @@ def test_the_code_tools_read_the_snapshot_and_nothing_outside_it(tmp_path, code_
     listed = srv.list_code(token)
     assert listed['files_in_snapshot'] == 4
     assert {row['path'] for row in listed['files']} >= {'analysis/pipeline.py'}
-    assert listed['skipped_count'] == len(listed['skipped']) == 2
+    assert listed['skipped_count'] == len(listed['skipped']) == 3
     assert listed['truncated'] == ''
     assert srv.list_code(token, path='analysis')['count'] == 2
 
@@ -526,7 +654,12 @@ def test_the_run_reports_which_code_was_reviewed_and_how_much_was_opened(tmp_pat
     assert re.fullmatch(r'[0-9a-f]{40}', read['commit']) and read['branch'] == 'trunk'
     assert read['dirty'] is False
     assert Path(read['snapshot']) == run.root / 'code'
-    assert read['files_in_snapshot'] == 4 and read['files_skipped'] == 2
+    # Four paths left out: two files, the data folder, and this checkout's own
+    # `.git` — every folder the walk refuses is one row, with no second rule
+    # deciding which of them are worth saying.
+    assert read['files_in_snapshot'] == 4 and read['files_skipped'] == 4
+    assert {one['path'] for one in read['manifest']['skipped']} == {
+        '.git', 'data', 'measurements.csv', 'notes.dat'}
     assert read['truncated'] == ''
     assert read['files_opened'] == ['analysis/pipeline.py'] and read['opened'] == 1
     assert read['manifest']['origin']['source'] == str(code_folder.resolve())
@@ -545,7 +678,7 @@ def test_the_run_reports_which_code_was_reviewed_and_how_much_was_opened(tmp_pat
     assert str(tmp_path) not in said
     assert read['commit'][:12] in said
     assert '1 of 4 file(s) opened' in said
-    assert '2 file(s) left out of the snapshot' in said
+    assert '4 path(s) left out of the snapshot' in said
 
 
 def test_a_run_given_no_code_says_the_code_was_not_reviewed(tmp_path):

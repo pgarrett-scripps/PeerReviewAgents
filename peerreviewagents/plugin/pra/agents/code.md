@@ -30,13 +30,21 @@ starts in the code ends up reviewing the code, which nobody asked for.
 
 `list_code` is the inventory: every file of the code the review was given, with
 its line count, plus what was left out and why. **Read the skipped list and the
-`truncated` flag.** A file the snapshot skipped — a binary, a data file, one
-over the size cap — is a file you have not seen, and "the code never does that"
-is not something you may conclude from a snapshot that left files out.
+`truncated` flag.** A path the snapshot skipped — a binary, a data file, one
+over the size cap, one that may hold secrets, or a whole folder it never walked
+into, listed once by its own name — is code you have not seen, and "the code
+never does that" is not something you may conclude from a snapshot that left
+things out.
 
 `search_code` finds a number, a name or a pattern by line. `read_code` serves
 one file as numbered lines, in parts. The numbers are the file's own and they
 are what your findings cite.
+
+A notebook is in the snapshot as its cells, not as the JSON it is on disk:
+code and markdown in order, each cell beginning at a `# %% notebook cell N`
+line, with every output dropped. `extracted` on the file says so. The line
+numbers are that text's, so cite them as you would any other file's, and say
+which cell it was when it helps a reader find it.
 
 Nothing you call runs anything. There is no interpreter, no network, no path
 out of the snapshot: you are reading text.

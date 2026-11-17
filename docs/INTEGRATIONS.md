@@ -521,9 +521,9 @@ keys.
 | `kind`, `source` | `git-clone` or `folder`, and where it came from as the caller named it: the URL for a clone, the resolved path for a folder |
 | `commit`, `branch`, `dirty` | the state the code was in. `dirty` is `None` for a snapshot of something that is not a repository |
 | `snapshot` | the absolute path of `<run>/code/`, which holds `manifest.json` and the text under `files/` |
-| `files_in_snapshot`, `files_skipped` | what was taken, and what was left out — a binary, a data file, one over the size caps |
+| `files_in_snapshot`, `files_skipped` | what was taken, and how many paths were left out — a binary, a data file, one over the size caps, one that may hold secrets, or a whole folder or symbolic link never walked into, which each count once |
 | `truncated` | why the snapshot stopped early, in words; empty for one that holds the whole of what it was pointed at |
-| `manifest` | the snapshot's own manifest, which names every file either way, with a digest per file taken and a reason per file skipped |
+| `manifest` | the snapshot's own manifest, which names everything either way, with a digest per file taken and a reason per path skipped |
 | `files_opened`, `opened`, `searches` | what a reviewer actually did with it |
 
 The last row is the one worth printing beside the first. A lane that opened no
@@ -536,6 +536,14 @@ A finding from that lane carries `code_evidence` — `path`, `start_line`,
 that text at those lines in the snapshot before it stored the finding, and
 refused it outright otherwise. The paper quote is there as on every other
 finding, anchored the same way, so highlighting one is unchanged.
+
+`path` names a file of the snapshot, and the lines are that file's lines as the
+snapshot holds them. For a notebook they are lines of the extracted cells, not
+of the JSON: the manifest row and `read_code` both carry `extracted`
+(`"notebook cells"`, or empty for a file stored as it is), and a `# %% notebook
+cell N (code)` marker in the text is where each cell begins. An application
+showing code evidence reads it out of `<run>/code/files/<path>`, which is the
+text the lines were counted in.
 
 #### Highlighting a citation
 

@@ -10,8 +10,11 @@ repository.
 
 So the code is copied in once, at the import, and never executed. What lands
 in the run folder is text source and nothing else: a suffix allowlist, a skip
-list for the folders that hold dependencies and data, and three caps — per
-file, in total, and in number of files. :func:`snapshot` writes that copy
+list for the folders that hold dependencies and data, a name rule that keeps
+out the files that hold credentials, and three caps — per file, in total, and
+in number of files. A notebook is stored as its cells, because the outputs in
+one are both most of its bytes and none of its method.
+:func:`snapshot` writes that copy
 under ``<run>/code/files`` and a ``manifest.json`` beside it recording where
 the code came from, which commit it was, every file included with its hash and
 line count, and every file skipped with the reason. A reader of the run can
@@ -34,6 +37,8 @@ content it copies.
 
 from __future__ import annotations
 
+import fnmatch
+import json
 import os
 import re
 import shutil
@@ -66,9 +71,40 @@ TEXT_SUFFIXES = (
     '.js', '.jsx', '.ts', '.tsx', '.sh', '.bash', '.zsh', '.pl', '.rb', '.lua',
     '.sql', '.f', '.f90', '.for',
     '.toml', '.cfg', '.ini', '.yaml', '.yml', '.json', '.txt', '.md', '.rst',
-    '.tex', '.bib', '.nf', '.smk', '.snakefile', '.cmake', '.mk', '.env',
+    '.tex', '.bib', '.nf', '.smk', '.snakefile', '.cmake', '.mk',
     '.ipynb',
 )
+
+#: The notebook suffix, handled on its own: a notebook is JSON holding cells,
+#: and what this snapshot stores is :func:`notebook_source` of it.
+NOTEBOOK_SUFFIX = '.ipynb'
+
+#: Names never copied, whatever their suffix, because of what they hold rather
+#: than what kind of file they are. A repository with a ``prod.env`` or a
+#: deployment key in it is common, and copying one into the run folder would
+#: put a live credential in a file a model is then served. The patterns are
+#: matched against the lowercased file name with :mod:`fnmatch`, and a match is
+#: skipped with the reason :data:`SECRET_REASON` — said plainly, because a
+#: reviewer has to be able to tell "there is no configuration here" from "the
+#: configuration was not copied in".
+SECRET_PATTERNS = (
+    '.env', '*.env', '.env.*', '.netrc', '_netrc', '.npmrc', '.pypirc',
+    '.pgpass', '.htpasswd', '.git-credentials', '.dockercfg',
+    'credentials*', 'secrets*', 'secret', 'secret.*',
+    '*.pem', '*.key', '*.pfx', '*.p12', '*.jks', '*.keystore', '*.ppk',
+    '*.crt', '*.cer', '*.der', '*.asc', '*.gpg', '*.kdbx',
+    'id_rsa*', 'id_dsa*', 'id_ecdsa*', 'id_ed25519*',
+    '*_rsa', '*_rsa.pub', '*_dsa', '*_ecdsa', '*_ed25519', '*_ed25519.pub',
+)
+
+#: Why a :data:`SECRET_PATTERNS` match is not in the snapshot.
+SECRET_REASON = 'may hold secrets'
+
+#: Why a folder, or a symbolic link, is not in the snapshot. Each is recorded
+#: once — the folder, not every file under it — so the record says what was
+#: never looked at without listing a dependency tree file by file.
+DIRECTORY_REASON = 'not looked at: a folder this snapshot does not walk into'
+LINK_REASON = 'not looked at: a symbolic link out of the snapshot'
 
 #: Files copied in whatever their suffix, because a build or a pipeline is
 #: often in a file that has none.
@@ -101,6 +137,20 @@ SKIPPED_DIRECTORIES = (
 MAX_FILE_BYTES = 200_000
 MAX_TOTAL_BYTES = 8_000_000
 MAX_FILES = 600
+
+#: The one cap that is read off the file on disk rather than off the text
+#: stored. A notebook holding a figure is megabytes of base64 and a few
+#: hundred lines of code, so ``max_file_bytes`` is applied to the cells
+#: :func:`notebook_source` keeps and not to the file they were in — which
+#: would skip the analysis for the size of its own output. This is the ceiling
+#: on the file that is parsed to get there.
+MAX_NOTEBOOK_BYTES = 20_000_000
+
+#: The line a cell is marked with in the text a notebook is stored as. The
+#: ``# %%`` is the cell convention a person reading a notebook as a script
+#: already knows, and the number is the cell's own, so code evidence citing a
+#: line of the stored text can be read back to a cell of the notebook.
+CELL_MARK = '# %% notebook cell {number} ({kind})'
 
 #: How many lines :meth:`CodeDesk.read_code` serves in one part, and how long a
 #: line is served before it is clipped. A file is read in parts for the same
@@ -208,13 +258,61 @@ def _git_state(folder):
     }
 
 
+def _secret(name):
+    """Whether a file name is one :data:`SECRET_PATTERNS` keeps out."""
+    low = str(name).lower()
+    return any(fnmatch.fnmatch(low, pattern) for pattern in SECRET_PATTERNS)
+
+
 def _wanted(path):
-    """Whether one file is text source this snapshot copies, or why it is not."""
+    """Whether one file is text source this snapshot copies, or why it is not.
+
+    The secret-name rule is first, so a ``prod.env`` is left out for what it
+    holds rather than kept for what it looks like.
+    """
+    if _secret(path.name):
+        return SECRET_REASON
     if path.name in TEXT_NAMES:
         return None
     if path.suffix in TEXT_SUFFIXES:
         return None
     return 'not text source: ' + (path.suffix or 'no suffix')
+
+
+def notebook_source(raw):
+    """The cells of a notebook as text: code and markdown in order, no outputs.
+
+    A notebook is JSON, and the JSON is mostly output — execution counts,
+    stream text, base64 images. Stored raw it is noise a reviewer reads instead
+    of the analysis, and usually too large to store at all. So what the
+    snapshot keeps is the cells: each one marked with :data:`CELL_MARK` and its
+    number, its source as the author wrote it, and nothing the kernel wrote
+    back.
+
+    Raises :class:`ValueError` naming the reason when *raw* is not a notebook
+    this can read, which is how the walk comes to skip it.
+    """
+    try:
+        held = json.loads(raw)
+    except ValueError as exc:
+        raise ValueError('not a readable notebook: ' + str(exc)) from exc
+    cells = held.get('cells') if isinstance(held, dict) else None
+    if not isinstance(cells, list):
+        raise ValueError('not a readable notebook: it holds no list of cells')
+    pieces = []
+    for number, cell in enumerate(cells, start=1):
+        if not isinstance(cell, dict):
+            continue
+        kind = str(cell.get('cell_type') or '')
+        if kind not in ('code', 'markdown', 'raw'):
+            continue
+        source = cell.get('source')
+        body = (''.join(str(one) for one in source) if isinstance(source, list)
+                else str(source or ''))
+        pieces.append(CELL_MARK.format(number=number, kind=kind) + '\n' + body.rstrip('\n'))
+    if not pieces:
+        raise ValueError('not a readable notebook: it holds no code or markdown cells')
+    return '\n\n'.join(pieces) + '\n'
 
 
 def _text(data):
@@ -228,21 +326,35 @@ def _text(data):
 
 
 def _walk(root):
-    """Every file under *root* that is not inside a skipped folder, sorted.
+    """The files under *root* to consider, and what was never looked at.
 
-    Symbolic links are not followed, for files or directories: a link is a
-    path into somewhere this snapshot was not given.
+    Returns ``(files, left_out)``. Symbolic links are not followed, for files
+    or directories: a link is a path into somewhere this snapshot was not
+    given. A skipped folder and a link are each recorded once, by their own
+    path rather than by the files inside them, so the record can say what was
+    not looked at without a vendored dependency filling it.
     """
-    found = []
+    found, left_out = [], []
     for folder, directories, files in os.walk(root, followlinks=False):
-        directories[:] = sorted(name for name in directories
-                                if name not in SKIPPED_DIRECTORIES
-                                and not Path(folder, name).is_symlink())
+        kept = []
+        for name in sorted(directories):
+            path = Path(folder, name)
+            relative = path.relative_to(root).as_posix()
+            if path.is_symlink():
+                left_out.append({'path': relative, 'reason': LINK_REASON})
+            elif name in SKIPPED_DIRECTORIES:
+                left_out.append({'path': relative, 'reason': DIRECTORY_REASON})
+            else:
+                kept.append(name)
+        directories[:] = kept
         for name in sorted(files):
             path = Path(folder, name)
-            if not path.is_symlink():
+            if path.is_symlink():
+                left_out.append({'path': path.relative_to(root).as_posix(),
+                                 'reason': LINK_REASON})
+            else:
                 found.append(path)
-    return found
+    return found, left_out
 
 
 def snapshot(source, folder, *, limits=None):
@@ -260,10 +372,15 @@ def snapshot(source, folder, *, limits=None):
         would say — empty strings and ``None`` for a plain folder.
     ``files``
         Every file copied, in path order: its ``path`` relative to the
-        snapshot, ``bytes``, ``lines`` and ``sha256``.
+        snapshot, ``bytes``, ``lines`` and ``sha256``, plus ``extracted`` on a
+        file whose stored text was pulled out of something else — a notebook,
+        stored as its cells.
     ``skipped``
-        Every file left out, with ``path`` and ``reason``: not text source, too
-        large, not decodable as text, or past one of the caps.
+        Everything left out, in path order, with ``path`` and ``reason``: not
+        text source, may hold secrets, too large, not decodable as text, past
+        one of the caps, or a folder or symbolic link never looked at — those
+        two recorded once each, by the folder or the link and not by the files
+        under it.
     ``counts``, ``limits``, ``truncated``
         How many files and bytes were copied, the caps in force, and whether a
         cap stopped the walk — a reviewer reading a snapshot that was cut short
@@ -298,58 +415,105 @@ def snapshot(source, folder, *, limits=None):
     if not record['files']:
         raise CodeRefused('No text source in ' + str(origin['source'])
                           + ': every file in it was skipped, so there is no code to review. '
-                          + 'Skipped ' + str(len(record['skipped'])) + ' file(s).')
+                          + 'Left out ' + str(len(record['skipped'])) + ' path(s).')
     manifest = {'schema_version': SCHEMA_VERSION, 'origin': origin,
                 'limits': caps, **record}
     write(folder / MANIFEST_FILE, manifest)
     return manifest
 
 
+def _contents(path, caps):
+    """What this snapshot would store for one file, or why it stores nothing.
+
+    Either ``{'reason': …}`` or the fields the manifest row is built from:
+    ``text`` as it is written into the snapshot, its ``bytes`` and ``sha256``,
+    and ``extracted`` saying what the text was pulled out of when it is not
+    the file itself.
+    """
+    if path.suffix == NOTEBOOK_SUFFIX:
+        return _notebook_contents(path, caps)
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        return {'reason': 'could not be read: ' + str(exc)}
+    if size > caps['max_file_bytes']:
+        return {'reason': 'larger than ' + str(caps['max_file_bytes']) + ' bytes'}
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        return {'reason': 'could not be read: ' + str(exc)}
+    text = _text(data)
+    if text is None:
+        return {'reason': 'not decodable as UTF-8 text'}
+    return {'text': text, 'bytes': size, 'sha256': digest(data), 'extracted': ''}
+
+
+def _notebook_contents(path, caps):
+    """A notebook as its cells, with the file cap applied to the cells kept."""
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        return {'reason': 'could not be read: ' + str(exc)}
+    if size > MAX_NOTEBOOK_BYTES:
+        return {'reason': 'larger than ' + str(MAX_NOTEBOOK_BYTES)
+                + ' bytes, which is too large a notebook to read the cells out of'}
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        return {'reason': 'could not be read: ' + str(exc)}
+    raw = _text(data)
+    if raw is None:
+        return {'reason': 'not decodable as UTF-8 text'}
+    try:
+        text = notebook_source(raw)
+    except ValueError as exc:
+        return {'reason': str(exc)}
+    kept = len(text.encode('utf-8'))
+    if kept > caps['max_file_bytes']:
+        return {'reason': 'larger than ' + str(caps['max_file_bytes'])
+                + ' bytes even with its outputs dropped'}
+    return {'text': text, 'bytes': kept, 'sha256': digest(text.encode('utf-8')),
+            'extracted': 'notebook cells'}
+
+
 def _copy(root, files_root, caps):
     """The walk itself: what was copied, what was skipped, and why."""
-    files, skipped = [], []
+    found, left_out = _walk(root)
+    files, skipped = [], list(left_out)
     total = 0
     truncated = ''
-    for path in _walk(root):
+    for path in found:
         relative = path.relative_to(root).as_posix()
         reason = _wanted(path)
         if reason:
             skipped.append({'path': relative, 'reason': reason})
             continue
-        try:
-            size = path.stat().st_size
-        except OSError as exc:
-            skipped.append({'path': relative, 'reason': 'could not be read: ' + str(exc)})
-            continue
-        if size > caps['max_file_bytes']:
-            skipped.append({'path': relative,
-                            'reason': 'larger than ' + str(caps['max_file_bytes']) + ' bytes'})
+        held = _contents(path, caps)
+        if 'reason' in held:
+            skipped.append({'path': relative, 'reason': held['reason']})
             continue
         if len(files) >= caps['max_files']:
             truncated = truncated or ('more than ' + str(caps['max_files'])
                                       + ' files of text source')
             skipped.append({'path': relative, 'reason': 'past the file count cap'})
             continue
-        if total + size > caps['max_total_bytes']:
+        if total + held['bytes'] > caps['max_total_bytes']:
             truncated = truncated or ('more than ' + str(caps['max_total_bytes'])
                                       + ' bytes of text source')
             skipped.append({'path': relative, 'reason': 'past the total size cap'})
             continue
-        try:
-            data = path.read_bytes()
-        except OSError as exc:
-            skipped.append({'path': relative, 'reason': 'could not be read: ' + str(exc)})
-            continue
-        text = _text(data)
-        if text is None:
-            skipped.append({'path': relative, 'reason': 'not decodable as UTF-8 text'})
-            continue
         destination = files_root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(text, encoding='utf-8')
-        total += size
-        files.append({'path': relative, 'bytes': size, 'lines': len(text.splitlines()),
-                      'sha256': digest(data)})
+        destination.write_text(held['text'], encoding='utf-8')
+        total += held['bytes']
+        row = {'path': relative, 'bytes': held['bytes'],
+               'lines': len(held['text'].splitlines()), 'sha256': held['sha256']}
+        if held['extracted']:
+            # A reader of the manifest has to know the lines a finding cites
+            # are lines of the cells and not of the file on disk.
+            row['extracted'] = held['extracted']
+        files.append(row)
+    skipped.sort(key=lambda one: one['path'])
     return {'files': files, 'skipped': skipped, 'truncated': truncated,
             'counts': {'files': len(files), 'bytes': total, 'skipped': len(skipped)}}
 
@@ -451,7 +615,8 @@ class CodeDesk:
                 and (not glob or Path(row['path']).match(glob))]
         return {
             'origin': self.origin,
-            'files': [{'path': row['path'], 'lines': row['lines'], 'bytes': row['bytes']}
+            'files': [{'path': row['path'], 'lines': row['lines'], 'bytes': row['bytes'],
+                       'extracted': str(row.get('extracted') or '')}
                       for row in rows],
             'count': len(rows),
             'files_in_snapshot': len(self.rows),
@@ -468,6 +633,10 @@ class CodeDesk:
         The line numbers are the file's own, and they are what a finding's code
         evidence cites. Reading a file is recorded, because a review says how
         much of the code it opened.
+
+        ``extracted`` says when the lines are not the lines of the file on
+        disk: a notebook is served as its cells, each marked with its cell
+        number, with every output dropped.
         """
         row = self._path(path)
         lines = self._lines(row)
@@ -486,6 +655,7 @@ class CodeDesk:
             'last_line': first + len(served) - 1,
             'lines': row['lines'],
             'sha256': row['sha256'],
+            'extracted': str(row.get('extracted') or ''),
             'text': '\n'.join(str(first + index) + '\t' + _clip(line)
                               for index, line in enumerate(served)),
         }

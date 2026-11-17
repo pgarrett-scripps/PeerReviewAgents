@@ -64,8 +64,22 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   source, configuration, notebooks, documentation, skipping binaries, data
   files and anything over the size caps — is snapshotted into `<run>/code/`
   beside a manifest naming the origin, the commit, every file taken with its
-  digest and every file left out with the reason. The snapshot is what the
+  digest and everything left out with the reason. The snapshot is what the
   review reads, so a finding cites code that is still there a year later.
+  Three rules decide what lands there. A notebook is stored as its cells —
+  code and markdown in order, each marked with its cell number, every output
+  dropped — with the file cap applied to those cells and not to the base64 a
+  single figure puts in the file, because otherwise the notebooks much
+  analysis lives in were either skipped for their own output or served as
+  JSON noise; the manifest row and `read_code` say `extracted` so a reader
+  knows the cited lines are lines of the cells. Nothing that may hold secrets
+  is copied: `.env` and `*.env` and `.env.*`, keys and certificates,
+  `credentials*`, `secrets*`, `.netrc`, `.npmrc`, `.pypirc` are skipped by
+  name with that as the reason, since the snapshot is served to a model and a
+  credential copied into it is a credential handed out. And a folder the walk
+  refuses or a symbolic link out of the snapshot is recorded once, by its own
+  path rather than by the files under it, so the record says what was never
+  looked at without a dependency tree filling it.
   One more specialist is planned when, and only when, there is a snapshot:
   `spec-code`, which reads the whole manuscript first and then audits what the
   methods say was done against what the code does — thresholds, filters, the

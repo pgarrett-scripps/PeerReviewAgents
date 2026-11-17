@@ -559,7 +559,9 @@ def _code_line(progress):
         line += f', {opened} of {files} file(s) opened'
     skipped = record.get('files_skipped')
     if isinstance(skipped, int) and skipped:
-        line += f', {skipped} file(s) left out of the snapshot'
+        # Paths, not files: a folder never walked into is one entry, which is
+        # what keeps a vendored dependency tree from being ten thousand.
+        line += f', {skipped} path(s) left out of the snapshot'
     truncated = str(record.get('truncated') or '')
     if truncated:
         line += f' ({truncated})'
