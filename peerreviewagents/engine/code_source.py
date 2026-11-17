@@ -545,7 +545,8 @@ def _copy(root, files_root, caps):
         # platform's ending, which on Windows turned a CRLF file into one
         # blank line between every line of code and doubled the numbers a
         # finding has to cite.
-        destination.write_text(held['text'], encoding='utf-8', newline='\n')
+        with destination.open('w', encoding='utf-8', newline='\n') as handle:
+            handle.write(held['text'])
         total += held['bytes']
         row = {'path': relative, 'bytes': held['bytes'],
                'lines': len(_split(held['text'])), 'sha256': held['sha256']}
@@ -645,10 +646,11 @@ class CodeDesk:
         return row
 
     def _lines(self, row):
-        # Read with the newline translation off and split here, so one rule
-        # numbers the lines however the file reached the snapshot.
-        held = (self.files_root / row['path']).read_text(encoding='utf-8', newline='')
-        return _split(held)
+        # Opened rather than read_text: the newline translation has to be off,
+        # so that one rule numbers the lines however the file reached the
+        # snapshot, and ``Path.read_text`` takes no newline before 3.13.
+        with (self.files_root / row['path']).open(encoding='utf-8', newline='') as handle:
+            return _split(handle.read())
 
     def list_code(self, path='', pattern=''):
         """The files in the snapshot, with their sizes, and what was left out."""
