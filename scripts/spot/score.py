@@ -13,7 +13,9 @@ stops. It reports, per run:
   *candidates*, never as a verdict;
 * every finding in brief, with the piece of the manuscript it cites: what kind
   of piece it is, what page it came off, and whether the converter extracted it
-  or a model that read the page wrote or repaired it;
+  or a model that read the page wrote or repaired it — and, when a model did,
+  whether it rebuilt a displayed piece or only cut debris out of the
+  converter's own sentences, which are not the same contribution;
 * what the Read stage did to the manuscript, from its own ``ai_read`` account;
 * the citation ledger's counts by state, straight from ``read_run``;
 * tokens, minutes, agents, status, guard status and the run's own problems;
@@ -472,7 +474,8 @@ def main(argv=None) -> int:
     parser.add_argument('--root', default='', help='the pilot data directory, for --all')
     parser.add_argument('--slug', default='', help='which paper this run is about')
     parser.add_argument('--all', action='store_true', help='score every run under <root>/runs')
-    parser.add_argument('--out', default='', help='append the rows to this JSONL file')
+    parser.add_argument('--out', default='',
+                        help='append the rows to this JSONL file, one row per run')
     args = parser.parse_args(argv)
     if args.all:
         if not args.root:
@@ -488,7 +491,12 @@ def main(argv=None) -> int:
     out = Path(args.out).expanduser() if args.out else (
         Path(args.root).expanduser() / 'runs' / 'results.jsonl' if args.root else None)
     if out:
-        out.write_text(''.join(json.dumps(row) + '\n' for row in rows), encoding='utf-8')
+        # Appended, because scoring one run and then another is how a comparison
+        # is scored, and the second run must not take the first one's line with
+        # it. The file is a log of scorings, so the last line for a run wins.
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with out.open('a', encoding='utf-8') as handle:
+            handle.write(''.join(json.dumps(row) + '\n' for row in rows))
     for row in rows:
         pieces = row.get('finding_pieces') or {}
         print(f"{Path(row['run']).name:22} {row['paper']:30} "
@@ -497,7 +505,8 @@ def main(argv=None) -> int:
               f"({row.get('findings_major', 0):>2} major) "
               f"candidates {len(row.get('candidates', row.get('allegations', []))):>3} "
               f"display {pieces.get('citing_display', 0):>3} "
-              f"on reader text {pieces.get('on_reader_text', 0):>3} "
+              f"rebuilt {pieces.get('on_reader_rebuilt', 0):>3} "
+              f"cut {pieces.get('on_reader_cut', 0):>3} "
               f"tokens {row.get('tokens', 0):>9,} {row.get('minutes', 0):>5} min "
               f"{'publishable' if row.get('publishable') else 'NOT publishable'}")
     return 0
