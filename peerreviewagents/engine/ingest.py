@@ -820,16 +820,18 @@ def seal_draft(output, draft=None, ai_read=None):
     lost = read_stage.lost_pages(draft)
     empty = [page for page in lost if not page['added']]
     if empty and not (ai_read or {}).get('read'):
-        # No reader is going to put these pages back, and sealing would write a
-        # manuscript the paper's own pages are missing from with nothing
-        # downstream able to tell. With the Read stage on, the same pages are
-        # outstanding items the reader adds the text of off the page image.
+        # The reader did not run, so nothing is going to put these pages back,
+        # and sealing would write a manuscript the paper's own pages are
+        # missing from with nothing downstream able to tell. With the stage
+        # run, the same pages are outstanding items the reader adds the text of
+        # off the page image.
         raise ValueError(
             parser + ' returned no text from page(s) ' + lost_page_names(empty)
             + ' of this PDF, which the text layer reads whole sentences from. Sealing as '
               'converted is refused: the manuscript would be missing those pages and nothing '
-              'downstream could tell. Import with the Read stage on, which hands those pages to '
-              'the reader to transcribe, or report the pages against ' + parser + '.')
+              'downstream could tell. Those pages are the reader\'s work — it views each one '
+              'and transcribes what it prints — so run the Read stage rather than sealing here, '
+              'or report the pages against ' + parser + '.')
     if empty:
         # The reader ran and left a page the converter returned nothing from
         # with nothing on it. `seal_manuscript` refuses this before it gets

@@ -136,7 +136,7 @@ def test_a_page_with_a_running_head_and_no_prose_is_not_a_lost_page():
 
 
 @pytest.fixture
-def reading(tmp_path, with_reader):
+def reading(tmp_path):
     """A run over the two-page PDF with page 2 lost, claimed by the reader."""
     srv.STATE['run'] = None
     pdf = pdf_with_rotations(tmp_path / 'turned.pdf', [0, 90])

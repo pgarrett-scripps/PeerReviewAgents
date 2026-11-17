@@ -119,6 +119,26 @@ def test_an_unknown_arm_is_refused_before_anything_is_written(tmp_path, monkeypa
     assert not (tmp_path / 'run').exists()
 
 
+def test_there_is_no_flag_for_reviewing_a_pdf_without_the_reader(tmp_path, monkeypatch):
+    """Every review of a PDF runs the Read stage, so the off switch is not a flag.
+
+    It was `--no-ai-read`, and a run that used it reviewed the converter's text
+    with its equations mangled and a page sometimes missing altogether. Nothing
+    deprecated is left: the flag is unknown to the parser, and the help does
+    not offer it.
+    """
+    manuscript = _pdf(tmp_path)
+    text = _fails(['review', str(manuscript), str(tmp_path / 'run'), '--no-ai-read'], monkeypatch)
+    assert 'no-ai-read' in text and 'unrecognized' in text.lower()
+    assert not (tmp_path / 'run').exists()
+
+    monkeypatch.setattr('sys.argv', ['peerreview', 'review', '--help'])
+    with pytest.raises(SystemExit):
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            cli.run()
+    assert 'ai-read' not in out.getvalue()
+
+
 def test_review_help_names_the_arms(monkeypatch):
     monkeypatch.setattr('sys.argv', ['peerreview', 'review', '--help'])
     with pytest.raises(SystemExit):

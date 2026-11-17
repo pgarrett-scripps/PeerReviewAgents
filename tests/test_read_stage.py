@@ -44,8 +44,8 @@ CODES = {}
 
 
 @pytest.fixture(autouse=True)
-def fresh_state(with_reader):
-    """A run with a Read stage, as a default run has, and no state left over."""
+def fresh_state():
+    """A run with a Read stage, as every run of a PDF has, and no state left over."""
     srv.STATE['run'] = None
     CODES.clear()
     yield
@@ -892,16 +892,14 @@ def test_the_reader_leaves_a_note_about_the_document_for_whoever_reads_it(tmp_pa
     assert 'not the authors\' text and not a finding' in text
 
 
-def test_a_run_without_a_reader_is_sealed_as_converted_and_says_so(tmp_path):
-    """The one setting for running without a Read stage, and what it leaves behind."""
-    opened = drafted(tmp_path, ai_read=False)
-    assert opened['sealed'] is True and opened['ai_read'] is False
-    assert opened['reader'] is None
-    assert 'reader' not in CODES
-    assert opened['statistics']['lines'][paper_base.MAIN_DOCUMENT] > 0
-    assert opened['sections']
-    assert opened['draft'] is None, 'there is no draft left to read'
-    # Every slot claims straight away: there is a manuscript to read.
+def test_a_run_sealed_as_converted_keeps_the_converter_s_reading_and_says_so(tmp_path):
+    """What the recorder's seal leaves behind: no setting reaches this, only a failure."""
+    opened = drafted(tmp_path)
+    sealed = srv.seal_as_converted(CODES['recorder_key'], reason='nothing read the pages')
+    assert sealed['sealed'] is True and sealed['ai_read']['read'] is False
+    assert sealed['statistics']['lines'][paper_base.MAIN_DOCUMENT] > 0
+    assert sealed['sections']
+    # Every slot claims now: there is a manuscript to read.
     taken = srv.claim_agent('core-1', CODES['core-1'])
     assert 'agent_token' in taken, taken
     assert 'read_draft' not in taken['allowed_tools']
@@ -915,6 +913,7 @@ def test_a_run_without_a_reader_is_sealed_as_converted_and_says_so(tmp_path):
     # And the gaps say what they said before this stage existed.
     assert 'claude' not in manifest['known_gaps']['figures']
     assert not (srv.current().workspace / DRAFT_FILE).exists()
+    assert opened['reader'] is not None, 'the run planned a reader, as every run does'
 
 
 def test_a_reader_that_never_sealed_leaves_the_recorder_to_seal_as_converted(tmp_path):
@@ -1011,7 +1010,7 @@ def test_the_reader_cannot_work_after_the_seal(tmp_path):
     # And the run's own progress says the stage is done rather than leaving the
     # reading's accounting behind to be read as outstanding work.
     progress = json.loads((srv.current().review / 'progress.json').read_text(encoding='utf-8'))
-    assert progress['read'] == {'ai_read': True, 'sealed': True, 'outstanding': None}
+    assert progress['read'] == {'sealed': True, 'outstanding': None}
 
 
 def test_the_readers_allowance_is_the_size_of_what_it_has_to_read(tmp_path):
@@ -1098,9 +1097,10 @@ def test_the_workflow_runs_the_read_stage_before_anything_claims_a_slot():
     assert 'codeFor(readerSlot)' in source and "reissue(readerSlot, 'Read')" in source
     # Its model has to arrive, the same as every other slot's.
     assert 'concat(readerSlot ? [readerSlot] : [])' in source
-    # The failure path and the explicit setting, both ending in one writer.
+    # The failure path, which is the only way a run reaches a manuscript
+    # nothing read: there is no setting that skips the stage.
     assert 'seal_as_converted' in source
-    assert 'ai_read=false' in source
+    assert 'ai_read=false' not in source
     # The counts come from the seal, because the ledger's rows cite its lines.
     assert 'opened.citations &&' not in source
     for sized in ('const referenceCount = (counts && counts.references)',

@@ -26,7 +26,7 @@ can only ask it for text and hand it findings.
 peerreview review <manuscript.pdf> <run folder> [--reviewers N] [--arm NAME]
                   [--reviewer-models A,B,C] [--specialist-model M] [--editor-model M]
                   [--citation-workers N] [--citation-worker-model M]
-                  [--reader-model M] [--no-ai-read] [--prior-issues PATH]
+                  [--reader-model M] [--prior-issues PATH]
 ```
 
 That is the only way to run a review in 0.9: the Python orchestration the 0.8
@@ -134,12 +134,13 @@ converter's (`text`), rewritten from the image (`ai-reconstructed`, with the
 converter's reading kept in `original`) or written by the model (`ai`), and
 `manifest['ai_read']` names the reader model and counts what it did.
 
-`--no-ai-read` is the one way to run without it, and it is a setting rather
-than a fallback: the draft is sealed as converted, every equation keeps the
-marker telling the reviewer to open the page, no figure is described, and the
-manifest says the paper was not AI-read. A reader that fails twice ends the
-same way, through the recorder's `seal_as_converted`. One code path writes the
-manuscript either way.
+There is no way to run a PDF review without it: the stage is planned with
+every other slot, and a paper with a page the converter returned nothing from
+cannot be imported at all without a reader to transcribe that page. Only a
+reader that fails twice ends with a manuscript sealed as converted — every
+equation keeping the marker telling the reviewer to open the page, no figure
+described, the manifest saying the paper was not AI-read — through the
+recorder's `seal_as_converted`. One code path writes the manuscript either way.
 
 ## What the server owns
 

@@ -264,7 +264,7 @@ def test_nothing_in_the_module_gates_on_billing_or_usage():
 # -- through the server -----------------------------------------------------
 
 
-def test_ingest_settles_the_models_and_hands_back_the_spawn_override(tmp_path, with_reader):
+def test_ingest_settles_the_models_and_hands_back_the_spawn_override(tmp_path):
     answer = opened(tmp_path, reviewers=3)
     assert models_of(answer) == {
         'core-1': SONNET, 'core-2': OPUS, 'core-3': HAIKU,
@@ -303,12 +303,13 @@ def test_the_launcher_passes_the_choice_in_the_environment(tmp_path, monkeypatch
     assert again['core-1'] == SONNET
 
 
-def test_the_reader_is_its_own_setting_and_not_a_review_stage(tmp_path, with_reader):
+def test_the_reader_is_planned_for_every_run_and_is_not_a_review_stage(tmp_path):
     """The Read stage is planned like any other slot and waited for like none of them."""
     answer = opened(tmp_path, reviewers=1)
     assert answer['reader'] == {'slot': 'reader', 'model': SONNET,
                                 'allowance': answer['reader']['allowance']}
-    assert answer['ai_read'] is True
+    # Nothing seals the manuscript at ingest: the reader writes the lines.
+    assert answer['sealed'] is False
     # Not in `slots`: those are the stages `write_review` waits for, and a
     # reader listed among them would be missing from the ledger for ever.
     assert 'reader' not in answer['slots']
@@ -319,27 +320,30 @@ def test_the_reader_is_its_own_setting_and_not_a_review_stage(tmp_path, with_rea
     assert answer['reader']['allowance'] >= 10
 
 
-def test_the_reader_model_is_settable_by_argument_and_by_variable(tmp_path, monkeypatch,
-                                                                  with_reader):
+def test_the_reader_model_is_settable_by_argument_and_by_variable(tmp_path, monkeypatch):
     assert models_of(opened(tmp_path, reviewers=1, reader_model='opus'))['reader'] == OPUS
     monkeypatch.setenv('PEERREVIEW_READER_MODEL', 'haiku')
     assert models_of(opened(tmp_path, folder='two', reviewers=1))['reader'] == HAIKU
 
 
-def test_a_run_without_a_reader_plans_no_reader_at_all(tmp_path, monkeypatch, with_reader):
-    answer = opened(tmp_path, reviewers=1, ai_read=False)
-    assert answer['reader'] is None and answer['ai_read'] is False
-    assert 'reader' not in models_of(answer)
-    assert 'reader' not in {row['slot'] for row in answer['claim_codes']}
+def test_there_is_no_way_to_ask_for_a_run_without_a_reader(tmp_path, monkeypatch):
+    """Every PDF review has a Read stage: no argument and no variable removes it."""
+    with pytest.raises(TypeError):
+        srv.ingest(str(FIXTURE), str(tmp_path / 'refused'), reviewers=1, ai_read=False)
+    assert not hasattr(srv, 'ai_read_setting')
+    assert not [name for name in vars(srv) if 'AI_READ' in name]
 
-    # The variable turns the reader off whatever the caller asks for: running
-    # without one is the user's choice about their own manuscript, and a
-    # workflow passing the default must not put one back.
+    # The variable the old setting was carried in is nothing to this version:
+    # a shell that still exports it gets the same run as every other, because
+    # a manuscript nothing read is not the manuscript this version reviews.
     monkeypatch.setenv('PEERREVIEW_AI_READ', '0')
-    assert opened(tmp_path, folder='two', reviewers=1, ai_read=True)['reader'] is None
+    answer = opened(tmp_path, reviewers=1)
+    assert answer['reader'] is not None and answer['sealed'] is False
+    assert 'reader' in models_of(answer)
+    assert 'reader' in {row['slot'] for row in answer['claim_codes']}
 
 
-def test_an_unavailable_reader_model_is_refused_by_its_own_flag(tmp_path, with_reader):
+def test_an_unavailable_reader_model_is_refused_by_its_own_flag(tmp_path):
     refused = srv.ingest(str(FIXTURE), str(tmp_path / 'run'), reviewers=1,
                          reader_model='claude-nonesuch-9')
     assert 'claude-nonesuch-9' in refused['request_rejected']

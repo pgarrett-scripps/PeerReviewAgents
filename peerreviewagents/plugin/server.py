@@ -48,6 +48,7 @@ from ..engine.ingest import DRAFT_FILE, convert_paper, seal_draft
 from ..engine.investigation import Investigation
 from ..engine.storage import digest, read, relative_name, write
 from ..names import (
+    BLOCKED,
     COMPLETE_STATUSES,
     FINDING_SCHEMA_VERSION,
     MANUSCRIPT_DIRECTORY,
@@ -246,28 +247,6 @@ def reader_call_budget(pages, pieces):
     return min(READER_CALL_CEILING, 10 + pages + 2 * pieces)
 
 
-#: How a launcher says this run is to be sealed as converted, with no reader.
-#: One setting, in one place. The values that mean no are the shell's usual
-#: ones; anything else, including the variable being unset, means a reader runs.
-AI_READ_ENVIRONMENT = 'PEERREVIEW_AI_READ'
-NO_VALUES = ('0', 'no', 'off', 'false', 'none')
-
-
-def ai_read_setting(asked=True, environ=None):
-    """Whether this run gets a reader: the caller's answer, and the environment's.
-
-    The environment can only turn the reader *off*. Running without one is the
-    user's choice about their own manuscript — and about what they are willing
-    to pay for — and a workflow that passes nothing must not be able to put a
-    reader back into a run the user said to do without. There is no path the
-    other way: a reader that fails does not quietly become a run without one,
-    it is a seal that says the paper was not AI-read.
-    """
-    environ = os.environ if environ is None else environ
-    value = str(environ.get(AI_READ_ENVIRONMENT) or '').strip().casefold()
-    return bool(asked) and value not in NO_VALUES
-
-
 #: The piece kinds the reader must account for one by one: the three the
 #: converter either garbles (an equation, a table) or cannot represent at all
 #: (a figure, which is an image it only has the caption of).
@@ -319,6 +298,38 @@ def now():
 def rejection(message, **extra):
     """A refusal an agent can act on, not an exception: the agent keeps its turn."""
     return {'request_rejected': message, **extra}
+
+
+def record_import_refusal(out, message):
+    """Record why the manuscript was refused in the run folder, and return the words.
+
+    A rejection goes back to whoever called ``ingest``, which is a model: it
+    can relay it, paraphrase it or drop it, and the run's own
+    ``blocked_reason`` then said that no plan reached the workflow rather than
+    why the paper could not be imported. So the refusal is written where the
+    starter and ``read_run`` already look for the cause of a blocked run, in
+    the server's own words.
+
+    Nothing is created here. An argument no run can be made from — an arm that
+    does not exist, a model this login cannot run — is refused before the run
+    folder exists, and that is not a run that stopped: it leaves no folder, as
+    it did before. A folder another process is serving is left alone too: a
+    live run's progress file carries its stage ledger, and nothing here writes
+    over one.
+    """
+    review = Path(out) / RUN_DIRECTORY
+    standing = review / 'progress.json'
+    try:
+        if not review.is_dir():
+            return message
+        if standing.is_file():
+            before = read(standing)
+            if not isinstance(before, dict) or 'stages' in before:
+                return message
+        write(standing, {'status': BLOCKED, 'error': message, 'updated': now()})
+    except (OSError, ValueError, UnicodeDecodeError):
+        pass  # the refusal itself is the answer; recording it is the extra
+    return message
 
 
 def complete_folder_message(root, review, status):
@@ -554,7 +565,7 @@ class Run:
     def __init__(self, pdf, root, reviewers, arm, literature_cutoff, plugin_root, title=None,
                  tracks=None, reviewer_models=None, specialist_model=None, editor_model=None,
                  recorder_model=None, citation_workers=None, citation_worker_model=None,
-                 prior_issues=None, supplements=None, reader_model=None, ai_read=True):
+                 prior_issues=None, supplements=None, reader_model=None):
         if arm not in ARMS:
             raise ValueError('Unknown arm: ' + arm + '. Arms: ' + ', '.join(sorted(ARMS)))
         self.arm = arm
@@ -590,22 +601,20 @@ class Run:
                 citation_worker_model, model_plan.DEFAULT_CITATION_WORKER_MODEL),
             'reader': model_plan.choice(reader_model, model_plan.DEFAULT_READER_MODEL),
         }
-        # Whether a model reads this manuscript against its own page images
-        # before any reviewer sees it. One setting, decided here and recorded
-        # in the manifest either way: a run without a reader is a run over the
-        # converter's text, with the converter's mangled equations and no
-        # figure descriptions at all, and nothing downstream may have to guess
-        # which of the two it is reading.
-        self.ai_read = bool(ai_read)
-        self.reader_slots = ('reader',) if self.ai_read else ()
         # The citation workers. They are planned here with everything else, so
         # an unavailable Haiku is refused before a lookup is made rather than
         # after the whole reference list has been resolved.
         self.citation_worker_count = (CITATION_WORKERS if citation_workers is None
                                       else citation_workers)
         self.citation_workers = citation_slots(arm, self.citation_worker_count, self.tracks)
+        # The reader is planned with every other slot. Every PDF review has a
+        # Read stage: the converter's equations and tables are its reading of a
+        # picture of them, a figure is a caption with no image behind it, and a
+        # page the text layer returns nothing from cannot be imported at all
+        # without a reader to transcribe it off the page. What the stage did to
+        # this manuscript is the manifest's own ``ai_read`` account.
         self.models = model_plan.refuse(model_plan.assign(
-            (*self.reader_slots, *self.required_slots(), *self.citation_workers, 'recorder'),
+            ('reader', *self.required_slots(), *self.citation_workers, 'recorder'),
             reviewers=self.reviewer_models, specialist=specialist_model,
             editor=editor_model, recorder=recorder_model,
             citation_worker=citation_worker_model, reader=reader_model))
@@ -654,12 +663,6 @@ class Run:
                                        supplements=supplements or None)
             engine_reader.number_pieces(self.draft)
             write(self.workspace / DRAFT_FILE, self.draft)
-        if self.base is None and not self.ai_read:
-            # No reader in this run, so there is nothing for the draft to wait
-            # for. One code path writes the base either way: this is the same
-            # call the reader's `seal_manuscript` makes at the end of its
-            # stage, with no account of a reading to put in the manifest.
-            self.seal_base()
         self.references = (read(self.workspace / 'references.json') if self.base is not None
                            else list(self.draft.get('references') or []))
         # The paper's identity, which exists before its line numbers do, so
@@ -701,7 +704,7 @@ class Run:
         # else. Without this a reviewer that knows a slot name is that slot.
         self.recorder_key = secrets.token_hex(16)
         self.claim_codes = {slot: secrets.token_hex(8)
-                            for slot in (*self.reader_slots, *self.required,
+                            for slot in ('reader', *self.required,
                                          *self.citation_workers, 'recorder')}
         self.write_progress()
         # Identity at ingest, not only at the end. A run that is killed — a
@@ -848,7 +851,7 @@ class Run:
         the specialists exist, and reviewer isolation is one of the things the
         study arms compare.
         """
-        if slot not in (*self.reader_slots, *self.required, *self.citation_workers, 'recorder'):
+        if slot not in ('reader', *self.required, *self.citation_workers, 'recorder'):
             raise ValueError('Slot ' + slot + ' is not part of this run.')
         if slot == 'recorder':
             return 'recorder', 'recorder', tuple(self.required)
@@ -1433,7 +1436,7 @@ class Run:
             # The Read stage, which closes no stage in the ledger: either the
             # manuscript is sealed or it is a draft with work left on it, and a
             # run killed mid-stage says which here.
-            'read': {'ai_read': self.ai_read, 'sealed': self.base is not None,
+            'read': {'sealed': self.base is not None,
                      'outstanding': (None if self.base is not None
                                      else engine_reader.outstanding(self.draft))},
             'citations': self.citation_counts(),
@@ -1534,12 +1537,12 @@ class Run:
             'literature_cutoff': self.cutoff,
             'version': WORKFLOW_VERSION,
             'finding_schema_version': FINDING_SCHEMA_VERSION,
-            # Whether a model read this manuscript against its page images, and
-            # which. A published review is read beside the text it was written
-            # about, and the two runs are not the same evidence.
-            'ai_read': self.ai_read,
+            # Which model read this manuscript against its page images. A
+            # published review is read beside the text it was written about,
+            # and what the reader did to that text is the manuscript's own
+            # ``ai_read`` account, which says whether it sealed at all.
             'reader_model': self.models.get('reader'),
-            'reader_tool_allowance': self.reader_allowance() if self.ai_read else None,
+            'reader_tool_allowance': self.reader_allowance(),
             'independent_tool_allowance': CALL_BUDGET['core'],
             'specialist_tool_allowance': CALL_BUDGET['specialist'],
             'editor_tool_allowance': editor_call_budget(len(self.pooled())),
@@ -1606,7 +1609,7 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
            editor_model: str = '', recorder_model: str = '',
            citation_workers: int = CITATION_WORKERS,
            citation_worker_model: str = '', prior_issues: str = '',
-           supplements: str = '', reader_model: str = '', ai_read: bool = True) -> dict:
+           supplements: str = '', reader_model: str = '') -> dict:
     """Open a run: import the manuscript PDF and fix the plan. Safe to call twice.
 
     ``tracks`` narrows the specialist track to the ones named; the default is
@@ -1632,12 +1635,11 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
     model and no lookup; ``resolve_citations`` does the lookups next.
 
     ``reader_model`` is the model that reads the manuscript against its own
-    page images before any reviewer sees it, and ``ai_read`` is whether one
-    does at all. The reader is returned as ``reader``, apart from ``slots``:
-    it is not a stage of the review and files no report. With ``ai_read``
-    false — or ``PEERREVIEW_AI_READ`` set to ``0`` in the session, which turns
-    the reader off whatever this call asks for — the draft is sealed as the
-    converter produced it, and the manifest says the paper was not AI-read.
+    page images before any reviewer sees it. The reader is returned as
+    ``reader``, apart from ``slots``: it is not a stage of the review and files
+    no report. Every PDF review has a Read stage and there is no way to turn it
+    off — the answer says ``sealed: false``, and the manuscript has no line
+    numbers until the reader's ``seal_manuscript`` writes them.
 
     ``supplements`` is a folder of supplementary files to import beside the
     manuscript. A ``.docx`` becomes a document of its own — its own ``.md``, its
@@ -1705,10 +1707,9 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
                   citation_worker_model=settled.get('citation_worker'),
                   prior_issues=prior_issues or None,
                   supplements=supplements or None,
-                  reader_model=settled.get('reader'),
-                  ai_read=ai_read_setting(ai_read))
+                  reader_model=settled.get('reader'))
     except (ValueError, KeyError, TypeError, OSError) as exc:
-        return rejection(str(exc))
+        return rejection(record_import_refusal(out, str(exc)))
     STATE['run'] = run
     return {**summary_of(run), 'attached': False, 'recorder_key': run.recorder_key,
             'citations_next': ('Resolve the references before any worker claims a batch: call '
@@ -1748,11 +1749,9 @@ def summary_of(run):
         'slots': list(run.required) + ['recorder'],
         # The Read stage, apart from the review stages on purpose: the reader
         # works before them, on a draft, and files no report, so it is never
-        # one of the slots `write_review` waits for. `null` is a run that will
-        # be sealed as converted.
-        'reader': ({'slot': 'reader', 'model': run.models.get('reader'),
-                    'allowance': run.reader_allowance()} if run.ai_read else None),
-        'ai_read': run.ai_read,
+        # one of the slots `write_review` waits for.
+        'reader': {'slot': 'reader', 'model': run.models.get('reader'),
+                   'allowance': run.reader_allowance()},
         # The citation workers, apart from the stages on purpose: they are
         # fanned out over the ledger and none of them is required to report.
         'citation_workers': list(run.citation_workers),

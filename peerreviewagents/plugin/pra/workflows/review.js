@@ -1,7 +1,7 @@
 export const meta = {
   name: 'review',
   description: 'Two-track peer review: ingest, N core reviewers and six specialists in parallel, editor, write the run',
-  whenToUse: 'Reviewing one manuscript PDF with PeerReviewAgents 0.10. Pass {pdf, out, reviewers, arm}, {prior_issues} to match a later round against an earlier run\'s issues.json, {ai_read: false} to review the converted text with no Read stage, and {reviewer_models, specialist_model, editor_model, recorder_model, citation_worker_model, reader_model} to choose the models.',
+  whenToUse: 'Reviewing one manuscript PDF with PeerReviewAgents 0.10. Pass {pdf, out, reviewers, arm}, {prior_issues} to match a later round against an earlier run\'s issues.json, and {reviewer_models, specialist_model, editor_model, recorder_model, citation_worker_model, reader_model} to choose the models.',
   phases: [
     { title: 'Ingest', detail: 'import the PDF and fix the plan for this arm' },
     { title: 'Read', detail: 'one model reads the page images, repairs the converted equations and tables, describes the figures, and seals the manuscript' },
@@ -25,12 +25,6 @@ if (!run.pdf || !run.out) {
 }
 const REVIEWERS = run.reviewers || 3
 const ARM = run.arm || 'full-two-track'
-// One setting, not a fallback: `ai_read: false` reviews the converter's own
-// text, with its garbled equations and its figures left as bare captions, and
-// the run records that nothing read the pages. Anything else runs the Read
-// stage, and the server is the one that decides — this is passed through.
-const AI_READ = run.ai_read === false ? false : null
-
 const OPENED = {
   type: 'object',
   properties: {
@@ -40,11 +34,10 @@ const OPENED = {
     line_count: { type: 'integer', description: 'how many lines paper.md holds; omit it where '
                                                 + 'the response says sealed: false, because the '
                                                 + 'file does not exist yet' },
-    // The Read stage. `sealed: false` is a run whose manuscript is still a
-    // draft and whose reader has to seal it before any reviewer can claim a
-    // slot; `reader: null` is a run that was sealed at ingest as converted.
+    // The Read stage. Every PDF review has one, so `sealed` comes back false:
+    // the manuscript is still a draft and the reader has to seal it before any
+    // reviewer can claim a slot.
     sealed: { type: 'boolean', description: "ingest's sealed, verbatim" },
-    ai_read: { type: 'boolean', description: "ingest's ai_read, verbatim" },
     reader: {
       type: 'object',
       properties: {
@@ -389,7 +382,6 @@ const opened = await agent(
     ? ', citation_workers=' + run.citation_workers : '')
   + (run.citation_worker_model ? ', citation_worker_model="' + run.citation_worker_model + '"' : '')
   + (run.reader_model ? ', reader_model="' + run.reader_model + '"' : '')
-  + (AI_READ === false ? ', ai_read=false' : '')
   // A later round of the same paper. The path is passed straight through: the
   // server reads the file, and an issue the authors did not fix keeps the id it
   // was first reported under.
@@ -402,7 +394,7 @@ const opened = await agent(
   + ' the recorder_key, every claim_code and every models entry out of the response verbatim:'
   + ' they are the only copies, and each stage is handed its own code and its own model'
   + ' from here.'
-  + ' Report sealed and ai_read as the response gives them, and — where the response holds them'
+  + ' Report sealed as the response gives it, and — where the response holds them'
   + ' rather than null — the reader entry and the draft\'s pages and pieces. A response with'
   + ' sealed: false has no line count: leave that field out rather than reporting a zero. Do not'
   + ' claim the reader slot and do not call any other tool: the Read stage is a separate agent'
@@ -524,10 +516,11 @@ let counts = opened.citations || null
 let lineCount = opened.line_count || 0
 let read = null
 if (opened.sealed) {
-  // `ai_read: false` — the explicit setting. ingest sealed the draft as the
-  // converter read it and there is no Read stage to run.
-  log('no Read stage: the manuscript is the converter\'s text, with garbled equations marked and'
-    + ' no figure described, and the run records that nothing read the pages')
+  // Nothing seals a PDF at ingest, so this folder's manuscript was written
+  // before this run: a run picked up after its own seal, or an application's
+  // own source. Either way the lines exist and there is no draft to read.
+  log('the manuscript in this folder was already sealed, so there is no draft to read: the'
+    + ' reviewers read the lines it already has')
 } else if (!readerSlot) {
   await block('ingest returned an unsealed manuscript and no reader, so nothing can write the '
     + 'manuscript and no reviewer can read it')

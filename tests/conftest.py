@@ -34,33 +34,11 @@ from manuscripts import build_base  # noqa: E402  (needs the path above)
 
 CREDENTIAL_VARIABLES = ('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'OPENAI_API_KEY')
 
-#: The setting that says a manuscript is not read by a model before it is
-#: sealed. The Read stage is a model stage — a reader claims the slot, looks at
-#: the page images and seals the base — and no test here runs a model, so by
-#: default the whole suite runs the way a user who passed ``--no-ai-read`` runs:
-#: ingest converts and seals in one step, which is what every test about the
-#: review layer downstream of the seal is about. The Read stage's own tests ask
-#: for the ``with_reader`` fixture and drive the reader's tools directly.
-AI_READ_VARIABLE = 'PEERREVIEW_AI_READ'
-
-
 @pytest.fixture(autouse=True)
 def no_model_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     """No test sees a provider credential, however the machine is configured."""
     for variable in CREDENTIAL_VARIABLES:
         monkeypatch.delenv(variable, raising=False)
-
-
-@pytest.fixture(autouse=True)
-def no_reader_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every test runs without a reader unless it asks for one."""
-    monkeypatch.setenv(AI_READ_VARIABLE, '0')
-
-
-@pytest.fixture
-def with_reader(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Plan the Read stage in this test, as a default run does."""
-    monkeypatch.delenv(AI_READ_VARIABLE, raising=False)
 
 
 @pytest.fixture

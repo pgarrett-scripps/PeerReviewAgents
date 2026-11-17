@@ -183,13 +183,17 @@ The stage is one slot, `reader`, planned with every other: `--reader-model`
 not a constant — it is `10 + pages + 2 × pieces`, capped — since a four-page
 letter and a forty-page paper with sixty figures are not the same job.
 
-**Running without it is one setting, not a fallback.** `--no-ai-read`, or
-`PEERREVIEW_AI_READ=0`, or `ai_read=false` on `ingest`, seals the draft at
-ingest from the converter's own text: the equations keep today's marker telling
-the reviewer to open the page, no figure has a description, and
-`manifest['ai_read']` is `{"read": false, "reason": …}`. The same thing happens
-when a reader fails twice, through the recorder's `seal_as_converted`. One code
-path writes the base either way, so a run never has a half-written manuscript.
+**There is no way to run a PDF review without it.** The stage is not a
+setting: every review of a PDF reads the pages, because the converter's
+equations and tables are its reading of a picture of them, a figure is a
+caption with nothing behind it, and a page the text layer returns nothing from
+cannot be imported at all without a reader to transcribe it (below). A
+manuscript sealed from the converter's own text — the equations keeping
+today's marker telling the reviewer to open the page, no figure described,
+`manifest['ai_read']` as `{"read": false, "reason": …}` — is now reached two
+ways only: the recorder's `seal_as_converted` after a reader failed twice, and
+an app's own source through `write_manuscript`. One code path writes the base
+however it was reached, so a run never has a half-written manuscript.
 
 **A page the converter returned nothing from is the reader's work.** The
 pinned converter returns no block at all for a page whose `/Rotate` is not
@@ -213,9 +217,10 @@ same footnote letter off the same sideways table and both got it wrong, at a
 rendering already at the long-edge limit a vision model accepts. The manifest then names the pages and the pieces added off them, in
 `ai_read['lost_pages']` and in `known_gaps['converter_pages']`, because that
 text is a model's transcription and not the converter's reading of anything.
-With no reader — `--no-ai-read`, or `seal_as_converted` after a reader failed
-— nothing is going to put those pages back, so the seal is **refused**, by
-page, naming the converter to report them against. (`write_manuscript` never
+With nothing read — `seal_as_converted` after a reader failed twice — nothing
+is going to put those pages back, so the seal is **refused**, by page, naming
+the converter to report them against. A paper with such a page is therefore one
+only the Read stage can import at all. (`write_manuscript` never
 meets this: its pieces are the app's, and no PDF was converted.)
 
 `write_manuscript` needs no reader and seals at once: an app that parses its
@@ -493,7 +498,7 @@ manuscript, or complete with none to show.
 | `absent` | nothing: the run stopped before the manuscript was imported |
 | `draft` | the converted pieces, unsealed. No line numbers, nothing can cite it — the Read stage started and did not finish |
 | `sealed-by-reader` | the base, with a model's reading of the pages behind it. `reader_model` names it |
-| `sealed-without-read` | the base, with no page read at all: `--no-ai-read`, a reader that failed and sealed as converted, or an app's own source through `write_manuscript`. `reason` is the manifest's own words for which |
+| `sealed-without-read` | the base, with no page read at all: a reader that failed and sealed as converted, or an app's own source through `write_manuscript`. `reason` is the manifest's own words for which |
 
 Beside it: `sealed` (that question already answered), `reason`,
 `reader_model`, `lost_pages` — each page the converter returned nothing from,

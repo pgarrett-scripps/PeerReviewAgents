@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 
 import pytest
+from manuscripts import seal_converted
 
 from peerreviewagents.plugin import server as srv
 from peerreviewagents.plugin import starter
@@ -40,6 +41,9 @@ def open_run(tmp_path, **kwargs):
     opened = srv.ingest(str(FIXTURE), str(tmp_path / 'run'), **kwargs)
     assert 'request_rejected' not in opened, opened
     CODES.update({row['slot']: row['claim_code'] for row in opened.get('claim_codes', [])})
+    # ingest leaves a draft, because the Read stage writes the lines. No model
+    # reads anything here, so the run is sealed as converted.
+    seal_converted(opened)
     return opened
 
 
