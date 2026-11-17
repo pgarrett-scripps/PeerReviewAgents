@@ -442,7 +442,14 @@ def unconverted_pages(blocks, pages, geometry=()):
     """Every page the PDF has text on that the converter returned no block from.
 
     One entry per lost page: its number, how many words the text layer reads
-    off it, and the rotation a viewer applies to it. The pinned converter
+    off it, the rotation a viewer applies to it, and those words themselves
+    with the layout thrown away. The words are kept because this is the one
+    kind of page with no pieces at all — the reader has the page image and
+    nothing else to check a character against, and on two runs over the same
+    paper the same footnote letter came back wrong off the same rotated table,
+    which Poppler reads exactly. :func:`read_stage.lost_page_text` is what
+    hands them to the reader, and what says they are characters and not a
+    reading of the page. The pinned converter
     returns nothing at all for a page whose ``/Rotate`` is not zero — the
     landscape table page comes back empty while every upright page around it
     converts — and nothing for some upright full-page tables either, so the
@@ -458,7 +465,8 @@ def unconverted_pages(blocks, pages, geometry=()):
     for number, text in enumerate(pages, start=1):
         count = len(words(text))
         if number not in seen and count >= LOST_PAGE_WORDS:
-            found.append({'page': number, 'words': count, 'rotation': turned.get(number, 0)})
+            found.append({'page': number, 'words': count, 'rotation': turned.get(number, 0),
+                          'text': ' '.join(str(text).split())})
     return found
 
 

@@ -139,6 +139,30 @@ is not shown.) And a caption is never written over by a single replacement,
 because the piece it names would be left with none. `withdraw_piece` takes out
 a piece the stage itself added, and refuses the converter's.
 
+**Debris the converter left as a piece of its own is folded into the piece it
+is debris of.** A span reaches debris inside a paragraph; it cannot reach a
+piece. On real papers the converter emitted three headings reading `with {`,
+`qn,s,d else` and `|A|2 d=1` — each the edge of a displayed equation on the
+same page — and read a bar chart's axis numbers as a paragraph above its
+caption. Nothing asked for any of them to be accounted for and
+`withdraw_piece` refuses a converter piece, so all of them reached sealed
+manuscripts as headings and lines of prose. `merge_equations` now takes
+non-equation members, and `describe_figure` and `reread_piece` take `absorb`,
+a list of neighbour pieces: each one leaves the document and its whole
+converter reading is kept under `original['absorbed']` on the piece that
+absorbed it, so it is a fold and not a deletion. What may be absorbed is
+narrow, and each refusal is a way of being sure this is debris and not the
+paper: the converter's own piece rather than one the stage added, prose by
+kind (an accountable piece is repaired, confirmed or described in its own
+right), on the page being viewed, at most `MOST_ABSORBED_CHARACTERS` of
+reading, contiguous with what absorbs it, and at most `MOST_ABSORBED` in one
+call. `reread_piece` also refuses `absorb` when the re-read writes prose
+alone, because then there is no displayed piece for the debris to be part of.
+Two equation pieces named in one `merge_equations` are held to neither
+adjacency nor the page: the converter labelling both equations is its own
+evidence, and one of them may be the tail of the equation at the top of the
+next page.
+
 The first design let a re-read *retype* prose, with a check that every
 character kept was one the converter read, in order. It does not hold: almost
 any short sentence is a character subsequence of a long paragraph, so
@@ -172,7 +196,15 @@ those pages are outstanding items of their own: `read_draft` names them under
 with `add_piece` — which may add a `paragraph` there and only there, a
 `caption` anywhere — and `seal_manuscript` is refused while one of them has
 nothing
-on it. The manifest then names the pages and the pieces added off them, in
+on it. On those pages, and only those, `view_page` also returns `text_layer`:
+the words Poppler read off the page's own text layer with the whitespace
+collapsed, which the import already keeps because that is what it counted the
+page's words from. It is labelled in the answer as characters to check against
+— a footnote letter, a subscript, a minus sign in a small or rotated cell — in
+no reliable order and with no layout, and explicitly not something to
+transcribe or to read a reading order off. Two runs over one paper read the
+same footnote letter off the same sideways table and both got it wrong, at a
+rendering already at the long-edge limit a vision model accepts. The manifest then names the pages and the pieces added off them, in
 `ai_read['lost_pages']` and in `known_gaps['converter_pages']`, because that
 text is a model's transcription and not the converter's reading of anything.
 With no reader — `--no-ai-read`, or `seal_as_converted` after a reader failed

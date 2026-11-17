@@ -131,7 +131,7 @@ def test_a_page_with_a_running_head_and_no_prose_is_not_a_lost_page():
     prose_page = 'A page of prose. ' * 40
     geometry = [{'page': 1, 'rotation': 0}, {'page': 2, 'rotation': 90}]
     assert ingest.unconverted_pages(blocks, [figure_page, prose_page], geometry) == [
-        {'page': 2, 'words': 160, 'rotation': 90}]
+        {'page': 2, 'words': 160, 'rotation': 90, 'text': prose_page.strip()}]
     assert ingest.unconverted_pages(blocks, [figure_page], geometry) == []
 
 
@@ -162,6 +162,38 @@ def test_the_reader_is_told_what_the_lost_page_is(reading):
     assert 'page(s) 2' in said and 'rotated 90°' in said
     assert 'add_piece' in said
     assert listing['outstanding']['lost_pages'][0]['added'] == []
+
+
+def test_a_lost_page_is_handed_over_with_its_text_layer_as_well(reading):
+    """On a page with no pieces the image is all there is, and it is not enough.
+
+    Two runs over one real paper read the same footnote letter off the same
+    rotated table and both got it wrong, and the reader's own note said why:
+    a superscript letter in a cell printed sideways is a few pixels at any
+    rendering. That page's text layer holds the character exactly — it is
+    where the import counts the page's words — so the page the converter
+    returned nothing from comes back with its words too, as characters to
+    check against and not as a reading of the page.
+    """
+    _, _, token, _ = reading
+
+    def viewed(page):
+        """A page is an image and a JSON payload beside it, which is this."""
+        answer = srv.view_page(token, page)
+        assert not isinstance(answer, dict) or 'request_rejected' not in answer, answer
+        return json.loads(answer[1]) if isinstance(answer, list) else answer
+
+    # Page 1 converted, so its pieces are the reading of it: raw words beside
+    # them would be a second, worse reading of a page that already has one.
+    upright = viewed(1)
+    assert upright['pieces'] and 'text_layer' not in upright
+    lost = viewed(2)
+    assert lost['pieces'] == []
+    assert 'turned ninety degrees' in lost['text_layer']
+    assert '\n' not in lost['text_layer'], 'the layout is dropped on purpose'
+    said = lost['reading']
+    assert 'no reliable order' in said and 'footnote letter' in said
+    assert 'do not transcribe from it' in said
 
 
 def test_the_seal_is_refused_while_a_lost_page_has_nothing_on_it(reading):
