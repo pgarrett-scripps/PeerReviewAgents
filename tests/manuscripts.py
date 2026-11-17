@@ -25,7 +25,7 @@ from peerreviewagents import read_manuscript, write_manuscript
 from peerreviewagents.engine.storage import write
 
 
-def build_base(folder, pieces, documents=None, references=None, manifest=None):
+def build_base(folder, pieces, documents=None, references=None, manifest=None, ai_model=''):
     """Write a manuscript workspace from pieces of text and load its base.
 
     *pieces* are the main document's, in order, in the shape a converter hands
@@ -33,7 +33,11 @@ def build_base(folder, pieces, documents=None, references=None, manifest=None):
     whatever else that kind renders from. *documents* adds further files by
     name — a supplement — each with its own pieces. *manifest* overrides keys of
     the written manifest, for a test about a manuscript that says something
-    else about itself.
+    else about itself. *ai_model* names the model a piece whose ``source`` is
+    ``ai`` or ``ai-reconstructed`` was written by, which
+    :func:`peerreviewagents.write_manuscript` requires before it will write
+    one: a manuscript cannot carry a model's words with nothing to say whose
+    they are.
 
     What comes back is the loaded
     :class:`~peerreviewagents.engine.paper_base.PaperBase`, and what is left
@@ -57,7 +61,7 @@ def build_base(folder, pieces, documents=None, references=None, manifest=None):
     # asserts against, and a PDF-backed source is what most of these tests are
     # standing in for.
     record = write_manuscript(folder, pages, title='A manuscript', paper_id='paper-1',
-                              parser='test', references=references,
+                              parser='test', references=references, ai_model=ai_model,
                               source={'file': 'original/original.pdf', 'sha256': 'f' * 64,
                                       'pages': 1})
     if manifest:

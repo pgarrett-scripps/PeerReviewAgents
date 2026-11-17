@@ -58,6 +58,25 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The SPOT and Stage A scorers read the manuscript, so a finding has a place
+  in the paper again.** Both scripts were written for the block manuscript and
+  decided where a finding was by looking for the answer key's phrases in the
+  reviewer's own sentences, which counted a finding that named Table 1 while
+  discussing the conclusion and missed one that quoted the table and never
+  named it. They now load the run's own manuscript and place each finding by
+  the line it cites: the map row gives the kind of piece, the page, the
+  section, and whether the converter read that text, a model repaired it from
+  the page, or a model wrote it from nothing. Every finding in brief carries
+  its piece and the kinds it cites, and the row carries the counts the reader
+  comparison needs — findings citing a table, an equation or a figure, and
+  findings resting on text the reader wrote or repaired — beside the Read
+  stage's own account of what it did. `scripts/spot/score.py` takes `--slug`
+  because a comparison names its arm in the folder (`cmp-antenna-on`), a run of
+  a paper with no key is scored as findings and cost with no candidates, and a
+  folder from before `paper-base-v2` is reported as not scored with the refusal
+  rather than as a paper in which every finding is nowhere. Candidates are
+  still candidates: no verdict is computed, and the cost numbers come from the
+  run.
 - **The Read stage driven in code, for a consumer's tests:
   `peerreviewagents.scripted_read(paper, folder, pieces)`.** It opens a real
   run on a PDF, claims the reader's slot and hands back a handle whose methods

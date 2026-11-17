@@ -11,18 +11,38 @@ stops. It reports, per run:
 * the **location** findings that land where SPOT says the error is, and the
   **cue** findings whose own words carry the key's phrases or values — both as
   *candidates*, never as a verdict;
-* every finding in brief, so the candidates can be read against the annotation;
+* every finding in brief, with the piece of the manuscript it cites: what kind
+  of piece it is, what page it came off, and whether the converter extracted it
+  or a model that read the page wrote or repaired it;
+* what the Read stage did to the manuscript, from its own ``ai_read`` account;
 * the citation ledger's counts by state, straight from ``read_run``;
 * tokens, minutes, agents, status, guard status and the run's own problems;
 * for a control, Stage A's false-allegation count, by Stage A's own rule.
 
+**Location is decided in the manuscript, not in the reviewer's prose.** A
+finding cites a quote, the engine anchored that quote to a line, and
+``map.json`` says which piece holds that line — so the key's phrases are looked
+for in the piece the finding cites and in the quote it took from it, rather than
+in the words the reviewer wrote around them. A reviewer who writes "Table 1" in
+a comment about Figure 3 is then not at the location, and one who quotes the
+table without naming it is.
+
 The yes/partly/no verdict is written by hand into the results document, with the
 finding quoted, because that is a reading and not a measurement. What this file
-guarantees is that the reading starts from every candidate the run produced, and
-that no cost number is retyped from a terminal.
+guarantees is that the reading starts from every candidate the run produced,
+that every candidate says which piece of the paper it rests on, and that no cost
+number is retyped from a terminal.
+
+A run folder is named by whoever made the run — a comparison names a pair of
+folders after the arm, not after the paper — so the paper is named with
+``--slug`` and the folder name is only a fallback.
 
     python scripts/spot/score.py <run folder> --slug medicine-oxytetracycline
     python scripts/spot/score.py --root ~/pra-spot --all      # every run on disk
+
+Runs made by a version before ``paper-base-v2`` are not scored here: their
+manuscript is blocks with ids rather than lines of ``paper.md``, so no finding
+in them cites a piece this file could name.
 """
 
 from __future__ import annotations
@@ -38,26 +58,36 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'stage_a'))
 from score import (  # noqa: E402
     ALLEGATION,
     SEVERE,
+    base_of,
+    base_refusal,
     brief,
     cost_of,
     counts,
     names_value,
     own_words_of,
+    piece_counts,
+    piece_text,
+    pieces_cited,
+    reader_of,
     reading_of,
     score_control,
     words_of,
 )
 
-#: What SPOT says is wrong, per chosen paper, in the two forms a scorer can use:
-#: ``where`` are phrases that put a finding at the annotated location, and
-#: ``values`` are numbers a finding has to name for the Stage A content rule to
-#: hold. ``cues`` are the words that would appear in a finding about this error;
-#: a cue hit is a candidate to read, not a catch. ``annotation`` is SPOT's own
-#: sentence, kept here so the reading never drifts from the benchmark.
+#: What SPOT says is wrong, per chosen paper, in the forms a scorer can use:
+#: ``where`` are phrases that put a *piece of the manuscript* at the annotated
+#: location — they are looked for in the piece a finding cites, not in the
+#: reviewer's prose — ``where_kinds`` are the kinds of piece the error lives in,
+#: and ``values`` are numbers a finding has to name for the Stage A content rule
+#: to hold. ``cues`` are the words that would appear in a finding about this
+#: error; a cue hit is a candidate to read, not a catch. ``annotation`` is
+#: SPOT's own sentence, kept here so the reading never drifts from the
+#: benchmark.
 KEYS = {
     'medicine-oxytetracycline': {
         'row': 66, 'kind': 'Statistical reporting', 'where_label': 'Table 1',
         'where': ['table 1', 'table. 1', 'pharmacokinetic parameter', 'loq', 'auc'],
+        'where_kinds': ['table'],
         'values': ['587.51', '1780.34'],
         'cues': [r'negative (?:value|auc|loq|concentration|parameter)',
                  r'cannot be negative', r'nonsensical', r'below zero', r'minus sign'],
@@ -68,6 +98,7 @@ KEYS = {
     'chemistry-photocatalytic': {
         'row': 8, 'kind': 'Data inconsistency', 'where_label': 'Fig. 4',
         'where': ['fig. 4', 'figure 4', 'fig 4', 'absorption spectra'],
+        'where_kinds': ['figure', 'figure-description', 'caption'],
         'values': [],
         'cues': [r'wavelenght', r'misspel', r'spelling', r'artefact', r'artifact',
                  r'spike', r'off[- ]scale', r'clipp', r'260\s*nm', r'unfiltered'],
@@ -79,6 +110,9 @@ KEYS = {
     'biology-dark-kinome': {
         'row': 6, 'kind': 'Reagent identity', 'where_label': 'Overall',
         'where': ['recombinant', 'kinase domain', 'protein fragment', 'reagent'],
+        # SPOT's annotation is "Overall": the reagents are named in the methods
+        # prose and in a supplementary table, so no kind of piece is the place.
+        'where_kinds': [],
         'values': [],
         'cues': [r'kinase domain', r'catalytic domain', r'lacks? the', r'truncat',
                  r'fragment (?:does not|lacks)', r'no intrinsic', r'not a kinase'],
@@ -90,6 +124,7 @@ KEYS = {
     'biology-cgrp': {
         'row': 53, 'kind': 'Figure duplication', 'where_label': 'Fig 5 and Fig 6',
         'where': ['fig. 5', 'figure 5', 'fig 5', 'fig. 6', 'figure 6', 'fig 6'],
+        'where_kinds': ['figure', 'figure-description', 'caption'],
         'values': [],
         'cues': [r'duplicat', r'same image', r'identical (?:image|panel|micrograph|field)',
                  r'reused', r're-?use of', r'overlap', r'cropped'],
@@ -100,6 +135,7 @@ KEYS = {
     'network-beamforming': {
         'row': 1, 'kind': 'Equation / proof', 'where_label': 'beamforming gain',
         'where': ['beamforming gain', 'combining gain', 'antenna element', '12.0 db'],
+        'where_kinds': ['equation'],
         'values': ['12.0'],
         'cues': [r'n\^?2', r'n\s*\*\*\s*2', r'squar', r'24(?:\.1)?\s*db', r'coherent',
                  r'gain of n\b', r'underestimat'],
@@ -113,10 +149,28 @@ KEYS = {
 CONTROLS = ('control-education-pmc7183109', 'control-microbiology-pmc8208984')
 
 
-def mentions_place(finding: dict, key: dict) -> bool:
-    """Whether a finding's own words land at the annotated location."""
-    said = words_of(finding).lower()
-    return any(phrase in said for phrase in key['where'])
+def where_hits(base, finding: dict, key: dict, cited: list) -> list:
+    """Which of the key's location phrases the piece this finding cites carries.
+
+    What is searched is the manuscript and not the review: the piece the cited
+    quote sits in — its own text and the section heading above it — together
+    with the quote. That is the one piece the finding is anchored to; the
+    evidence lines it also names are counted by :func:`at_kind` instead, where a
+    table two lines below the quoted sentence is a table the finding points at
+    without the paragraph having to mention it. A phrase in the reviewer's own
+    sentence is a cue, counted by :func:`mentions_cue`, and not a location —
+    naming Table 1 while discussing Figure 3 does not put a finding in Table 1.
+    """
+    located = cited[0] if cited else {}
+    said = ' '.join([piece_text(base, located), str(located.get('section') or ''),
+                     str(finding.get('quote') or '')]).lower()
+    return [phrase for phrase in key['where'] if phrase in said]
+
+
+def at_kind(key: dict, cited: list) -> bool:
+    """Whether the finding cites a piece of the kind the error lives in."""
+    kinds = [str(piece.get('kind') or '') for piece in cited]
+    return any(kind in (key.get('where_kinds') or []) for kind in kinds)
 
 
 def mentions_cue(finding: dict, key: dict) -> list:
@@ -131,17 +185,22 @@ def names_values(finding: dict, key: dict) -> list:
     return [value for value in key['values'] if names_value(said, value)]
 
 
-def score_paper(run: Path, slug: str, reading: dict | None = None) -> dict:
+def score_paper(run: Path, slug: str, reading: dict | None = None, base=None) -> dict:
     """Candidates, findings and cost for one paper with a known error."""
     key = KEYS[slug]
     reading = reading if reading is not None else reading_of(run)
+    base = base_of(run) if base is None else base
     findings = reading['findings']
-    candidates = []
+    briefs, candidates = [], []
     for finding in findings:
-        place, cues, values = (mentions_place(finding, key), mentions_cue(finding, key),
-                               names_values(finding, key))
+        cited = pieces_cited(base, finding)
+        row = brief(finding, base)
+        briefs.append(row)
+        place = where_hits(base, finding, key, cited)
+        cues, values = mentions_cue(finding, key), names_values(finding, key)
         if place or cues or values:
-            candidates.append({**brief(finding), 'at_location': place,
+            candidates.append({**row, 'at_location': bool(place), 'where_hits': place,
+                               'at_kind': at_kind(key, cited),
                                'cues': cues, 'values_named': values,
                                'stage_a_rule': bool(place and values and
                                                     len(values) == len(key['values']))})
@@ -154,8 +213,10 @@ def score_paper(run: Path, slug: str, reading: dict | None = None) -> dict:
         'issues_suggestions': (reading.get('counts') or {}).get('suggestions'),
         'candidates': candidates,
         'candidates_at_location': sum(1 for one in candidates if one['at_location']),
+        'candidates_at_kind': sum(1 for one in candidates if one['at_kind']),
         'candidates_by_cue': sum(1 for one in candidates if one['cues']),
         'caught_by_stage_a_rule': sum(1 for one in candidates if one['stage_a_rule']),
+        'candidate_pieces': piece_counts(candidates),
         'severe_allegations': sum(1 for finding in findings
                                   if ALLEGATION.search(words_of(finding))
                                   and str(finding.get('severity') or '').lower() in SEVERE),
@@ -164,10 +225,13 @@ def score_paper(run: Path, slug: str, reading: dict | None = None) -> dict:
         'findings_major': sum(1 for finding in findings
                               if str(finding.get('severity') or '').lower() in SEVERE),
         'quarantined': len(reading.get('quarantined') or []),
+        'reader': reader_of(base),
+        'manuscript_refusal': base_refusal(run) if base is None else '',
+        'finding_pieces': piece_counts(briefs),
         'citations': citations_of(reading),
-        'marker_shapes': marker_shapes(run, reading),
+        'marker_shapes': marker_shapes(base, reading),
         'citation_causes': citation_causes(run),
-        'all_findings': [brief(finding) for finding in findings],
+        'all_findings': briefs,
         **cost_of(reading),
     }
 
@@ -211,20 +275,17 @@ AUTHOR_YEAR = re.compile(r'[A-Z][A-Za-z-]{2,}'
                          r'[,\s]*\(?(?:1[89]|20)\d{2}\)?')
 
 
-def marker_shapes(run: Path, reading: dict) -> dict:
+def marker_shapes(base, reading: dict) -> dict:
     """Why the ledger found the in-text uses it found, or found none.
 
     A ledger with no use rows means the half of the lane that asks whether a
     source supports the claim never ran, and the reason is a property of the
     manuscript's text rather than of the lookups. So this counts, in the
-    converted manuscript, each marker shape the ledger can match and the one it
-    cannot: a superscript numeral, which arrives as digits glued to the end of
-    the preceding word.
+    manuscript the review was made against, each marker shape the ledger can
+    match and the one it cannot: a superscript numeral, which arrives as digits
+    glued to the end of the preceding word.
     """
-    text = ''
-    source = Path(run) / 'manuscript' / 'paper.md'
-    if source.is_file():
-        text = source.read_text(encoding='utf-8', errors='replace')
+    text = base.text if base is not None else ''
     uses = (reading.get('citations') or {}).get('counts', {}).get('uses')
     bracketed, glued = len(BRACKETED.findall(text)), len(GLUED_DIGITS.findall(text))
     author_year = len(AUTHOR_YEAR.findall(text))
@@ -297,31 +358,107 @@ def citation_causes(run: Path) -> dict:
 
 
 def score_one(run: Path, slug: str) -> dict:
-    """One run, scored as a control or against its key."""
+    """One run, scored as a control, against its key, or as neither.
+
+    A slug with no key here is scored anyway, as findings and cost and pieces
+    with no candidates: a comparison run of a paper that is not one of the five
+    is still a run whose numbers are worth having, and refusing it would stop
+    ``--all`` on the first folder it did not recognise.
+
+    A run whose manuscript cannot be read — a folder from before
+    ``paper-base-v2``, or one that never got as far as sealing one — is not
+    scored for candidates at all. Location is decided in the map over the
+    manuscript, so without one every finding would be reported as nowhere, and a
+    column of zeros reads like a result. Its findings and its cost are still
+    reported, with the refusal beside them.
+    """
     reading = reading_of(run)
-    if slug in CONTROLS:
-        row = score_control(run, slug, reading)
-        row['citations'] = citations_of(reading)
-        row['marker_shapes'] = marker_shapes(run, reading)
-        row['citation_causes'] = citation_causes(run)
-        row['findings_major'] = sum(1 for finding in reading['findings']
-                                    if str(finding.get('severity') or '').lower() in SEVERE)
-        row['all_findings'] = [brief(finding) for finding in reading['findings']]
-        return row
-    return score_paper(run, slug, reading)
+    base = base_of(run)
+    if base is None:
+        return unkeyed(run, slug, reading, kind='not scored',
+                       annotation='This run\'s manuscript could not be read, so no finding in '
+                                  'it could be put in a piece of the paper: '
+                                  + base_refusal(run))
+    if slug in KEYS:
+        return score_paper(run, slug, reading, base)
+    row = (score_control(run, slug, reading, base) if slug in CONTROLS
+           else unkeyed(run, slug, reading, base))
+    row['citations'] = citations_of(reading)
+    row['marker_shapes'] = marker_shapes(base, reading)
+    row['citation_causes'] = citation_causes(run)
+    row['all_findings'] = [brief(finding, base) for finding in reading['findings']]
+    row['finding_pieces'] = piece_counts(row['all_findings'])
+    return row
+
+
+def unkeyed(run: Path, slug: str, reading: dict, base=None, kind: str = 'no key',
+            annotation: str = '') -> dict:
+    """A run with no candidates in it: everything measurable, and why.
+
+    Two runs end here: one of a paper SPOT has no key for, and one whose
+    manuscript could not be read. Both are real rows — the findings and the cost
+    are the arm's answer for that paper — and both say in ``kind`` and
+    ``annotation`` which they are, so a table never shows an empty candidate
+    count as a run that found nothing.
+    """
+    findings = reading['findings']
+    return {
+        'run': str(run), 'paper': slug, 'kind': kind,
+        'annotation': annotation or 'No SPOT key for this paper, so nothing here is '
+                                    'a candidate.',
+        'findings_total': len(findings),
+        'issues_total': (reading.get('counts') or {}).get('issues'),
+        'issues_required': (reading.get('counts') or {}).get('required'),
+        'issues_suggestions': (reading.get('counts') or {}).get('suggestions'),
+        'findings_by_slot': counts(findings, 'slot'),
+        'findings_by_severity': counts(findings, 'severity'),
+        'findings_major': sum(1 for finding in findings
+                              if str(finding.get('severity') or '').lower() in SEVERE),
+        'severe_allegations': sum(1 for finding in findings
+                                  if ALLEGATION.search(words_of(finding))
+                                  and str(finding.get('severity') or '').lower() in SEVERE),
+        'quarantined': len(reading.get('quarantined') or []),
+        'reader': reader_of(base),
+        'manuscript_refusal': base_refusal(run) if base is None else '',
+        **cost_of(reading),
+    }
+
+
+#: Words a run folder's name carries that are about the run and not about the
+#: paper: a comparison makes one folder per arm — ``cmp-antenna-on`` and
+#: ``cmp-antenna-off`` — and the arm is read from the manuscript's own
+#: ``ai_read`` rather than from the name, so it is stripped here.
+ARM_WORDS = ('cmp-', 'reader-trial-', 'reader-rerun-', 'reader-rerun2-')
+
+#: The short names a run folder is called by, where the name is not part of the
+#: slug at all. ``antenna`` is the beamforming paper, named for what it is about
+#: rather than for its SPOT row.
+ALIASES = {'antenna': 'network-beamforming', 'antibiotic': 'medicine-oxytetracycline',
+           'education': 'control-education-pmc7183109',
+           'microbiology': 'control-microbiology-pmc8208984'}
 
 
 def slug_of(run: Path) -> str:
-    """The paper a run folder is about, from its own name.
+    """The paper a run folder is about, from its own name, as a fallback.
 
-    A run folder is named for the short half of the slug — ``runs/beamforming``
-    for ``network-beamforming``, ``runs/control-education`` for
-    ``control-education-pmc7183109`` — so the folder name can be either the
-    tail of the slug or its head. Both are matched; an unmatched name is
-    returned as it is, and :func:`score_paper` then says which key is missing
-    rather than guessing one.
+    ``--slug`` is how a run says which paper it is about, because a folder name
+    is whatever the person who made the run chose. This is for the runs named
+    after the paper: the folder name can be the tail of the slug
+    (``runs/beamforming`` for ``network-beamforming``), its head
+    (``runs/control-education`` for ``control-education-pmc7183109``), the slug
+    itself, or a short name in :data:`ALIASES`, with any arm word stripped
+    first. An unmatched name is returned as it is and scored by
+    :func:`unkeyed`, which says there is no key rather than guessing one.
     """
     name = Path(run).name
+    for word in ARM_WORDS:
+        if name.startswith(word):
+            name = name[len(word):]
+    for word in ('-on', '-off'):
+        if name.endswith(word):
+            name = name[:-len(word)]
+    if name in ALIASES:
+        return ALIASES[name]
     for slug in (*KEYS, *CONTROLS):
         if name in {slug} or name.startswith(slug) or slug.endswith(name) \
                 or slug.startswith(name):
@@ -353,10 +490,14 @@ def main(argv=None) -> int:
     if out:
         out.write_text(''.join(json.dumps(row) + '\n' for row in rows), encoding='utf-8')
     for row in rows:
-        print(f"{row['paper']:34} findings {row.get('findings_total', 0):>3} "
+        pieces = row.get('finding_pieces') or {}
+        print(f"{Path(row['run']).name:22} {row['paper']:30} "
+              f"{'reader' if (row.get('reader') or {}).get('read') else 'converter':9} "
+              f"findings {row.get('findings_total', 0):>3} "
               f"({row.get('findings_major', 0):>2} major) "
               f"candidates {len(row.get('candidates', row.get('allegations', []))):>3} "
-              f"uses {str((row.get('marker_shapes') or {}).get('uses')):>4} "
+              f"display {pieces.get('citing_display', 0):>3} "
+              f"on reader text {pieces.get('on_reader_text', 0):>3} "
               f"tokens {row.get('tokens', 0):>9,} {row.get('minutes', 0):>5} min "
               f"{'publishable' if row.get('publishable') else 'NOT publishable'}")
     return 0

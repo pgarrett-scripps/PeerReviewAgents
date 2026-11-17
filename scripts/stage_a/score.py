@@ -44,6 +44,18 @@ mid-write is read as far as it can be read instead of raising; and every row
 carries ``publishable`` and ``problems``, so a score computed from a damaged
 folder says so in the table rather than passing as a whole review.
 
+**Which piece of the paper a finding is about.** A run folder holds the
+manuscript the review was made against — ``paper.md`` and the ``map.json`` over
+it — so the piece behind a finding is in the run and not somewhere else. A
+finding cites a line, the map has one row per piece covering a range of lines,
+and that row says what the piece is (a paragraph, a table, an equation, a figure
+description), what page it came off, and who wrote it: the converter, or a model
+that read the page and wrote or repaired it. :func:`brief` carries that row with
+every finding when the manuscript is readable, which is what lets a results
+table count the findings that rest on a display item and the findings that rest
+on text a model wrote. A folder with no manuscript scores its findings with no
+piece behind any of them, and says so.
+
 Nothing here makes a model call.
 """
 
@@ -55,6 +67,8 @@ import re
 import sys
 from pathlib import Path
 
+from peerreviewagents import read_manuscript
+from peerreviewagents.engine import quotes
 from peerreviewagents.engine.paper_base import MAIN_DOCUMENT
 from peerreviewagents.issues import lines_of
 from peerreviewagents.runs import NotARunFolder, read_run
@@ -190,6 +204,170 @@ def findings_of(run: Path) -> list:
     return reading_of(run)['findings']
 
 
+#: The piece kinds that are not prose: a finding that cites one of these is
+#: about something the page laid out — a table, an equation, a figure — rather
+#: than about a sentence. ``figure-description`` is the reader's own account of
+#: a figure the converter could only name, and it is a figure for this purpose.
+DISPLAY_KINDS = ('table', 'equation', 'figure', 'figure-description')
+
+#: What a map row's ``source`` says about who wrote the piece a finding cites.
+#: ``text`` is the converter's extraction, ``ai`` a piece a model wrote where
+#: the converter had nothing, and ``ai-reconstructed`` one a model repaired,
+#: with the converter's own reading kept beside it in ``original``.
+WROTE = {'text': 'the converter', 'ai': 'written by the reader',
+         'ai-reconstructed': 'repaired by the reader'}
+
+#: One loaded manuscript per run folder, as ``(base, refusal)``. A score walks
+#: every finding of a run and every finding names a line, so the base is read
+#: once and asked many times rather than re-read per finding.
+_BASES: dict = {}
+
+
+def base_of(run: Path):
+    """The manuscript the run was reviewed against, or ``None`` with a reason.
+
+    The workspace is the run's own ``manuscript/`` folder, and it is read by
+    :func:`peerreviewagents.read_manuscript` rather than by opening
+    ``map.json`` here, so a folder in a shape this version does not read — the
+    old ``paper.json`` blocks, a ``paper-base-v1`` map — is refused by name
+    instead of half-understood. :func:`base_refusal` carries that refusal into
+    the results row, because a score with no piece behind any finding and a
+    score of a paper nothing was cited in are different results.
+    """
+    folder = Path(run).expanduser() / 'manuscript'
+    key = str(folder)
+    if key not in _BASES:
+        try:
+            _BASES[key] = (read_manuscript(folder), '')
+        except (NotARunFolder, FileNotFoundError, NotADirectoryError, ValueError,
+                OSError) as refusal:
+            _BASES[key] = (None, str(refusal))
+    return _BASES[key][0]
+
+
+def base_refusal(run: Path) -> str:
+    """Why this run's manuscript could not be read, or ``''`` when it was."""
+    base_of(run)
+    return _BASES[str(Path(run).expanduser() / 'manuscript')][1]
+
+
+def reader_of(base) -> dict:
+    """What the Read stage did to this manuscript, from the manifest's ``ai_read``.
+
+    ``actions`` counts pieces that are still in the manuscript, one tally per
+    act, and ``gone`` counts pieces that have left it — folded into another,
+    merged, withdrawn — kept at the time of the act. The two do not add up, and
+    both are the reader's own numbers rather than anything recomputed here.
+    """
+    read = (base.manifest.get('ai_read') if base is not None else None) or {}
+    read = read if isinstance(read, dict) else {}
+    return {'read': bool(read.get('read')),
+            'reader_model': str(read.get('reader_model') or ''),
+            'pages_viewed': read.get('pages_viewed'),
+            'pages': read.get('pages'),
+            'actions': dict(read.get('actions') or {}),
+            'gone': dict(read.get('gone') or {}),
+            'tool_calls': read.get('tool_calls'),
+            'lost_pages': list(read.get('lost_pages') or []),
+            # The reader's note when one read the pages, and the reason nothing
+            # did when none did: the two fields that say what happened.
+            'note': str(read.get('note') or read.get('reason') or '')}
+
+
+def piece_at_line(base, line, document=MAIN_DOCUMENT, how='anchor') -> dict:
+    """The piece holding this line, as a results row records a location.
+
+    *how* is how the line was arrived at — the finding's anchor, a search for
+    its quote, an evidence line, a corroborating passage — and it is kept
+    because a piece found by searching for an unanchored quote is a weaker
+    location than one the engine anchored when it recorded the finding.
+    """
+    row = base.piece_at(line, document) if base is not None and line else None
+    if not row:
+        return {}
+    source = str(row.get('source') or 'text')
+    original = row.get('original') if isinstance(row.get('original'), dict) else {}
+    folded = [one for field in ('absorbed', 'merged')
+              for one in (original.get(field) or []) if isinstance(one, dict)]
+    piece = {'document': document, 'line': int(line), 'located_by': str(how),
+             'lines': [int(row['lines'][0]), int(row['lines'][1])],
+             'kind': str(row.get('kind') or ''), 'page': row.get('page'),
+             'section': row.get('section'), 'source': source,
+             'written': WROTE.get(source, source),
+             'from_reader': source != 'text',
+             'reader_wrote': source == 'ai',
+             'reader_repaired': source == 'ai-reconstructed',
+             'display': str(row.get('kind') or '') in DISPLAY_KINDS}
+    # What the converter had here before a model repaired it: the kind it read
+    # the piece as, which is how a paragraph re-read as an equation shows up,
+    # and how many of its pieces were folded into this one.
+    if original.get('kind'):
+        piece['was'] = str(original['kind'])
+    if folded:
+        piece['folded_in'] = len(folded)
+    return piece
+
+
+def _quote_lines(base, finding, document) -> list:
+    """The line a finding's quote sits on, when the finding carries no anchor.
+
+    A quarantined row, or one from a run that recorded no ``piece_lines``, has
+    its quote looked for in the document. A quote that occurs twice is no
+    location — the same words in two places do not say which one the finding
+    means — and a quote too short to identify a passage is not searched for at
+    all, by the same rule :func:`in_place` uses.
+    """
+    quote = str(finding.get('quote') or finding.get('anchor_text') or '')
+    if base is None or len(squash(quote)) < 12:
+        return []
+    found = quotes.placements(base, quote, document=document)
+    return [int(found[0]['line'])] if len(found) == 1 else []
+
+
+def pieces_cited(base, finding) -> list:
+    """Every piece of the manuscript a finding points at, its location first.
+
+    The location is where the cited quote sits: the engine anchored the quote to
+    a line when it recorded the finding, so the map row holding that line is the
+    piece the finding is about. Evidence lines and a corroborating passage come
+    after it, because a finding that quotes a paragraph while pointing at the
+    table under it is a finding about the table too, and a count of findings
+    that rest on a table would miss it otherwise.
+    """
+    if base is None:
+        return []
+    document = str(finding.get('document') or MAIN_DOCUMENT)
+    anchored = lines_of({'line': finding.get('line'), 'end_line': finding.get('end_line')})
+    places = [(number, document, 'anchor') for number in anchored]
+    if not places:
+        places = [(number, document, 'quote')
+                  for number in _quote_lines(base, finding, document)]
+    places += [(number, document, 'evidence')
+               for number in lines_of({'evidence_lines': finding.get('evidence_lines')})]
+    corroborating = finding.get('corroborating')
+    if isinstance(corroborating, dict):
+        second = str(corroborating.get('document') or document)
+        places += [(number, second, 'corroborating') for number in lines_of(corroborating)]
+    out, seen = [], set()
+    for number, name, how in places:
+        piece = piece_at_line(base, number, name, how)
+        if not piece:
+            continue
+        where = (name, tuple(piece['lines']))
+        if where not in seen:
+            seen.add(where)
+            out.append(piece)
+    return out
+
+
+def piece_text(base, piece) -> str:
+    """The manuscript's own lines for one cited piece, as they stand."""
+    lines = (piece or {}).get('lines') or []
+    if base is None or len(lines) != 2:
+        return ''
+    return base.range_text(lines[0], lines[1], piece.get('document') or MAIN_DOCUMENT)
+
+
 def cost_of(reading: dict) -> dict:
     """Tokens, minutes, agents and status, as the run itself recorded them.
 
@@ -227,26 +405,52 @@ def cost_of(reading: dict) -> dict:
     }
 
 
-def brief(finding: dict) -> dict:
-    """The part of a finding worth putting in a results table."""
-    return {field: finding.get(field) for field in
-            ('finding_uid', 'title', 'slot', 'role', 'track', 'severity', 'kind', 'basis',
-             'document', 'line', 'quote', 'escalate')}
+def brief(finding: dict, base=None) -> dict:
+    """The part of a finding worth putting in a results table.
+
+    With *base* — the run's own manuscript — the row also says which piece of
+    the paper the finding cites and who wrote that piece, in ``piece``, and
+    carries the four questions a table counts over as their own fields:
+    ``cites_kinds`` is every kind of piece this finding points at,
+    ``cites_display`` whether one of them is a table, an equation or a figure,
+    and ``cites_reader_text`` whether one of them is text a model wrote or
+    repaired rather than the converter's extraction. Without a base the row is
+    the finding alone, because an unreadable manuscript is not an answer of
+    ``false`` to any of those questions.
+    """
+    row = {field: finding.get(field) for field in
+           ('finding_uid', 'title', 'slot', 'role', 'track', 'severity', 'kind', 'basis',
+            'document', 'line', 'quote', 'escalate')}
+    if base is None:
+        return row
+    cited = pieces_cited(base, finding)
+    row['piece'] = cited[0] if cited else {}
+    row['cites_kinds'] = sorted({piece['kind'] for piece in cited if piece.get('kind')})
+    row['cites_display'] = any(piece.get('display') for piece in cited)
+    row['cites_reader_text'] = any(piece.get('from_reader') for piece in cited)
+    row['cites_reader_written'] = any(piece.get('reader_wrote') for piece in cited)
+    row['cites_reader_repaired'] = any(piece.get('reader_repaired') for piece in cited)
+    return row
 
 
-def score(run: Path, key: dict, reading: dict | None = None) -> dict:
-    """Did this run catch the planted error, and what did it cost?"""
+def score(run: Path, key: dict, reading: dict | None = None, base=None) -> dict:
+    """Did this run catch the planted error, and what did it cost?
+
+    *base* is the manuscript the run was reviewed against, read from the run
+    folder when it is not passed, and ``None`` for a folder that holds none.
+    """
     reading = reading if reading is not None else reading_of(run)
+    base = base_of(run) if base is None else base
     findings = reading['findings']
     caught, near_place, near_content = [], [], []
     for finding in findings:
         placed, about = in_place(finding, key), about_it(finding, key)
         if placed and about:
-            caught.append(brief(finding))
+            caught.append(brief(finding, base))
         elif placed:
-            near_place.append(brief(finding))
+            near_place.append(brief(finding, base))
         elif about:
-            near_content.append(brief(finding))
+            near_content.append(brief(finding, base))
     tracks = {}
     for finding in findings:
         tracks[str(finding.get('track') or 'unknown')] = \
@@ -256,13 +460,15 @@ def score(run: Path, key: dict, reading: dict | None = None) -> dict:
     # separately: it says the brief needs fixing, not that the reviewers failed.
     # The place rule reaches a quarantined row through the line it cites, which
     # the guard leaves in place even when it rejects the quote.
-    held = [brief(finding) for finding in (reading.get('quarantined') or [])
+    held = [brief(finding, base) for finding in (reading.get('quarantined') or [])
             if in_place(finding, key) and about_it(finding, key)]
     return {
         'run': str(run),
         'paper': key['paper'],
         'kind': key['kind'],
         'rule': key['rule'],
+        'reader': reader_of(base),
+        'manuscript_refusal': base_refusal(run) if base is None else '',
         'caught': bool(caught),
         'caught_by': caught,
         'first_catch': caught[0] if caught else None,
@@ -291,7 +497,28 @@ def counts(findings: list, field: str) -> dict:
     return dict(sorted(out.items()))
 
 
-def score_control(run: Path, paper: str = '', reading: dict | None = None) -> dict:
+def piece_counts(rows: list) -> dict:
+    """What these findings cite, over briefs made with a base.
+
+    ``unlocated`` is the number whose quote could not be put in a piece, and it
+    is reported beside the others because a run whose findings cite nothing
+    locatable has to look different from one whose findings all cite prose.
+    """
+    kinds = {}
+    for row in rows:
+        kind = str((row.get('piece') or {}).get('kind') or 'nothing')
+        kinds[kind] = kinds.get(kind, 0) + 1
+    return {
+        'by_piece_kind': dict(sorted(kinds.items())),
+        'citing_display': sum(1 for row in rows if row.get('cites_display')),
+        'on_reader_text': sum(1 for row in rows if row.get('cites_reader_text')),
+        'on_reader_written': sum(1 for row in rows if row.get('cites_reader_written')),
+        'on_reader_repaired': sum(1 for row in rows if row.get('cites_reader_repaired')),
+        'unlocated': sum(1 for row in rows if not (row.get('piece') or {}).get('kind')),
+    }
+
+
+def score_control(run: Path, paper: str = '', reading: dict | None = None, base=None) -> dict:
     """What a run alleged on a paper with nothing planted in it.
 
     The rule is the same shape as the catching rule: a finding counts as a
@@ -301,20 +528,25 @@ def score_control(run: Path, paper: str = '', reading: dict | None = None) -> di
     allegation of this sort, however fair it is.
     """
     reading = reading if reading is not None else reading_of(run)
+    base = base_of(run) if base is None else base
     findings = reading['findings']
-    alleged = [brief(finding) for finding in findings
+    alleged = [brief(finding, base) for finding in findings
                if ALLEGATION.search(words_of(finding))
                and str(finding.get('severity') or '').lower() in SEVERE]
     return {
         'run': str(run),
         'paper': paper or Path(run).name,
         'kind': 'control',
+        'reader': reader_of(base),
+        'manuscript_refusal': base_refusal(run) if base is None else '',
         'findings_total': len(findings),
         'issues_total': (reading.get('counts') or {}).get('issues'),
         'issues_required': (reading.get('counts') or {}).get('required'),
         'issues_suggestions': (reading.get('counts') or {}).get('suggestions'),
         'planted_style_allegations': len(alleged),
         'allegations': alleged,
+        'findings_major': sum(1 for finding in findings
+                              if str(finding.get('severity') or '').lower() in SEVERE),
         'findings_by_slot': counts(findings, 'slot'),
         'findings_by_severity': counts(findings, 'severity'),
         'quarantined': len(reading.get('quarantined') or []),
