@@ -20,12 +20,13 @@ import re
 from pathlib import Path
 
 import pytest
+from manuscripts import build_base, seal_converted
 
 from peerreviewagents import names
 from peerreviewagents.engine import paper_base
 from peerreviewagents.engine import reader as read_stage
 from peerreviewagents.engine.ingest import DRAFT_FILE, convert_paper
-from peerreviewagents.engine.storage import write
+from peerreviewagents.engine.storage import digest, write
 from peerreviewagents.plugin import models as model_plan
 from peerreviewagents.plugin import server as srv
 
@@ -1011,6 +1012,70 @@ def test_the_reader_cannot_work_after_the_seal(tmp_path):
     # reading's accounting behind to be read as outstanding work.
     progress = json.loads((srv.current().review / 'progress.json').read_text(encoding='utf-8'))
     assert progress['read'] == {'sealed': True, 'outstanding': None}
+
+
+def test_a_reader_claiming_after_the_seal_is_refused_in_words(tmp_path):
+    """The claim is answered. A slot that cannot be served says why, not how it broke."""
+    opened = drafted(tmp_path)
+    assert opened['reader'] is not None, 'this run opened on a draft, so it planned a reader'
+    seal_converted(opened)
+    # The reader that was planned arrives late — a slow spawn, a retry, a
+    # reader the recorder gave up waiting for and sealed around — and finds the
+    # manuscript written. Its claim is refused in words a model can act on
+    # rather than raising out of a desk built over a draft that is gone.
+    refused = srv.claim_agent('reader', CODES['reader'])
+    assert 'request_rejected' in refused, refused
+    assert 'sealed' in refused['request_rejected']
+    assert 'nothing to read' in refused['request_rejected']
+    assert 'Read stage is over' in refused['request_rejected']
+    # And it is the state that refuses, not the code: a reader holding the
+    # right code is told the same thing, and the run is untouched either way.
+    assert 'request_rejected' in srv.claim_agent('reader', 'not-the-code')
+    assert srv.current().agents.get('reader') is None
+    assert 'agent_token' in srv.claim_agent('core-1', CODES['core-1'])
+
+
+def test_a_manuscript_sealed_before_the_run_opened_plans_no_reader_at_all(tmp_path):
+    """An application's own source: nothing here converted it, so there is no stage.
+
+    ``write_manuscript`` is the call an application writes its own manuscript
+    with, and a folder that already holds one arrives with paper.md, map.json
+    and citable lines. The run planned a reader slot there anyway — a code
+    handed back for a stage that could not run, and a claim that raised rather
+    than answered. A slot nobody can claim is not planned.
+    """
+    root = tmp_path / 'run'
+    build_base(root / names.MANUSCRIPT_DIRECTORY,
+               [{'kind': 'title', 'text': 'A manuscript the application wrote',
+                 'section': 'Title'},
+                {'kind': 'paragraph', 'text': 'These lines were written by the application '
+                 'that holds the paper, from its own source, and they are citable already.',
+                 'section': '1 Introduction'}],
+               # The source the application names is the one being reviewed, so
+               # the folder guard reads this as the same manuscript rather than
+               # a different paper in a reused folder.
+               manifest={'source': {'file': FIXTURE.name, 'pages': 1,
+                                    'sha256': digest(FIXTURE.read_bytes())}})
+    opened = srv.ingest(str(FIXTURE), str(root), reviewers=1, arm='single')
+    assert 'request_rejected' not in opened, opened
+    assert opened['sealed'] is True
+    assert opened['reader'] is None, 'there is no Read stage, so there is no reader to spawn'
+    codes = {row['slot']: row['claim_code'] for row in opened['claim_codes']}
+    assert 'reader' not in codes, 'no code is handed back for a slot nobody can claim'
+    assert 'core-1' in codes and 'recorder' in codes
+    assert 'reader' not in srv.current().models, 'and no model is planned to run it'
+    # Asked for anyway, the slot is refused in words that name the seal — the
+    # same answer whatever code is offered, because the stage is what is
+    # missing and not the identity.
+    refused = srv.claim_agent('reader', 'any-code-at-all')
+    assert 'request_rejected' in refused, refused
+    assert 'already sealed' in refused['request_rejected']
+    assert 'nothing to read' in refused['request_rejected']
+    # The stages this run does have work: the lines are written, so a reviewer
+    # reads the manuscript the application handed in.
+    taken = srv.claim_agent('core-1', codes['core-1'])
+    assert 'agent_token' in taken, taken
+    assert 'request_rejected' not in srv.read_paper(taken['agent_token'])
 
 
 def test_the_readers_allowance_is_the_size_of_what_it_has_to_read(tmp_path):

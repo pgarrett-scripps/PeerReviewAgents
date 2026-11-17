@@ -225,7 +225,12 @@ meets this: its pieces are the app's, and no PDF was converted.)
 
 `write_manuscript` needs no reader and seals at once: an app that parses its
 own Typst or LaTeX source already has the equation, so there is nothing to read
-off a page image. Its manifest records `{"read": false, "reason": …}` too.
+off a page image. Its manifest records `{"read": false, "reason": …}` too. A
+run opened over such a folder — or over one a run already read and sealed —
+has no Read stage, and so no reader slot: `ingest` returns `reader: null`, no
+claim code is minted for it, no model is planned for it, and asking for the
+slot is refused in words that name the seal. The same refusal answers a reader
+that claims after the manuscript was sealed around it.
 
 #### What the manifest and the map say about it
 
