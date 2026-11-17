@@ -220,6 +220,17 @@ and most network-bound track and the one an author usually wants before
 submission. Without that track, `draft-check` writes no `citations/` folder and
 `read_run()['citations']['enabled']` is `False`.
 
+## Not a study arm: `--code`
+
+`--code <folder or repository URL>` adds one specialist to whichever arm is
+running: the lane that reads the paper's methods against the code behind it,
+from a read-only snapshot of that code's text taken into `<run>/code/`. It is
+not an arm and does not replace one — every other slot runs exactly as it
+would have — so a comparison that adds it is measuring one more lane and
+nothing else. An arm that runs no specialists (`single`, `manuscript-only`,
+`reviewers-only`) refuses it by name rather than ignoring it, because a code
+review with no specialist in the plan is a flag that did nothing.
+
 ## What an arm cannot change
 
 - **The model.** The arm does not choose it: the model flags above do, the same

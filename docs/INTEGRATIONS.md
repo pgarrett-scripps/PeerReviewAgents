@@ -6,7 +6,7 @@ inside a session, so there is nothing to wire up twice.
 
 ```
 peerreview review     peerreviewagents/plugin/pra   peerreviewagents.plugin.server
-  (the command)      →     (workflow, agents,     →   (39 MCP tools, the ledger,
+  (the command)      →     (workflow, agents,     →   (42 MCP tools, the ledger,
                             skills, .mcp.json)         the run files)
 ```
 
@@ -329,7 +329,7 @@ Then ask for one of its three skills:
 | `follow-up` | what changed since a previous run of the same paper |
 
 The agents may call only the server's tools — the allow list the starter passes
-is `Workflow`, `Skill`, `TodoWrite` and the 39 `peerreview` tools, and nothing
+is `Workflow`, `Skill`, `TodoWrite` and the 42 `peerreview` tools, and nothing
 else. No `Read`, `Write`, `Edit`, `Bash`, `WebSearch` or `WebFetch` reaches a
 reviewer, which is why a quotation cannot come from anywhere but the
 manuscript the server served.
@@ -482,10 +482,10 @@ Keys: `status`, `complete`, `publishable`, `not_publishable_reasons`, `blocked`,
 `cause`, `note`, `stage`, `findings`, `issues`, `issues_source`, `prior_round`,
 `findings_source`, `counts`, `quarantined`, `citations`, `guard_status`,
 `escalations`, `escalation_rulings`, `summary`, `verdict`, `limitations`,
-`identity`, `manuscript`, `stages`, `runtime`, `agents`, `usage`, `reports`,
-`startup`, `startup_problems`, `problems`, `files`, `run`, `review`. The same
-35 keys come back for every folder, in every state, so a consumer never has to
-test whether a key is there.
+`identity`, `manuscript`, `code`, `stages`, `runtime`, `agents`, `usage`,
+`reports`, `startup`, `startup_problems`, `problems`, `files`, `run`, `review`.
+The same 36 keys come back for every folder, in every state, so a consumer
+never has to test whether a key is there.
 
 #### What state the manuscript is in
 
@@ -507,6 +507,46 @@ account of the document if it left one, and `documents`. Before
 this, telling a run whose read stopped from one that never started meant
 looking for `draft.json` by name, which is this package's working file and not
 part of the folder a consumer is promised.
+
+#### Whether code was reviewed beside the paper
+
+`run["code"]` answers it. `reviewed` is `False` for every run that was given no
+code — which is most of them, and all of them before 0.10.0 — and the rest of
+the block is empty rather than absent, so a page renders it without testing for
+keys.
+
+| Key | What it says |
+| --- | --- |
+| `reviewed` | whether this run read code at all |
+| `kind`, `source` | `git-clone` or `folder`, and where it came from as the caller named it: the URL for a clone, the resolved path for a folder |
+| `commit`, `branch`, `dirty` | the state the code was in. `dirty` is `None` for a snapshot of something that is not a repository |
+| `snapshot` | the absolute path of `<run>/code/`, which holds `manifest.json` and the text under `files/` |
+| `files_in_snapshot`, `files_skipped` | what was taken, and how many paths were left out — a binary, a data file, one over the size caps, one that may hold secrets, or a whole folder or symbolic link never walked into, which each count once |
+| `truncated` | why the snapshot stopped early, in words; empty for one that holds the whole of what it was pointed at |
+| `manifest` | the snapshot's own manifest, which names everything either way, with a digest per file taken and a reason per path skipped |
+| `files_opened`, `opened`, `searches` | what a reviewer actually did with it |
+
+The last row is the one worth printing beside the first. A lane that opened no
+file read the paper and nothing else, and a page that said only "code:
+reviewed" could not have told anyone so. `REVIEW.md` prints the same line from
+the same record.
+
+A finding from that lane carries `code_evidence` — `path`, `start_line`,
+`end_line` and `text` — and its `basis` is `code-checked`: the server found
+that text at those lines in the snapshot before it stored the finding, and
+refused it outright otherwise. The paper quote is there as on every other
+finding, anchored the same way, so highlighting one is unchanged.
+
+`path` names a file of the snapshot, and the lines are that file's lines as the
+snapshot holds them. For a notebook they are lines of the extracted cells, not
+of the JSON: the manifest row and `read_code` both carry `extracted`
+(`"notebook cells"`, or empty for a file stored as it is), and a `# %% notebook
+cell N (code)` marker in the text is where each cell begins. An application
+showing code evidence reads it out of `<run>/code/files/<path>`, which is the
+text the lines were counted in: line endings are folded to LF on the way into
+the snapshot, so a CRLF repository is numbered the way its author's editor
+numbers it, and the manifest row's `bytes` and `sha256` are of that stored
+copy rather than of the original file.
 
 #### Highlighting a citation
 

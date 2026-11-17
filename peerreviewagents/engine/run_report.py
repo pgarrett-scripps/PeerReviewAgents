@@ -527,6 +527,47 @@ def _review(heading, review):
     return blocks
 
 
+def _code_line(progress):
+    """What the page says about the code this paper was checked against.
+
+    ``None`` for a run that was given none, which is most of them: a row
+    reading "Code reviewed: no" on every other review tells a reader nothing.
+    Where there was code, the line is what an author needs in order to answer
+    back — which code, at which commit, and how much of it a reviewer opened,
+    because "the code was reviewed" over a lane that opened one file of forty
+    is a claim the folder does not support.
+
+    A local folder is named by its own name and not its path, for the reason
+    ``Run folder`` is: REVIEW.md goes to authors and editors, and the absolute
+    path names the home directory of whoever ran the review. A URL is printed
+    whole, because that is the name of the remote and the authors' own.
+    """
+    record = progress.get('code')
+    if not isinstance(record, dict) or not record.get('reviewed'):
+        return None
+    source = str(record.get('source') or '')
+    if record.get('kind') == 'folder':
+        source = Path(source).name if source else ''
+    line = source or 'the code this run was given'
+    commit = str(record.get('commit') or '')
+    if commit:
+        line += ' at ' + commit[:12]
+        if record.get('dirty'):
+            line += ' with uncommitted changes'
+    files, opened = record.get('files_in_snapshot'), record.get('opened')
+    if isinstance(files, int) and isinstance(opened, int):
+        line += f', {opened} of {files} file(s) opened'
+    skipped = record.get('files_skipped')
+    if isinstance(skipped, int) and skipped:
+        # Paths, not files: a folder never walked into is one entry, which is
+        # what keeps a vendored dependency tree from being ten thousand.
+        line += f', {skipped} path(s) left out of the snapshot'
+    truncated = str(record.get('truncated') or '')
+    if truncated:
+        line += f' ({truncated})'
+    return line
+
+
 def report_blocks(run, workspace=None):
     """Collect the run details, final review and each independent reviewer as renderable blocks."""
     run = Path(run).resolve()
@@ -581,6 +622,7 @@ def report_blocks(run, workspace=None):
               ('Models asked for', ', '.join(asked) or None),
               ('Models that ran', ', '.join(models) or None),
               ('Literature cutoff', protocol.get('literature_cutoff')),
+              ('Code reviewed', _code_line(progress)),
               ('Run status', status),
               ('Agents', len(agents) or None),
               ('Server tool calls', _total(agents, 'tool_calls')),

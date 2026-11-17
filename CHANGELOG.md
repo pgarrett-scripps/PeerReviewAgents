@@ -58,6 +58,54 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A review can read the code behind the paper: `--code <folder or
+  repository URL>`, `code=` on `review()` and on `ingest`.** A URL is cloned
+  shallow with hooks and submodules off; either way the *text* of that code —
+  source, configuration, notebooks, documentation, skipping binaries, data
+  files and anything over the size caps — is snapshotted into `<run>/code/`
+  beside a manifest naming the origin, the commit, every file taken with its
+  digest and everything left out with the reason. The snapshot is what the
+  review reads, so a finding cites code that is still there a year later.
+  Three rules decide what lands there. A notebook is stored as its cells —
+  code and markdown in order, each marked with its cell number, every output
+  dropped — with the file cap applied to those cells and not to the base64 a
+  single figure puts in the file, because otherwise the notebooks much
+  analysis lives in were either skipped for their own output or served as
+  JSON noise; the manifest row and `read_code` say `extracted` so a reader
+  knows the cited lines are lines of the cells. Nothing that may hold secrets
+  is copied: `.env` and `*.env` and `.env.*`, keys and certificates,
+  `credentials*`, `secrets*`, `.netrc`, `.npmrc`, `.pypirc` are skipped by
+  name with that as the reason, since the snapshot is served to a model and a
+  credential copied into it is a credential handed out. And a folder the walk
+  refuses or a symbolic link out of the snapshot is recorded once, by its own
+  path rather than by the files under it, so the record says what was never
+  looked at without a dependency tree filling it. Line endings are folded to
+  LF on the way in and the copy is written and read back with the platform's
+  translation off: a CRLF repository is numbered the way its author's editor
+  numbers it on whatever machine the review runs on, and `bytes` and `sha256`
+  are of the stored copy, so a reader can recompute them from `files/`.
+  One more specialist is planned when, and only when, there is a snapshot:
+  `spec-code`, which reads the whole manuscript first and then audits what the
+  methods say was done against what the code does — thresholds, filters, the
+  order of operations, the test actually called, the versions declared. Its
+  three tools (`list_code`, `read_code`, `search_code`) list, read and search
+  the snapshot and nothing else: none of them executes anything, reaches the
+  network, or can name a path outside it, and the code is treated as data
+  throughout, so a comment or README telling a reviewer what to report is text
+  being audited rather than an instruction being followed.
+  Every finding still quotes the manuscript, and a code finding carries the
+  code as well — `code_path`, `code_start_line`, `code_end_line`,
+  `code_quote` — which the server checks against the snapshot before it stores
+  anything; a quote that is not at those lines is refused and nothing is
+  stored. A finding that passes earns the new basis word `code-checked`, which
+  the editor cannot bury as a `minor` suggestion without an anchored rebuttal,
+  the same protection `computed` has. `REVIEW.md`, `read_run()['code']` and
+  `progress.json` say which code was reviewed, at which commit, and how many
+  files of the snapshot a reviewer actually opened, because "the code was
+  reviewed" over a lane that opened one file of forty is a claim the run folder
+  does not support. An arm that runs no specialists refuses `--code` by name
+  rather than ignoring it, and an `ingest` attaching to a live run refuses a
+  different `code` argument the way it already refuses a different arm.
 - **The SPOT and Stage A scorers read the manuscript, so a finding has a place
   in the paper again.** Both scripts were written for the block manuscript and
   decided where a finding was by looking for the answer key's phrases in the

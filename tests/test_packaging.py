@@ -29,7 +29,7 @@ PLUGIN_FILES = (
     'peerreviewagents/plugin/pra/skills/check-draft/SKILL.md',
     'peerreviewagents/plugin/pra/skills/follow-up/SKILL.md',
 )
-AGENTS = ('citation-worker', 'citations', 'core-reviewer', 'editor', 'field',
+AGENTS = ('citation-worker', 'citations', 'code', 'core-reviewer', 'editor', 'field',
           'figures-tables', 'methods-reporting', 'numbers', 'reader', 'recorder', 'stats')
 
 
