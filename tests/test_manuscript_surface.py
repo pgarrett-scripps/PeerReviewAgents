@@ -21,11 +21,15 @@ numbers it.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 import peerreviewagents
 from peerreviewagents import workspace as workspace_tools
 from peerreviewagents.engine.investigation import Investigation
+
+FIXTURE = Path(__file__).resolve().parent / 'fixtures' / 'single-column.pdf'
 
 #: One short paper, in the shape an application hands the writer: a kind, the
 #: text, the section it sits in, and nothing about a page.
@@ -382,3 +386,106 @@ def test_what_the_writer_refuses(tmp_path):
     workspace(folder)
     with pytest.raises(ValueError, match='immutable manuscript'):
         workspace(folder)
+
+
+# -- a fixture of a read manuscript, written by the Read stage ---------------
+# The other direction: not a manuscript an application wrote, but one the Read
+# stage wrote, which an application has to render. What that stage leaves in a
+# map row — a re-read part's `part` and `of`, the converter's reading of a
+# piece folded into another — came out of a model run and nowhere else, so a
+# consumer's fixtures for it were hand-built JSON that nothing held against
+# the engine. `scripted_read` is that fixture, written by the engine.
+
+#: What the converter left for the Read stage to repair, in the shape it
+#: writes a piece: an equation with a brace it never closed, a heading that is
+#: really the edge of that equation, a table it read as one paragraph of
+#: run-together cells behind a sentence of the paper, and a figure it has the
+#: caption of and no image.
+CONVERTER_LEFT = [
+    {'kind': 'equation', 'text': 'E = m c^{2', 'latex': 'E = m c^{2', 'number': '(1)',
+     'section': '3 Results', 'confidence': 1.0},
+    {'kind': 'heading', 'text': 'with $\\{$', 'section': '3 Results'},
+    {'kind': 'paragraph', 'section': '3 Results',
+     'text': 'The current was logged every hour. Hour Current (mA) 1 4.5 2 9.0'},
+    {'kind': 'caption', 'text': 'Figure 1: The bench, the instrument and the widgets.',
+     'section': '3 Results'},
+]
+
+DESCRIBED = ('A photograph of the bench with the instrument clamped at the left and three '
+             'widgets in a row; the scale divisions are 0.5 mm apart.')
+
+NOTE = 'The table under the current paragraph came back as prose and is put back as a table.'
+
+
+def test_the_read_stage_is_driven_in_code_for_a_fixture_to_render(tmp_path):
+    """A sealed manuscript with every mark of the Read stage on it, and no model.
+
+    This is the whole of what a consumer needs: the stage's own tools, by their
+    own names, writing a folder it can then read with the same exports its
+    users' runs leave behind.
+    """
+    folder = tmp_path / 'run'
+    with peerreviewagents.scripted_read(FIXTURE, folder, CONVERTER_LEFT) as read:
+        # The equation and the figure are what the draft says is unaccounted
+        # for; the paragraph of cells is not, which is why the reader reads the
+        # listing against the page rather than the other way round.
+        left = read.read_draft()['outstanding']
+        assert [row['kind'] for row in left['pieces']] == ['equation', 'figure']
+        assert left['pages'] == [1, 2]
+        read.view_page(1)
+        read.view_page(2)
+        read.replace_equation(read.find('E = m c^{2'), 1, 'E = m c^{2}', number='(1)')
+        read.describe_figure(read.find('Figure 1: The bench'), 1, DESCRIBED)
+        folded = read.reread_piece(read.find('logged every hour'), 1, [
+            {'kind': 'paragraph', 'keep': 'The current was logged every hour.'},
+            {'kind': 'table', 'rows': [['Hour', 'Current (mA)'], ['1', '4.5'], ['2', '9.0']]},
+            {'kind': 'caption', 'text': 'Table 1: Current by hour.'},
+        ], absorb=[read.find('with $\\{$')])
+        assert folded['kinds'] == ['paragraph', 'table', 'caption']
+        assert read.seal(note=NOTE)['sealed'] is True
+        assert read.sealed['statistics']['lines']['paper.md'] > 0
+
+    base = read.base()
+    assert base.folder == read.workspace == folder / peerreviewagents.MANUSCRIPT_DIRECTORY
+    # The three marks a consumer renders. The parts of one re-read, each one
+    # saying which part of what it is:
+    parts = [row for row in base.rows if (row.get('original') or {}).get('of')]
+    assert [(row['original']['part'], row['original']['of']) for row in parts] == [(1, 3), (2, 3),
+                                                                                   (3, 3)]
+    assert len({row['original']['piece'] for row in parts}) == 1
+    # the converter's whole reading of the piece folded into one of them, on
+    # one of them, so that a consumer shows one fold once:
+    held = [row for row in base.rows if (row.get('original') or {}).get('absorbed')]
+    assert len(held) == 1 and held[0]['kind'] == 'table'
+    fold = held[0]['original']['absorbed']
+    assert len(fold) == 1 and fold[0]['kind'] == 'heading' and fold[0]['text'] == 'with $\\{$'
+    assert fold[0]['piece'] not in {row['original']['piece'] for row in parts}
+    assert 'with $\\{$' not in base.text
+    # and the reader's note, which is served above the manuscript.
+    assert base.manifest['ai_read']['note'] == NOTE
+    assert base.manifest['ai_read']['read'] is True
+
+
+def test_a_refused_reader_call_is_raised_rather_than_answered(tmp_path):
+    """A script has no turn to take again, so a refusal stops it.
+
+    The tools answer a refusal to a model, which reads it and tries something
+    else. A fixture that read past one would seal a manuscript missing the
+    repair it thinks it made, so the refusal is an exception with the server's
+    own answer on it.
+    """
+    with peerreviewagents.scripted_read(FIXTURE, tmp_path / 'run', CONVERTER_LEFT) as read:
+        mangled = read.find('E = m c^{2')
+        # A repair is a transcription of a page, and this script has not opened
+        # one yet.
+        with pytest.raises(peerreviewagents.ReaderRefused) as refused:
+            read.replace_equation(mangled, 1, 'E = m c^{2}', number='(1)')
+        assert refused.value.tool == 'replace_equation'
+        assert 'request_rejected' in refused.value.answer
+        # And a piece is named by what the converter read there, so a fixture
+        # that names nothing, or two things, stops rather than working on
+        # whichever came first.
+        with pytest.raises(LookupError, match='in 0 pieces'):
+            read.find('a sentence this paper does not hold')
+        read.view_page(1)
+        assert read.replace_equation(mangled, 1, 'E = m c^{2}', number='(1)')['piece'] == mangled

@@ -150,7 +150,13 @@ manuscripts as headings and lines of prose. `merge_equations` now takes
 non-equation members, and `describe_figure` and `reread_piece` take `absorb`,
 a list of neighbour pieces: each one leaves the document and its whole
 converter reading is kept under `original['absorbed']` on the piece that
-absorbed it, so it is a fold and not a deletion. What may be absorbed is
+absorbed it, so it is a fold and not a deletion. A re-read writes several
+pieces, and **the fold is recorded on one of them: the first part that is not
+prose**, which is the displayed piece the debris was printed as part of. One
+fold is one fold — on every part, the one folded heading would read to
+whatever renders the map as one fold per part, three parts and three headings,
+and `part` and `of` already say the parts are one piece between them. What may
+be absorbed is
 narrow, and each refusal is a way of being sure this is debris and not the
 paper: the converter's own piece rather than one the stage added, prose by
 kind (an accountable piece is repaired, confirmed or described in its own
@@ -226,6 +232,7 @@ off a page image. Its manifest records `{"read": false, "reason": …}` too.
             "pages_viewed": 12, "pages": 12,
             "actions": {"repaired": 6, "confirmed": 5, "merged": 1,
                         "described": 9, "added": 4, "reread": 3},
+            "gone": {"absorbed": 4, "merged": 1, "withdrawn": 1},
             "tool_calls": 47,
             "note": "Table 4 was inside the converter's Table 3 and is now a "
                     "table of its own. Figure 2's y-axis label is unreadable "
@@ -234,6 +241,21 @@ off a page image. Its manifest records `{"read": false, "reason": …}` too.
                             "added": [{"piece": "p0211", "document": "paper.md",
                                        "lines": [120, 126]}]}]}
 ```
+
+**`ai_read['actions']` counts the pieces the manuscript has** — it is the
+pieces of the sealed documents, counted by what was done to each — and
+**`ai_read['gone']` counts the pieces it no longer has**, kept as they went
+rather than walked at the seal, because a piece folded into another or taken
+back out is in no document to be counted. `absorbed` is converter pieces
+folded into the piece they were debris of, `merged` the other halves of an
+equation put back together, `withdrawn` pieces this stage added and took out
+again. Keys with no count are left out, so `{}` is a stage that folded
+nothing. **The two do not add up with each other**: a fold moves a piece out
+of `actions` and into `gone`, and the piece that holds the fold is counted in
+`actions` under what was done to *it* (`merged`, `described`, `reread`). Each
+fold is also in the map, on the piece that holds it, under
+`original['absorbed']` and `original['merged']`; `gone` is the one place a
+number for them survives.
 
 **`ai_read['note']` is the reader's own account of the document**, in its
 words, capped at 2000 characters and empty when it filed none. It exists
@@ -1592,6 +1614,63 @@ So a scaffold workspace holds, at minimum:
 that tree. Nothing in the engine builds the source or reads it: the reviewer
 reads `paper.md`, and the tree is there so the workspace is the whole
 manuscript and a later build can be checked against what was reviewed.
+
+### Building a read manuscript for your tests: `scripted_read`
+
+**For tests and fixtures.** A review's Read stage is a model stage, launched by
+`review`; this is that stage driven in code, with nothing launched and no model
+reading anything.
+
+What the stage leaves on a sealed manuscript — a re-read part's `part` and
+`of`, the `absorbed` reading of folded debris, the reader's `note` in the
+manifest — used to exist only in the output of a real run, so a consumer's
+fixtures for it were hand-written JSON copying the shape by eye, which drifts
+from the engine the moment the engine moves. `scripted_read` opens a real run
+on a PDF, claims the reader's slot and hands back a handle whose methods are
+the reader's own tools under their own names, through the same server the stage
+drives:
+
+```python
+from peerreviewagents import ReaderRefused, scripted_read
+
+CONVERTER_LEFT = [
+    {'kind': 'equation', 'text': 'E = m c^{2', 'latex': 'E = m c^{2',
+     'number': '(1)', 'section': '3 Results'},
+    {'kind': 'caption', 'text': 'Figure 1: The bench and the instrument.',
+     'section': '3 Results'},
+    {'kind': 'paragraph', 'text': '0 10 20 30 40 mm', 'section': '3 Results'},
+]
+
+with scripted_read('paper.pdf', folder, CONVERTER_LEFT) as read:
+    read.view_page(1)
+    read.replace_equation(read.find('E = m c^{2'), 1, 'E = m c^{2}', number='(1)')
+    read.describe_figure(read.find('Figure 1:'), 1, 'A photograph of the bench …',
+                         absorb=[read.find('0 10 20 30 40 mm')])
+    read.seal(note="The figure's axis numbers were a paragraph and are folded in.")
+
+base = read.base()          # the sealed workspace: `text`, `rows`, `manifest`
+```
+
+- `pieces` — the third argument — are extra converter pieces spliced into the
+  draft, each in the shape the converter writes and merged over
+  `peerreviewagents.PIECE`, so `{'kind': 'equation', 'latex': 'E = m c^{2'}` is
+  a piece. This is how a fixture holds the failures the stage exists for
+  without a PDF that has them. One naming a `document` other than `paper.md`
+  goes to that document, which is how a fixture gets a supplement.
+- `find(text)` is how a script names a piece: by a few characters of what the
+  converter read there. It raises `LookupError` unless exactly one piece
+  matches, because a fixture quietly working on a different piece than it
+  means to is worse than one that stops.
+- A refusal raises `ReaderRefused`, with the tool on `.tool` and the server's
+  whole answer on `.answer`. The tools *answer* a refusal to a model, which
+  reads it and tries something else; a script has no turn to take again.
+- `view_page` returns that page's JSON payload alone. The image beside it is
+  for a model.
+- `base()` is `read_manuscript` on the sealed workspace, so a test does not
+  have to know where in the run folder the workspace is.
+- One run is open per process, so use it as a context manager (or call
+  `close()`): leaving the block puts back whatever run was attached before.
+  The folder stays as it is, sealed, for the test to read.
 
 ### Writing files the engine reads: `peerreviewagents.workspace`
 

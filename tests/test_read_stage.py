@@ -449,9 +449,16 @@ def test_an_equations_debris_is_folded_into_the_equation(tmp_path):
     assert 'request_rejected' not in srv.view_page(token, 2)
     assert 'request_rejected' not in srv.seal_manuscript(token)
 
-    text, rows, _ = base_of(srv.current())
+    text, rows, manifest = base_of(srv.current())
     assert 'qn,s,d' not in text and 'with $\\{$' not in text
     assert '$$ a^{2} + b^{2} = c^{2} \\tag{(2)} $$' in text.splitlines()
+    # Three pieces left the manuscript here — the equation's other half and the
+    # two headings of its edges — and the per-piece tally walks the pieces the
+    # documents still hold, so none of them is in it. Their count is kept as
+    # they go, and `actions` and `gone` do not add up: a fold moves a piece
+    # from the first to the second.
+    assert manifest['ai_read']['gone'] == {'merged': 1, 'absorbed': 2}
+    assert manifest['ai_read']['actions']['merged'] == 1, 'the piece that holds them all'
     held = [row for row in rows if row.get('original', {}).get('absorbed')]
     assert len(held) == 1 and held[0]['kind'] == 'equation'
     assert [row['text'] for row in held[0]['original']['absorbed']] == ['with $\\{$',
@@ -811,6 +818,13 @@ def test_an_empty_piece_is_refused_and_one_the_stage_added_can_be_withdrawn(tmp_
     assert listed(token)[marks['figure']]['settled'] is None
     assert marks['figure'] in [row['piece']
                                for row in srv.read_draft(token)['outstanding']['pieces']]
+
+    # A withdrawn piece is in no document, so nothing the seal walks counts it.
+    # The count is kept at the act: two pieces taken back out, and the one
+    # equation half folded into its other half by the work below.
+    account_for_everything(token, marks)
+    assert 'request_rejected' not in srv.seal_manuscript(token)
+    assert base_of(srv.current())[2]['ai_read']['gone'] == {'withdrawn': 2, 'merged': 1}
 
 
 def test_a_paragraph_the_converter_mislabelled_can_become_an_equation(tmp_path):

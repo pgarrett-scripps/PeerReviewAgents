@@ -58,6 +58,32 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The Read stage driven in code, for a consumer's tests:
+  `peerreviewagents.scripted_read(paper, folder, pieces)`.** It opens a real
+  run on a PDF, claims the reader's slot and hands back a handle whose methods
+  are the reader's own tools under their own names, through the same server the
+  stage drives — nothing launched, no model reading anything. `pieces` are
+  extra converter pieces spliced into the draft, so a fixture holds the
+  failures the stage exists for (a mangled equation, debris left as a heading
+  of its own) without a PDF that has them; `find('a few characters')` names a
+  piece by what the converter read there and raises unless exactly one matches;
+  a refused call raises `ReaderRefused`, because the tools answer a refusal to
+  a model that can try something else and a script cannot; and `base()` reads
+  the sealed workspace back. What the stage leaves on a manuscript — a re-read
+  part's `part` and `of`, a fold's `absorbed`, the reader's `note` — existed
+  only in the output of a real run, so the first consumer's fixtures for it
+  were hand-written JSON copying the shape by eye, which drifts from the engine
+  the moment the engine moves.
+- **`ai_read['gone']` counts the pieces that left the manuscript.**
+  `actions` is the pieces the sealed documents hold, counted by what was done
+  to each, so a piece folded into another or withdrawn is in no document to be
+  counted and a stage that folded three headings away left no number anywhere
+  saying it had. The counts are now kept as the pieces go: `absorbed`
+  (converter pieces folded into the piece they were debris of), `merged` (the
+  other halves of an equation put back together) and `withdrawn` (pieces this
+  stage added and took out again). They do not add up with `actions` — a fold
+  moves a piece from the one to the other — and keys with no count are left
+  out.
 - **A ledger of your own: `peerreviewagents.citation_uses(base, references)`.**
   Every in-text use of a reference in a manuscript base, as the engine's own
   rows: the citing sentence, its line range and offsets, the piece it sits in,
@@ -167,7 +193,12 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   `describe_figure` and `reread_piece` take `absorb`: neighbour pieces that
   leave the document, each one's whole converter reading kept under
   `original['absorbed']` on the piece that absorbed it, which is what makes it
-  a fold and not a deletion. It is refused unless the piece really is debris —
+  a fold and not a deletion. A re-read writes several pieces, and the fold goes
+  on one of them — the first part that is not prose, which is the displayed
+  piece the debris was printed as part of — because one fold is one fold: on
+  every part, the one folded heading reads to whatever renders the map as one
+  fold per part, three parts and three headings. It is refused unless the piece
+  really is debris —
   the converter's own rather than one this stage added, prose by kind (an
   equation, a table or a figure is accounted for in its own right), on the page
   being viewed, at most 200 characters of reading, next to what takes it in
