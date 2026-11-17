@@ -380,6 +380,187 @@ def test_a_cloned_repository_is_not_mistaken_for_the_run_folder(tmp_path, monkey
     assert not (out / CODE_DIRECTORY / '.checkout').exists(), 'the checkout was left behind'
 
 
+def test_a_checkout_is_snapshotted_from_the_files_git_tracks(tmp_path):
+    """The repository already says which files are the authors' own.
+
+    Found on the first real repository this was pointed at: a workspace with a
+    gitignored build cache in it filled the snapshot with the cache and left
+    out every analysis script, so the code reviewer would have read a build
+    cache and reported on it as the method. What ``.gitignore`` names is out,
+    and it is out as one row per top folder with a count — a cache is
+    thousands of paths, and a skipped list of thousands of rows is one nobody
+    reads.
+    """
+    folder = tmp_path / 'repo'
+    scripts = {f'analysis/step{number:02d}.py': f'STEP = {number}\n' for number in range(10)}
+    write_code(folder, {**scripts, '.gitignore': '.build-state/\n'})
+    for number in range(700):
+        path = folder / '.build-state' / f'cache{number:03d}.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"step": %d}\n' % number, encoding='utf-8')
+    commit_code(folder)
+
+    manifest = code_source.snapshot(folder, tmp_path / 'snapshot')
+    assert manifest['tracked'] is True
+    assert {row['path'] for row in manifest['files']} == set(scripts)
+    assert manifest['truncated'] == '', 'ten scripts are not past any cap'
+    assert not (tmp_path / 'snapshot' / code_source.FILES_DIRECTORY / '.build-state').exists()
+
+    rows = {one['path']: one['reason'] for one in manifest['skipped']}
+    assert rows['.build-state'] == (code_source.NOT_LOOKED_AT
+                                    + code_source.IGNORED_REASON.format(count=700))
+    assert not [path for path in rows if path.startswith('.build-state/')], \
+        'the cache is one row, not seven hundred'
+    # The `.gitignore` itself is tracked and is not text source, which is the
+    # only other row: the summary of what git ignores has not become a second
+    # list of files.
+    assert set(rows) == {'.build-state', '.gitignore'}
+
+    untracked = folder / 'analysis' / 'draft.py'
+    untracked.write_text('DRAFT = 1\n', encoding='utf-8')
+    again = code_source.snapshot(folder, tmp_path / 'again')
+    assert 'analysis/draft.py' not in {row['path'] for row in again['files']}
+    assert {one['path']: one['reason'] for one in again['skipped']}['analysis'] == (
+        code_source.NOT_LOOKED_AT + code_source.UNTRACKED_REASON.format(count=1))
+
+
+def test_the_caps_keep_program_source_and_cut_data_like_text_first(tmp_path):
+    """What survives a cap is what a reviewer needs, not what sorts first.
+
+    The cap used to cut in walk order, which is alphabetical, so which files a
+    snapshot of a repository larger than the cap held was arbitrary. Program
+    source first, then build and environment files, then configuration and
+    prose, and data-like text last; shallower paths before deeper ones inside
+    a kind. Both caps cut in that order, the file count and the byte total
+    alike.
+    """
+    files = {f'analysis/step{number:02d}.py': f'STEP = {number}\n' for number in range(5)}
+    files.update({f'evidence/row{number:03d}.json': '{"step": %d}\n' % number
+                  for number in range(40)})
+    files['Snakefile'] = 'rule all:\n    input: []\n'
+    files['pyproject.toml'] = '[project]\nname = "analysis"\n'
+    files['README.md'] = '# The analysis\n'
+    folder = commit_code(write_code(tmp_path / 'repo', files))
+
+    kept = code_source.snapshot(folder, tmp_path / 'capped', limits={'max_files': 8})
+    assert {row['path'] for row in kept['files']} == (
+        set(files) - {name for name in files if name.startswith('evidence/')})
+    assert kept['counts']['kinds'] == {code_source.KIND_SOURCE: 6,
+                                       code_source.KIND_BUILD: 1,
+                                       code_source.KIND_CONFIG: 1,
+                                       code_source.KIND_DATA: 0}
+    assert kept['left_out_kinds'][code_source.KIND_DATA] == 40
+    assert kept['source_cut'] == 0
+    assert kept['truncated'] == ('more than 8 files of text source: left out 40 data-like '
+                                 'text file(s)')
+    assert code_source.SOURCE_CUT_WARNING not in kept['truncated']
+
+    # Shallower first inside a kind: the one file a cap of one keeps is the
+    # pipeline at the root, not the first script alphabetically under a folder.
+    one = code_source.snapshot(folder, tmp_path / 'one', limits={'max_files': 1})
+    assert [row['path'] for row in one['files']] == ['Snakefile']
+    assert one['source_cut'] == 5 and code_source.SOURCE_CUT_WARNING in one['truncated']
+
+    # The byte cap cuts in the same order: a total that holds the source holds
+    # the source, and the data-like text is what goes.
+    full = code_source.snapshot(folder, tmp_path / 'full')
+    source_bytes = sum(row['bytes'] for row in full['files']
+                       if code_source.kind(row['path']) == code_source.KIND_SOURCE)
+    tight = code_source.snapshot(folder, tmp_path / 'tight',
+                                 limits={'max_total_bytes': source_bytes})
+    assert tight['counts']['kinds'][code_source.KIND_SOURCE] == 6
+    assert tight['counts']['kinds'][code_source.KIND_DATA] == 0
+    assert tight['source_cut'] == 0
+    assert 'bytes of text source' in tight['truncated']
+    assert tight['left_out_kinds'][code_source.KIND_DATA] == 40
+
+
+def test_a_folder_that_is_no_checkout_leaves_hidden_and_cache_folders_alone(tmp_path):
+    """Outside git there is no tracked list, so the walk has the rule instead.
+
+    A dot folder at the root of a project is where tooling keeps its state,
+    and a build or coverage folder is output. Neither is the authors' method,
+    and each is one row.
+    """
+    folder = write_code(tmp_path / 'plain', {
+        'analysis/pipeline.py': 'OK = 1\n',
+        'docs/notes.md': '# notes\n',
+        '.build-state/cache.json': '{"built": true}\n',
+        '.venv/lib/thing.py': 'import os\n',
+        'build/generated.py': 'GENERATED = 1\n',
+        'htmlcov/report.json': '{"covered": 1}\n',
+    })
+
+    manifest = code_source.snapshot(folder, tmp_path / 'snapshot')
+    assert manifest['tracked'] is False
+    assert {row['path'] for row in manifest['files']} == {'analysis/pipeline.py',
+                                                          'docs/notes.md'}
+    rows = {one['path']: one['reason'] for one in manifest['skipped']}
+    assert rows['.build-state'] == code_source.HIDDEN_REASON
+    # `.venv` is named in the skip list, which is read before the dot rule, so
+    # it is left out for being a dependency tree rather than for being hidden.
+    assert rows['.venv'] == code_source.DIRECTORY_REASON
+    assert rows['build'] == code_source.DIRECTORY_REASON
+    assert rows['htmlcov'] == code_source.DIRECTORY_REASON
+    assert not [path for path in rows if '/' in path], 'each folder is one row'
+
+
+def test_a_clone_is_snapshotted_from_its_tracked_files_as_a_folder_is(tmp_path, monkeypatch):
+    """The repository URL path uses the one selection, not a second rule."""
+    def clone(source, into):
+        folder = Path(into)
+        write_code(folder, {'analysis/pipeline.py': 'FDR = 0.05\n',
+                            '.gitignore': 'cache/\n'})
+        for number in range(3):
+            path = folder / 'cache' / f'built{number}.json'
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('{"built": %d}\n' % number, encoding='utf-8')
+        commit_code(folder)
+        return {'kind': 'git-clone', 'source': str(source), 'commit': 'a' * 40,
+                'branch': 'trunk', 'dirty': False}
+
+    monkeypatch.setattr(code_source, 'clone', clone)
+    out = tmp_path / 'run'
+    manifest = code_source.snapshot('https://example.invalid/analysis.git',
+                                    out / CODE_DIRECTORY, run=out)
+    assert manifest['tracked'] is True
+    assert {row['path'] for row in manifest['files']} == {'analysis/pipeline.py'}
+    assert {one['path']: one['reason'] for one in manifest['skipped']}['cache'] == (
+        code_source.NOT_LOOKED_AT + code_source.IGNORED_REASON.format(count=3))
+
+
+def test_a_cap_that_cut_program_source_says_so_in_the_run_and_to_the_lane(tmp_path,
+                                                                          code_folder,
+                                                                          monkeypatch):
+    """Every other cut narrows the review; this one changes what it may claim.
+
+    A reviewer who cannot see every script cannot report that no script does a
+    thing, so the number is in the manifest, in what the run reads back, in
+    the REVIEW.md line that says what was reviewed, and in what the lane's own
+    ``list_code`` answers.
+    """
+    monkeypatch.setattr(code_source, 'MAX_FILES', 1)
+    run, token = code_run(tmp_path, code_folder)
+    listed = srv.list_code(token)
+    assert listed['source_cut'] == 1
+    assert listed['left_out_kinds'][code_source.KIND_SOURCE] == 1
+    assert code_source.SOURCE_CUT_WARNING in listed['truncated']
+    run.write_progress()
+
+    read = read_run(tmp_path / 'run')['code']
+    assert read['source_cut'] == 1
+    assert code_source.SOURCE_CUT_WARNING in read['truncated']
+    rendered = {label: value for block in report_blocks(run.review)
+                if block[0] == 'fields' for label, value in block[1]}
+    assert code_source.SOURCE_CUT_WARNING in rendered['Code reviewed']
+
+    # And the lane is briefed to read the number, because the warning only
+    # does anything if what reads the snapshot knows what it means.
+    brief = (Path(srv.__file__).resolve().parent / 'pra' / 'agents'
+             / 'code.md').read_text(encoding='utf-8')
+    assert 'source_cut' in brief and 'left_out_kinds' in brief
+
+
 def notebook(cells, outputs=True):
     """A notebook as a notebook is on disk: cells, and the kernel's answers."""
     held = {'nbformat': 4, 'nbformat_minor': 5, 'metadata': {}, 'cells': []}
@@ -841,12 +1022,14 @@ def test_the_run_reports_which_code_was_reviewed_and_how_much_was_opened(tmp_pat
     assert re.fullmatch(r'[0-9a-f]{40}', read['commit']) and read['branch'] == 'trunk'
     assert read['dirty'] is False
     assert Path(read['snapshot']) == run.root / 'code'
-    # Four paths left out: two files, the data folder, and this checkout's own
-    # `.git` — every folder the walk refuses is one row, with no second rule
-    # deciding which of them are worth saying.
-    assert read['files_in_snapshot'] == 4 and read['files_skipped'] == 4
+    # Three paths left out: two files and the data folder, each one row. No
+    # `.git` row, because a checkout is snapshotted from the files git tracks
+    # and its own internals were never a candidate; and no untracked row,
+    # because every file here is committed.
+    assert read['files_in_snapshot'] == 4 and read['files_skipped'] == 3
     assert {one['path'] for one in read['manifest']['skipped']} == {
-        '.git', 'data', 'measurements.csv', 'notes.dat'}
+        'data', 'measurements.csv', 'notes.dat'}
+    assert read['manifest']['tracked'] is True
     assert read['truncated'] == ''
     assert read['files_opened'] == ['analysis/pipeline.py'] and read['opened'] == 1
     assert read['manifest']['origin']['source'] == str(code_folder.resolve())
@@ -865,7 +1048,7 @@ def test_the_run_reports_which_code_was_reviewed_and_how_much_was_opened(tmp_pat
     assert str(tmp_path) not in said
     assert read['commit'][:12] in said
     assert '1 of 4 file(s) opened' in said
-    assert '4 path(s) left out of the snapshot' in said
+    assert '3 path(s) left out of the snapshot' in said
 
 
 def test_a_run_given_no_code_says_the_code_was_not_reviewed(tmp_path):

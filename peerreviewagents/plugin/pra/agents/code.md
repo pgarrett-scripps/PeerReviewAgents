@@ -36,6 +36,15 @@ into, listed once by its own name — is code you have not seen, and "the code
 never does that" is not something you may conclude from a snapshot that left
 things out.
 
+A repository is in the snapshot as the files it tracks, so what `.gitignore`
+names — a build cache, a results folder, an environment — is listed in the
+skipped rows as a count per folder and is not code you are missing. When there
+was more text than the snapshot holds, program source was kept first and
+data-like text dropped first: `left_out_kinds` says how many of each kind a cap
+left out. **If `source_cut` is above zero, program source itself was cut.** Say
+so in any finding that depends on what you did not see, and do not write that
+the code never does something: you have not read every script.
+
 `search_code` finds a number, a name or a pattern by line. `read_code` serves
 one file as numbered lines, in parts. The numbers are the file's own and they
 are what your findings cite.
