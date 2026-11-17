@@ -23,6 +23,7 @@ import pytest
 
 from peerreviewagents import names
 from peerreviewagents.engine import paper_base
+from peerreviewagents.engine import reader as read_stage
 from peerreviewagents.engine.ingest import DRAFT_FILE, convert_paper
 from peerreviewagents.engine.storage import write
 from peerreviewagents.plugin import models as model_plan
@@ -121,6 +122,39 @@ DEBRIS_PARAGRAPH = ('At high signal-to-noise the logarithm is well approximated 
                     'function of the bandwidth. We have SNR ln 2 In that regime the gain is '
                     'linear in the bandwidth and nothing else.')
 
+#: A bar chart's axis text, read as a paragraph above its caption: a figure's
+#: content that reached a sealed manuscript as a line of prose, which the
+#: reader's own note named and no tool could reach.
+AXIS_TEXT = '120 100 80 60 40 20 0 Control 10 µl/ml 20 µl/ml Concentration(µl/ml)'
+
+#: A paragraph of the authors' own prose, on the page the debris is on. It is
+#: longer than any debris a converter leaves, and that length is how `absorb`
+#: tells the paper from the leavings.
+AUTHORS_PROSE = ('The readings were taken at the same place on the bench each morning, with the '
+                 'instrument clamped and the widgets left in the order they were received, so '
+                 'that the only difference between one day and the next was the widget under '
+                 'the probe rather than the position of the stage.')
+
+#: What the converter made of the same page when it strewed the equations
+#: instead of only mangling them: equation (2) in two pieces with a heading of
+#: its debris on each side, and the figure's axis text above its caption. Every
+#: debris piece here is prose by kind, so nothing asks for it to be accounted
+#: for and nothing could take it out — the case `absorb` is for. The page-two
+#: heading is there to be refused: debris is absorbed off its own page.
+STREWN = [
+    piece('equation', MANGLED, latex=MANGLED, number='(1)', confidence=1.0),
+    piece('heading', 'with $\\{$'),
+    piece('equation', 'a^{2} + b^{2}', latex='a^{2} + b^{2}', number='', confidence=0.4),
+    piece('equation', '= c^{2}', latex='= c^{2}', number='(2)', confidence=0.4),
+    piece('heading', '$qn,s,d$ else'),
+    piece('paragraph', AXIS_TEXT),
+    piece('caption', 'Figure 1: The bench, the instrument and the widgets.'),
+    piece('paragraph', DEBRIS_PARAGRAPH),
+    piece('caption', 'Table 1: Readings of the blue widgets, by day.'),
+    piece('paragraph', AUTHORS_PROSE),
+    piece('heading', '$|A|2 d=1$', page=2),
+]
+
 
 def reading(tmp_path, **kwargs):
     """``(ingest's answer, the reader's token)``: the stage, claimed and ready."""
@@ -146,6 +180,20 @@ def ids_of(token):
               if str(row['text']).startswith('Caption: Table 1')]
     return {'mangled': equations[0], 'split': equations[1:3],
             'figure': figures[0], 'table_caption': tables[0]}
+
+
+def strewn(tmp_path, **kwargs):
+    """The stage over a draft whose displayed pieces came back strewn about."""
+    opened, token = reading(tmp_path, pieces=STREWN, **kwargs)
+    rows = listed(token)
+
+    def named(text):
+        return next(key for key, row in rows.items() if text in str(row['text']))
+
+    return token, {**ids_of(token), 'before': named('with $\\{$'),
+                   'after': named('$qn,s,d$ else'), 'axis': named('Concentration'),
+                   'prose': named('SNR ln 2'), 'next_page': named('|A|2 d=1'),
+                   'long': named('readings were taken')}
 
 
 def garbled(tmp_path, **kwargs):
@@ -365,6 +413,130 @@ def test_an_equation_the_converter_split_becomes_one_line(tmp_path):
     assert lines[start - 1] == '$$ a^{2} + b^{2} = c^{2} \\tag{(2)} $$'
     assert '$$ = c^{2} \\tag{(2)} $$' not in lines, 'and not a line of its own'
     assert len([line for line in lines if line.startswith('$$')]) == 2
+
+
+def test_an_equations_debris_is_folded_into_the_equation(tmp_path):
+    """The headings the converter made of an equation's edges go into it.
+
+    Three of them came off one real paper — ``with {``, ``qn,s,d else`` and
+    ``|A|2 d=1`` — labelled headings, so nothing asked for them to be
+    accounted for and no tool could reach them: a converter piece is the
+    authors' text and this stage deletes none on its own. They reached the
+    sealed manuscript as `####` lines. They are not prose and they are not
+    pieces: they are the equation beside them, so they are merged into it.
+    """
+    token, marks = strewn(tmp_path)
+    assert 'request_rejected' not in srv.view_page(token, 1)
+    merged = srv.merge_equations(token, [*marks['split'], marks['before'], marks['after']],
+                                 1, 'a^{2} + b^{2} = c^{2}', number='(2)')
+    assert 'request_rejected' not in merged, merged
+    assert merged['piece'] == marks['split'][0]
+    assert merged['removed'] == sorted([marks['split'][1], marks['before'], marks['after']])
+    # The halves are kept as halves and the debris as debris, each with the
+    # converter's whole reading of it: the fold can be read back, which is what
+    # makes it a fold and not a deletion.
+    assert merged['replaced']['merged'][0]['latex'] == '= c^{2}'
+    folded = {row['piece']: row for row in merged['replaced']['absorbed']}
+    assert sorted(folded) == sorted([marks['before'], marks['after']])
+    assert folded[marks['before']] == {'piece': marks['before'], 'kind': 'heading',
+                                       'text': 'with $\\{$'}
+    rows = listed(token)
+    assert marks['before'] not in rows and marks['after'] not in rows
+
+    assert 'request_rejected' not in srv.replace_equation(
+        token, marks['mangled'], 1, 'E = m c^{2}', number='(1)')
+    assert 'request_rejected' not in srv.describe_figure(token, marks['figure'], 1, DESCRIPTION)
+    assert 'request_rejected' not in srv.view_page(token, 2)
+    assert 'request_rejected' not in srv.seal_manuscript(token)
+
+    text, rows, _ = base_of(srv.current())
+    assert 'qn,s,d' not in text and 'with $\\{$' not in text
+    assert '$$ a^{2} + b^{2} = c^{2} \\tag{(2)} $$' in text.splitlines()
+    held = [row for row in rows if row.get('original', {}).get('absorbed')]
+    assert len(held) == 1 and held[0]['kind'] == 'equation'
+    assert [row['text'] for row in held[0]['original']['absorbed']] == ['with $\\{$',
+                                                                        '$qn,s,d$ else']
+
+
+def test_a_figures_axis_text_is_folded_into_its_description(tmp_path):
+    """A bar chart's axis numbers, read as a paragraph, go into the figure.
+
+    They are the figure's own content: the converter read the numbers printed
+    along the axes as prose above the caption, and a sealed manuscript carried
+    "120 100 80 … Concentration(µl/ml)" as a line of the paper. The
+    description is what the figure's content is in the manuscript, so the
+    paragraph is folded into it.
+    """
+    token, marks = strewn(tmp_path)
+    assert 'request_rejected' not in srv.view_page(token, 1)
+    described = srv.describe_figure(token, marks['figure'], 1, DESCRIPTION,
+                                    absorb=[marks['axis']])
+    assert 'request_rejected' not in described, described
+    assert described['removed'] == [marks['axis']]
+    assert described['absorbed'] == [{'piece': marks['axis'], 'kind': 'paragraph',
+                                      'text': AXIS_TEXT}]
+    assert marks['axis'] not in listed(token)
+
+    assert 'request_rejected' not in srv.replace_equation(
+        token, marks['mangled'], 1, 'E = m c^{2}', number='(1)')
+    assert 'request_rejected' not in srv.merge_equations(
+        token, marks['split'], 1, 'a^{2} + b^{2} = c^{2}', number='(2)')
+    assert 'request_rejected' not in srv.view_page(token, 2)
+    assert 'request_rejected' not in srv.seal_manuscript(token)
+
+    text, rows, _ = base_of(srv.current())
+    assert 'Concentration(µl/ml)' not in text
+    assert DESCRIPTION in text
+    held = [row for row in rows if row.get('original', {}).get('absorbed')]
+    assert len(held) == 1 and held[0]['kind'] == 'figure-description'
+    assert held[0]['original']['absorbed'][0]['text'] == AXIS_TEXT
+
+
+def test_what_may_be_absorbed_is_the_debris_printed_beside_the_piece(tmp_path):
+    """Every way of absorbing something that is the paper rather than debris."""
+    token, marks = strewn(tmp_path)
+    assert 'request_rejected' not in srv.view_page(token, 1)
+    table = [{'kind': 'table', 'rows': [['Hour', 'Current'], ['1', '4.5']]}]
+
+    def refused(answer):
+        assert 'request_rejected' in answer, answer
+        return answer['request_rejected']
+
+    # A figure, an equation or a table is accounted for in its own right.
+    said = refused(srv.reread_piece(token, marks['prose'], 1, table, absorb=[marks['figure']]))
+    assert 'is a figure' in said and 'in its own right' in said
+    said = refused(srv.reread_piece(token, marks['prose'], 1, table, absorb=[marks['mangled']]))
+    assert 'is an equation' in said and 'merge_equations' in said
+    # A paragraph of the paper is not debris, and its length is how that shows.
+    assert len(AUTHORS_PROSE) > read_stage.MOST_ABSORBED_CHARACTERS
+    said = refused(srv.describe_figure(token, marks['figure'], 1, DESCRIPTION,
+                                       absorb=[marks['long']]))
+    assert 'characters' in said and 'reread_piece' in said and '`remove`' in said
+    # Debris is absorbed off the page it is printed on, not across a page.
+    said = refused(srv.describe_figure(token, marks['figure'], 1, DESCRIPTION,
+                                       absorb=[marks['next_page']]))
+    assert 'page 2 and not on page 1' in said
+    # And out of the run: the axis paragraph between them is the paper too.
+    said = refused(srv.describe_figure(token, marks['figure'], 1, DESCRIPTION,
+                                       absorb=[marks['after']]))
+    assert 'other pieces between these' in said
+    # A re-read that writes prose alone has nothing for the debris to be part of.
+    said = refused(srv.reread_piece(token, marks['prose'], 1,
+                                    [{'kind': 'paragraph', 'remove': ['We have SNR ln 2']}],
+                                    absorb=[marks['after']]))
+    assert 'nothing here for the debris to be part of' in said
+    # Three at most, and never the piece doing the absorbing.
+    said = refused(srv.describe_figure(token, marks['figure'], 1, DESCRIPTION,
+                                       absorb=[marks['before'], marks['after'], marks['axis'],
+                                               marks['next_page']]))
+    assert 'at most 3 pieces' in said
+    said = refused(srv.describe_figure(token, marks['figure'], 1, DESCRIPTION,
+                                       absorb=[marks['figure']]))
+    assert 'the piece doing the absorbing' in said
+    # None of that moved anything: every piece named is still in the draft.
+    standing = listed(token)
+    assert all(marks[name] in standing for name in ('before', 'after', 'axis', 'prose',
+                                                    'figure', 'mangled', 'next_page', 'long'))
 
 
 def test_a_table_the_converter_missed_is_added_after_its_caption(tmp_path):

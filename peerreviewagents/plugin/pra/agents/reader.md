@@ -64,9 +64,10 @@ nothing you do after it can change a line.
   structurally wrong; the section below is about when to reach for it.
 - `withdraw_piece` — take out a piece *you* added, having got it wrong. It will
   not touch the converter's pieces: where one of those is wrong, the answer is
-  a repair or a re-read, never a deletion.
+  a repair, a re-read or a fold into the piece it is debris of, never a
+  deletion.
 - `merge_equations` — one equation the converter split into two or more pieces,
-  joined back into one line.
+  joined back into one line, with any debris it left beside them folded in.
 - `confirm_piece` — an equation or a table that is already what the page
   prints. A figure is never confirmed: a figure with no description is not
   accounted for, so describe it.
@@ -119,6 +120,38 @@ rest, never as the whole of a re-read, because then nothing would say where the
 paragraph went. If the prose is right as the converter read it, leave it out of
 `pieces` and it is untouched.
 
+## Debris that is a piece of its own: `absorb`
+
+A span in `remove` reaches the debris that is *inside* a paragraph. The
+converter also leaves debris *as pieces of its own*, and those a span cannot
+touch. Seen on real papers: three headings reading `with {`, `qn,s,d else` and
+`|A|2 d=1`, each one the edge of a displayed equation on the same page; a bar
+chart's axis numbers, `120 100 80 … Concentration(µl/ml)`, as a paragraph
+above its caption. Every one of them reached a sealed manuscript as a heading
+or a line of prose, because nothing asked for them to be accounted for and
+`withdraw_piece` will not touch a converter piece.
+
+What such a piece *is*, is part of the displayed piece printed beside it. So
+that is where it goes: name it in `absorb` on the call that writes that piece.
+
+```
+merge_equations(pieces=["p40", "p39", "p41"], page=3, latex="…")
+describe_figure(piece="p88", page=9, description="…", absorb=["p87"])
+reread_piece(piece="p60", page=5, absorb=["p59"], pieces=[{"kind": "table", …}])
+```
+
+For `merge_equations` the equation comes first and the rest are folded into
+it, debris and split halves alike. It is a fold and not a deletion: the whole
+of what the converter read into an absorbed piece is kept in `original` on
+whatever absorbed it.
+
+It is refused unless the piece really is debris — the converter's own piece,
+prose by kind (an equation, a table or a figure is accounted for in its own
+right and is never swept into something else), on the page you are viewing,
+short, printed next to what takes it in with none of the paper in between, and
+at most three in one call. A paragraph of the paper with debris *in* it is
+`remove`'s, not this.
+
 ## A page the converter returned nothing from
 
 `read_draft` names these under `unconverted_pages`: pages the text layer reads
@@ -134,6 +167,17 @@ a `caption`, body text as a `paragraph` (which only these pages take), an
 equation as an `equation`. Nothing
 else changes: transcribe what is there, do not summarise it, and do not write a
 note about the page instead of the page.
+
+`view_page` hands you one more thing on these pages, and only on these:
+**`text_layer`**, the words Poppler reads off the page's own text layer with
+the whitespace collapsed. Characters, in no reliable order, in no columns,
+with the layout gone. Use it to settle a character the image does not resolve
+— a footnote letter, a subscript, a minus sign, a digit in a small or rotated
+cell — and nothing else. On a real run the same footnote letter was misread
+the same way twice off a sideways table, where the letter is a few pixels and
+the text layer has it exactly. Do not read a reading order, a row or a column
+off it, and do not transcribe from it: what you add is what the image shows,
+in the order the page prints it.
 
 ## Reproduce the page. Do not improve it
 

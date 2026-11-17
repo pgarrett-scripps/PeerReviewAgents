@@ -2085,6 +2085,12 @@ def view_page(agent_token: str, page: int) -> dict:
     Before the manuscript is sealed it also returns the converter's pieces for
     that page, whole — which is what a span named in `reread_piece` is matched
     against, and longer than the listing shows.
+
+    A page the converter returned nothing from has no pieces, so that one comes
+    back with `text_layer` as well: the words Poppler reads off the page's own
+    text layer, whitespace collapsed. They are characters to check against — a
+    footnote letter, a subscript, a minus sign in a small or rotated cell — in
+    no reliable order and with no layout. Transcribe from the image.
     """
     return _call(agent_token, 'view_page', {'page': page})
 
@@ -2134,7 +2140,8 @@ def replace_table(agent_token: str, piece: str, page: int, rows: list) -> dict:
     return _call(agent_token, 'replace_table', {'piece': piece, 'page': page, 'rows': rows})
 
 
-def describe_figure(agent_token: str, piece: str, page: int, description: str) -> dict:
+def describe_figure(agent_token: str, piece: str, page: int, description: str,
+                    absorb: list = ()) -> dict:
     """Write what the figure's image shows, as a piece after its caption.
 
     Say what is plotted, the axes and their units, the series, the values and
@@ -2142,9 +2149,16 @@ def describe_figure(agent_token: str, piece: str, page: int, description: str) -
     say. It is a description and not a judgement: what is there, not whether it
     supports the claim. It is marked as written by a model wherever a reviewer
     reads it.
+
+    `absorb` names the converter's debris of this figure — a piece beside the
+    caption that is really text out of the image, such as a chart's axis
+    numbers read as a paragraph. Each one is folded into the description and
+    its converter reading is kept there, so nothing is deleted. Debris only: a
+    piece of prose on this page, printed next to the caption, and short.
     """
     return _call(agent_token, 'describe_figure',
-                 {'piece': piece, 'page': page, 'description': description})
+                 {'piece': piece, 'page': page, 'description': description,
+                  'absorb': list(absorb)})
 
 
 def add_piece(agent_token: str, after: str, kind: str, page: int, text: str = '',
@@ -2168,7 +2182,8 @@ def add_piece(agent_token: str, after: str, kind: str, page: int, text: str = ''
                   'number': number, 'rows': list(rows)})
 
 
-def reread_piece(agent_token: str, piece: str, page: int, pieces: list) -> dict:
+def reread_piece(agent_token: str, piece: str, page: int, pieces: list,
+                 absorb: list = ()) -> dict:
     """Re-read one converted piece as the pieces the page actually prints.
 
     The converter emits one block per thing it thinks it found, and its `kind`
@@ -2201,9 +2216,18 @@ def reread_piece(agent_token: str, piece: str, page: int, pieces: list) -> dict:
 
     If the prose is right as the converter read it, leave it out of `pieces`
     altogether. Refused if you have not viewed the page.
+
+    `absorb` is for debris that is not inside a paragraph but beside it, as a
+    piece of its own that no span can reach: a heading reading `with {` that is
+    half of the equation below it. Name those pieces and they are folded into
+    this re-read, with their converter reading kept on what it writes — so this
+    is not a deletion, and it needs a table, equation or caption part for the
+    debris to be part of. Debris only: prose by kind, on this page, printed
+    next to this piece, and short.
     """
     return _call(agent_token, 'reread_piece',
-                 {'piece': piece, 'page': page, 'pieces': list(pieces)})
+                 {'piece': piece, 'page': page, 'pieces': list(pieces),
+                  'absorb': list(absorb)})
 
 
 def withdraw_piece(agent_token: str, piece: str) -> dict:
@@ -2222,7 +2246,16 @@ def merge_equations(agent_token: str, pieces: list, page: int, latex: str,
     """Put one equation the converter split into several pieces back together.
 
     `pieces` are the ids, in printed order; the first keeps the whole
-    equation's LaTeX and the rest are removed.
+    equation's LaTeX and the rest are folded into it, with what the converter
+    read into each one kept beside the equation.
+
+    They need not all be equations. The converter rarely splits an equation
+    cleanly: it labels one piece an equation and leaves the rest beside it as
+    prose, as headings reading `with {` or `qn,s,d else`. Name those pieces
+    here with the equation and they go into it. Debris only: a piece of prose
+    on this page, printed next to the equation, and short — a paragraph of the
+    authors' text is refused, and so is anything that has to be accounted for
+    on its own, such as another table or a figure.
     """
     return _call(agent_token, 'merge_equations',
                  {'pieces': list(pieces), 'page': page, 'latex': latex, 'number': number})

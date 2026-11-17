@@ -152,6 +152,44 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   `manifest['ai_read']['note']` and on `read_run`'s `manuscript` key. That
   run's reader knew a table had been dropped and two more were garbled, and
   said it in a report that reached no file.
+- **A piece that is a displayed piece's debris is folded into it, and a page
+  the converter returned nothing from comes with its text layer.** Two runs of
+  the rewritten stage over two real papers, each sealed first try, left exactly
+  two things the reader named in its own note and no tool could reach. One:
+  debris the converter emitted as *pieces* rather than inside a paragraph —
+  three headings reading `with {`, `qn,s,d else` and `|A|2 d=1`, each the edge
+  of a displayed equation on the same page, and a bar chart's axis numbers,
+  `120 100 80 … Concentration(µl/ml)`, as a paragraph above its caption. A span
+  in `remove` cannot reach a piece, nothing asked for any of them to be
+  accounted for, and `withdraw_piece` refuses a converter piece, so they
+  reached the sealed manuscripts as headings and lines of prose. So
+  `merge_equations` now takes members that are not equations, and
+  `describe_figure` and `reread_piece` take `absorb`: neighbour pieces that
+  leave the document, each one's whole converter reading kept under
+  `original['absorbed']` on the piece that absorbed it, which is what makes it
+  a fold and not a deletion. It is refused unless the piece really is debris —
+  the converter's own rather than one this stage added, prose by kind (an
+  equation, a table or a figure is accounted for in its own right), on the page
+  being viewed, at most 200 characters of reading, next to what takes it in
+  with none of the paper in between, and at most three in a call — and
+  `reread_piece` refuses it for a re-read that writes prose alone, where
+  nothing would be left for the debris to be part of. Two pieces the converter
+  labelled equations are held to neither adjacency nor the page, since one of
+  them may be the tail of the equation at the top of the next page. Two: the
+  same footnote letter was misread the same way in both runs — `−2.023d` on
+  the page, `−2.023b` in the caption, twice — off a table printed sideways on a
+  page the converter returned nothing from, where the letter is a few pixels
+  and the reader's note said the letters were a best guess. The page itself is
+  upright (`/Rotate 0`, so no renderer flag helps) and the render is already at
+  the long edge a standard-tier vision model accepts, so the image is not where
+  the fix is: `view_page` now also returns `text_layer` for those pages, the
+  words Poppler read off the page's own text layer with the whitespace
+  collapsed, which the import had been computing to count the page's words and
+  now keeps. The answer labels them as characters to check against — a footnote
+  letter, a subscript, a minus sign — in no reliable order and with no layout,
+  and not something to transcribe from or to read a reading order off. They
+  stay off the manifest, which records the page, its word count and its
+  rotation as before.
 - **A citation says where the quote is inside its line, everywhere a consumer
   reads one.** An issue's members now carry `start`, `end` and `anchor_text`
   beside the line, and a citation ledger use row carries `start`, `end` and

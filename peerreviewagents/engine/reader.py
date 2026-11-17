@@ -78,6 +78,21 @@ DISPLAY_KINDS = ('equation', 'table', 'caption')
 #: what the converter had already labelled left both of those as garbage.
 REREADABLE = DISPLAY_KINDS + PROSE_KINDS
 
+#: What one absorbed neighbour may hold, in characters. The debris a converter
+#: leaves around a displayed piece is short: ``"with {"``, ``"qn,s,d else"`` and
+#: ``"|A|2 d=1"`` came back as three headings off one paper, and a bar chart's
+#: axis numbers came back as one 89-character paragraph above its caption. The
+#: authors' own prose is longer than that, and prose is never debris, so the cap
+#: is what sits between the two: past it, absorbing would take a paragraph of
+#: the paper out of the manuscript instead of a displayed piece's leftovers.
+MOST_ABSORBED_CHARACTERS = 200
+
+#: How many neighbours one call may absorb. An equation the converter broke left
+#: a piece of debris on each side of it, so one is not enough; a call that wants
+#: more than this is re-reading the page rather than folding a displayed piece's
+#: debris back into it.
+MOST_ABSORBED = 3
+
 #: How much of a piece the listing shows. An equation, a table or a caption is
 #: shown whole, because that is what gets repaired; prose is context, and a
 #: reader that needs more of it is reading the page image anyway.
@@ -290,6 +305,34 @@ def original_of(piece):
                'latex': piece.get('latex'), 'number': piece.get('number'),
                'rows': piece.get('table')}
     return {key: value for key, value in account.items() if value not in (None, '')}
+
+
+def absorbed_of(piece):
+    """One absorbed piece's whole converter reading, named, for whatever took it.
+
+    A piece that is folded into the displayed piece it is debris of leaves the
+    document, and this is what says it was ever there: its id and everything
+    the converter read into it, kept under ``original`` on the piece that
+    absorbed it. Absorbing is not a deletion, and this row is the difference.
+    """
+    return {'piece': piece.get('piece_id'), **original_of(piece)}
+
+
+def lost_page_text(draft, page):
+    """The text layer's words for a page the converter returned nothing from.
+
+    The import keeps them because that page has no pieces at all: a reader
+    looking at a turned, small or badly printed page has the image and nothing
+    else to check a character against, and on two runs the same footnote
+    letter came back wrong from the same rotated table. Poppler reads the
+    letter off the text layer exactly. The words come back with the layout
+    thrown away, which is what they are for: settling a character, not
+    standing in for the page.
+    """
+    for entry in draft.get('lost_pages') or []:
+        if int(entry.get('page') or 0) == int(page):
+            return ' '.join(str(entry.get('text') or '').split())
+    return ''
 
 
 def viewed(draft):
@@ -535,6 +578,92 @@ class Desk:
                              + ' is for ' + ' or '.join(kinds) + ' pieces.' + pointer)
         return document, index, piece
 
+    def absorb(self, document, kept, piece_ids, page, verb):
+        """The neighbour pieces to fold into a displayed piece, checked.
+
+        The converter does not only mangle a displayed piece, it strews it: an
+        equation came back as the equation and two headings reading ``with {``
+        and ``qn,s,d else``, one on each side of it, and a bar chart came back
+        as its caption with ``120 100 80 … Concentration(µl/ml)`` — the axis
+        text — as a paragraph above it. None of that is prose, none of it
+        belongs in the manuscript, and until now nothing could take it out: a
+        converter piece is the authors' text and this stage never deletes one
+        on its own. Folding it into the piece it is debris of is the way out,
+        and it is not a deletion — whatever absorbs it keeps its whole
+        converter reading in ``original``, by :func:`absorbed_of`.
+
+        So what may be absorbed is narrow, and each refusal below is a way of
+        being sure this is debris and not the paper. It is the converter's own
+        piece and not one this stage added, it is prose by kind — an equation,
+        a table or a figure is accounted for in its own right and is never
+        swept into another piece — it is on the page being read, it is short
+        enough to be debris, and it sits next to what absorbs it with nothing
+        of the manuscript in between.
+        """
+        kept = [str(one) for one in kept]
+        wanted = [str(one) for one in piece_ids]
+        if not wanted:
+            return []
+        if len(set(wanted)) != len(wanted):
+            raise ValueError(verb + ': `absorb` names the same piece more than once.')
+        if len(wanted) > MOST_ABSORBED:
+            raise ValueError(verb + ': `absorb` takes at most ' + str(MOST_ABSORBED) + ' pieces, '
+                             'and this names ' + str(len(wanted)) + '. It is for the debris of '
+                             'one displayed piece; a page that needs more than that is a page to '
+                             'work through piece by piece.')
+        taken = []
+        for piece_id in wanted:
+            where = verb + ': `absorb` names ' + piece_id
+            if piece_id in kept:
+                raise ValueError(where + ', which is the piece doing the absorbing.')
+            other_document, _, other = locate(self.draft, piece_id)
+            if other_document != document:
+                raise ValueError(where + ', which is in ' + other_document + ' and not in '
+                                 + document + '. A piece is debris of something printed beside '
+                                 'it, so both are in one document.')
+            if (other.get('read') or {}).get('action') == 'added':
+                raise ValueError(where + ', which is a piece this stage added rather than one the '
+                                 'converter read. Take one of those out with withdraw_piece.')
+            kind = account_kind(other) or str(other.get('kind') or 'paragraph')
+            if kind not in PROSE_KINDS:
+                article = 'an ' if kind[:1] in 'aeiou' else 'a '
+                raise ValueError(where + ', which is ' + article + kind + '. A ' + kind
+                                 + ' is accounted '
+                                 'for in its own right — repaired, confirmed or described — and '
+                                 'is never folded into another piece, because then nothing would '
+                                 'say what the page printed there. An equation the converter '
+                                 'split is merge_equations\'.')
+            if int(other.get('page') or 0) != int(page):
+                raise ValueError(where + ', which the converter put on page '
+                                 + str(other.get('page')) + ' and not on page ' + str(page)
+                                 + '. Debris is absorbed off the page it is printed on, which is '
+                                 'the page you are looking at.')
+            reading = converter_reading(other)
+            if len(reading) > MOST_ABSORBED_CHARACTERS:
+                raise ValueError(where + ', which holds ' + str(len(reading)) + ' characters. '
+                                 'Debris of a displayed piece is short, and that is the length '
+                                 'of prose: absorbing it would take a paragraph of the paper out '
+                                 'of the manuscript whole. To cut a displayed piece\'s debris '
+                                 'out of a paragraph and keep the paragraph, reread_piece it '
+                                 'with `remove`.')
+            taken.append(other)
+        places = {str(one.get('piece_id')): at
+                  for at, one in enumerate(self.draft['documents'][document])}
+        run = sorted(places[one] for one in kept + wanted)
+        if run != list(range(run[0], run[-1] + 1)):
+            raise ValueError(verb + ': `absorb` is for a piece printed next to the one that '
+                             'absorbs it, and the draft has other pieces between these. Those '
+                             'pieces are the paper too, and a fold that reached across them '
+                             'would take them out with the debris.')
+        return taken
+
+    def shed(self, document, taken):
+        """Take the absorbed pieces out of the document, now something else holds them."""
+        dropped = {one.get('piece_id') for one in taken}
+        self.draft['documents'][document] = [one for one in self.draft['documents'][document]
+                                             if one.get('piece_id') not in dropped]
+        return sorted(str(one) for one in dropped)
+
     # --- the tools --------------------------------------------------------
 
     def dispatch(self, name, args):
@@ -550,7 +679,8 @@ class Desk:
                                       args.get('page'))
         if name == 'describe_figure':
             return self.describe_figure(str(args.get('piece') or ''),
-                                        args.get('description') or '', args.get('page'))
+                                        args.get('description') or '', args.get('page'),
+                                        list(args.get('absorb') or []))
         if name == 'add_piece':
             return self.add_piece(str(args.get('after') or ''), str(args.get('kind') or ''),
                                   args.get('page'), args.get('text') or '',
@@ -558,7 +688,8 @@ class Desk:
                                   args.get('rows') or [])
         if name == 'reread_piece':
             return self.reread_piece(str(args.get('piece') or ''), args.get('page'),
-                                     list(args.get('pieces') or []))
+                                     list(args.get('pieces') or []),
+                                     list(args.get('absorb') or []))
         if name == 'withdraw_piece':
             return self.withdraw_piece(str(args.get('piece') or ''))
         if name == 'merge_equations':
@@ -627,6 +758,14 @@ class Desk:
         a reader asked to cut the debris out of a 700-character paragraph could
         not see the end of the paragraph it was cutting. A page is a bounded
         amount of text, and this is the call made while looking at it.
+
+        On a page the converter returned nothing from there are no pieces, so
+        the image is all there is — and on a rotated, small or badly printed
+        one that is not always enough. Two runs over the same paper read the
+        same footnote letter off the same turned table and both got it wrong.
+        So that page also comes back with the words Poppler reads off its text
+        layer, with the layout thrown away: they settle a character the image
+        does not resolve, and they are not a reading of the page.
         """
         target = pages.page_image(self.workspace, page, self.out,
                                   int(self.draft.get('page_count') or 0))
@@ -642,12 +781,25 @@ class Desk:
                              'kind': str(piece.get('kind') or 'paragraph'),
                              'document': name, 'source': piece.get('source') or 'text',
                              'text': rendered(piece)})
-        return {'label': 'Original PDF page ' + str(page), 'page': int(page),
-                'pieces': here,
-                'reading': ('Those are the converter\'s pieces for this page, whole, with the '
-                            'text it read. A span you name in `remove` or `keep` is matched '
-                            'against this, not against the page.'),
-                'image': base64.b64encode(target.read_bytes()).decode()}
+        answer = {'label': 'Original PDF page ' + str(page), 'page': int(page),
+                  'pieces': here,
+                  'reading': ('Those are the converter\'s pieces for this page, whole, with the '
+                              'text it read. A span you name in `remove` or `keep` is matched '
+                              'against this, not against the page.'),
+                  'image': base64.b64encode(target.read_bytes()).decode()}
+        raw = lost_page_text(self.draft, page)
+        if raw:
+            answer['text_layer'] = raw
+            answer['reading'] = (
+                'The converter returned nothing from this page, so it has no pieces: the image is '
+                'the page. `text_layer` is what Poppler reads off the page\'s own text layer, '
+                'whitespace collapsed — the characters, in no reliable order, in no columns and '
+                'with the layout gone. Use it to settle a character the image does not resolve: a '
+                'footnote letter, a subscript, a minus sign, a digit in a small or rotated cell. '
+                'Do not read a reading order, a row, a column or a layout off it, and do not '
+                'transcribe from it: what you add with add_piece is what the image shows, in the '
+                'order the page prints it.')
+        return answer
 
     def replace_equation(self, piece_id, latex, number, page):
         """Rewrite one displayed equation's LaTeX from the page image."""
@@ -682,8 +834,16 @@ class Desk:
                 'text': rendered(piece), 'replaced': piece['original'],
                 'outstanding': outstanding(self.draft)}
 
-    def describe_figure(self, piece_id, description, page):
-        """Write what the figure's image shows, as a piece after its caption."""
+    def describe_figure(self, piece_id, description, page, absorb=()):
+        """Write what the figure's image shows, as a piece after its caption.
+
+        *absorb* folds the converter's debris of this figure into the
+        description: the axis text of a bar chart came back as a paragraph
+        above its caption, which is a figure's content read as prose, and the
+        description is where a figure's content belongs. :meth:`absorb` is
+        what checks that it is debris, and the reading of each piece folded in
+        is kept on the description.
+        """
         page = self.off_page(page)
         description = ' '.join(str(description).split())
         if len(description) < 40:
@@ -693,8 +853,13 @@ class Desk:
         document, index, piece = self.target(piece_id, ('figure',), 'describe_figure')
         pieces = self.draft['documents'][document]
         following = pieces[index + 1] if index + 1 < len(pieces) else None
-        if following is not None and str(following.get('kind')) == 'figure-description' \
-                and following.get('describes') == piece_id:
+        standing = following if (following is not None
+                                 and str(following.get('kind')) == 'figure-description'
+                                 and following.get('describes') == piece_id) else None
+        kept = [piece_id] + ([standing.get('piece_id')] if standing is not None else [])
+        taken = self.absorb(document, kept, absorb, page, 'describe_figure')
+        if standing is not None:
+            following = standing
             following['text'] = description
             following['page'] = page
             written = following
@@ -710,9 +875,20 @@ class Desk:
         # among the pieces `add_piece` put back: a manifest reported nine
         # described and nine added on a run where `add_piece` was never called.
         settle(piece, 'described', page)
+        folded = []
+        if taken:
+            held = dict(written.get('original') or {})
+            folded = [absorbed_of(one) for one in taken]
+            held['absorbed'] = [*(held.get('absorbed') or []), *folded]
+            written['original'] = held
+        removed = self.shed(document, taken)
         self.save()
-        return {'piece': piece_id, 'description_piece': written['piece_id'], 'source': 'ai',
-                'text': rendered(written), 'outstanding': outstanding(self.draft)}
+        answer = {'piece': piece_id, 'description_piece': written['piece_id'], 'source': 'ai',
+                  'text': rendered(written), 'outstanding': outstanding(self.draft)}
+        if folded:
+            answer['absorbed'] = folded
+            answer['removed'] = removed
+        return answer
 
     def add_piece(self, after, kind, page, text='', latex='', number='', rows=()):
         """Add a piece the converter never produced, after the one it belongs behind.
@@ -747,7 +923,7 @@ class Desk:
         return {'piece': piece['piece_id'], 'kind': kind, 'after': after, 'source': 'ai',
                 'text': rendered(piece), 'outstanding': outstanding(self.draft)}
 
-    def reread_piece(self, piece_id, page, parts):
+    def reread_piece(self, piece_id, page, parts, absorb=()):
         """One converted piece re-read as the pieces the page actually prints.
 
         The converter emits one block per thing it *thinks* it found, and when
@@ -764,6 +940,13 @@ class Desk:
         the spans to cut, or the one span to keep, and the engine cuts them —
         see :func:`prose_from` — so a displayed piece's debris can leave a
         paragraph and nothing a model types can get into one.
+
+        *absorb* is for the debris that is not inside a paragraph but beside
+        it, as a piece of its own that no span can reach. Each piece named
+        there is folded into this re-read and its converter reading is kept on
+        what this call writes — see :meth:`absorb`. Because that is where the
+        reading goes, a re-read that absorbs has to write something the debris
+        can be part of: a table, an equation or a caption.
         """
         page = self.off_page(page)
         parts = [dict(part or {}) for part in parts]
@@ -784,6 +967,13 @@ class Desk:
         # drops has to be accounted for by a table's cells or an equation's
         # LaTeX, and in a re-read that is prose alone nothing would be.
         accounted = any(str(part.get('kind') or '') not in PROSE_KINDS for part in parts)
+        if absorb and not accounted:
+            raise ValueError('`absorb` folds a piece of debris into a displayed piece, and this '
+                             're-read writes prose alone, which is the authors\' own text: there '
+                             'would be nothing here for the debris to be part of. Re-read it as '
+                             'the table, equation or caption the debris belongs to.')
+        taken = self.absorb(document, [piece_id], absorb, page, 'reread_piece')
+        folded = [absorbed_of(one) for one in taken]
         written = []
         for at, part in enumerate(parts, 1):
             kind = str(part.get('kind') or '')
@@ -808,6 +998,8 @@ class Desk:
             made['source'] = 'ai-reconstructed'
             made['original'] = {**original_of(piece), 'piece': piece_id,
                                 'part': at, 'of': len(parts)}
+            if folded:
+                made['original']['absorbed'] = folded
             if len(parts) == 1:
                 made['bbox'] = piece.get('bbox')
             made['piece_id'] = self.next_id()
@@ -816,11 +1008,16 @@ class Desk:
             self.draft['documents'][document].insert(index + len(written), made)
         self.draft['documents'][document] = [one for one in self.draft['documents'][document]
                                              if one.get('piece_id') != piece_id]
+        removed = self.shed(document, taken)
         self.save()
-        return {'replaced': piece_id, 'pieces': [one['piece_id'] for one in written],
-                'kinds': [one['kind'] for one in written], 'source': 'ai-reconstructed',
-                'text': '\n'.join(rendered(one) for one in written),
-                'was': original_of(piece), 'outstanding': outstanding(self.draft)}
+        answer = {'replaced': piece_id, 'pieces': [one['piece_id'] for one in written],
+                  'kinds': [one['kind'] for one in written], 'source': 'ai-reconstructed',
+                  'text': '\n'.join(rendered(one) for one in written),
+                  'was': original_of(piece), 'outstanding': outstanding(self.draft)}
+        if folded:
+            answer['absorbed'] = folded
+            answer['removed'] = removed
+        return answer
 
     def withdraw_piece(self, piece_id):
         """Take out a piece this stage added, having got it wrong.
@@ -859,35 +1056,60 @@ class Desk:
                 'outstanding': outstanding(self.draft)}
 
     def merge_equations(self, piece_ids, latex, number, page):
-        """One equation the converter split into several pieces, put back together."""
+        """One equation the converter split up, put back together.
+
+        The first id keeps the whole equation and the rest are folded into it.
+        They need not all be equations: the converter does not split an
+        equation cleanly, it labels one piece of it an equation and leaves the
+        rest as prose beside it, and on one paper that meant three headings
+        reading ``with {``, ``qn,s,d else`` and ``|A|2 d=1`` — equation debris
+        the manuscript carried as headings, with no tool that could reach
+        them, because a converter piece is the authors' text and this stage
+        deletes none of them on its own. A piece of prose that is really part
+        of the equation beside it is folded in by :meth:`absorb`, which is
+        what checks that it is debris and not the paper: prose by kind, on
+        this page, short, and printed next to what takes it in. What it holds
+        is kept on the keeper either way.
+        """
         page = self.off_page(page)
         latex = ' '.join(str(latex).split())
         if not latex:
             raise ValueError('Give the whole equation\'s LaTeX, as one line.')
-        if len(piece_ids) < 2:
-            raise ValueError('Merging is for two or more pieces that are one equation.')
-        found = [self.target(str(one), ('equation',), 'merge_equations') for one in piece_ids]
-        if len({document for document, _, _ in found}) != 1:
-            raise ValueError('Those pieces are in different documents.')
-        document = found[0][0]
-        keeper = found[0][2]
+        wanted = [str(one) for one in piece_ids]
+        if len(wanted) < 2:
+            raise ValueError('Merging is for two or more pieces that are one equation: the '
+                             'equation first, then the pieces to fold into it. To rewrite one '
+                             'piece on its own, replace_equation.')
+        if len(set(wanted)) != len(wanted):
+            raise ValueError('merge_equations: the same piece is named more than once.')
+        document, _, keeper = self.target(wanted[0], ('equation',), 'merge_equations')
+        halves, debris = [], []
+        for one in wanted[1:]:
+            other_document, _, other = locate(self.draft, one)
+            if other_document != document:
+                raise ValueError('Those pieces are in different documents.')
+            if str(other.get('kind') or '') == 'equation':
+                halves.append(other)
+            else:
+                debris.append(one)
+        # Only the debris is held to adjacency and to the page: two pieces the
+        # converter labelled equations are one equation on its own evidence,
+        # and one of them may be the tail of it at the top of the next page.
+        taken = self.absorb(document, [wanted[0], *(one.get('piece_id') for one in halves)],
+                            debris, page, 'merge_equations')
         keeper['original'] = {'latex': keeper.get('latex'), 'number': keeper.get('number'),
                               'text': keeper.get('text'),
-                              'merged': [{'piece': piece.get('piece_id'),
-                                          'latex': piece.get('latex'),
-                                          'number': piece.get('number')}
-                                         for _, _, piece in found[1:]]}
+                              'merged': [absorbed_of(piece) for piece in halves]}
+        if taken:
+            keeper['original']['absorbed'] = [absorbed_of(piece) for piece in taken]
         keeper['latex'] = latex
         keeper['number'] = ' '.join(str(number).split())
         keeper['text'] = latex
         keeper['source'] = 'ai-reconstructed'
         settle(keeper, 'merged', page)
-        dropped = {piece.get('piece_id') for _, _, piece in found[1:]}
-        self.draft['documents'][document] = [piece for piece
-                                             in self.draft['documents'][document]
-                                             if piece.get('piece_id') not in dropped]
+        removed = self.shed(document, [*halves, *taken])
         self.save()
-        return {'piece': keeper['piece_id'], 'removed': sorted(dropped), 'source': keeper['source'],
+        return {'piece': keeper['piece_id'], 'removed': removed, 'source': keeper['source'],
                 'text': rendered(keeper), 'replaced': keeper['original'],
                 'outstanding': outstanding(self.draft)}
 
