@@ -231,7 +231,7 @@ def test_the_agent_files_pin_the_same_models_this_module_defaults_to():
     A per-spawn override is what normally decides a slot's model; the agent
     file's ``model:`` is what runs when none arrives — a dropped relay, a
     version of Claude Code that ignores the override. Two answers in two places
-    is how a run comes to record a model it did not run, so the eleven files
+    is how a run comes to record a model it did not run, so the twelve files
     and the defaults here are checked against each other rather than by hand.
     """
     agents = Path(model_plan.__file__).resolve().parent / 'pra' / 'agents'
@@ -241,7 +241,7 @@ def test_the_agent_files_pin_the_same_models_this_module_defaults_to():
         assert found, f'{path.name} pins no model, so its slot would inherit one'
         pinned[path.stem] = found.group(1)
 
-    assert len(pinned) == 11, pinned
+    assert len(pinned) == 12, pinned
     assert pinned['core-reviewer'] == model_plan.DEFAULT_REVIEWER_MODELS[0]
     assert pinned['editor'] == model_plan.DEFAULT_EDITOR_MODEL
     assert pinned['recorder'] == model_plan.DEFAULT_RECORDER_MODEL
@@ -249,9 +249,13 @@ def test_the_agent_files_pin_the_same_models_this_module_defaults_to():
     assert pinned['reader'] == model_plan.DEFAULT_READER_MODEL
     specialists = {name: model for name, model in pinned.items()
                    if name not in ('core-reviewer', 'editor', 'recorder', 'citation-worker',
-                                   'reader')}
+                                   'reader', srv.CODE_TRACK)}
     assert set(specialists) == set(srv.SPECIALIST_TRACKS), 'one file per specialist track'
     assert set(specialists.values()) == {model_plan.DEFAULT_SPECIALIST_MODEL}
+    # The code lane is a specialist too, and is deliberately not one of the
+    # six: it is planned only where the run was given code. It is pinned to the
+    # same model they are, because it is the same kind of work on two documents.
+    assert pinned[srv.CODE_TRACK] == model_plan.DEFAULT_SPECIALIST_MODEL
     assert set(pinned.values()) <= set(model_plan.KNOWN)
 
 

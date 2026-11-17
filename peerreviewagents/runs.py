@@ -597,6 +597,65 @@ def _manuscript(workspace, paper):
     }
 
 
+def _code_reviewed(progress, manifest, problems):
+    """Whether the run read code beside the paper, and what it read.
+
+    ``progress.json`` carries the desk's own record — where the code came
+    from, the commit it was at, how many files the snapshot held and which of
+    them a reviewer opened — and ``manifest.json`` carries the snapshot
+    manifest under ``code_under_review``, which is the full list including the
+    files that were left out. A run written before the code lane existed holds
+    neither, and that is a run that reviewed no code rather than a folder with
+    something missing from it: every reading says ``reviewed: False`` and the
+    rest is empty, so an application never has to ask whether the key is there.
+    """
+    empty = {'reviewed': False, 'kind': '', 'source': '', 'commit': '', 'branch': '',
+             'dirty': None, 'snapshot': None, 'files_in_snapshot': 0, 'files_skipped': 0,
+             'truncated': '', 'files_opened': [], 'opened': 0, 'searches': 0, 'manifest': None}
+    progress, manifest = progress or {}, manifest or {}
+    record = progress.get('code')
+    if record is None or record == {}:
+        return empty
+    if not isinstance(record, dict):
+        problems.append(f"progress.json's code holds a {type(record).__name__} where the record "
+                        'of the code this run reviewed belongs, so it is read as no code')
+        return empty
+    if not record.get('reviewed'):
+        return empty
+    snapshot = record.get('snapshot')
+    taken = manifest.get('code_under_review')
+    return {
+        'reviewed': True,
+        'kind': str(record.get('kind') or ''),
+        'source': str(record.get('source') or ''),
+        'commit': str(record.get('commit') or ''),
+        'branch': str(record.get('branch') or ''),
+        # Whether the folder had uncommitted changes in it when it was taken.
+        # ``None`` for a snapshot of something that is not a repository, where
+        # the question does not arise.
+        'dirty': record.get('dirty') if isinstance(record.get('dirty'), bool) else None,
+        'snapshot': str(snapshot) if snapshot else None,
+        'files_in_snapshot': _count(record.get('files_in_snapshot')),
+        'files_skipped': _count(record.get('files_skipped')),
+        # Why the snapshot stopped early, in the words of whatever took it: a
+        # file count, a byte total. Empty for a snapshot that holds the whole
+        # of what it was pointed at, which is the ordinary case.
+        'truncated': str(record.get('truncated') or ''),
+        # Which files a reviewer actually opened, out of the snapshot. A lane
+        # that opened none read the paper and nothing else, and a reading that
+        # reported only "code: reviewed" could not say so.
+        'files_opened': [str(name) for name in (record.get('files_opened') or [])],
+        'opened': _count(record.get('opened')),
+        'searches': _count(record.get('searches')),
+        'manifest': taken if isinstance(taken, dict) else None,
+    }
+
+
+def _count(value):
+    """A count as a number, ``0`` for anything that is not one."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
 def cause_of(runtime=None, progress=None, startup=None):
     """Why the run is not a written review, in one sentence, or ``None``.
 
@@ -931,6 +990,22 @@ def read_run(path):
         ``lost_pages`` is each page the converter returned nothing from, with
         the document and lines its transcription became, and ``documents`` is
         the file names the base holds.
+    ``code``
+        Whether this run read the code behind the paper, and what it read.
+        ``reviewed`` is false for every run that was given none — which is most
+        of them, and for every run written before 0.10.0 — and the rest of the
+        block is then empty rather than absent. Where it is true: ``kind`` is
+        ``git-clone`` or ``folder``, ``source`` is where the code came from as
+        the caller named it, ``commit``, ``branch`` and ``dirty`` are the state
+        it was in, and ``snapshot`` is the folder under the run that holds the
+        text of it. ``files_in_snapshot`` and ``files_skipped`` are what was
+        taken and what was left out — a binary, a data file, one over the size
+        cap — ``truncated`` says in words where the snapshot stopped early and
+        is empty when it did not, and ``manifest`` is the snapshot's own
+        manifest, which names every file either way. ``files_opened``,
+        ``opened`` and ``searches`` are what a reviewer actually did with it: a
+        lane that opened no file read the paper and nothing else, and a reading
+        that said only "code: reviewed" could not have told you so.
     ``startup``
         The start-up probe: ``probe`` is the harness's own init event, the
         plugins, MCP servers, agents and commands the session reported, or
@@ -1109,6 +1184,7 @@ def read_run(path):
         'identity': _identity(manifest, protocol, paper,
                               (probe or {}).get('pdf'), problems, agents),
         'manuscript': _manuscript(workspace, paper),
+        'code': _code_reviewed(progress, manifest, problems),
         'stages': progress.get('stages') or (runtime.get('stages') if runtime else None),
         'runtime': {'wall_seconds': runtime.get('wall_seconds'),
                     'tokens_total': runtime.get('tokens_total'),

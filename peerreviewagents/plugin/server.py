@@ -39,7 +39,7 @@ import anyio.from_thread
 import anyio.to_thread
 
 from .. import issues as issue_model
-from ..engine import citation_ledger, paper_base, paper_view, quotes
+from ..engine import citation_ledger, code_source, paper_base, paper_view, quotes
 from ..engine import reader as engine_reader
 from ..engine.annotations import line_finding, quarantine_findings
 from ..engine.domain_registry import context as domain_context
@@ -49,6 +49,7 @@ from ..engine.investigation import Investigation
 from ..engine.storage import digest, read, relative_name, write
 from ..names import (
     BLOCKED,
+    CODE_DIRECTORY,
     COMPLETE_STATUSES,
     FINDING_SCHEMA_VERSION,
     MANUSCRIPT_DIRECTORY,
@@ -108,6 +109,30 @@ READER_TOOLS = ('read_draft', 'view_page', 'replace_equation', 'replace_table',
                 'describe_figure', 'add_piece', 'reread_piece', 'withdraw_piece',
                 'merge_equations', 'confirm_piece', 'seal_manuscript')
 
+#: The code track's tools: list, read and search the snapshot of the code this
+#: paper was reviewed against. They are not the engine's paper tools and do not
+#: go through an :class:`Investigation` — the snapshot is the run's, read by the
+#: run's :class:`peerreviewagents.engine.code_source.CodeDesk`, so they are
+#: granted in :meth:`Run.claim` and dispatched in :func:`_call` beside the
+#: ledger's and the reader's. None of them executes anything, reaches the
+#: network, or can name a path outside the snapshot.
+CODE_TOOLS = ('list_code', 'read_code', 'search_code')
+
+#: The track that checks the paper against its code. It is deliberately not one
+#: of :data:`SPECIALIST_TRACKS`: those six run on every paper, and this one
+#: exists only when a run was given code, so a plan that listed it among them
+#: would plan a slot that usually has nothing to read. It is planned by
+#: :func:`plan_slots` as ``spec-code`` when, and only when, there is a snapshot.
+CODE_TRACK = 'code'
+
+#: The basis words a ``minor`` issue cannot bury without an anchored rebuttal:
+#: the two the server checked itself. ``computed`` is arithmetic over numbers
+#: printed on the lines the finding cites, with the server's own receipt;
+#: ``code-checked`` is a passage of the code snapshot the server found at the
+#: lines the finding names. Neither is a reading, so calling one a suggestion
+#: takes a reason — see :meth:`Run.basis` and :func:`_issue_problems`.
+CHECKED_BASES = ('computed', 'code-checked')
+
 #: How much of the reader's note at the seal the manifest keeps. It is the few
 #: things a reviewer needs to know about the document as a document — a table
 #: the converter dropped, a page whose order had to be chosen — and a cap is
@@ -133,6 +158,13 @@ TRACK_TOOLS = {
     # are.
     'numbers': (*OFFLINE_TOOLS, 'view_page'),
     'field': (*OFFLINE_TOOLS, *IMAGE_TOOLS, *NETWORK_TOOLS),
+    # The code lane reads the whole paper first and then the snapshot, so it
+    # has the offline paper tools and `view_page` for a figure or a table whose
+    # value it is checking against what the code writes. Its own three tools
+    # are granted beside this list, in :meth:`Run.claim`, because the snapshot
+    # is not something an investigation reads. No lookups: what a method is
+    # called in the literature is another lane's question.
+    CODE_TRACK: (*OFFLINE_TOOLS, 'view_page'),
     'editor': ('read_paper', 'search', 'calculate', 'inspect_results'),
     'recorder': (),
     # A citation worker reads one sentence and one stored passage and answers
@@ -151,11 +183,22 @@ CALL_BUDGET = {'core': 30, 'specialist': 20, 'editor': 12, 'recorder': 2,
                # One claim plus the verdicts for it, three batches over: a
                # worker that has spent this has judged thirty citation uses.
                'citation-worker': 40,
+               # The code lane reads two documents, not one: the paper and then
+               # the repository. A specialist's twenty calls are spent before
+               # it has listed the snapshot, searched it for the three
+               # thresholds the methods section names and read the file each
+               # one is in — and a lane that runs out mid-check files the half
+               # it has, which is the finding without evidence this whole shape
+               # refuses. Reading the paper is free, as everywhere.
+               CODE_TRACK: 40,
                # Never used: the reader's allowance is the manuscript's size.
                # Here so that a role is never missing from this table.
                'reader': 0}
 EXTERNAL_BUDGET = {'core': 24, 'specialist': 16, 'editor': 0, 'recorder': 0,
-                   'citation-worker': 0, 'reader': 0}
+                   'citation-worker': 0, 'reader': 0,
+                   # No lookups at all: the code lane's evidence is in the
+                   # paper and in the snapshot, both of them already here.
+                   CODE_TRACK: 0}
 # Raised from 600 when the citation ledger arrived: a 60-reference paper has
 # roughly 90 in-text uses, and one verdict is one tool call, so the workers
 # alone can spend a hundred calls that no reviewer used to make. The reviewers'
@@ -433,13 +476,18 @@ class Agent:
     issues: dict = field(default_factory=dict)
 
 
-def plan_slots(arm, reviewers, tracks=None):
+def plan_slots(arm, reviewers, tracks=None, code=False):
     """The slots one arm asks for, without a run: ``core-1``, ``spec-stats``, …
 
     :class:`Run` answers this about itself, but the launcher has to answer it
     before a run exists — it settles which model each slot would run, and
     refuses an unavailable one, before the manuscript is imported or a session
     is started.
+
+    *code* is whether this run was given code to review. It adds one slot,
+    ``spec-code``, after the specialist lanes: the only stage of the review
+    that is not planned from the arm alone, because the code is not a property
+    of the paper and a run that was given none has nothing for it to read.
     """
     plan = ARMS[arm]
     fixed = plan['reviewers']
@@ -450,6 +498,8 @@ def plan_slots(arm, reviewers, tracks=None):
         slots.append('revision-1')
     if plan['specialists']:
         slots.extend(f'spec-{track}' for track in chosen)
+        if code:
+            slots.append(f'spec-{CODE_TRACK}')
     if plan['editor']:
         slots.append('editor')
     return tuple(slots)
@@ -565,7 +615,7 @@ class Run:
     def __init__(self, pdf, root, reviewers, arm, literature_cutoff, plugin_root, title=None,
                  tracks=None, reviewer_models=None, specialist_model=None, editor_model=None,
                  recorder_model=None, citation_workers=None, citation_worker_model=None,
-                 prior_issues=None, supplements=None, reader_model=None):
+                 prior_issues=None, supplements=None, reader_model=None, code=None):
         if arm not in ARMS:
             raise ValueError('Unknown arm: ' + arm + '. Arms: ' + ', '.join(sorted(ARMS)))
         self.arm = arm
@@ -580,6 +630,20 @@ class Run:
         if tracks and not chosen:
             raise ValueError('tracks must name specialists: ' + ', '.join(SPECIALIST_TRACKS))
         self.tracks = chosen
+        # Whether this run checks the paper against the code behind it, which
+        # adds one slot to the plan. Settled here, before the models are
+        # assigned per slot; the snapshot itself is taken below, once the
+        # folder guard has passed, because cloning into a folder that is about
+        # to be refused would be work nobody asked for.
+        self.code_given = bool(code)
+        if self.code_given and not self.plan['specialists']:
+            raise ValueError(
+                'The ' + str(arm) + ' arm runs no specialists, and the code review is one: '
+                'there would be nobody to read the snapshot, and a run that was given code '
+                'and reviewed none would report a code review that never happened. Arms that '
+                'run specialists: '
+                + ', '.join(sorted(name for name, one in ARMS.items() if one['specialists']))
+                + '.')
         # Which model runs in which slot, settled before anything is imported
         # or written: a model this login cannot run is refused here, rather
         # than quietly substituted halfway through a run and recorded as the
@@ -643,6 +707,14 @@ class Run:
         self.prior_by_id = {str(row['id']): row for row in self.prior_issues}
         self.refuse_foreign_folder(pdf)
         self.review.mkdir(parents=True, exist_ok=True)
+        # The code, copied into the run folder once and never executed. A
+        # folder that already holds the snapshot of this same code keeps it —
+        # `ingest` is safe to call twice and a killed run is recovered by
+        # opening the same folder — and anything that leaves nothing to review
+        # is refused here, as the import of an unreadable PDF is.
+        self.code = None
+        if self.code_given:
+            self.code = code_source.attach(code, self.root / CODE_DIRECTORY)
         # The manuscript in two states, never both. A *draft* is the converted
         # pieces with no line numbers: the reader repairs it, and nothing else
         # in the run can see it. A *base* is paper.md, its supplements and the
@@ -792,7 +864,7 @@ class Run:
     # -- plan ---------------------------------------------------------------
 
     def required_slots(self):
-        return plan_slots(self.arm, self.reviewers, self.tracks)
+        return plan_slots(self.arm, self.reviewers, self.tracks, self.code_given)
 
     def citations_enabled(self):
         """Whether this run keeps a citation ledger, by what its arm runs.
@@ -1013,10 +1085,17 @@ class Run:
             ledger_tools = ('claim_citation_batch', 'submit_citation_verdict')
         elif track == 'citations' and self.citations_enabled():
             ledger_tools = ('citation_rows',)
+        # The code lane's three tools are granted the same way and for the same
+        # reason: the snapshot is a folder of this run, not the manuscript an
+        # investigation reads. They exist only where a snapshot does, so a
+        # track named `code` in a run that was given none gets nothing rather
+        # than tools over an empty folder.
+        code_tools = CODE_TOOLS if track == CODE_TRACK and self.code is not None else ()
         # The reader's tools are granted the same way, and for the same reason:
         # they work on the draft, which is the server's own file and not the
         # manuscript an investigation reads.
-        allowed = (*paper_tools, *ledger_tools, *(READER_TOOLS if role == 'reader' else ()))
+        allowed = (*paper_tools, *ledger_tools, *code_tools,
+                   *(READER_TOOLS if role == 'reader' else ()))
         # Every other slot's allowance is a constant, because the work is one
         # manuscript however many findings come out of it. The editor's work is
         # the findings themselves, so its allowance is measured from the ledger
@@ -1024,12 +1103,17 @@ class Run:
         # Two slots are measured against the work in front of them rather than
         # given a constant: the editor against the ledger it is handed, and the
         # reader against the pages and pieces it must account for.
+        # Which row of the two allowance tables this slot reads. Every
+        # specialist reads the specialist's row except the code lane, which has
+        # its own: it works through two documents, the paper and the snapshot.
+        allowance = (CODE_TRACK if track == CODE_TRACK
+                     else 'specialist' if role == 'specialist' else role)
         if role == 'editor':
             budget = editor_call_budget(len(self.pooled()))
         elif role == 'reader':
             budget = self.reader_allowance()
         else:
-            budget = CALL_BUDGET['specialist' if role == 'specialist' else role]
+            budget = CALL_BUDGET[allowance]
         # The allowance belongs to the slot, not to the claim. A second attempt
         # continues the first one's count, so a re-claim cannot buy more calls.
         used = self.slot_calls.get(slot, 0)
@@ -1062,8 +1146,7 @@ class Run:
                 'cache': str(self.root / 'cache'),
                 'tool_limit': max(0, budget - used),
                 'literature_cutoff': self.cutoff,
-                'external_request_limit': EXTERNAL_BUDGET[
-                    'specialist' if role == 'specialist' else role],
+                'external_request_limit': EXTERNAL_BUDGET[allowance],
             })
         self.agents[slot] = agent
         self.tokens[token] = agent
@@ -1140,19 +1223,35 @@ class Run:
                     printed |= {value, abs(value)}
         return printed
 
-    def basis(self, agent, stored, receipt_id, corroborating):
-        """``computed``, ``two-quotes`` or ``judgement``, decided here from receipts.
+    def basis(self, agent, stored, receipt_id, corroborating, code_evidence=None):
+        """``computed``, ``code-checked``, ``two-quotes`` or ``judgement``, decided here.
 
         A receipt is ``computed`` when every number it works on is printed on
         the lines the finding cites. A number that appears on none of them came
         from somewhere the server cannot check — the agent's own prose, or a
         figure read by eye — and that is judgement however the arithmetic looks.
 
+        ``code-checked`` is the same kind of word for the code lane: the server
+        found the quoted passage in the code snapshot at the lines the finding
+        names, so what the code says is checked rather than reported. What the
+        paper says is checked by the quote, as in every finding; whether the two
+        disagree is still the reviewer's reading, which is why the reason says
+        so. A stored ``calculate_receipt`` is kept beside it either way.
+
         A figure reading is judgement whatever else it carries: a number read off
-        pixels is not a guard-checked number, so it can never be ``computed``.
+        pixels is not a guard-checked number, so it can never be ``computed``,
+        and a comparison against the code is only as good as the pixel it
+        started from.
         """
         if str(stored.get('piece_kind') or '').startswith('figure'):
             return 'judgement', 'A reading taken from a figure is judgement.'
+        if code_evidence:
+            return 'code-checked', (
+                'The code quoted is what ' + str(code_evidence.get('path'))
+                + ' holds at lines ' + str(code_evidence.get('start_line')) + '-'
+                + str(code_evidence.get('end_line')) + ', checked by the server against the '
+                'snapshot. That the code says this is checked; that it disagrees with the '
+                'paper is the reviewer\'s reading.')
         receipt = agent.receipts.get(receipt_id) if receipt_id else None
         if receipt:
             printed = self.printed_numbers(stored, corroborating)
@@ -1223,7 +1322,8 @@ class Run:
                             'matched_by': 'fingerprint'}
         return None
 
-    def store_finding(self, agent, raw, escalate, receipt_id, corroborating, found):
+    def store_finding(self, agent, raw, escalate, receipt_id, corroborating, found,
+                      code_evidence=None):
         """One submitted finding on the ledger, or ``(None, reason)`` for a quarantine.
 
         *found* is what :func:`peerreviewagents.engine.quotes.anchor` said about
@@ -1251,9 +1351,14 @@ class Run:
         stored['escalate'] = bool(escalate) and agent.role == 'specialist'
         stored['finding_uid'] = self.finding_uid(agent, raw)
         stored['basis'], stored['basis_reason'] = self.basis(agent, stored, receipt_id,
-                                                             corroborating)
+                                                             corroborating, code_evidence)
         if corroborating:
             stored['corroborating'] = corroborating
+        # The code the finding rests on, as the server found it: the file, the
+        # line range, the text at those lines and the hash of the file in the
+        # snapshot. A reader of the review can go to the snapshot and see it.
+        if code_evidence:
+            stored['code_evidence'] = dict(code_evidence)
         if receipt_id and receipt_id in agent.receipts:
             stored['calculate_receipt'] = {'receipt': receipt_id, **agent.receipts[receipt_id]}
         stored['recorded'] = now()
@@ -1440,6 +1545,10 @@ class Run:
                      'outstanding': (None if self.base is not None
                                      else engine_reader.outstanding(self.draft))},
             'citations': self.citation_counts(),
+            # Whether this review had the code, and what it has read of it so
+            # far. A run that was given none says so, so "the code was not
+            # reviewed" is never something a reader has to infer from silence.
+            'code': self.code.record() if self.code is not None else {'reviewed': False},
             'tool_calls': {slot: agent.calls for slot, agent in self.agents.items()},
             'tool_calls_total': self.calls,
             'started': self.started,
@@ -1464,7 +1573,11 @@ class Run:
             'paper_id': self.paper_id,
             'source_sha256': (held.get('source') or {}).get('sha256'),
             'pdf': self.pdf,
+            # `code` is this package's own files, hashed; the code the paper was
+            # reviewed against is `code_under_review`, which is somebody else's
+            # repository and is recorded by origin, commit and per-file digest.
             'code': files,
+            'code_under_review': (self.code.manifest if self.code is not None else None),
             'workflow_version': WORKFLOW_VERSION,
             'finding_schema_version': FINDING_SCHEMA_VERSION,
             'issues_schema_version': issue_model.ISSUES_SCHEMA_VERSION,
@@ -1545,6 +1658,9 @@ class Run:
             'reader_tool_allowance': self.reader_allowance(),
             'independent_tool_allowance': CALL_BUDGET['core'],
             'specialist_tool_allowance': CALL_BUDGET['specialist'],
+            # The code lane, where there is one: it reads two documents, so its
+            # allowance is its own and a reader of the protocol can see that.
+            'code_tool_allowance': (CALL_BUDGET[CODE_TRACK] if self.code_given else None),
             'editor_tool_allowance': editor_call_budget(len(self.pooled())),
             'run_tool_allowance': RUN_CALL_BUDGET,
             'issues_schema_version': issue_model.ISSUES_SCHEMA_VERSION,
@@ -1609,7 +1725,7 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
            editor_model: str = '', recorder_model: str = '',
            citation_workers: int = CITATION_WORKERS,
            citation_worker_model: str = '', prior_issues: str = '',
-           supplements: str = '', reader_model: str = '') -> dict:
+           supplements: str = '', reader_model: str = '', code: str = '') -> dict:
     """Open a run: import the manuscript PDF and fix the plan. Safe to call twice.
 
     ``tracks`` narrows the specialist track to the ones named; the default is
@@ -1646,6 +1762,14 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
     own lines, read through ``read_paper`` by name and quoted and cited like any
     other line of the paper. Everything else is copied in as an asset a reviewer
     can look at with ``view_supplement``.
+
+    ``code`` is the code this paper is reviewed against: a local folder or a git
+    URL. The text source in it is copied into ``<out>/code`` once, with a
+    manifest of what was taken and what was left out, and one further lane —
+    ``spec-code`` in ``slots`` — reads the paper against that snapshot. Nothing
+    in the snapshot is ever executed. Without ``code`` there is no such lane and
+    the review says the code was not reviewed; an arm that runs no specialists
+    is refused rather than quietly reviewing none of it.
 
     ``prior_issues`` makes this run a second round: it is the ``issues.json`` of
     an earlier run of the same paper, or that run's folder. The editor is shown
@@ -1688,6 +1812,16 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
         if differs:
             return rejection('This run already runs ' + differs + '. An attach does not change '
                              'the models: review the models you want in a fresh out folder.')
+        # The code is as much the plan as the arm and the models are: `spec-code`
+        # is in this run's slots or it is not, and the snapshot was taken once.
+        held = (run.code.origin.get('source') or '') if run.code is not None else ''
+        asked = code_source.origin_name(code) if code else ''
+        if asked != held:
+            return rejection(
+                ('This run reviews the code at ' + held if held
+                 else 'This run was given no code')
+                + ', and you asked for ' + (asked or 'none') + '. An attach does not change '
+                'what is reviewed: review that code in a fresh out folder.')
         # The claim codes are minted once and go back once. A second caller
         # attaching to a live run is not the recorder: no identities, and not
         # the slot list either — nor the per-slot models, which name the slots.
@@ -1707,7 +1841,8 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
                   citation_worker_model=settled.get('citation_worker'),
                   prior_issues=prior_issues or None,
                   supplements=supplements or None,
-                  reader_model=settled.get('reader'))
+                  reader_model=settled.get('reader'),
+                  code=code or None)
     except (ValueError, KeyError, TypeError, OSError) as exc:
         return rejection(record_import_refusal(out, str(exc)))
     STATE['run'] = run
@@ -1756,6 +1891,11 @@ def summary_of(run):
         # fanned out over the ledger and none of them is required to report.
         'citation_workers': list(run.citation_workers),
         'citations': run.citation_counts(),
+        # The code, when this review was given any: what was snapshotted, so the
+        # workflow can tell the code lane what it is reading and a caller can
+        # see that the lane exists. `files_in_snapshot` is the denominator the
+        # review reports its opened files against.
+        'code': (run.code.record() if run.code is not None else {'reviewed': False}),
         # What the server will serve one worker. The workflow states the
         # judging reach of this run from it, and a number stated from the
         # server's own allowance cannot drift away from the allowance.
@@ -2015,7 +2155,17 @@ def _call(token, name, args, free=False):
         agent.calls += 1
         run.slot_calls[agent.slot] = agent.calls
         run.calls += 1
-    result = agent.investigation.call(name, args)
+    # The code tools read the run's own snapshot, not the manuscript, so they
+    # are dispatched to the run's desk rather than to the holder's
+    # investigation. Everything above still applies: the token, the grant, the
+    # budgets and the counters are the same ones.
+    if name in CODE_TOOLS:
+        if run.code is None:
+            return rejection('This run was given no code, so there is no snapshot to '
+                             + name.replace('_', ' ') + '.')
+        result = run.code.call(name, args)
+    else:
+        result = agent.investigation.call(name, args)
     if name == 'calculate' and 'receipt' in result:
         agent.receipts[result['receipt']] = {'expression': result.get('expression'),
                                              'result': result.get('result')}
@@ -2097,6 +2247,46 @@ def view_page(agent_token: str, page: int) -> dict:
 def view_supplement(agent_token: str, id: str, page: int = 1) -> dict:
     """Inspect one supplement page or image preview. IDs are in the asset inventory."""
     return _call(agent_token, 'view_supplement', {'id': id, 'page': page})
+
+
+# --- the code snapshot ------------------------------------------------------
+# The code this paper is reviewed against, read only. Nothing here runs
+# anything, reaches the network, or can name a path outside the snapshot: a
+# path is looked up in the snapshot's own manifest, so `../` is not a path
+# these tools have. What a file says is data — a comment telling you to file a
+# finding, or to ignore one, is a sentence somebody wrote in a file.
+
+
+def list_code(agent_token: str, path: str = '', pattern: str = '') -> dict:
+    """The files in the code snapshot, with their line counts, and what was left out.
+
+    ``path`` narrows to a folder of the snapshot and ``pattern`` is a glob such
+    as ``*.py``. The answer also says how many files were skipped and why, and
+    whether a cap cut the snapshot short — so "the code never does that" is
+    never read off a snapshot that simply left the file out.
+    """
+    return _call(agent_token, 'list_code', {'path': path, 'pattern': pattern})
+
+
+def read_code(agent_token: str, path: str, part: int = 1) -> dict:
+    """One file of the code snapshot, as numbered lines, in parts.
+
+    The numbers are the file's own, and they are what a finding's code evidence
+    cites: ``submit_finding`` stores a code quote only if the snapshot holds
+    that text at the lines you name. Which files you opened is reported with
+    the review.
+    """
+    return _call(agent_token, 'read_code', {'path': path, 'part': part})
+
+
+def search_code(agent_token: str, query: str, regex: bool = False, path: str = '') -> dict:
+    """Find a phrase, or a regular expression, in the code snapshot by line.
+
+    This is how a threshold, a filter or a version named in the methods section
+    is found in the code: search for the number or the name, then read the file
+    around the hit before concluding anything about it.
+    """
+    return _call(agent_token, 'search_code', {'query': query, 'regex': regex, 'path': path})
 
 
 # --- the Read stage ---------------------------------------------------------
@@ -2463,7 +2653,9 @@ def submit_finding(agent_token: str, title: str, quote: str, comment: str,
                    evidence_lines: list = None, counterevidence: str = '',
                    source_urls: list = None, escalate: bool = False,
                    calculate_receipt: str = '', corroborating_quote: str = '',
-                   corroborating_line: int = 0) -> dict:
+                   corroborating_line: int = 0, code_path: str = '',
+                   code_start_line: int = 0, code_end_line: int = 0,
+                   code_quote: str = '') -> dict:
     """Store one finding, quoting the manuscript exactly. The server places the quote.
 
     ``quote`` is the manuscript's own words. The engine finds them, records the
@@ -2480,6 +2672,13 @@ def submit_finding(agent_token: str, title: str, quote: str, comment: str,
     A quote that is not in the manuscript is refused with the nearest lines, and
     one that occurs twice with the lines it occurs on; the finding is quarantined
     with its reason and nothing is stored, so fix the quote and submit again.
+
+    ``code_path``, ``code_start_line``, ``code_end_line`` and ``code_quote`` are
+    the code this finding rests on, for a lane that reviews the paper against
+    its code. All four go together, the quote is the text of the snapshot at
+    those lines, and the server checks it there: a quote that is not what the
+    file holds is refused with the lines it does hold, and nothing is stored.
+    A finding that passes is ``code-checked``.
     """
     run = current()
     try:
@@ -2545,6 +2744,36 @@ def submit_finding(agent_token: str, title: str, quote: str, comment: str,
                              **{key: found[key] for key in ('nearest', 'lines') if key in found})
         corroborating = {'quote': corroborating_quote, 'document': document,
                          'line': placement['line'], 'end_line': placement['end_line']}
+    # The code this finding rests on, checked against the snapshot before
+    # anything is stored. The four arguments go together: a path with no quote
+    # cites a file without saying what in it, and a quote with no lines is a
+    # passage the server has nowhere to check.
+    code_evidence = None
+    names = ('code_path', 'code_start_line', 'code_end_line', 'code_quote')
+    given = [name for name, value in zip(names, (code_path, code_start_line,
+                                                 code_end_line, code_quote)) if value]
+    if given and run.code is None:
+        return rejection('This run was given no code, so there is no snapshot to check '
+                         + ', '.join(given) + ' against. Nothing was stored.')
+    if given and 'read_code' not in agent.allowed:
+        return rejection('The code is the ' + CODE_TRACK + " lane's to cite, and you have no "
+                         'tool that reads it, so a quote from it is not evidence you took. '
+                         'Nothing was stored.')
+    if given and len(given) < len(names):
+        return rejection('Code evidence is all four of ' + ', '.join(names) + ', or none of '
+                         'them. Missing: ' + ', '.join(name for name in names
+                                                       if name not in given) + '.')
+    if not given and agent.track == CODE_TRACK:
+        return rejection('A finding from the ' + CODE_TRACK + ' lane carries the code it rests '
+                         'on: ' + ', '.join(names) + ', quoted exactly as read_code served it. '
+                         'Nothing was stored. What you noticed about the paper alone goes under '
+                         '"Seen, not mine" in your report.')
+    if given:
+        try:
+            code_evidence = run.code.verify(code_path, code_start_line, code_end_line,
+                                            code_quote)
+        except (ValueError, OSError) as exc:
+            return rejection('Nothing was stored. ' + str(exc))
     raw = {'title': title, 'quote': quote, 'comment': comment,
            'severity': severity, 'kind': kind if kind in KINDS else 'question',
            'replacement': replacement, 'evidence_lines': evidence,
@@ -2558,7 +2787,7 @@ def submit_finding(agent_token: str, title: str, quote: str, comment: str,
         if equations is not None:
             return equations
     stored, reason = run.store_finding(agent, raw, escalate, calculate_receipt, corroborating,
-                                       found)
+                                       found, code_evidence)
     run.write_progress()
     if stored is None:
         return rejection(reason, quarantined=True,
@@ -2568,6 +2797,7 @@ def submit_finding(agent_token: str, title: str, quote: str, comment: str,
             'track': stored['track'], 'basis': stored['basis'],
             'basis_reason': stored['basis_reason'], 'escalate': stored['escalate'],
             'kind': stored['kind'], 'edit_withheld': stored.get('edit_withheld'),
+            'code_evidence': stored.get('code_evidence'),
             'receipt': digest(json.dumps(stored, sort_keys=True))[:16],
             'findings_stored_by_you': sum(f['slot'] == agent.slot for f in run.pooled()),
             'submissions_by_you': sum(f['slot'] == agent.slot for f in run.findings)}
@@ -2745,7 +2975,8 @@ def list_findings(agent_token: str, track: str = '', include_comment: bool = Tru
         rows = sorted(rows, key=lambda f: digest(run.salt + f['finding_uid']))
     fields = ('finding_uid', 'id', 'track', 'slot', 'title', 'severity', 'kind', 'basis',
               'basis_reason', 'escalate', 'document', 'line', 'end_line', 'section', 'quote',
-              'evidence_lines', 'counterevidence', 'corroborating', 'calculate_receipt')
+              'evidence_lines', 'counterevidence', 'corroborating', 'calculate_receipt',
+              'code_evidence')
     out = []
     for finding in rows:
         row = {key: finding.get(key) for key in fields}
@@ -2983,17 +3214,20 @@ def _issue_problems(run, agent, batch, retiring=()):
         # checked arithmetic finding from the appendix now protects it from
         # `minor`, and the way out is the same one — quote the passage of the
         # manuscript that answers it, anchored exactly.
-        computed = [uid for uid in members if by_uid[uid]['basis'] == 'computed']
+        # A code-checked finding is protected the same way and for the same
+        # reason: the server read the passage out of the snapshot, so what the
+        # code does is not the editor's to wave off without quoting the paper.
+        checked = [uid for uid in members if by_uid[uid]['basis'] in CHECKED_BASES]
         rebuttal = None
         document = rebuttal_document or paper_base.MAIN_DOCUMENT
-        if severity == 'minor' and computed:
+        if severity == 'minor' and checked:
             quote = _text(row.get('rebuttal_quote'))
             rebuttal = run.locate(quote, rebuttal_line, document)
             if rebuttal is None:
-                problems.append(f'issue {index} ({name}): it holds the computed finding(s) '
-                                + ', '.join(computed[:5])
-                                + ', whose arithmetic was checked against the manuscript, so '
-                                  'calling it a suggestion needs a rebuttal_quote of '
+                problems.append(f'issue {index} ({name}): it holds the checked finding(s) '
+                                + ', '.join(checked[:5])
+                                + ', whose arithmetic or quoted code the server checked itself, '
+                                  'so calling it a suggestion needs a rebuttal_quote of '
                                 + document + ' itself, in one place in it — with rebuttal_line '
                                   'where those words occur more than once'
                                 + ('' if rebuttal_document else
@@ -4377,6 +4611,7 @@ def _fallback_issue(issue):
 
 TOOLS = (ingest, claim_agent, reissue_claim_code, read_paper, search, calculate, save_note,
          view_page, view_supplement,
+         list_code, read_code, search_code,
          read_draft, replace_equation, replace_table, describe_figure, add_piece,
          reread_piece, withdraw_piece, merge_equations, confirm_piece,
          seal_manuscript, seal_as_converted,

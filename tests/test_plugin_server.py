@@ -1396,4 +1396,4 @@ def test_the_tool_list_is_the_one_the_agents_are_allowed_to_call(tmp_path):
     # reader's tools: it writes the manuscript as converted when the reader
     # did not, which is not a thing the reader may choose to do.
     assert 'seal_as_converted' in names and 'seal_as_converted' not in srv.READER_TOOLS
-    assert len(srv.TOOLS) == len(names) == 39
+    assert len(srv.TOOLS) == len(names) == 42

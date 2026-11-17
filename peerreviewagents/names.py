@@ -20,6 +20,12 @@ RUN_DIRECTORY = 'review'
 #: ``<run>/manuscript``.
 MANUSCRIPT_DIRECTORY = 'manuscript'
 
+#: The folder inside a run that holds the snapshot of the code the paper was
+#: reviewed against, when a review was given any: ``<run>/code``, with the
+#: copied text source under ``files/`` and the record of it in
+#: ``manifest.json``. Absent from a run that reviewed no code.
+CODE_DIRECTORY = 'code'
+
 #: The schema every stored finding is stamped with, in its ``schema_version``.
 FINDING_SCHEMA_VERSION = 'review-finding-v4'
 
@@ -85,7 +91,7 @@ COMPLETE_STATUSES = (COMPLETE, COMPLETE_WITHOUT_FINDINGS)
 #: :func:`peerreviewagents.report_parser`.
 CLI_COMMANDS = ('review', 'report')
 
-__all__ = ['RUN_DIRECTORY', 'MANUSCRIPT_DIRECTORY', 'FINDING_SCHEMA_VERSION',
+__all__ = ['RUN_DIRECTORY', 'MANUSCRIPT_DIRECTORY', 'CODE_DIRECTORY', 'FINDING_SCHEMA_VERSION',
            'BASE_SCHEMA_VERSION', 'DRAFT_SCHEMA_VERSION',
            'MAIN_DOCUMENT', 'RUN_STATUSES', 'COMPLETE_STATUSES', 'MANUSCRIPT_STATES',
            'MANUSCRIPT_DRAFT', 'MANUSCRIPT_SEALED_BY_READER', 'MANUSCRIPT_SEALED_WITHOUT_READ',

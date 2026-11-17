@@ -44,6 +44,7 @@ import threading
 import time
 from pathlib import Path
 
+from ..engine import code_source
 from ..engine.storage import digest, read, write
 from ..names import BLOCKED, COMPLETE_STATUSES, FINDING_SCHEMA_VERSION
 from . import models as model_plan
@@ -783,7 +784,7 @@ def rerender(review, workspace=None):
 
 
 def prompt_for(pdf, out, reviewers, arm, cutoff, tracks, models=None, citation_workers=None,
-               prior_issues=None):
+               prior_issues=None, code=None):
     text = (f'Use the peer-review-manuscript skill from the {PLUGIN} plugin. Review the '
             f'manuscript at {pdf} and write the run folder to {out}. Use {reviewers} core '
             f'reviewer(s) and the {arm} arm.')
@@ -799,6 +800,13 @@ def prompt_for(pdf, out, reviewers, arm, cutoff, tracks, models=None, citation_w
         # rounds and a reader can see what was fixed.
         text += (f' This is a later round of a review whose prior issues are at {prior_issues}: '
                  'pass that path to ingest as prior_issues.')
+    if code:
+        # The code this paper is reviewed against. The session passes it to
+        # ingest, which takes the snapshot and plans the lane that reads it; the
+        # path or URL is stated here because nothing else in the prompt would
+        # tell the session there is any code at all.
+        text += (f' The code this paper is reviewed against is {code}: pass it to ingest as '
+                 'code, and run the code lane against the snapshot ingest takes.')
     if citation_workers is not None:
         # The count is planned out here, so the session has to be told it: the
         # server's own default would otherwise plan a different number of
@@ -823,7 +831,7 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
            wall_timeout=WALL_TIMEOUT, directory=None, cwd=None,
            reviewer_models=None, specialist_model=None, editor_model=None,
            recorder_model=None, citation_workers=CITATION_WORKERS, citation_worker_model=None,
-           reader_model=None, prior_issues=None):
+           reader_model=None, prior_issues=None, code=None):
     """Run one review and return its summary.
 
     The summary is a dict, not an exit code: ``status``, ``blocked_reason``,
@@ -863,6 +871,14 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     issue carries one id across rounds and the new document can say what was
     resolved, what persists and what regressed. Left out, every issue is new.
 
+    ``code`` is the code this paper is reviewed against: a local folder or a git
+    URL. The session passes it to ``ingest``, which copies the text source of it
+    into ``<out>/code`` and plans one further lane — ``spec-code`` — that reads
+    the paper against that snapshot and quotes both sides of what it files.
+    Nothing in the snapshot is executed, and a run given no code reports that
+    the code was not reviewed rather than saying nothing about it. An arm that
+    runs no specialists is refused, because that lane is a specialist.
+
     An unknown arm, a manuscript that is not there, a missing plugin, a model
     this login cannot run and a ``CLAUDE_CODE_SUBAGENT_MODEL`` that would
     outrank the plan all raise ``ValueError`` before anything is written or any
@@ -884,6 +900,18 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
                          'an earlier one is the editor\'s judgement. Without one the issue ids '
                          'would be re-minted from scratch and collide with the prior round. Run '
                          'an arm with an editor, or drop --prior-issues.')
+    # The code is checked here for the same reason the arm and the models are:
+    # a session launched to review code against an arm that reads none, or
+    # against a folder that is not there, would spend a probe and a reader
+    # before the server refused it.
+    if code and not ARMS[arm]['specialists']:
+        raise ValueError('The ' + str(arm) + ' arm runs no specialists, and the code review is '
+                         'one. Run an arm with specialists, or drop --code. Arms that run them: '
+                         + ', '.join(sorted(name for name, one in ARMS.items()
+                                            if one['specialists'])) + '.')
+    if code and not code_source.is_url(code) and not Path(code).expanduser().is_dir():
+        raise ValueError('No code folder at ' + str(Path(code).expanduser())
+                         + '. Give a folder that exists or a repository URL.')
     prior_path, _prior, _prior_provenance = load_prior_issues(prior_issues)
     root = Path(out).resolve()
     review_dir = root / RUN_DIRECTORY
@@ -919,7 +947,8 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     # The reader is planned here too, so a login that cannot run the reader
     # model is refused before the probe spends anything.
     wanted = model_plan.assign(
-        ('reader', *plan_slots(arm, reviewers, tracks), *workers, 'recorder'), **settled)
+        ('reader', *plan_slots(arm, reviewers, tracks, bool(code)), *workers, 'recorder'),
+        **settled)
     model_plan.refuse(wanted)
     # A variable that outranks the per-spawn override makes every slot one
     # model while the run records the plan. Refused, never unset: the variable
@@ -948,7 +977,7 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     started = time.monotonic()
     prompt = prompt_for(source, root, reviewers, arm, literature_cutoff, tracks, wanted,
                         citation_workers=len(workers) if citation_lane else None,
-                        prior_issues=prior_path)
+                        prior_issues=prior_path, code=code)
     watch = Completion(review_dir, accounting)
     seen, stop, code = launch(prompt, directory, started + wall_timeout,
                               accounting.on_event, cwd, chosen, watch=watch,
@@ -1024,6 +1053,10 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
         summary['issues'] = done.get('issues')
         summary['quarantined'] = done.get('quarantined_findings_count')
         summary['stages'] = done.get('stages')
+        # Whether the code was reviewed, and how much of the snapshot the lane
+        # opened. A caller that asked for a code review reads this rather than
+        # trusting that asking was enough.
+        summary['code'] = done.get('code')
     return summary
 
 
@@ -1078,6 +1111,11 @@ def build_parser(prog='peerreview review'):
                              'before the reviewers, repairing the equations and tables the '
                              'converter garbled and describing the figures (default: '
                              + model_plan.DEFAULT_READER_MODEL + ')')
+    parser.add_argument('--code', default=None, metavar='FOLDER_OR_URL',
+                        help='the code this paper is reviewed against: a local folder or a git '
+                             'URL. Its text source is copied into <out>/code and one further '
+                             'lane reads the paper against that snapshot, quoting both sides. '
+                             'Nothing in it is ever run')
     parser.add_argument('--prior-issues', default=None, metavar='PATH',
                         help="an earlier round's issues.json, or the run folder holding it: "
                              'the editor matches this round against it, keeps the matched ids '
@@ -1126,7 +1164,8 @@ def review_main(argv=None, prog='peerreview review'):
                          citation_workers=args.citation_workers,
                          citation_worker_model=args.citation_worker_model,
                          reader_model=args.reader_model,
-                         prior_issues=args.prior_issues)
+                         prior_issues=args.prior_issues,
+                         code=args.code)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2

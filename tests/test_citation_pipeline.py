@@ -1602,6 +1602,12 @@ def test_no_registered_tool_writes_in_a_complete_folder(tmp_path):
         'confirm_piece': lambda: srv.confirm_piece(reviewer, 'p1', 1),
         'seal_manuscript': lambda: srv.seal_manuscript(reviewer),
         'seal_as_converted': lambda: srv.seal_as_converted(key, 'a late change of mind'),
+        # The code lane's tools. This run was given no code, so no slot holds
+        # them and there is no snapshot behind them: refused, and nothing in
+        # the folder is theirs to write in any case.
+        'list_code': lambda: srv.list_code(reviewer),
+        'read_code': lambda: srv.read_code(reviewer, 'setup.py'),
+        'search_code': lambda: srv.search_code(reviewer, 'threshold'),
         'resolve_citations': lambda: resolving(key, limit=0),
         'citation_rows': lambda: srv.citation_rows(token_for('spec-citations'), 'counts'),
         'claim_citation_batch': lambda: srv.claim_citation_batch(worker, size=10,
@@ -1630,6 +1636,10 @@ def test_no_registered_tool_writes_in_a_complete_folder(tmp_path):
     # a finding may already cite the lines it wrote, so nothing re-seals it
     # whatever state the rest of the run is in.
     reader_only = {*srv.READER_TOOLS, 'seal_as_converted'}
+    # The code lane's tools belong to `spec-code`, which a run given no code
+    # never plans: the refusal is that this slot may not call them, which comes
+    # before the run's own state and is the stronger of the two answers.
+    lane_only = set(srv.CODE_TOOLS)
     before = folder_digests(run.root)
 
     for name, call in calls.items():
@@ -1640,6 +1650,9 @@ def test_no_registered_tool_writes_in_a_complete_folder(tmp_path):
             continue
         assert 'request_rejected' in answer, (name, answer)
         if name in always_refuses:
+            continue
+        if name in lane_only:
+            assert 'may not call' in answer['request_rejected'], (name, answer)
             continue
         if name in reader_only:
             assert ('complete' in answer['request_rejected']

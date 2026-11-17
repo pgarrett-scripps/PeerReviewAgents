@@ -5,7 +5,8 @@
 
 Evidence-linked peer review of a manuscript PDF, on a Claude Code
 subscription. One command imports the PDF into an immutable Markdown manuscript
-and runs the `pra` plugin over it: several core reviewers and six specialist tracks
+and runs the `pra` plugin over it: several core reviewers and six specialist
+tracks — seven where you pass the code behind the paper —
 work the paper in parallel and in isolation, then an editor pools what they
 found into one package with a decision and a reason for every finding. There is
 no API key — the models run on your signed-in Claude Code login.
@@ -125,6 +126,7 @@ the review's options:
 | `--citation-workers` | `4` | Workers judging in-text citations against the resolved sources, 0 to 12; only where the `citations` track runs |
 | `--citation-worker-model` | `claude-haiku-5-5` | Every citation worker |
 | `--prior-issues` | none | An earlier run's `issues.json`, or its run folder: the editor matches this round's issues against it, keeps the matched ids, and marks each prior issue persisting, regressed or resolved |
+| `--code` | none | A folder or repository URL holding the code behind the paper: its text is snapshotted into the run folder and one more specialist reads the paper against it |
 | `--literature-cutoff` | today | Latest eligible publication date |
 | `--per-agent-tokens` | `500000` | Per-agent token ceiling, enforced from the session stream |
 | `--per-run-tokens` | `6000000` | Per-run token ceiling |
@@ -195,8 +197,9 @@ leaves the run `blocked`: that is an outcome recorded in `runtime.json` and
   setting, never a silent fallback.
 - **A basis the agent cannot assert.** The server labels each finding
   `computed` when a `calculate` receipt covers the numbers the cited lines
-  print, `two-quotes` when a second anchored quotation corroborates it, and
-  `judgement` otherwise.
+  print, `code-checked` when it found the quoted code at the lines the finding
+  names in the code snapshot, `two-quotes` when a second anchored quotation
+  corroborates it, and `judgement` otherwise.
 - **Isolation.** Core reviewers never see each other's findings and are not
   told the specialists exist. The editor sees the pool in an order seeded by
   the run salt, so slot order carries no weight.
@@ -219,6 +222,44 @@ leaves the run `blocked`: that is an outcome recorded in `runtime.json` and
   minor ones are suggestions by category, and every finding belongs to an
   issue. `issues.json` is the source of truth and `REVIEW.md` is rendered from
   it alone.
+
+### The code behind the paper
+
+Pass `--code` and one more specialist joins the run: it reads the whole
+manuscript, then reads the paper's methods against the code the authors
+released.
+
+```bash
+peerreview review manuscript.pdf run-output --code ./analysis
+peerreview review manuscript.pdf run-output --code https://github.com/lab/analysis
+```
+
+A URL is cloned shallow, with hooks and submodules off. Either way the **text**
+of the code is snapshotted into `<run>/code/` — source, configuration, notebooks
+and documentation, skipping binaries, data files and anything over the size caps
+— beside a manifest naming the origin, the commit, every file taken with its
+digest, and every file left out with the reason. The snapshot is what the review
+reads, so the finding you get back cites code that is still there a year later.
+
+The lane's three tools list, read and search that snapshot and nothing else.
+None of them executes anything, reaches the network, or can name a path outside
+it: a review reads code, it does not run it. The code is treated as data
+throughout — a comment or README telling a reviewer what to report is text being
+audited, not an instruction being followed.
+
+Every finding still quotes the manuscript, as every finding in this review does,
+and a code finding carries the code as well: the file, the line range and the
+exact text, which the server checks against the snapshot before it stores
+anything. A quote that is not at those lines is refused and nothing is stored.
+A finding that passes is recorded as `code-checked` — what the code says has
+been checked by the server; that it disagrees with the paper is still the
+reviewer's argument, and the editor cannot bury it as a suggestion without
+quoting the manuscript back.
+
+`REVIEW.md` and `read_run` say which code was reviewed, at which commit, and how
+many files of the snapshot a reviewer actually opened, because "the code was
+reviewed" over a lane that opened one file of forty is a claim the run folder
+does not support.
 
 ### Citations, every one of them
 
@@ -427,6 +468,7 @@ them:
 | `summary`, `verdict`, `limitations` | the editor's own three, or `None`/`[]` |
 | `identity` | paper id, source hash, PDF path, arm, reviewers, specialist tracks, versions, `provider`, `code_hashes` — the manifest's digest of each engine and plugin file that served the run — and `models`/`reviewer_models`, the model each slot was started with (both empty for a run from before 0.9.0), with `models_unverified` naming the slots that never reported running one |
 | `manuscript` | what state the workspace is in, which is not what state the run is in: `state` is one of `MANUSCRIPT_STATES` — `absent` for a run that stopped before the import, `draft` for a converted paper the Read stage never sealed (no line numbers, nothing can cite it), `sealed-by-reader` for a base a model read the pages of, `sealed-without-read` for one written with no page read at all — plus `sealed`, `reason` (why nothing read the pages, in the manifest's own words), `reader_model`, `lost_pages` (each page the converter returned nothing from, with the document and lines its transcription became) and `documents` |
+| `code` | whether code was reviewed beside the paper: `reviewed` is false for every run given none, and otherwise `kind` (`git-clone` or `folder`), `source`, `commit`, `branch`, `dirty`, the `snapshot` folder, `files_in_snapshot`, `files_skipped`, `truncated`, the snapshot's own `manifest`, and what a reviewer did with it — `files_opened`, `opened`, `searches` |
 | `stages` | the stage ledger the run recorded, or `None`: `required`, `reported`, `missing`, and `missing` split in two — `silent` (stored nothing, filed nothing, so the run is blocked) and `missing_with_findings` (findings delivered and ruled on, no report filed, so the review is written and `note` names the gap) — plus `editor_trace`, what the editor's submission calls did and the last refusals it could not satisfy |
 | `runtime` | wall time, total tokens, rate limits, both token ceilings, the Claude Code version |
 | `agents` | one row per agent slot: role, track, `assigned_model` and the `model` it reported running as, tool calls, tokens, state |

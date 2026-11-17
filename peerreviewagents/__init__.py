@@ -10,6 +10,10 @@ Running a review
     session on the ``pra`` plugin, enforces the token ceilings from the
     session's own stream, and writes the run folder. It is exactly what
     ``peerreview review`` runs, and it returns the run summary as a dict.
+    Pass ``code=`` — a local folder or a repository URL — to add the lane that
+    reads the paper against the code behind it: the text of that code is
+    snapshotted into the run folder, read-only, and every finding the lane
+    files carries a passage of it the server checked against the snapshot.
     :func:`review_main` and :func:`report_main` are the two commands as
     functions — argument list in, JSON on stdout, exit code returned — so a
     wrapper does not have to reach into the starter or the CLI module.
@@ -21,7 +25,8 @@ Reading a run
     never launched a session. It returns the status, the cause, the issues the
     editor raised with their member findings, the findings themselves
     de-duplicated to the latest row per ``finding_uid``, the escalations and
-    their rulings, the manifest identity, the report paths
+    their rulings, the manifest identity, whether code was reviewed beside the
+    paper and which files of it were opened, the report paths
     and the runtime of each agent. :func:`write_reports` re-renders
     ``REVIEW.md`` and ``REVIEW.txt`` from a run folder, with no model call and
     no workspace path needed. :func:`locate_run` is the resolution those two
@@ -107,7 +112,8 @@ Building a fixture to test against
 
 Names
     :data:`RUN_DIRECTORY` and :data:`MANUSCRIPT_DIRECTORY` are the two folders
-    inside a run, :data:`RUN_STATUSES` and :data:`COMPLETE_STATUSES` are the
+    every run holds and :data:`CODE_DIRECTORY` the third one a run given code
+    holds, :data:`RUN_STATUSES` and :data:`COMPLETE_STATUSES` are the
     statuses a run folder can record, :data:`CLI_COMMANDS` is the two commands,
     and :data:`FINDING_SCHEMA_VERSION` is the schema every stored finding is
     stamped with. :data:`ISSUES_SCHEMA_VERSION` is the schema of ``issues.json``,
@@ -140,6 +146,7 @@ from .issues import (
 from .names import (
     BASE_SCHEMA_VERSION,
     CLI_COMMANDS,
+    CODE_DIRECTORY,
     COMPLETE_STATUSES,
     FINDING_SCHEMA_VERSION,
     MAIN_DOCUMENT,
@@ -193,6 +200,7 @@ __all__ = [
     "report_parser",
     "RUN_DIRECTORY",
     "MANUSCRIPT_DIRECTORY",
+    "CODE_DIRECTORY",
     "RUN_STATUSES",
     "COMPLETE_STATUSES",
     "MANUSCRIPT_STATES",
