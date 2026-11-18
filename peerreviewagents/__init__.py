@@ -132,6 +132,13 @@ Building a fixture to test against
     in the manifest — is written by the engine instead of by hand.
     :class:`ReaderRefused` is what a refused call raises. It is for tests; a
     review's Read stage is a model stage and :func:`review` is what runs one.
+    :func:`scripted_fix_check` is the same for the other stage an application
+    renders: it opens a fix check on a PDF with a problems file, claims every
+    checker slot and hands back a :class:`ScriptedFixCheck` whose methods are
+    ``fix_queue``, ``submit_fix_check`` and the tools that read the paper, so a
+    fixture holding ``fix-check.json`` and ``FIXES.md`` is written by the lane.
+    :class:`CheckRefused` is its refusal and :class:`ToolRefused` is the base of
+    both.
 
 Names
     :data:`RUN_DIRECTORY` and :data:`MANUSCRIPT_DIRECTORY` are the two folders
@@ -202,7 +209,15 @@ if TYPE_CHECKING:  # Static tooling sees the real objects, not the fallback.
     from .problems import problems_from_run
     from .runs import NotARunFolder, read_citation_ledger, read_fix_check, read_run
     from .runs import locate as locate_run
-    from .scripted import ReaderRefused, ScriptedRead, scripted_read
+    from .scripted import (
+        CheckRefused,
+        ReaderRefused,
+        ScriptedFixCheck,
+        ScriptedRead,
+        ToolRefused,
+        scripted_fix_check,
+        scripted_read,
+    )
 
 __all__ = [
     "review",
@@ -229,6 +244,10 @@ __all__ = [
     "scripted_read",
     "ScriptedRead",
     "ReaderRefused",
+    "scripted_fix_check",
+    "ScriptedFixCheck",
+    "CheckRefused",
+    "ToolRefused",
     "plugin_directory",
     "claude_code_version",
     "review_parser",
@@ -307,6 +326,12 @@ _LAZY = {
     "scripted_read": (".scripted", "scripted_read"),
     "ScriptedRead": (".scripted", "ScriptedRead"),
     "ReaderRefused": (".scripted", "ReaderRefused"),
+    # And the fix check in code, for the same reason: a folder holding
+    # `fix-check.json` and `FIXES.md`, written by the lane that writes them.
+    "scripted_fix_check": (".scripted", "scripted_fix_check"),
+    "ScriptedFixCheck": (".scripted", "ScriptedFixCheck"),
+    "CheckRefused": (".scripted", "CheckRefused"),
+    "ToolRefused": (".scripted", "ToolRefused"),
 }
 
 

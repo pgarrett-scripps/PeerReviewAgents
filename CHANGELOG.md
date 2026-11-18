@@ -58,6 +58,25 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A fix check can be driven from a script: `scripted_fix_check`.** The
+  counterpart of `scripted_read` for the other stage an application renders.
+  It opens a real check on a PDF with a problems file — a path, or the rows
+  themselves, written to `problems.json` for you — seals the manuscript as the
+  converter read it, claims every checker slot, serves each the manuscript, and
+  hands back a handle whose methods are the checker's own tools under their own
+  names: `fix_queue`, `submit_fix_check`, and the tools that read the paper.
+  `write()` writes `fix-check.json` and `FIXES.md`, and `read()` reads them
+  back. No model runs and nothing is launched: the script is the checker.
+  A consumer testing against a check had to import `plugin.server` privately to
+  get a folder to render — ingest with `arm='fix-check'`, `claim_agent`,
+  `submit_fix_check`, `write_fix_check`, and the recorder's seal in the middle
+  of it — or hand-write the JSON, which copies the engine's output shape by eye
+  and drifts from it silently. Verdicts route to the checker whose batch holds
+  the problem (`slots`, `batches`, `slot_of`, and `slot=` to override it on
+  purpose), `line(n)` is where an exact quotation of the new draft comes from,
+  and a refusal raises `CheckRefused` rather than being answered to nobody.
+  `ToolRefused` is new as the base class of that and of `ReaderRefused`; the
+  latter keeps its name and its behaviour.
 - **A new draft can be checked against the problems a review raised:
   `peerreview check-fixes paper-v2.pdf out/ --problems problems.json`.** The
   third command, and the other half of a review rather than a second one:
