@@ -32,6 +32,7 @@ from .engine import citation_ledger
 from .engine.usage import agent_rows, observed_usage
 from .names import (
     BLOCKED,
+    CODE_CHECK_VERDICTS,
     COMPLETE,
     COMPLETE_STATUSES,
     COMPLETE_WITHOUT_FINDINGS,
@@ -670,6 +671,63 @@ def _code_reviewed(progress, manifest, problems):
     }
 
 
+def _code_check_reading(review, document, progress, problems):
+    """What the code check answered on this run, or ``None`` where it had none.
+
+    The lane exists only on a run that was given code: between the reviewers
+    and the synthesis, every finding whose basis is ``computed`` and every one
+    whose reviewer marked an ``assumed_method`` is read against the snapshot
+    and comes back ``confirmed``, ``contradicted`` or ``not-shown``.
+
+    ``issues.json`` is the published record and is read first: its ``code_check``
+    block is what REVIEW.md's own section is rendered from, and every path in it
+    is relative to the run folder. A run that stopped before the review was
+    written has no block and may still have answered claims, so the second
+    reading is the lane's own append-only file, ``code-checks.jsonl``, with the
+    cap from ``progress.json``. Either way the counts are taken over the rows
+    that come back, so a consumer's tally and the rows it was given cannot
+    disagree.
+
+    ``None`` means this run had no code check at all: every run that was given
+    no code, and every run written before the lane existed.
+    """
+    stated = {}
+    for label, value in (('issues.json', (document or {}).get('code_check')),
+                         ('progress.json', (progress or {}).get('code_check'))):
+        if value is None:
+            continue
+        if not isinstance(value, dict):
+            problems.append(f"{label}'s code_check holds a {type(value).__name__} where the "
+                            'record of the code check belongs, so it is read as no record')
+            continue
+        stated[label] = value
+    published = stated.get('issues.json')
+    if published is not None:
+        rows = [dict(row) for row in (published.get('checks') or []) if isinstance(row, dict)]
+        record = published
+    else:
+        path = review / 'code-checks.jsonl'
+        rows = dedupe(_rows(path, problems)) if path.is_file() else []
+        record = stated.get('progress.json')
+        if record is None and not rows:
+            return None
+        record = record or {}
+    cap = record.get('cap')
+    return {
+        # The most findings the check is handed. ``None`` only for a record
+        # written by something that did not say, which no version writes.
+        'cap': cap if isinstance(cap, int) and not isinstance(cap, bool) else None,
+        'checked': len(rows),
+        # How many findings qualified past the cap. They are not cleared and
+        # not thrown out: they are exactly as their reviewers filed them, and
+        # the number is here so that nobody reads them as either.
+        'over_cap': _count(record.get('over_cap')),
+        'counts': {verdict: sum(1 for row in rows if row.get('verdict') == verdict)
+                   for verdict in CODE_CHECK_VERDICTS},
+        'checks': rows,
+    }
+
+
 def _count(value):
     """A count as a number, ``0`` for anything that is not one."""
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
@@ -788,13 +846,19 @@ def publishable_reasons(status, findings_source, guard_status, problems, quarant
     run it came from read as not publishable with nothing at all wrong in it.
 
     **A review with no findings in it.** ``complete-without-findings`` is the
-    status for an issues document that holds no findings, and two different runs
-    end that way. If the guard quarantined findings, the reviewers did raise
-    something and it is not in the review, so there is nothing publishable to
-    show and the reason says how many were held. If nothing was quarantined, the
-    reviewers read the manuscript and raised nothing — "we found nothing
-    make-or-break" is a review, and a run that reached it with an issues
-    document and a clean guard is publishable like any other.
+    status for an issues document that holds no findings, and three different
+    runs end that way. If the guard quarantined findings, the reviewers did
+    raise something and it is not in the review, so there is nothing
+    publishable to show and the reason says how many were held. If nothing was
+    quarantined, the reviewers read the manuscript and raised nothing — "we
+    found nothing make-or-break" is a review, and a run that reached it with an
+    issues document and a clean guard is publishable like any other. The third
+    is a run whose findings were all contradicted by the code check: the
+    reviewers raised something, the authors' own code disproved it, and the
+    review says so in its thrown-out section with the passage that did it. That
+    is a finished review with no surviving problem in it, so it is publishable
+    too — the caller passes ``findings_source`` ``issues`` for it, because a
+    thrown-out finding is accounted for rather than unaccounted for.
 
     What does stop a run from being publishable is the review not being there to
     show: a status that is not ``complete``, a review emptied by the guard,
@@ -865,9 +929,10 @@ def read_run(path):
         a folder whose status file was never written or holds a word this
         version does not know. :func:`run_status` is the rule, and
         ``complete-without-findings`` means the review was written with no
-        findings in it: either the reviewers raised nothing, or the guard
-        quarantined everything they did raise. ``counts['quarantined']`` is
-        which of the two.
+        findings in it, which happens three ways: the reviewers raised nothing,
+        the guard quarantined everything they did raise, or the code check
+        contradicted it. ``counts['quarantined']`` and
+        ``code_check['counts']['contradicted']`` are which of the three.
     ``complete``, ``blocked``
         The two questions asked of a status, already answered. ``complete`` is
         true for ``complete`` and for ``complete-without-findings``, so a run
@@ -881,9 +946,13 @@ def read_run(path):
         reason: the guard threw out a finding it could not anchor, which is the
         guard working, and what is left is publishable. ``quarantined`` says
         what was thrown out, and whether that mattered is a judgement for a
-        person rather than a flag. A review with no findings in it is
-        publishable when the reviewers raised nothing and the guard held
-        nothing, and is not when the guard emptied it. A slot that reported
+        person rather than a flag. A finding the code check contradicted is not
+        a reason either, for the same reason and one more: the finding is
+        accounted for, in the review's own thrown-out section with the passage
+        of the authors' code that disproved it. A review with no findings in it
+        is publishable when the reviewers raised nothing, and when every
+        finding they raised was disproved by the code; it is not when the guard
+        emptied it. A slot that reported
         running a different model family than the run assigned it is a reason
         of its own, naming the slot, the model assigned and the model that ran:
         the review would otherwise be attributed to a model that never wrote
@@ -973,10 +1042,12 @@ def read_run(path):
         line break too, so a viewer underlines the words without searching the
         line for them again. ``findings_source`` is ``issues`` when
         ``issues.json`` could be read, including the empty review of a
-        manuscript nobody raised anything about; ``ledger`` when it could not,
-        or when it holds no issue over findings that are in the ledger — then
-        what is here is the raw findings and not the review — and ``none`` for
-        a run that holds neither.
+        manuscript nobody raised anything about and the empty review of one
+        whose every finding the code check contradicted; ``ledger`` when it
+        could not, or when it holds no issue over findings that are in the
+        ledger and were not thrown out by the check — then what is here is the
+        raw findings and not the review — and ``none`` for a run that holds
+        neither.
     ``escalations``, ``escalation_rulings``
         The specialist findings that asked for a ruling, and the rulings given.
     ``identity``
@@ -1028,6 +1099,24 @@ def read_run(path):
         ``opened`` and ``searches`` are what a reviewer actually did with it: a
         lane that opened no file read the paper and nothing else, and a reading
         that said only "code: reviewed" could not have told you so.
+    ``code_check``
+        What the code lane's second pass answered, and ``None`` on a run that
+        was given no code or that is older than the lane. A finding that
+        asserts how something was computed, sampled, filtered or selected goes
+        to it between the reviewers and the synthesis and comes back
+        ``confirmed``, ``contradicted`` or ``not-shown``:
+        :data:`peerreviewagents.names.CODE_CHECK_VERDICTS` is the three words.
+        ``cap`` is the most findings the check is handed, ``checked`` how many
+        it answered, ``over_cap`` how many qualified past the cap and were left
+        exactly as their reviewers filed them, ``counts`` the tally per verdict,
+        and ``checks`` one row per answer — the finding it is about, the
+        ``code_evidence`` that decides it (verified against the snapshot before
+        it was stored) or the ``searches`` behind a ``not-shown``, and the
+        ``note`` written for the authors. **A contradicted finding is in no
+        issue**: it is in the ledger, in this block and in the review's own
+        thrown-out section, so a consumer that counts required changes must not
+        count it and a consumer that reports what the review threw out reads it
+        here rather than opening ``issues.json`` itself.
     ``startup``
         The start-up probe: ``probe`` is the harness's own init event, the
         plugins, MCP servers, agents and commands the session reported, or
@@ -1083,6 +1172,9 @@ def read_run(path):
         problems.append(stamp_problem + ', so what is below is the raw findings from the ledger '
                         'and not the review')
         document = {}
+    # What the code check answered, read before the findings because one of its
+    # answers decides what a ledger with no issue over it means.
+    code_check = _code_check_reading(review, document, progress, problems)
     # The ledger is the finding set. Nothing is placed out of sight any more, so
     # a finding reaches the review through the issue that holds it, and the two
     # readings never disagree about how much was found.
@@ -1104,7 +1196,20 @@ def read_run(path):
         # ledger with findings in it and no issue over any of them is the other
         # thing: the review does not account for what was found, so what is
         # here is the raw findings rather than the review.
-        source = 'ledger' if findings else 'issues'
+        #
+        # A finding the code check contradicted is the third case, and it is an
+        # accounted-for finding: the review is refused if an issue holds one,
+        # and the review's own thrown-out section is where it is reported. A
+        # run whose only finding was disproved by the authors' own code is a
+        # finished review with no surviving problem in it — the first one read
+        # as raw findings and as not publishable, with nothing wrong in it at
+        # all.
+        thrown_out = {str(row.get('finding_uid'))
+                      for row in (code_check or {}).get('checks', ())
+                      if row.get('verdict') == 'contradicted'}
+        unaccounted = [one for one in findings
+                       if str(one.get('finding_uid')) not in thrown_out]
+        source = 'ledger' if unaccounted else 'issues'
     else:
         source = 'ledger' if findings else 'none'
     if not findings:
@@ -1207,6 +1312,7 @@ def read_run(path):
                               (probe or {}).get('pdf'), problems, agents),
         'manuscript': _manuscript(workspace, paper),
         'code': _code_reviewed(progress, manifest, problems),
+        'code_check': code_check,
         'stages': progress.get('stages') or (runtime.get('stages') if runtime else None),
         'runtime': {'wall_seconds': runtime.get('wall_seconds'),
                     'tokens_total': runtime.get('tokens_total'),

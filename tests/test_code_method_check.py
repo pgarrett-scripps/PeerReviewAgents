@@ -48,6 +48,7 @@ from pathlib import Path
 import pytest
 from manuscripts import seal_converted
 
+from peerreviewagents import read_run
 from peerreviewagents.engine.run_report import report_blocks
 from peerreviewagents.plugin import server as srv
 
@@ -646,3 +647,77 @@ def test_a_run_given_no_code_plans_no_check_and_is_the_review_it_always_was(tmp_
     assert document['code_check'] is None
     report, _ = rendered_review(run)
     assert 'Checked against the code' not in report
+    assert read_run(run.root)['code_check'] is None
+
+
+# -- what a consumer reads back ----------------------------------------------
+
+
+def test_the_run_reading_carries_the_check_and_a_thrown_out_only_review_is_finished(
+        tmp_path, code_folder):
+    """``read_run`` answers both questions about the check.
+
+    Two things were wrong. An application that wanted to show what the check
+    did had to open ``issues.json`` itself, which is the one file this package
+    promises to read on its behalf. And a run whose single finding the code
+    disproved read as raw findings from the ledger and as not publishable —
+    over a review that is finished with nothing left wrong in it: the
+    reviewers raised one problem, the authors' own code disproved it, and the
+    review says so with the passage that did. A thrown-out finding is
+    accounted for, so the reading is of the review and not of the ledger.
+    """
+    open_run(tmp_path, code=str(code_folder))
+    run = srv.current()
+    reviewer = claim('core-1')
+    guessed = the_real_finding(run, reviewer)
+    assert srv.submit_report(reviewer, 'One finding, and it is arithmetic.',
+                             model=run.models.get('core-1')).get('closed')
+
+    checker = claim(srv.CHECK_TRACK)
+    answered = srv.submit_code_check(
+        checker, guessed, 'contradicted', **code_evidence(*RESAMPLE),
+        note='The bootstrap resamples all eight assigned papers and averages whichever of them '
+             'have a score, so a mean of a third is one of the values it can take.')
+    assert answered['stored'] is True and answered['verdict'] == 'contradicted'
+    assert srv.submit_report(checker, 'One claim checked, one contradicted.',
+                             model=run.models.get(srv.CHECK_TRACK)).get('closed')
+
+    # Nothing is left for the editor to group: the one finding is out of the
+    # pool, so it closes the review with no issue in it.
+    editor = claim('editor')
+    assert srv.list_findings(editor)['findings'] == []
+    close_every_stage(run, done=('core-1', srv.CHECK_TRACK))
+    accepted = srv.submit_editor(
+        editor,
+        summary='The one problem the panel raised is not what the code does.',
+        significance='Nothing make-or-break is left standing.',
+        strength_of_evidence='The claim the finding rested on is disproved by the authors\' '
+                             'own code.',
+        verdict_reasoning='The arithmetic was right and the procedure under it was not the one '
+                          'the finding assumed.',
+        escalation_rulings=[],
+        limitations=['Only the two analysis scripts in the snapshot were read.'])
+    assert accepted.get('accepted'), accepted
+    assert srv.submit_report(editor, 'No issue survives the code check.',
+                             model=run.models.get('editor')).get('closed')
+    written = srv.write_review(claim('recorder'))
+    assert written['status'] == 'complete-without-findings', written
+
+    reading = read_run(run.root)
+    document = json.loads((run.review / 'issues.json').read_text(encoding='utf-8'))
+    record = reading['code_check']
+    assert record == document['code_check'], 'the reading is the published record itself'
+    assert record['cap'] == srv.MAX_CODE_CHECKS and record['over_cap'] == 0
+    assert record['checked'] == 1
+    assert record['counts'] == {'confirmed': 0, 'contradicted': 1, 'not-shown': 0}
+    assert [row['finding_uid'] for row in record['checks']] == [guessed]
+    assert 'generator.choice(rows)' in record['checks'][0]['code_evidence']['text']
+    assert 'resamples all eight assigned papers' in record['checks'][0]['note']
+
+    assert reading['status'] == 'complete-without-findings'
+    assert reading['findings_source'] == 'issues', 'the thrown-out finding is accounted for'
+    assert reading['not_publishable_reasons'] == []
+    assert reading['publishable'] is True
+    assert reading['issues'] == [] and reading['counts']['quarantined'] == 0
+    assert [one['finding_uid'] for one in reading['findings']] == [guessed], (
+        'out of the issues is not off the ledger')
