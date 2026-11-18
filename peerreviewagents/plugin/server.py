@@ -272,12 +272,6 @@ EDITOR_CALL_CEILING = EDITOR_MAX_TURNS - EDITOR_TURN_RESERVE
 #: :meth:`Run.editor_capacity`.
 MAX_EDITOR_FINDINGS = 200
 
-#: The shortest passage that counts as evidence a prior issue's text is still
-#: there. Below it a "quote" is a word or two that any revision would still
-#: contain, and reading its presence as "unfixed" would be noise.
-MIN_SURVIVING_QUOTE = 24
-
-
 def editor_call_budget(findings):
     """The editor's tool allowance for a ledger of *findings* rows.
 
@@ -458,10 +452,9 @@ def complete_folder_message(root, review, status):
     that cannot see either reads the refusal as a dead end.
     """
     return ('The folder ' + str(root) + ' already holds a ' + str(status) + ' review, written '
-            'and not a draft. Nothing in it was changed. A further round of review is a fresh '
-            'out folder with this one as its prior round: pass prior_issues='
-            + str(Path(review) / 'issues.json') + ' to that run. Reading what is here takes no '
-            'run at all: the review is ' + str(Path(review) / 'REVIEW.md') + '.')
+            'and not a draft. Nothing in it was changed. A further review of this paper is a '
+            'fresh out folder, reviewed from the manuscript as it now reads. Reading what is '
+            'here takes no run at all: the review is ' + str(Path(review) / 'REVIEW.md') + '.')
 
 
 def run_deadline():
@@ -621,92 +614,13 @@ def citation_slots(arm, count=CITATION_WORKERS, tracks=None):
     return tuple(f'cite-{index}' for index in range(1, count + 1))
 
 
-def load_prior_issues(path):
-    """``(path, issues, provenance)`` for an earlier round, or ``(None, [], None)``.
-
-    A second round of review is the same workflow over a revised manuscript,
-    and the one thing it needs from the first round is the issues it raised, so
-    that an issue the authors did not fix keeps the id it was reported under.
-    The argument is that file, or the run folder that holds it — both spellings
-    are accepted, because a caller has the folder and a reader has the file.
-
-    Raised, never swallowed: a prior round named and not found is a run that
-    would silently renumber every issue, which is the one thing stable ids
-    exist to prevent. A file stamped with a schema this version does not read is
-    refused the same way — the ids in it may not mean what this version would
-    take them for.
-
-    The issues the prior round resolved are left behind. They were reported in
-    the round that resolved them and carrying them on makes every later round
-    recount every fix ever made; see
-    :func:`peerreviewagents.issues.carried_forward`.
-
-    ``provenance`` is what this run may *publish* about the prior round: the file
-    name and a digest of its content, never the path it was read from. The path
-    is a machine path on whoever ran the review, and ``issues.json`` is a file
-    consumers publish.
-    """
-    if not path:
-        return None, [], None
-    source = Path(str(path)).expanduser()
-    if source.is_dir():
-        for candidate in (source / 'issues.json', source / RUN_DIRECTORY / 'issues.json'):
-            if candidate.is_file():
-                source = candidate
-                break
-    if not source.is_file():
-        raise ValueError('No prior-round issues at ' + str(path) + ': pass the issues.json of an '
-                         'earlier run, or the run folder that holds it.')
-    try:
-        raw = source.read_text(encoding='utf-8')
-        document = json.loads(raw)
-    except (ValueError, OSError, UnicodeDecodeError) as exc:
-        raise ValueError('The prior-round issues at ' + str(source) + ' could not be read: '
-                         + str(exc)) from None
-    # Every check this file is held to is :func:`issues.validate_prior_issues`,
-    # which is the same function a consumer calls on a file it is about to
-    # publish: a round that cannot read a prior file and a consumer that cannot
-    # publish one are the same list of problems, and neither can drift from the
-    # other. The refusal names the file and the first problem, and says how many
-    # more there are so a reader of one line knows the file needs a pass rather
-    # than a patch.
-    #
-    # A prior file is read, never trusted: a row that was not an object raised
-    # an AttributeError out of the status test, a `members` that was not a list
-    # raised a TypeError out of `submit_editor` an hour later, and an
-    # `issue_ids_used` of `5` raised a bare "'int' object is not iterable" — each
-    # of them in a call that named neither the file nor the row.
-    problems = issue_model.validate_prior_issues(
-        document, label='The prior-round file at ' + str(source))
-    if problems:
-        raise ValueError(problems[0] + '. This round matches its ids against the issues it '
-                         'raises, so the file is refused rather than read past.'
-                         + (' (' + str(len(problems) - 1) + ' further problem(s) in the same '
-                            'file.)' if len(problems) > 1 else ''))
-    rows = issue_model.rows_of(document)
-    kept = issue_model.carried_forward(rows)
-    provenance = {'file': source.name, 'digest': digest(raw)[:16]}
-    # Every id that round accounted for, live or closed, plus the ids its own
-    # prior rounds spent. A resolved row is dropped from the carry, so without
-    # this the id it held would be minted again for a different problem two
-    # rounds later — the one thing an id is for is that it does not happen.
-    # Read off the document, never indexed into it: every requirement of this
-    # loader is a problem `validate_prior_issues` returns, so a document that
-    # got this far holds the list — and a `document['issue_ids_used']` here
-    # would be a second, silent check, which is how a file the validator passed
-    # came to be refused by a bare KeyError instead.
-    spent = {str(row['id']) for row in rows if row.get('id')}
-    spent |= {str(value) for value in document.get('issue_ids_used') or []}
-    return str(source.resolve()), kept, {**provenance, 'ids_used': sorted(spent)}
-
-
 class Run:
     """One review in one folder. Created by ``ingest``, finished by ``write_review``."""
 
     def __init__(self, pdf, root, reviewers, arm, literature_cutoff, plugin_root, title=None,
                  tracks=None, reviewer_models=None, specialist_model=None, editor_model=None,
                  recorder_model=None, citation_workers=None, citation_worker_model=None,
-                 prior_issues=None, supplements=None, reader_model=None, code=None):
+                 supplements=None, reader_model=None, code=None):
         if arm not in ARMS:
             raise ValueError('Unknown arm: ' + arm + '. Arms: ' + ', '.join(sorted(ARMS)))
         self.arm = arm
@@ -807,24 +721,6 @@ class Run:
         self.review = self.root / RUN_DIRECTORY
         self.cutoff = literature_cutoff
         self.plugin_root = Path(plugin_root).resolve() if plugin_root else None
-        # The prior round, when this run is a second look at a revised paper:
-        # the ``issues.json`` of the earlier run, read here so an unreadable
-        # path is refused at ingest rather than discovered by the editor an
-        # hour later. Nothing is matched here — the matching is the editor's
-        # judgement, issue by issue.
-        self.prior_path, self.prior_issues, self.prior_provenance = load_prior_issues(
-            prior_issues)
-        if self.prior_path and not self.plan['editor']:
-            # Only the editor matches issues against a prior round. Without one
-            # the server mints i01.. per finding, which collides with the ids
-            # the earlier round already published while claiming to be new
-            # work. Refused here rather than written wrong.
-            raise ValueError('The ' + str(self.arm) + ' arm runs no editor, and matching this '
-                             'round against ' + str(Path(self.prior_path).name) + ' is the '
-                             "editor's judgement. Without one the ids would be re-minted from "
-                             'scratch and collide with the prior round. Run an arm with an '
-                             'editor, or drop the prior round.')
-        self.prior_by_id = {str(row['id']): row for row in self.prior_issues}
         self.refuse_foreign_folder(pdf)
         self.review.mkdir(parents=True, exist_ok=True)
         # The code, copied into the run folder once and never executed. A
@@ -1195,8 +1091,7 @@ class Run:
             raise ValueError(
                 'This run is ' + self.status + ' and its review is written. A slot is not claimed '
                 'into a finished run: nothing it submitted could be stored. A further round of '
-                'review is a new run over the revised manuscript, with this run named as its '
-                'prior round.')
+                'review is a new run over the revised manuscript, in its own folder.')
         # Nothing but the reader holds a slot while the manuscript is a draft.
         # Every other slot's work is lines — a finding cites them, a citation
         # row anchors to them, a review quotes them — and the draft has none:
@@ -1458,42 +1353,6 @@ class Run:
         if not str(quote or '').strip():
             return None
         return quotes.anchor(self.base, quote, line, None, document).get('placement')
-
-    def locate_quote(self, quote, fingerprint=None):
-        """Where *this* manuscript still holds a prior round's passage, or ``None``.
-
-        A prior round's line numbers mean nothing here — the file is rewritten
-        at every import — so the passage is looked for in the manuscript as a
-        whole, and a quote that survived into two places answers with the first
-        of them: the question is whether the authors still say it, not where.
-        A quote too short to identify a passage is not evidence either way and
-        is reported as not checkable, by returning ``None`` for a different
-        reason than "the text changed" — the caller counts only what it finds.
-
-        Two routes, in order, and the answer says which one found it. The
-        quote itself comes first, normalised the way every quote in this engine
-        is. Where that fails the piece's ``fingerprint`` is tried: the digest
-        is over the passage's own normalised text, so a piece the converter
-        now reads with a different line break, or a different hyphen, is still
-        the same passage and the reviewer's quote was a fragment of it. A
-        fingerprint match says the passage is unchanged without claiming the
-        quoted words were found, which is why ``matched_by`` is carried
-        wherever the answer is reported.
-        """
-        text = str(quote or '').strip()
-        if len(text) >= MIN_SURVIVING_QUOTE:
-            found = quotes.placements(self.base, text)
-            if found:
-                return {'line': found[0]['line'], 'document': found[0].get('document'),
-                        'matched_by': 'quote'}
-        stamp = str(fingerprint or '')
-        if stamp:
-            for row in self.base.rows:
-                if row.get('fingerprint') == stamp:
-                    return {'line': row['lines'][0],
-                            'document': row.get('document') or paper_base.MAIN_DOCUMENT,
-                            'matched_by': 'fingerprint'}
-        return None
 
     def store_finding(self, agent, raw, escalate, receipt_id, corroborating, found,
                       code_evidence=None):
@@ -1864,7 +1723,6 @@ class Run:
             'workflow_version': WORKFLOW_VERSION,
             'finding_schema_version': FINDING_SCHEMA_VERSION,
             'issues_schema_version': issue_model.ISSUES_SCHEMA_VERSION,
-            'prior_round_issues': self.prior_round_record(),
             'claude_code_version': os.environ.get('PEERREVIEW_CLAUDE_VERSION'),
             'plugin_root': str(self.plugin_root) if self.plugin_root else None,
             # The ledger is a file this run produced, so the manifest says where
@@ -1883,38 +1741,6 @@ class Run:
                      'execution': 'Claude Code plugin workflow; agents in parallel, '
                                   'server-owned ledger.'},
         }
-
-    def prior_round_record(self, rows=None):
-        """What a published file may say about the prior round, or ``None``.
-
-        The file name and a digest of its content, never the path it was read
-        from: ``issues.json`` is a file consumers publish, and the path is a
-        machine path on whoever ran the review. ``rows`` adds the tally of this
-        round's rulings over it.
-        """
-        if not self.prior_path:
-            return None
-        record = {key: value for key, value in (self.prior_provenance or {}).items()
-                  # The spent ids are the run's to reserve, and they are
-                  # published once, at the document's top level as
-                  # `issue_ids_used`. Carrying the list here too would say the
-                  # same thing twice and grow this record every round.
-                  if key != 'ids_used'}
-        record['issues'] = len(self.prior_issues)
-        if rows is not None:
-            record['tally'] = issue_model.prior_tally(rows)
-        return record
-
-    def ids_spent(self):
-        """Every issue id the earlier rounds of this line used, open or closed.
-
-        An id names one problem for as long as the authors keep working on the
-        manuscript, so it is never minted twice. The carried issues cannot
-        answer that on their own — a resolved issue is reported once and then
-        dropped — so the prior file's own ``issue_ids_used`` is read as well.
-        """
-        return {str(identifier)
-                for identifier in (self.prior_provenance or {}).get('ids_used') or []}
 
     def write_protocol(self):
         write(self.review / 'protocol.json', {
@@ -1954,7 +1780,6 @@ class Run:
             'run_tool_allowance': RUN_CALL_BUDGET,
             'issues_schema_version': issue_model.ISSUES_SCHEMA_VERSION,
             'issue_batch_limit': issue_model.issue_batch_limit(len(self.pooled())),
-            'prior_round_issues': self.prior_round_record(),
             'agents': {slot: {'role': agent.role, 'track': agent.track,
                               'attempt': agent.attempt, 'tool_calls': agent.calls,
                               'model': (agent.report or {}).get('model') or agent.observed,
@@ -2013,7 +1838,7 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
            reviewer_models: list = None, specialist_model: str = '',
            editor_model: str = '', recorder_model: str = '',
            citation_workers: int = CITATION_WORKERS,
-           citation_worker_model: str = '', prior_issues: str = '',
+           citation_worker_model: str = '',
            supplements: str = '', reader_model: str = '', code: str = '') -> dict:
     """Open a run: import the manuscript PDF and fix the plan. Safe to call twice.
 
@@ -2059,13 +1884,6 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
     in the snapshot is ever executed. Without ``code`` there is no such lane and
     the review says the code was not reviewed; an arm that runs no specialists
     is refused rather than quietly reviewing none of it.
-
-    ``prior_issues`` makes this run a second round: it is the ``issues.json`` of
-    an earlier run of the same paper, or that run's folder. The editor is shown
-    those issues and matches its own to them, so an issue the authors did not
-    fix keeps the id it was reported under and the review can say what is
-    resolved, what persists and what came back. A path that holds no readable
-    issues is refused here rather than at the editor.
     """
     try:
         # The arguments over the environment, once, in the module that owns the
@@ -2128,7 +1946,6 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
                   recorder_model=settled.get('recorder'),
                   citation_workers=citation_workers,
                   citation_worker_model=settled.get('citation_worker'),
-                  prior_issues=prior_issues or None,
                   supplements=supplements or None,
                   reader_model=settled.get('reader'),
                   code=code or None)
@@ -2213,9 +2030,6 @@ def summary_of(run):
         'literature_cutoff': run.cutoff,
         'finding_schema_version': FINDING_SCHEMA_VERSION,
         'issues_schema_version': issue_model.ISSUES_SCHEMA_VERSION,
-        # The prior round, when there is one: the file it was read from and how
-        # many issues it holds. The issues themselves go to the editor alone.
-        'prior_round': run.prior_round_record(),
     }
 
 
@@ -2323,26 +2137,18 @@ def claim_agent(slot: str, claim_code: str = '') -> dict:
     if agent.role != 'editor':
         return answer
     # The editor writes the issues, so it is the one slot that is handed the
-    # vocabulary they are written in and the prior round they are matched
-    # against. A reviewer is told neither: an issue is not a reviewer's word.
+    # vocabulary they are written in. A reviewer is told none of it: an issue is
+    # not a reviewer's word.
     answer['issue_model'] = {
         'severities': list(issue_model.ISSUE_SEVERITIES),
         'required_severities': list(issue_model.REQUIRED_SEVERITIES),
         'categories': list(issue_model.ISSUE_CATEGORIES),
-        'statuses': list(issue_model.ISSUE_STATUSES),
-        'matched_statuses': list(issue_model.MATCHED_STATUSES),
-        'prior_ruling_statuses': list(issue_model.PRIOR_RULING_STATUSES),
         # Grows with the ledger, so however many findings there are the issues
         # go in within a bounded number of calls. Read it from here, never from
         # a number written down anywhere else.
         'batch_limit': issue_model.issue_batch_limit(len(run.for_issues())),
         'schema_version': issue_model.ISSUES_SCHEMA_VERSION,
     }
-    answer['prior_issues'] = [
-        {key: row.get(key) for key in ('id', 'name', 'severity', 'category', 'rank',
-                                       'statement', 'status')}
-        for row in run.prior_issues]
-    answer['prior_round'] = run.prior_round_record()
     # What a retry inherits. The working set belongs to the slot, not to the
     # attempt, so an editor claiming after a failed attempt is told what it is
     # already holding instead of starting the pooling again from nothing.
@@ -2359,11 +2165,7 @@ def claim_agent(slot: str, claim_code: str = '') -> dict:
         + ' per call and as many calls as you need, then close with submit_editor. Every '
         'finding in the ledger belongs to exactly one issue. To merge, rename or drop an '
         'issue you have already submitted, name it in submit_issues\' retire beside the '
-        'batch that replaces it.'
-        + (' Every issue of the prior round above needs a ruling before you can close: '
-           'either an issue of this round carrying its prior_id, or a row in '
-           'submit_editor\'s prior_rulings saying resolved or unverified with a reason.'
-           if run.prior_issues else ''))
+        'batch that replaces it.')
     return answer
 
 
@@ -2426,7 +2228,7 @@ def reissue_claim_code(recorder_key: str, slot: str) -> dict:
     if run.status in COMPLETE_STATUSES:
         return rejection('This run is ' + run.status + ' and its review is written. There is no '
                          'stage left to retry: a further round of review is a new run over the '
-                         'revised manuscript, with this run named as its prior round.',
+                         'revised manuscript, in its own folder.',
                          status=run.status)
     try:
         code = run.reissue(slot)
@@ -2457,7 +2259,7 @@ def _call(token, name, args, free=False):
         return rejection('This run is ' + run.status + ' and its review is written. ' + name
                          + ' reads the manuscript into a record that is closed, so nothing was '
                          'read and nothing was written. A later look at this paper is a new run '
-                         'with this one as its prior round.', status=run.status)
+                         'in its own folder.', status=run.status)
     # The Read stage ends at the seal. After it the draft is gone and the
     # lines exist, so a repair would be a rewrite of a manuscript a reviewer
     # may already be citing — which is the one thing this whole shape is for.
@@ -3350,8 +3152,7 @@ def list_findings(agent_token: str, track: str = '', include_comment: bool = Tru
         # after a refused batch can read what landed instead of guessing.
         answer['issues'] = [{'name': issue['name'], 'severity': issue['severity'],
                              'category': issue['category'], 'rank': issue['rank'],
-                             'members': issue['member_uids'], 'prior_id': issue['prior_id'],
-                             'status': issue['status']}
+                             'members': issue['member_uids']}
                             for issue in agent.issues.values()]
         answer['contradicted_by_code'] = [
             {'finding_uid': row['finding_uid'], 'title': row['title'],
@@ -3623,19 +3424,17 @@ def _issue_problems(run, agent, batch, retiring=()):
     by_uid = {f['finding_uid']: f for f in run.for_issues()}
     thrown_out = {row['finding_uid']: row for row in run.code_checks
                   if row['verdict'] == 'contradicted'}
-    # The uids and prior ids already spoken for, excluding the issues this call
-    # replaces by name or retires — re-submitting an issue frees its own
-    # members, and retiring one frees them for whatever this batch does next.
+    # The uids already spoken for, excluding the issues this call replaces by
+    # name or retires — re-submitting an issue frees its own members, and
+    # retiring one frees them for whatever this batch does next.
     names = {_text(row.get('name')).strip().casefold() for row in batch
              if isinstance(row, dict)} | set(retiring)
-    held, prior_held = {}, {}
+    held = {}
     for key, issue in agent.issues.items():
         if key in names:
             continue
         for uid in issue['member_uids']:
             held[uid] = issue['name']
-        if issue.get('prior_id'):
-            prior_held[issue['prior_id']] = issue['name']
     problems, staged, seen = [], [], {}
     for index, row in enumerate(batch, 1):
         if not isinstance(row, dict):
@@ -3643,11 +3442,10 @@ def _issue_problems(run, agent, batch, retiring=()):
                             + type(row).__name__)
             continue
         # Every text field is text. `name: 5` used to be stored as the name
-        # "5", printed in REVIEW.md and matched against by a later round: a
-        # number that had become a string nobody wrote.
+        # "5" and printed in REVIEW.md: a number that had become a string
+        # nobody wrote.
         wrong = _wrong_types([(field, row.get(field)) for field in
-                              ('name', 'severity', 'category', 'statement', 'status',
-                               'status_reason', 'prior_id', 'rebuttal_quote',
+                              ('name', 'severity', 'category', 'statement', 'rebuttal_quote',
                                'rebuttal_document')])
         if wrong:
             problems.append(f'issue {index}: ' + '; '.join(wrong))
@@ -3806,32 +3604,9 @@ def _issue_problems(run, agent, batch, retiring=()):
                             'that is not a rebuttal goes in the member finding that anchored it, '
                             f'and a {severity} issue has nothing to rebut.')
             continue
-        prior_id = _text(row.get('prior_id')).strip() or None
-        status = _text(row.get('status')).strip() or ('new' if prior_id is None else '')
-        if prior_id is not None and prior_id not in run.prior_by_id:
-            problems.append(f'issue {index} ({name}): prior_id {prior_id} is not an issue of the '
-                            'prior round. The prior issues are in your claim answer; leave '
-                            'prior_id out for an issue this round is the first to raise.')
-            continue
-        if prior_id is not None and prior_id in prior_held:
-            problems.append(f'issue {index} ({name}): prior issue {prior_id} is already matched '
-                            f'by {prior_held[prior_id]!r}. One prior issue matches one issue of '
-                            'this round.')
-            continue
-        if prior_id is None and status != 'new':
-            problems.append(f'issue {index} ({name}): an issue with no prior_id is new, so its '
-                            f'status cannot be {status!r}')
-            continue
-        if prior_id is not None and status not in issue_model.MATCHED_STATUSES:
-            problems.append(f'issue {index} ({name}): an issue matched to a prior one is '
-                            + ' or '.join(issue_model.MATCHED_STATUSES)
-                            + ', and yours says ' + (repr(status) if status else 'nothing'))
-            continue
         seen[key] = index
         for uid in members:
             seen['uid:' + uid] = name
-        if prior_id is not None:
-            prior_held[prior_id] = name
         staged.append({'key': key, 'name': name, 'severity': severity, 'category': category,
                        'rank': rank, 'statement': statement, 'member_uids': members,
                        # The document the quote was anchored in, as a member
@@ -3840,8 +3615,6 @@ def _issue_problems(run, agent, batch, retiring=()):
                        'rebuttal_document': (rebuttal_document or None) if rebuttal else None,
                        'rebuttal_line': (rebuttal or {}).get('line'),
                        'rebuttal_quote': _text(row.get('rebuttal_quote')) or None,
-                       'prior_id': prior_id, 'status': status,
-                       'status_reason': _text(row.get('status_reason')).strip() or None,
                        'submitted': now()})
     return problems, staged
 
@@ -3867,8 +3640,7 @@ def submit_issues(agent_token: str, issues=None, retire=None) -> dict:
     One issue is ``{name, severity, category, rank, statement, members}``, where
     ``members`` is the ``finding_uid`` of every finding the issue is raised from
     — the server keeps each member's slot, quote and cited lines as the issue's
-    evidence, and counts "raised by N" from them. ``prior_id`` and ``status``
-    name an issue of the prior round this one continues.
+    evidence, and counts "raised by N" from them.
 
     ``retire`` is the names of issues to take out of the working set, applied in
     the same call and the same all-or-nothing way as the batch. It is how an
@@ -4060,164 +3832,20 @@ def _rank_problems(agent):
             'and no ties; ' + '; '.join(parts) + '. Submit the issues whose rank changes again.']
 
 
-def _surviving_quotes(run, prior):
-    """The prior issue's member quotes that still appear verbatim in this manuscript.
-
-    The evidence behind the ``resolved`` rule. A passage the authors did not
-    touch is not evidence of a fix, and the saved pilots show findings
-    disappearing from text nobody edited — a reviewer simply not raising it
-    again. What the server can check, it checks here, by the text and not by
-    where the words were, because the file is written afresh at every import
-    and a prior round's line numbers point into a manuscript that is gone.
-    """
-    found, seen = [], set()
-    # A closed row has no members — the findings were this round's, not the
-    # next one's — so its own surviving quotes are what it carries forward. An
-    # issue ruled `unverified` in round two and `resolved` in round three used
-    # to skip this check entirely for want of anything to test.
-    carried = [{'quote': row.get('quote'), 'finding_uid': row.get('finding_uid'),
-                'fingerprint': row.get('fingerprint')}
-               for row in issue_model.quotes_of(prior)]
-    for member in [*issue_model.members_of(prior), *carried]:
-        quote = _text(member.get('quote')).strip()
-        if not quote or quote in seen:
-            continue
-        seen.add(quote)
-        where = run.locate_quote(quote, member.get('fingerprint'))
-        if where:
-            # The fingerprint travels with the row, not just the match: an issue
-            # closed in round two and ruled again in round four has only these
-            # rows to check, and they have to carry what the check reads.
-            found.append({'finding_uid': member.get('finding_uid'), 'line': where['line'],
-                          'document': where.get('document'),
-                          'fingerprint': member.get('fingerprint'),
-                          'matched_by': where['matched_by'], 'quote': quote[:200]})
-    return found
-
-
-def _prior_rank(prior):
-    """The last rank the prior row actually held, closed or live.
-
-    A closed row has no ``rank`` — it would collide with this round's 1..N —
-    so the rank it held before closing is in ``prior_rank``. Reading only
-    ``rank`` reported null for every issue that had been closed once already.
-    """
-    return issue_model.last_rank(prior)
-
-
-def _prior_ruling_problems(run, rulings, matched):
-    """``(problems, ruled)`` for the editor's rulings on the prior round's issues.
-
-    Nothing becomes resolved by omission. Every issue of the prior round is
-    either matched to an issue of this round — that is a ruling, ``persisting``
-    or ``regressed`` — or ruled here, by name, as ``resolved`` or
-    ``unverified``. A prior issue nobody mentions is not a fixed one, and the
-    close refuses until the editor has said which it is.
-
-    ``resolved`` over text that did not change needs more than a status. Where
-    the server can still find the prior issue's quotes in the new manuscript,
-    the ruling has to carry ``text_unchanged_reason`` — why the issue is fixed
-    although the passage it was raised against is still there word for word.
-    """
-    problems, ruled = [], {}
-    if rulings is None:
-        rulings = []
-    if not isinstance(rulings, list):
-        return ([f'prior_rulings is a list of {{prior_id, status, reason}} objects, and yours is '
-                 f'a {type(rulings).__name__}'], {})
-    for index, row in enumerate(rulings, 1):
-        if not isinstance(row, dict):
-            problems.append(f'prior ruling {index}: each ruling is an object '
-                            '{prior_id, status, reason}, not a ' + type(row).__name__)
-            continue
-        identifier = _text(row.get('prior_id')).strip()
-        if identifier not in run.prior_by_id:
-            problems.append(f'prior ruling {index}: ' + (repr(identifier) if identifier else 'it')
-                            + ' is not an issue of the prior round. The prior issues are in your '
-                              'claim answer.')
-            continue
-        if identifier in matched:
-            problems.append(f'prior ruling {index} ({identifier}): an issue of this round is '
-                            f'matched to {identifier}, and that match is the ruling. Rule here '
-                            'only the prior issues no issue of this round continues.')
-            continue
-        if identifier in ruled:
-            problems.append(f'prior ruling {index} ({identifier}): it is ruled twice')
-            continue
-        status = _text(row.get('status')).strip()
-        if status not in issue_model.PRIOR_RULING_STATUSES:
-            problems.append(f'prior ruling {index} ({identifier}): status is '
-                            + ' or '.join(issue_model.PRIOR_RULING_STATUSES)
-                            + ', and yours says ' + (repr(status) if status else 'nothing')
-                            + '. `resolved` is a fix you can point to; `unverified` is "nobody '
-                              'raised it this round and nothing shows it fixed".')
-            continue
-        reason = _text(row.get('reason')).strip()
-        if len(reason) < 20:
-            problems.append(f'prior ruling {index} ({identifier}): reason is the one line the '
-                            'authors read about it — for `resolved`, what changed; for '
-                            f'`unverified`, what you looked at. Yours is {len(reason)} '
-                            'characters.')
-            continue
-        # Computed for either status: on `resolved` it is the check, and on
-        # `unverified` it is what the row carries so the round that does rule
-        # it resolved still has quotes to test.
-        surviving = _surviving_quotes(run, run.prior_by_id[identifier])
-        unchanged = _text(row.get('text_unchanged_reason')).strip()
-        if status == 'resolved' and surviving and len(unchanged) < 40:
-            problems.append(
-                f'prior ruling {index} ({identifier}): you ruled it resolved, and '
-                f'{len(surviving)} of its passage(s) are still in the manuscript — '
-                + '; '.join(f"line {found['line']}: {found['quote'][:80]!r}"
-                            + (' (the same passage by digest, its wording moved)'
-                               if found.get('matched_by') == 'fingerprint' else ' word for word')
-                            for found in surviving[:3])
-                + '. Not being raised again is not a fix. Either rule it `unverified`, or say in '
-                  'text_unchanged_reason (40 characters or more) why it is fixed although that '
-                  'passage is unchanged.')
-            continue
-        ruled[identifier] = {'status': status, 'reason': reason,
-                             'text_unchanged_reason': unchanged or None,
-                             'surviving_quotes': surviving}
-    unruled = [identifier for identifier in run.prior_by_id
-               if identifier not in matched and identifier not in ruled]
-    if unruled:
-        problems.append(
-            str(len(unruled)) + ' issue(s) of the prior round have no ruling: '
-            + ', '.join(unruled[:10]) + '. Nothing becomes resolved because nobody mentioned it. '
-            'Either submit an issue of this round with that prior_id, or rule it in '
-            'prior_rulings as {prior_id, status, reason} — `resolved` or `unverified`.')
-    return problems, ruled
-
-
-def _finalize_issues(run, agent, ruled=None):
+def _finalize_issues(run, agent):
     """The working set as the issues of record: ids assigned, members filled in.
 
-    An issue matched to a prior round keeps that round's id, which is the whole
-    point of naming a prior round; a new issue takes the next id no prior round
-    and no earlier issue of this run is using. The prior issues no issue of this
-    round continues are carried on the end with the editor's own ruling —
-    ``resolved`` or ``unverified`` — so one file says what was fixed, what was
-    not raised again, and what still stands, without the three being confused.
+    The ids are this run's own, minted ``i01`` upwards in the order the editor
+    submitted the issues. Every review is one panel reading one manuscript, so
+    an id names a problem inside this review and nowhere else.
     """
     by_uid = {f['finding_uid']: f for f in run.for_issues()}
     audits = {path.name.split('audit_', 1)[1].removesuffix('.md'): path.name
               for path in sorted(run.review.glob('audit_*.md'))}
-    # Every id the earlier rounds spent, not only the ones still open. A
-    # resolved issue is dropped from the carry, so minting against the carry
-    # alone handed i03 to a different problem one round after i03 was fixed.
-    taken = set(run.prior_by_id) | run.ids_spent()
     number, rows = 0, []
     for issue in agent.issues.values():
-        if issue['prior_id']:
-            identifier = issue['prior_id']
-        else:
-            number += 1
-            identifier = issue_model.issue_id(number)
-            while identifier in taken:
-                number += 1
-                identifier = issue_model.issue_id(number)
-        taken.add(identifier)
+        number += 1
+        identifier = issue_model.issue_id(number)
         members = [issue_model.member_of(by_uid[uid]) for uid in issue['member_uids']
                    if uid in by_uid]
         row = {
@@ -4232,15 +3860,6 @@ def _finalize_issues(run, agent, ruled=None):
             'rebuttal_document': issue.get('rebuttal_document'),
             'rebuttal_line': issue.get('rebuttal_line'),
             'rebuttal_quote': issue.get('rebuttal_quote'),
-            'prior_id': issue['prior_id'],
-            # Every issue row carries every key, live or closed, so a consumer
-            # reads a field rather than testing for its presence: what does not
-            # apply is null, or an empty list where the field is a list.
-            'prior_rank': _prior_rank(run.prior_by_id.get(issue['prior_id'])),
-            'status': issue['status'],
-            'status_reason': issue['status_reason'],
-            'text_unchanged_reason': None,
-            'surviving_quotes': [],
             # The specialist audits this issue rests on. They stay on disk as
             # evidence and are named here, so a reader of one issue knows which
             # audit to open rather than reading all six.
@@ -4249,74 +3868,20 @@ def _finalize_issues(run, agent, ruled=None):
         }
         row['raised_by'] = issue_model.raised_by(row)
         rows.append(row)
-    matched = {row['prior_id'] for row in rows if row.get('prior_id')}
-    ruled = ruled or {}
-    for identifier, prior in run.prior_by_id.items():
-        if identifier in matched:
-            continue
-        ruling = ruled.get(identifier) or {
-            # Unreachable through `submit_editor`, which refuses while a prior
-            # issue has no ruling. Kept as the honest answer rather than
-            # `resolved`: a row nobody ruled is not a fix.
-            'status': 'unverified', 'reason': 'No ruling was recorded for it.',
-            'text_unchanged_reason': None, 'surviving_quotes': _surviving_quotes(run, prior),
-        }
-        rows.append({
-            'id': identifier,
-            'name': prior.get('name'),
-            'severity': prior.get('severity'),
-            'category': prior.get('category'),
-            # No rank. A closed row holding the prior round's rank collides with
-            # this round's 1..N, and two issues at rank 3 is a report with no
-            # order. The renderer lists the closed rows after the live ones.
-            'rank': None,
-            # The last rank this issue actually held. A row that was already
-            # closed last round carries no `rank` of its own, and reading only
-            # that left every twice-closed issue at prior_rank null.
-            'prior_rank': _prior_rank(prior),
-            'statement': prior.get('statement'),
-            'members': [],
-            'raised_by': 0,
-            # A closed row has no rebuttal to carry; the keys are here all the
-            # same, because a reader of issues.json reads fields, not shapes.
-            'rebuttal_document': None,
-            'rebuttal_line': None,
-            'rebuttal_quote': None,
-            'prior_id': identifier,
-            'status': ruling['status'],
-            'status_reason': ruling['reason'],
-            'text_unchanged_reason': ruling.get('text_unchanged_reason'),
-            # What the server itself could still find of the prior issue's
-            # evidence in the new manuscript, quoted. It is the check behind
-            # the `resolved` rule and it is published, so a reader can see what
-            # the ruling was made against.
-            'surviving_quotes': ruling.get('surviving_quotes') or [],
-            'audits': [],
-        })
     return rows
 
 
 def submit_editor(agent_token: str, summary=None, significance=None,
                   strength_of_evidence=None, verdict_reasoning=None,
-                  escalation_rulings=None, limitations=None,
-                  prior_rulings=None) -> dict:
+                  escalation_rulings=None, limitations=None) -> dict:
     """Close the pooled review. Every finding in the ledger belongs to exactly one issue.
 
     The issues themselves go in through :func:`submit_issues`, batch by batch;
     this call is the verdict and the close. It refuses while a finding has no
-    issue, while the ranks are not 1 to N, while an escalated finding has no
-    ruling, or while an issue of the prior round has neither a match nor a
+    issue, while the ranks are not 1 to N, or while an escalated finding has no
     ruling, and says which in ``problems``. Nothing is capped and nothing is
     hidden: major and moderate issues are the required changes, minor ones the
     suggestions.
-
-    ``prior_rulings`` is ``[{prior_id, status, reason}]`` for the prior-round
-    issues no issue of this round continues: ``resolved`` for one you can point
-    at a fix for, ``unverified`` for one nobody raised again and nothing shows
-    fixed. Omission rules nothing — a prior issue with no match and no ruling
-    refuses the close. Where the server can still find a prior issue's quotes
-    verbatim in this manuscript, ``resolved`` also needs
-    ``text_unchanged_reason``.
     """
     run = current()
     try:
@@ -4356,10 +3921,9 @@ def submit_editor(agent_token: str, summary=None, significance=None,
          ('strength_of_evidence', strength_of_evidence),
          ('verdict_reasoning', verdict_reasoning)),
         (('limitations', limitations),))
-    for label, value in (('escalation_rulings', escalation_rulings),
-                         ('prior_rulings', prior_rulings)):
-        if value is not None and not isinstance(value, list):
-            wrong.append(f'{label} is a list of objects, and yours is a {type(value).__name__}')
+    if escalation_rulings is not None and not isinstance(escalation_rulings, list):
+        wrong.append('escalation_rulings is a list of objects, and yours is a '
+                     f'{type(escalation_rulings).__name__}')
     if wrong:
         refusal = ('; '.join(wrong)
                    + '. The review was not accepted and your issues are still held.')
@@ -4381,9 +3945,6 @@ def submit_editor(agent_token: str, summary=None, significance=None,
                           'already submitted by submitting that issue again with the uid in its '
                           'members, or submit a new issue for it.')
     problems += _rank_problems(agent)
-    matched = {issue['prior_id'] for issue in agent.issues.values() if issue.get('prior_id')}
-    prior_problems, ruled = _prior_ruling_problems(run, prior_rulings, matched)
-    problems += prior_problems
     escalated = [uid for uid, f in by_uid.items() if f['escalate']]
     rulings = {}
     for index, row in enumerate(escalation_rulings or [], 1):
@@ -4414,7 +3975,7 @@ def submit_editor(agent_token: str, summary=None, significance=None,
         return rejection('The pooled review was not accepted. Fix these and submit again; the '
                          'issues you have submitted are still held.',
                          problems=problems, escalated=escalated, **state)
-    rows = _finalize_issues(run, agent, ruled)
+    rows = _finalize_issues(run, agent)
     package = {
         'summary': summary,
         'limitations': list(limitations or []),
@@ -4424,7 +3985,6 @@ def submit_editor(agent_token: str, summary=None, significance=None,
                     'reasoning': verdict_reasoning, 'basis': 'judgement',
                     'limitation': 'Advisory two-axis judgement, not a score and not a decision.'},
         'counts': issue_model.counts(rows),
-        'prior_round': run.prior_round_record(rows),
         'accepted': now(),
     }
     agent.editor_package = package
@@ -4435,8 +3995,7 @@ def submit_editor(agent_token: str, summary=None, significance=None,
                         suggestions=counts['suggestions'])
     run.write_progress()
     return {'accepted': True, 'issues': counts['issues'], 'required_changes': counts['required'],
-            'suggestions': counts['suggestions'], 'resolved_from_prior': counts['resolved'],
-            'unverified_from_prior': counts['unverified'],
+            'suggestions': counts['suggestions'],
             'escalated_ruled': len(escalated), 'next': 'The recorder calls write_review.'}
 
 
@@ -5023,15 +4582,7 @@ def _issues_document(run):
     # of the three ways it happens and the wrong one to print over a run whose
     # editor was refused the slot or died holding it.
     reason = None if package else _synthesis_reason(run)
-    # The degraded path mints above every id this line of rounds has spent and
-    # carries the prior issues itself. Without the prior rows and the spent ids
-    # it numbered from i01 over a run that named a prior round: i01 was handed
-    # to a new finding while it was still the id of a prior issue, and the prior
-    # issues were in no row of the published file.
-    issue_rows = package['issues'] if package else issue_model.synthesize(
-        pooled, reason, prior=list(run.prior_by_id.values()), spent=run.ids_spent(),
-        surviving={identifier: _surviving_quotes(run, prior)
-                   for identifier, prior in run.prior_by_id.items()})
+    issue_rows = package['issues'] if package else issue_model.synthesize(pooled, reason)
     counts = {}
     for finding in delivered:
         counts[finding['track']] = counts.get(finding['track'], 0) + 1
@@ -5043,13 +4594,6 @@ def _issues_document(run):
         'summary': (package or {}).get('summary') or _fallback_summary(run),
         'issues': issue_rows,
         'counts': issue_model.counts(issue_rows),
-        'prior_round': (package or {}).get('prior_round') or run.prior_round_record(issue_rows),
-        # Every id this line of rounds has spent, this round's included. A
-        # resolved issue is reported once and then dropped from the carry, so
-        # without this list the next round would mint its id again for a
-        # different problem. A later round reserves every id named here.
-        'issue_ids_used': sorted(run.ids_spent()
-                                 | {str(row['id']) for row in issue_rows if row.get('id')}),
         # The specialist audits stay on disk as evidence; each issue names the
         # ones it rests on, and this is the whole set in one place.
         'audits': [path.name for path in sorted(run.review.glob('audit_*.md'))],

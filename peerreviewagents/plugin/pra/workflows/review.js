@@ -1,7 +1,7 @@
 export const meta = {
   name: 'review',
   description: 'Two-track peer review: ingest, N core reviewers and six specialists in parallel, editor, write the run',
-  whenToUse: 'Reviewing one manuscript PDF with PeerReviewAgents 0.10. Pass {pdf, out, reviewers, arm}, {prior_issues} to match a later round against an earlier run\'s issues.json, {code} — a folder or repository URL — to add the lane that reads the paper against the code behind it, and {reviewer_models, specialist_model, editor_model, recorder_model, citation_worker_model, reader_model} to choose the models.',
+  whenToUse: 'Reviewing one manuscript PDF with PeerReviewAgents 0.10. Pass {pdf, out, reviewers, arm}, {code} — a folder or repository URL — to add the lane that reads the paper against the code behind it, and {reviewer_models, specialist_model, editor_model, recorder_model, citation_worker_model, reader_model} to choose the models.',
   phases: [
     { title: 'Ingest', detail: 'import the PDF and fix the plan for this arm' },
     { title: 'Read', detail: 'one model reads the page images, repairs the converted equations and tables, describes the figures, and seals the manuscript' },
@@ -223,11 +223,6 @@ const EDITED = {
     issues: { type: 'integer', description: 'issues the accepted review holds' },
     required_changes: { type: 'integer', description: 'major and moderate issues' },
     suggestions: { type: 'integer', description: 'minor issues' },
-    resolved_from_prior: { type: 'integer', description: 'prior issues you ruled resolved' },
-    unverified_from_prior: {
-      type: 'integer',
-      description: 'prior issues you ruled unverified: not raised again, not verified fixed',
-    },
     escalated_ruled: { type: 'integer' },
     batches: { type: 'integer', description: 'how many times you called submit_issues' },
     attempts: { type: 'integer', description: 'how many times you called submit_editor' },
@@ -414,10 +409,6 @@ const opened = await agent(
     ? ', citation_workers=' + run.citation_workers : '')
   + (run.citation_worker_model ? ', citation_worker_model="' + run.citation_worker_model + '"' : '')
   + (run.reader_model ? ', reader_model="' + run.reader_model + '"' : '')
-  // A later round of the same paper. The path is passed straight through: the
-  // server reads the file, and an issue the authors did not fix keeps the id it
-  // was first reported under.
-  + (run.prior_issues ? ', prior_issues="' + run.prior_issues + '"' : '')
   // The code this paper is reviewed against. The server clones or copies it
   // into the run folder here and nowhere else: the snapshot is what every
   // later stage reads, so a run that was given code is a run whose plan holds
@@ -979,10 +970,7 @@ if (hasEditor) {
     + ' Read issues_held in your claim answer first: it lists the issues an earlier attempt of'
     + ' this slot already stored, and they are still held, so send only what is missing or what'
     + ' you are changing. To merge, rename or drop one of them, name it in submit_issues\''
-    + ' retire beside the batch that replaces it. Where your claim answer carries prior_issues,'
-    + ' match each issue you can to one of those with prior_id and a status of persisting or'
-    + ' regressed, and rule on every one you did not match in submit_editor\'s prior_rulings as'
-    + ' resolved or unverified with a reason. Then close with submit_editor: the summary, a'
+    + ' retire beside the batch that replaces it. Then close with submit_editor: the summary, a'
     + ' ruling by name on every escalated finding, and the two-axis verdict in words. If a call'
     + ' returns problems, fix exactly those and send that batch again; what you submitted before'
     + ' is kept. Close with submit_report, and report how many batches you sent in the batches'
@@ -1119,8 +1107,6 @@ return {
     issues: edited.issues,
     required_changes: edited.required_changes || 0,
     suggestions: edited.suggestions || 0,
-    resolved_from_prior: edited.resolved_from_prior || 0,
-    unverified_from_prior: edited.unverified_from_prior || 0,
     escalated_ruled: edited.escalated_ruled || 0,
     batches: edited.batches || null,
     attempts: edited.attempts,
@@ -1131,7 +1117,6 @@ return {
   // stand as filed, not a run where the code agreed with them.
   code_check: codeCheck,
   findings_stored: findingsStored,
-  prior_issues: run.prior_issues || null,
   issues: recorded.issues,
   required_changes: recorded.required_changes,
   suggestions: recorded.suggestions,

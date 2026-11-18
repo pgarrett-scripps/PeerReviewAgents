@@ -27,7 +27,6 @@ PLUGIN_FILES = (
     'peerreviewagents/plugin/pra/workflows/review.js',
     'peerreviewagents/plugin/pra/skills/peer-review-manuscript/SKILL.md',
     'peerreviewagents/plugin/pra/skills/check-draft/SKILL.md',
-    'peerreviewagents/plugin/pra/skills/follow-up/SKILL.md',
 )
 AGENTS = ('citation-worker', 'citations', 'code', 'code-check', 'core-reviewer', 'editor',
           'field', 'figures-tables', 'methods-reporting', 'numbers', 'reader', 'recorder',

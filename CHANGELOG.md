@@ -659,6 +659,29 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   happen beside nothing raised and the guard emptying it, which
   `code_check['counts']['contradicted']` distinguishes.
 
+### Removed
+
+- **A review no longer carries an earlier review.** `--prior-issues` on
+  `peerreview review`, `prior_issues` on `ingest` and on the workflow, the
+  `prior_rulings` argument of `submit_editor`, the brief the editor was given
+  about ruling on an earlier round, the `follow-up` skill, and
+  `validate_prior_issues` on the public surface are gone, with no flag kept as
+  a shim. Every review is a fresh panel reading the manuscript as it now
+  reads: nothing is inherited, so nothing can be inherited wrongly. The
+  rulings the editor used to make on a prior issue — `resolved`, `unverified`,
+  "not raised again", carried forward — went with it, and with them
+  `ISSUE_STATUSES`, the `status`, `status_reason`, `prior_id`, `prior_rank`,
+  `text_unchanged_reason` and `surviving_quotes` fields of an `issues.json` row
+  (12 fields now, from 18), the `prior_round` block of that file, REVIEW.md's closed-row and
+  carried-issue sections, and `read_run()`'s `prior_round` key together with
+  `counts['resolved']`, `counts['unverified']` and `counts['by_status']` (36
+  keys now, from 37). A later review of a revised paper is a new out folder,
+  and a consumer that wants the two compared compares two finished runs
+  itself — the one thing the engine could never do honestly, since a paper's
+  id is a digest of its PDF and no finding of one run shares a `finding_uid`
+  with the next. The tool count is unchanged at 44: this removed arguments and
+  fields, not tools.
+
 ## [0.10.0] — 2026-11-15
 
 The report is issues now, not a body and an appendix, and an editor that cannot

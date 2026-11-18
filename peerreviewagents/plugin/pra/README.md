@@ -13,11 +13,11 @@ can only ask it for text and hand it findings.
 
 | Part | Where | What it is |
 | --- | --- | --- |
-| `peerreview` server | `.mcp.json` → `peerreviewagents.plugin.server` | 37 tools, and every piece of state worth forging |
+| `peerreview` server | `.mcp.json` → `peerreviewagents.plugin.server` | 44 tools, and every piece of state worth forging |
 | Agents | `agents/*.md` | `core-reviewer`, six specialists, `citation-worker`, `reader`, `editor`, `recorder`; each pins `maxTurns:` and a fallback `model:`, and may call only server tools |
 | Models | `peerreviewagents/plugin/models.py` | which model each slot runs, and the refusal when one is not available |
 | Workflow | `workflows/review.js` | ingest → read → reviewers ∥ specialists (the citation lane first resolves, then fans out workers) → (revision) → editor → record |
-| Skills | `skills/*/SKILL.md` | `peer-review-manuscript` (a full review), `check-draft` (your own draft), `follow-up` (what changed since the last run) |
+| Skills | `skills/*/SKILL.md` | `peer-review-manuscript` (a full review), `check-draft` (your own draft) |
 | Starter | `peerreviewagents/plugin/starter.py` | probes, launches the headless session, enforces token budgets, records models and wall time |
 
 ## Running one
@@ -26,7 +26,7 @@ can only ask it for text and hand it findings.
 peerreview review <manuscript.pdf> <run folder> [--reviewers N] [--arm NAME]
                   [--reviewer-models A,B,C] [--specialist-model M] [--editor-model M]
                   [--citation-workers N] [--citation-worker-model M]
-                  [--reader-model M] [--prior-issues PATH]
+                  [--reader-model M]
 ```
 
 That is the only way to run a review in 0.9: the Python orchestration the 0.8
@@ -251,10 +251,8 @@ severity, a category, a rank, a one-paragraph statement, and the findings it
 holds as its members. Every stored finding has to belong to an issue, the ranks
 have to be exactly 1..N over the required changes, and the escalations each
 need a ruling by name. Nothing is capped and nothing is hidden — major and
-moderate are the required changes, minor are the suggestions. Given a prior
-round, each issue is matched against it by reading, keeps the matched id, and
-says whether it is persisting, regressed or new. The verdict is two axes in
-words, never a number.
+moderate are the required changes, minor are the suggestions. The verdict is
+two axes in words, never a number.
 
 ## Run folder
 

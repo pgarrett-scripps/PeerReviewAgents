@@ -1,12 +1,9 @@
-"""What the editor may change, and what a later round has to rule on.
+"""What the editor may change.
 
-Two review findings put this file here. The first: a stored issue could not be
-merged, renamed or dropped, while the refusal that fires when a finding is
-already a member of another issue told the editor to merge — so an editor that
-grouped two problems as one looped to ``maxTurns`` with nowhere to go. The
-second: a prior issue nobody raised again was recorded as ``resolved``, which is
-not the same claim, and the saved pilots show findings disappearing from text
-nobody touched.
+A review finding put this file here: a stored issue could not be merged,
+renamed or dropped, while the refusal that fires when a finding is already a
+member of another issue told the editor to merge — so an editor that grouped
+two problems as one looped to ``maxTurns`` with nowhere to go.
 
 Everything here runs offline. The findings are submitted through the server by
 the reviewer slots themselves and the grouping is done in Python; no model is
@@ -23,7 +20,6 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import pytest
 from manuscripts import seal_converted
 
-import peerreviewagents
 from peerreviewagents import issues as issue_model
 from peerreviewagents.engine.storage import relative_name
 from peerreviewagents.plugin import server as srv
@@ -158,33 +154,6 @@ def refusal_text(answer):
     """A refusal reads the same to the editor whether it is one line or a list."""
     assert 'request_rejected' in answer, answer
     return ' '.join([answer['request_rejected']] + list(answer.get('problems') or []))
-
-
-def prior_file(path, issues, version=issue_model.ISSUES_SCHEMA_VERSION, ids_used=None):
-    """A prior round's issues.json, as this version publishes one.
-
-    ``issue_ids_used`` is part of that shape — every id the round and its own
-    prior rounds spent — and a file without it is refused, so the default here
-    is the one the writer would have published: the ids of its own rows.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    document = {'schema_version': version, 'summary': 'The first round.', 'issues': issues}
-    if ids_used is not None:
-        document['issue_ids_used'] = ids_used
-    else:
-        document['issue_ids_used'] = sorted({str(row['id']) for row in issues
-                                             if isinstance(row, dict) and row.get('id')})
-    path.write_text(json.dumps(document), encoding='utf-8')
-    return path
-
-
-def prior_issue(identifier, rank, name, members=(), status='new'):
-    return {'id': identifier, 'name': name, 'severity': 'major', 'rank': rank,
-            'category': 'claims-and-conclusions', 'status': status,
-            'statement': 'The first round said this claim outruns its evidence.',
-            'members': [{'finding_uid': 'a' * 16, 'slot': 'core-1', 'track': 'core',
-                         'title': name, 'document': 'paper.md', 'line': line, 'quote': quote}
-                        for line, quote in members]}
 
 
 # -- what the editor may change --------------------------------------------
@@ -516,12 +485,10 @@ def test_malformed_input_is_refused_with_a_reason_and_logged(tmp_path):
     srv.submit_issues(editor, [issue('The right shape', 1, uids)])
     bad_ruling = close_the_review(editor, escalation_rulings=['abc'])
     assert 'object' in refusal_text(bad_ruling), bad_ruling
-    bad_prior = close_the_review(editor, prior_rulings=5)
-    assert 'list' in refusal_text(bad_prior), bad_prior
 
     rows = [json.loads(line) for line in
             (run.review / 'editor-log.jsonl').read_text(encoding='utf-8').splitlines() if line]
-    assert len([row for row in rows if not row['accepted']]) >= 6, rows
+    assert len([row for row in rows if not row['accepted']]) >= 5, rows
 
 
 def test_a_null_name_or_a_null_quote_is_absent_and_not_the_word_none(tmp_path):
@@ -543,175 +510,6 @@ def test_a_null_name_or_a_null_quote_is_absent_and_not_the_word_none(tmp_path):
     srv.write_review(token_for('recorder'))
     stored = json.loads((run.review / 'issues.json').read_text(encoding='utf-8'))['issues'][0]
     assert stored['rebuttal_quote'] is None and stored['rebuttal_line'] is None
-
-
-# -- a later round ---------------------------------------------------------
-
-
-@pytest.mark.parametrize('arm', ['single', 'single-revision', 'manuscript-only', 'draft-check'])
-def test_an_arm_with_no_editor_refuses_a_prior_round(tmp_path, arm):
-    """Nothing in those arms could rule on a prior issue, and the ids collide."""
-    path = prior_file(tmp_path / 'prior' / 'issues.json',
-                      [prior_issue('i01', 1, 'The first round said so')])
-
-    opened = srv.ingest(str(FIXTURE), str(tmp_path / arm / 'run'), arm=arm,
-                        tracks=['stats'] if arm == 'draft-check' else None,
-                        prior_issues=str(path))
-
-    assert 'request_rejected' in opened, opened
-    assert 'editor' in opened['request_rejected']
-
-
-def test_a_matched_prior_issue_keeps_its_id_and_the_match_is_the_ruling(tmp_path):
-    path = prior_file(tmp_path / 'prior' / 'issues.json',
-                      [prior_issue('i01', 1, 'The first round said so')])
-    open_run(tmp_path, prior_issues=str(path))
-    run = srv.current()
-    uids = file_findings(run, 2)
-    close_the_others(run)
-    claimed = claim_editor()
-    assert [row['id'] for row in claimed['prior_issues']] == ['i01']
-    editor = claimed['agent_token']
-    srv.submit_issues(editor, [issue('The same claim, still unsupported', 1, uids) | {
-        'prior_id': 'i01', 'status': 'persisting',
-        'status_reason': 'The revision rewrote the sentence and kept the claim.'}])
-
-    accepted = close_the_review(editor)
-
-    assert accepted['accepted'] is True, accepted
-    assert srv.submit_report(editor, 'Grouped.', model=run.models.get('editor'))['closed']
-    srv.write_review(token_for('recorder'))
-    document = json.loads((run.review / 'issues.json').read_text(encoding='utf-8'))
-    assert [row['id'] for row in document['issues']] == ['i01']
-    assert document['issues'][0]['status'] == 'persisting'
-    assert document['prior_round']['issues'] == 1
-    assert document['prior_round']['tally']['persisting'] == 1
-
-
-def test_a_prior_issue_with_no_match_and_no_ruling_refuses_the_close(tmp_path):
-    """Nothing is resolved by omission, which is what the pilots recorded."""
-    path = prior_file(tmp_path / 'prior' / 'issues.json',
-                      [prior_issue('i01', 1, 'The first round said so')])
-    open_run(tmp_path, prior_issues=str(path))
-    run = srv.current()
-    uids = file_findings(run, 2)
-    close_the_others(run)
-    editor = token_for('editor')
-    srv.submit_issues(editor, [issue('A problem this round is the first to raise', 1, uids)])
-
-    refused = close_the_review(editor)
-
-    assert 'request_rejected' in refused
-    assert any('i01' in problem for problem in refused['problems']), refused
-
-    ruled = close_the_review(editor, prior_rulings=[{
-        'prior_id': 'i01', 'status': 'unverified',
-        'reason': 'No reviewer raised it this round and the methods section still omits it.'}])
-    assert ruled['accepted'] is True, ruled
-    assert ruled['unverified_from_prior'] == 1
-    assert ruled.get('resolved_from_prior', 0) == 0
-
-
-def test_resolved_over_text_that_still_reads_the_same_takes_a_stated_reason(tmp_path):
-    """A passage the authors did not touch is not evidence of a fix."""
-    run_quotes = None
-    path = tmp_path / 'prior' / 'issues.json'
-    open_run(tmp_path, arm='reviewers-only', reviewers=2)
-    run = srv.current()
-    run_quotes = quote_pool(run, 3)
-    srv.STATE['run'] = None
-    CODES.clear()
-    prior_file(path, [prior_issue('i01', 1, 'The first round said so',
-                                  members=[run_quotes[2]])])
-
-    open_run(tmp_path / 'second', prior_issues=str(path))
-    run = srv.current()
-    uids = file_findings(run, 2)
-    close_the_others(run)
-    editor = token_for('editor')
-    srv.submit_issues(editor, [issue('A problem this round is the first to raise', 1, uids)])
-
-    refused = close_the_review(editor, prior_rulings=[{
-        'prior_id': 'i01', 'status': 'resolved',
-        'reason': 'The authors say in the response letter that they fixed it.'}])
-
-    assert 'request_rejected' in refused
-    text = ' '.join(refused['problems'])
-    assert 'word for word' in text, text
-    assert run_quotes[2][1][:40] in text
-
-    accepted = close_the_review(editor, prior_rulings=[{
-        'prior_id': 'i01', 'status': 'resolved',
-        'reason': 'The authors added the missing power calculation.',
-        'text_unchanged_reason': 'The sentence is unchanged on purpose: the number it reports is '
-                                'now supported by the new appendix table rather than by the '
-                                'estimate the first round objected to.'}])
-    assert accepted['accepted'] is True, accepted
-    assert accepted['resolved_from_prior'] == 1
-    assert srv.submit_report(editor, 'Grouped.', model=run.models.get('editor'))['closed']
-    srv.write_review(token_for('recorder'))
-    document = json.loads((run.review / 'issues.json').read_text(encoding='utf-8'))
-    closed = [row for row in document['issues'] if row['id'] == 'i01'][0]
-    assert closed['status'] == 'resolved'
-    assert closed['rank'] is None and closed['prior_rank'] == 1
-    assert closed['surviving_quotes'], closed
-    assert 'appendix table' in closed['text_unchanged_reason']
-    review = (run.review / 'REVIEW.md').read_text(encoding='utf-8')
-    assert '## Since the prior round' in review
-    assert 'appendix table' in review
-    assert 'The first round said this claim outruns its evidence.' in review
-
-
-def test_a_resolved_prior_row_is_reported_once_and_not_carried_again(tmp_path):
-    """Round three reported 37 resolved with 19 live: the carry was recounted."""
-    path = prior_file(tmp_path / 'prior' / 'issues.json', [
-        prior_issue('i01', 1, 'Still open', status='persisting'),
-        prior_issue('i02', None, 'Closed in the round before', status='resolved'),
-        prior_issue('i03', None, 'Never verified', status='unverified'),
-    ])
-    open_run(tmp_path, prior_issues=str(path))
-    run = srv.current()
-
-    assert [row['id'] for row in run.prior_issues] == ['i01', 'i03'], 'resolved is not carried'
-    claimed = claim_editor()
-    assert [row['id'] for row in claimed['prior_issues']] == ['i01', 'i03']
-    assert claimed['prior_round']['issues'] == 2
-
-
-def test_the_prior_round_is_recorded_without_a_path_from_the_machine(tmp_path):
-    path = prior_file(tmp_path / 'prior' / 'issues.json',
-                      [prior_issue('i01', 1, 'The first round said so')])
-    open_run(tmp_path, prior_issues=str(path))
-    run = srv.current()
-    uids = file_findings(run, 2)
-    close_the_others(run)
-    editor = token_for('editor')
-    srv.submit_issues(editor, [issue('The same claim, still unsupported', 1, uids) | {
-        'prior_id': 'i01', 'status': 'persisting',
-        'status_reason': 'The revision rewrote the sentence and kept the claim.'}])
-    assert close_the_review(editor)['accepted'] is True
-    assert srv.submit_report(editor, 'Grouped.', model=run.models.get('editor'))['closed']
-    srv.write_review(token_for('recorder'))
-
-    for name in ('issues.json', 'protocol.json', 'REVIEW.md'):
-        text = (run.review / name).read_text(encoding='utf-8')
-        assert str(path) not in text, name
-        assert str(path.parent) not in text, name
-    document = json.loads((run.review / 'issues.json').read_text(encoding='utf-8'))
-    assert document['prior_round']['file'] == 'issues.json'
-    assert len(document['prior_round']['digest']) == 16
-
-
-def test_a_prior_round_file_this_version_cannot_read_is_refused_at_ingest(tmp_path):
-    path = prior_file(tmp_path / 'prior' / 'issues.json',
-                      [prior_issue('i01', 1, 'The first round said so')],
-                      version='review-issues-v9')
-
-    opened = srv.ingest(str(FIXTURE), str(tmp_path / 'run'), arm='reviewers-only',
-                        reviewers=2, prior_issues=str(path))
-
-    assert 'request_rejected' in opened, opened
-    assert 'review-issues-v9' in opened['request_rejected']
 
 
 # -- what a refused or late call must not destroy ---------------------------
@@ -806,72 +604,6 @@ def test_the_same_name_retired_twice_is_one_retirement(tmp_path):
     assert close_the_review(editor)['accepted'] is True
 
 
-# -- an id is never reused --------------------------------------------------
-
-
-def test_an_id_an_earlier_round_spent_is_never_minted_again(tmp_path):
-    """i01 was resolved in round one and handed to a new problem in round two."""
-    path = prior_file(tmp_path / 'prior' / 'issues.json', [
-        prior_issue('i01', 1, 'Fixed in the first round', status='resolved'),
-        prior_issue('i02', 2, 'Still open'),
-    ])
-    open_run(tmp_path, prior_issues=str(path))
-    run = srv.current()
-    uids = file_findings(run, 2)
-    close_the_others(run)
-    editor = token_for('editor')
-    srv.submit_issues(editor, [
-        issue('The same claim, still unsupported', 1, [uids[0]]) | {
-            'prior_id': 'i02', 'status': 'persisting',
-            'status_reason': 'The revision rewrote the sentence and kept the claim.'},
-        issue('A problem this round is the first to raise', 2, [uids[1]])])
-    assert close_the_review(editor)['accepted'] is True
-    assert srv.submit_report(editor, 'Grouped.', model=run.models.get('editor'))['closed']
-    srv.write_review(token_for('recorder'))
-
-    document = json.loads((run.review / 'issues.json').read_text(encoding='utf-8'))
-    minted = [row['id'] for row in document['issues'] if not row['prior_id']]
-    assert minted == ['i03'], 'i01 belongs to the problem the first round reported'
-    assert set(document['issue_ids_used']) >= {'i01', 'i02', 'i03'}
-
-
-def test_a_spent_id_stays_spent_through_a_round_that_never_held_it(tmp_path):
-    """Round three reads the reserved ids, not only the rows it was handed.
-
-    The resolved row is dropped from the carry, so by round three ``i01`` is in
-    no row anywhere — only in the list the document publishes for this.
-    """
-    second = prior_file(tmp_path / 'second' / 'issues.json', [
-        prior_issue('i02', 1, 'Still open'),
-        prior_issue('i03', 2, 'Raised in the second round'),
-    ])
-    document = json.loads(second.read_text(encoding='utf-8'))
-    document['issue_ids_used'] = ['i01', 'i02', 'i03']
-    second.write_text(json.dumps(document), encoding='utf-8')
-    open_run(tmp_path, prior_issues=str(second))
-    run = srv.current()
-    uids = file_findings(run, 2)
-    close_the_others(run)
-    editor = token_for('editor')
-    assert [row['id'] for row in run.prior_issues] == ['i02', 'i03']
-    srv.submit_issues(editor, [
-        issue('The same claim, still unsupported', 1, [uids[0]]) | {
-            'prior_id': 'i02', 'status': 'persisting',
-            'status_reason': 'The revision rewrote the sentence and kept the claim.'},
-        issue('A problem this round is the first to raise', 2, [uids[1]])])
-    closed = close_the_review(editor, prior_rulings=[{
-        'prior_id': 'i03', 'status': 'unverified',
-        'reason': 'Nobody raised it this round and the passage is gone from the manuscript.'}])
-
-    assert closed['accepted'] is True, closed
-    assert srv.submit_report(editor, 'Grouped.', model=run.models.get('editor'))['closed']
-    srv.write_review(token_for('recorder'))
-    written = json.loads((run.review / 'issues.json').read_text(encoding='utf-8'))
-    minted = [row['id'] for row in written['issues'] if not row['prior_id']]
-    assert minted == ['i04'], 'i01 was spent two rounds ago'
-    assert set(written['issue_ids_used']) >= {'i01', 'i02', 'i03', 'i04'}
-
-
 # -- no published file holds a path from the machine ------------------------
 
 
@@ -956,60 +688,6 @@ def test_a_rebuttal_quote_outside_the_case_it_answers_is_refused(tmp_path):
     assert stored['rebuttal_quote'] is None and stored['rebuttal_line'] is None
 
 
-# -- what an unverified row has to carry ------------------------------------
-
-
-def test_an_unverified_row_keeps_the_quotes_the_next_round_tests(tmp_path):
-    """``unverified`` then ``resolved`` skipped the surviving-quote check.
-
-    A closed row has no members — the findings were that round's — so unless it
-    carries what the check needs, the round after it can call the issue fixed
-    over a passage nobody touched.
-    """
-    open_run(tmp_path)
-    passages = quote_pool(srv.current(), 3)
-    srv.STATE['run'] = None
-    CODES.clear()
-    first = prior_file(tmp_path / 'first' / 'issues.json',
-                       [prior_issue('i01', 1, 'The first round said so',
-                                    members=[passages[2]])])
-
-    open_run(tmp_path / 'second', prior_issues=str(first))
-    run = srv.current()
-    uids = file_findings(run, 2)
-    close_the_others(run)
-    editor = token_for('editor')
-    srv.submit_issues(editor, [issue('A problem this round is the first to raise', 1, uids)])
-    assert close_the_review(editor, prior_rulings=[{
-        'prior_id': 'i01', 'status': 'unverified',
-        'reason': 'Nobody raised it again and I cannot show the revision fixed it.',
-    }])['accepted'] is True
-    assert srv.submit_report(editor, 'Grouped.', model=run.models.get('editor'))['closed']
-    srv.write_review(token_for('recorder'))
-    document = run.review / 'issues.json'
-    carried = [row for row in json.loads(document.read_text(encoding='utf-8'))['issues']
-               if row['id'] == 'i01'][0]
-    assert carried['status'] == 'unverified'
-    assert carried['prior_rank'] == 1, 'the rank it held is what the next round reads'
-    assert [row['quote'] for row in carried['surviving_quotes']] == [passages[2][1]]
-
-    srv.STATE['run'] = None
-    CODES.clear()
-    open_run(tmp_path / 'third', prior_issues=str(document))
-    third = srv.current()
-    uids = file_findings(third, 2)
-    close_the_others(third)
-    editor = token_for('editor')
-    srv.submit_issues(editor, [issue('A problem of this round', 1, uids)])
-
-    refused = close_the_review(editor, prior_rulings=[{
-        'prior_id': 'i01', 'status': 'resolved',
-        'reason': 'The authors say in the response letter that they fixed it.'}])
-
-    assert 'word for word' in refusal_text(refused), refused
-    assert passages[2][1][:40] in refusal_text(refused)
-
-
 # -- the types the tool layer used to swallow -------------------------------
 
 
@@ -1077,7 +755,6 @@ def test_a_ledger_past_the_editor_limit_says_so_rather_than_naming_the_arm(tmp_p
     reason = document['issues_source_reason']
     assert '2 findings' in reason and 'at most 1' in reason, reason
     assert 'runs no editor' not in reason, reason
-    assert all('at most 1' in row['status_reason'] for row in document['issues'])
     review = (run.review / 'REVIEW.md').read_text(encoding='utf-8')
     assert 'at most 1' in review and 'runs no editor' not in review
     reading = read_run(run.review)
@@ -1115,79 +792,15 @@ def test_findings_passing_the_limit_after_the_editor_claimed_keep_its_review(tmp
         reading['limitations']
 
 
-# -- a prior-round file this version will not read -------------------------
-
-
-def test_a_prior_round_row_that_is_not_an_object_is_refused_by_name(tmp_path):
-    """It raised an AttributeError that named neither the file nor the row."""
-    path = tmp_path / 'prior' / 'issues.json'
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({'schema_version': issue_model.ISSUES_SCHEMA_VERSION,
-                                'summary': 'The first round.',
-                                'issues': [prior_issue('i01', 1, 'The first round said so'),
-                                           'i02']}), encoding='utf-8')
-
-    opened = srv.ingest(str(FIXTURE), str(tmp_path / 'run'), arm='reviewers-only',
-                        reviewers=2, prior_issues=str(path))
-
-    assert 'request_rejected' in opened, opened
-    assert 'str' in opened['request_rejected'] and 'not objects' in opened['request_rejected']
-
-
-def test_a_prior_round_file_holding_one_id_twice_is_refused(tmp_path):
-    """Two rows under one id match two issues of this round to the same one."""
-    path = prior_file(tmp_path / 'prior' / 'issues.json', [
-        prior_issue('i01', 1, 'One reading of it'),
-        prior_issue('i01', 2, 'Another row under the same id'),
-    ])
-
-    opened = srv.ingest(str(FIXTURE), str(tmp_path / 'run'), arm='reviewers-only',
-                        reviewers=2, prior_issues=str(path))
-
-    assert 'request_rejected' in opened, opened
-    assert 'i01' in opened['request_rejected'] and 'more than once' in opened['request_rejected']
-
-
-# -- the agent file and the server agree on the number ---------------------
-
-
-def test_the_text_unchanged_length_in_the_agent_file_is_the_one_the_server_asks_for(tmp_path):
-    """The file said "two sentences" and the server counted 40 characters."""
-    stated = re.search(r'(\d+) characters at least', EDITOR_FILE.read_text(encoding='utf-8'))
-    assert stated, 'the editor file no longer states the length it needs'
-    floor = int(stated.group(1))
-
-    open_run(tmp_path)
-    passages = quote_pool(srv.current(), 3)
-    srv.STATE['run'] = None
-    CODES.clear()
-    path = prior_file(tmp_path / 'prior' / 'issues.json',
-                      [prior_issue('i01', 1, 'The first round said so',
-                                   members=[passages[2]])])
-    open_run(tmp_path / 'second', prior_issues=str(path))
-    run = srv.current()
-    uids = file_findings(run, 2)
-    close_the_others(run)
-    editor = token_for('editor')
-    srv.submit_issues(editor, [issue('A problem of this round', 1, uids)])
-
-    def rule(length):
-        return close_the_review(editor, prior_rulings=[{
-            'prior_id': 'i01', 'status': 'resolved',
-            'reason': 'The authors added the missing power calculation.',
-            'text_unchanged_reason': 'x' * length}])
-
-    assert 'request_rejected' in rule(floor - 1), 'one short of the stated floor passed'
-    assert rule(floor)['accepted'] is True
+# -- every published key is documented -------------------------------------
 
 
 def test_the_integrations_doc_names_every_key_the_document_publishes(tmp_path):
     """A published key nobody documents is a key no integration reads.
 
-    ``issues_source_reason`` and ``issue_ids_used`` both arrived in 0.10.0, and
-    the second one has to be carried forward by anyone writing an
-    ``issues.json`` for a later round to match against — undocumented, that
-    round mints an id an earlier one already reported.
+    ``issues_source_reason`` arrived in 0.10.0: a consumer that does not know
+    the key cannot tell a review the editor grouped from one the server pooled
+    after the editor was refused.
     """
     open_run(tmp_path)
     run = srv.current()
@@ -1322,7 +935,7 @@ def test_a_complete_folder_is_not_a_place_to_start_a_run(tmp_path):
     assert 'request_rejected' in refused, refused
     said = refused['request_rejected']
     assert 'already holds a complete review' in said, said
-    assert 'prior_issues=' + str(run.review / 'issues.json') in said, 'and how a round two runs'
+    assert 'fresh out folder' in said, 'and how a further review runs'
     assert str(run.review / 'REVIEW.md') in said, 'and where the review it holds is'
     assert folder_state(run.root) == before, 'the finished folder was written to'
     reading = read_run(run.review)
@@ -1500,7 +1113,7 @@ def test_the_session_that_wrote_the_review_does_not_attach_to_it_either(tmp_path
     assert 'request_rejected' in refused, refused
     said = refused['request_rejected']
     assert 'already holds a complete review' in said, said
-    assert 'prior_issues=' + str(run.review / 'issues.json') in said, 'and how a round two runs'
+    assert 'fresh out folder' in said, 'and how a further review runs'
     assert str(run.review / 'REVIEW.md') in said, 'and where the review it holds is'
     assert 'attached' not in refused, 'nothing was attached to'
     assert folder_state(run.root) == before, 'the finished folder was written to'
@@ -1615,275 +1228,17 @@ def test_every_editor_refusal_of_a_closure_is_in_the_editor_log(tmp_path):
     assert rows[-1] == {**rows[-1], 'tool': 'submit_report', 'accepted': True, 'refusal': None}
 
 
-# -- the degraded round still accounts for the prior round ------------------
+# -- what REVIEW.md's header names -----------------------------------------
 
 
-def test_a_degraded_round_mints_above_the_spent_ids_and_carries_the_prior_issues(
-        tmp_path, monkeypatch):
-    """The no-editor path numbered from i01 and published no prior row at all.
+def test_the_review_header_names_the_run_folder_and_not_the_folder_inside_it(tmp_path):
+    """The header's "Run folder | review" said nothing at all.
 
-    A second round that degrades — here a ledger past what the editor path
-    supports — handed i01 to a new finding while i01 was still the id of a
-    prior issue, and the prior issues appeared in no row of the file: neither
-    resolved nor open, simply gone from the review the authors were sent.
+    Every caller hands the renderer the review directory, so printing that
+    directory's own name printed the word "review" and named nothing.
     """
-    monkeypatch.setattr(srv, 'MAX_EDITOR_FINDINGS', 1)
-    open_run(tmp_path)
-    passages = quote_pool(srv.current(), 3)
-    srv.STATE['run'] = None
-    CODES.clear()
-    path = prior_file(tmp_path / 'prior' / 'issues.json', [
-        prior_issue('i01', 1, 'Fixed in the first round', status='resolved'),
-        prior_issue('i02', 2, 'Still open', members=[passages[2]]),
-    ])
-
-    open_run(tmp_path / 'second', prior_issues=str(path))
-    run = srv.current()
-    file_findings(run, 2)
-    close_the_others(run)
-    assert 'request_rejected' in srv.claim_agent('editor', CODES.get('editor', ''))
-    assert srv.write_review(token_for('recorder'))['status'] == 'complete'
-
-    document = json.loads((run.review / 'issues.json').read_text(encoding='utf-8'))
-    assert document['issues_source'] == 'server'
-    minted = [row['id'] for row in document['issues'] if not row['prior_id']]
-    assert minted == ['i03', 'i04'], 'i01 and i02 belong to the problems of the prior round'
-    assert [row['rank'] for row in document['issues'] if not row['prior_id']] == [1, 2]
-    carried = [row for row in document['issues'] if row['id'] == 'i02']
-    assert len(carried) == 1, 'the prior issue nobody ruled on is in the file'
-    assert carried[0]['status'] == 'unverified'
-    assert 'No editor ruled on this issue' in carried[0]['status_reason']
-    assert 'at most 1' in carried[0]['status_reason'], 'and why there was no editor'
-    assert carried[0]['rank'] is None and carried[0]['prior_rank'] == 2
-    assert [row['quote'] for row in carried[0]['surviving_quotes']] == [passages[2][1]]
-    assert set(document['issue_ids_used']) >= {'i01', 'i02', 'i03', 'i04'}
-    assert sorted(carried[0]) == sorted(issue_model.ISSUE_FIELDS), 'the same shape as any row'
-    reading = read_run(run.review)
-    assert {row['id'] for row in reading['issues']} == {'i02', 'i03', 'i04'}
-
-
-# -- a prior-round file is read, never trusted -----------------------------
-
-
-def refused_ingest(tmp_path, name, document):
-    """One hand-written prior file through ``ingest``, as the refusal it draws."""
-    path = tmp_path / name / 'issues.json'
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(document), encoding='utf-8')
-    answer = srv.ingest(str(FIXTURE), str(tmp_path / name / 'run'),
-                        arm='reviewers-only', reviewers=2, prior_issues=str(path))
-    assert 'request_rejected' in answer, answer
-    return answer['request_rejected']
-
-
-def test_a_prior_file_that_cannot_say_which_ids_it_spent_is_refused_by_name(tmp_path):
-    """``issue_ids_used`` was iterated on trust, whatever it held.
-
-    ``5`` raised a bare "'int' object is not iterable" out of ingest, a string
-    was iterated one character at a time into ids like ``i``, and a dict
-    quietly contributed its keys — each of which would hand a spent id to a new
-    problem one round later.
-    """
-    rows = [prior_issue('i01', 1, 'Still open')]
-    document = {'schema_version': issue_model.ISSUES_SCHEMA_VERSION,
-                'summary': 'The first round.', 'issues': rows}
-
-    cases = {'missing': document,
-             'int': {**document, 'issue_ids_used': 5},
-             'true': {**document, 'issue_ids_used': True},
-             'string': {**document, 'issue_ids_used': 'i01'},
-             'dict': {**document, 'issue_ids_used': {'i01': 1}},
-             'not-an-id': {**document, 'issue_ids_used': ['i01', 7]},
-             'bare-number': {**document, 'issue_ids_used': ['1']}}
-    for name, candidate in cases.items():
-        refusal = refused_ingest(tmp_path, name, candidate)
-        assert 'issue_ids_used' in refusal, (name, refusal)
-        assert str(tmp_path / name / 'issues.json') in refusal, 'the file is named'
-
-    # And the shape this version publishes is accepted.
-    ok = srv.ingest(str(FIXTURE), str(tmp_path / 'good' / 'run'), arm='reviewers-only',
-                    reviewers=2, prior_issues=str(prior_file(tmp_path / 'good' / 'issues.json',
-                                                             rows)))
-    assert 'request_rejected' not in ok, ok
-
-
-def test_a_prior_row_this_round_cannot_read_is_refused_at_ingest(tmp_path):
-    """Half-validated rows reached the editor and raised TypeError an hour later.
-
-    The duplicate-id check ran over the carried rows alone, so a live row and a
-    resolved row sharing an id passed — the id of a problem the authors were
-    told was fixed was also the id of one they were told was still open. A
-    ``members`` or ``surviving_quotes`` that was not a list was accepted here
-    and raised out of every ``submit_editor`` call afterwards.
-    """
-    def document(rows):
-        return {'schema_version': issue_model.ISSUES_SCHEMA_VERSION,
-                'summary': 'The first round.', 'issues': rows,
-                'issue_ids_used': ['i01', 'i02']}
-
-    live = prior_issue('i01', 1, 'Still open')
-    cases = {
-        'closed-duplicate': (document([live, prior_issue('i01', 2, 'Fixed', status='resolved')]),
-                             'more than once'),
-        'int-id': (document([{**live, 'id': 7}]), 'whose id is a int'),
-        'no-id': (document([{k: v for k, v in live.items() if k != 'id'}]), 'whose id is absent'),
-        'members-dict': (document([{**live, 'members': {'finding_uid': 'a' * 16}}]),
-                         'whose members is a dict'),
-        'quotes-string': (document([{**live, 'surviving_quotes': 'the passage'}]),
-                          'whose surviving_quotes is a str'),
-    }
-    for name, (candidate, said) in cases.items():
-        refusal = refused_ingest(tmp_path, name, candidate)
-        assert said in refusal, (name, refusal)
-        assert str(tmp_path / name / 'issues.json') in refusal, 'the file is named'
-
-
-def test_the_public_validator_runs_the_checks_the_loader_runs(tmp_path):
-    """A consumer holds the file it is about to publish against this code.
-
-    A consumer publishes an issues.json for a later round to read, and the only
-    way to ask whether that round could read it was to start a review: the
-    rules lived inside the loader behind ``--prior-issues``. They are one
-    function now, so the problems a consumer sees before publishing are the
-    problems the loader would raise, by construction rather than by a copy of
-    the rules kept in step by hand.
-    """
-    assert peerreviewagents.validate_prior_issues is issue_model.validate_prior_issues
-
-    live = prior_issue('i01', 1, 'Still open')
-    published = json.loads(prior_file(tmp_path / 'good' / 'issues.json',
-                                      [live]).read_text(encoding='utf-8'))
-    # The shape this version publishes is the shape the next round reads.
-    assert issue_model.validate_prior_issues(published) == []
-
-    broken = {
-        'closed-duplicate': [live, prior_issue('i01', 2, 'Fixed', status='resolved')],
-        'int-id': [{**live, 'id': 7}],
-        'members-dict': [{**live, 'members': {'finding_uid': 'a' * 16}}],
-        'quotes-string': [{**live, 'surviving_quotes': 'the passage'}],
-        'not-an-object': [live, 'i02'],
-        'all-resolved': [prior_issue('i01', 1, 'Fixed', status='resolved')],
-    }
-    for name, rows in broken.items():
-        document = {**published, 'issues': rows}
-        # Named as the consumer's own file, which is what it is holding.
-        problems = issue_model.validate_prior_issues(document, label='issues.json')
-        assert problems, name
-        # And the round that reads it refuses it, with the validator's first
-        # problem as the refusal: one check, read twice.
-        refusal = refused_ingest(tmp_path / 'published', name, document)
-        first = issue_model.validate_prior_issues(
-            document, label='The prior-round file at '
-            + str(tmp_path / 'published' / name / 'issues.json'))[0]
-        assert refusal.startswith(first), (name, refusal, first)
-        assert problems[0].split('issues.json', 1)[1] in refusal, 'the same problem, named twice'
-
-    # An issue_ids_used a round cannot mint above is the same answer, and the
-    # consumer hears it before publishing rather than from the next round.
-    assert 'issue_ids_used' in issue_model.validate_prior_issues(
-        {**published, 'issue_ids_used': 5})[0]
-    assert 'issue_ids_used' in issue_model.validate_prior_issues(
-        {k: v for k, v in published.items() if k != 'issue_ids_used'})[0]
-    # And a stamp this version does not read is the first thing it says, with
-    # nothing read past it.
-    stamped = issue_model.validate_prior_issues({**published,
-                                                 'schema_version': 'review-issues-v9'})
-    assert len(stamped) == 1 and 'review-issues-v9' in stamped[0]
-    # The stamp an earlier release of this engine wrote is refused the same
-    # way, by name. A `v3` row carries a `rebuttal_line` with no document
-    # beside it, so reading it as this version's shape would anchor a
-    # supplement's rebuttal at a line of paper.md that says something else.
-    assert issue_model.ISSUES_SCHEMA_VERSION == 'review-issues-v4'
-    superseded = issue_model.validate_prior_issues({**published,
-                                                    'schema_version': 'review-issues-v3'})
-    assert len(superseded) == 1 and 'review-issues-v3' in superseded[0]
-
-
-def test_a_file_the_validator_passes_is_a_file_the_loader_opens(tmp_path):
-    """The validator said nothing about the fields the loader required anyway.
-
-    A document with no ``issues`` list returned no problems at all, so a
-    consumer was told its file was loadable and the round then opened on a prior
-    round of nothing; with only a stamp the loader refused it with a bare
-    ``'issue_ids_used'`` — a KeyError, from a requirement that lived outside the
-    check a consumer can run. Every requirement of the loader is a problem this
-    function returns, and a list field held as ``null`` is one of them: every
-    list in this document is a list in what the engine writes, ``[]`` where it
-    does not apply.
-    """
-    live = prior_issue('i01', 1, 'Still open')
-    published = json.loads(prior_file(tmp_path / 'good' / 'issues.json',
-                                      [live]).read_text(encoding='utf-8'))
-    stamp_only = {'schema_version': issue_model.ISSUES_SCHEMA_VERSION}
-    cases = {
-        'stamp-only': (stamp_only, 'holds no issues list'),
-        'stamp-and-ids': ({**stamp_only, 'issue_ids_used': ['i01']}, 'holds no issues list'),
-        'issues-null': ({**published, 'issues': None}, 'holds no issues list'),
-        'members-null': ({**published, 'issues': [{**live, 'members': None}]},
-                         'whose members is null'),
-        'quotes-null': ({**published, 'issues': [{**live, 'surviving_quotes': None}]},
-                        'whose surviving_quotes is null'),
-    }
-    for name, (document, said) in cases.items():
-        problems = issue_model.validate_prior_issues(document)
-        assert problems, name
-        assert said in problems[0], (name, problems)
-        # And the round refuses it with that same first problem — not with a
-        # KeyError out of a check the consumer had no way to run.
-        refusal = refused_ingest(tmp_path / 'opened', name, document)
-        assert said in refusal, (name, refusal)
-        assert refusal.startswith(issue_model.validate_prior_issues(
-            document, label='The prior-round file at '
-            + str(tmp_path / 'opened' / name / 'issues.json'))[0]), (name, refusal)
-
-    # A stamp-only file is refused for its issues *and* its spent ids: the
-    # checks run on, rather than stopping at the first field that is not there.
-    assert any('issue_ids_used' in problem
-               for problem in issue_model.validate_prior_issues(stamp_only))
-    # The file this version publishes still opens, with every requirement
-    # listed: nothing above tightened the shape the engine writes.
-    assert issue_model.validate_prior_issues(published) == []
-
-
-# -- what REVIEW.md says about a closed row --------------------------------
-
-
-def test_a_closed_rows_surviving_quotes_are_labelled_and_the_header_names_the_run(tmp_path):
-    """The page printed a bare blockquote under "Why it is closed".
-
-    The authors could not tell whether they were being quoted their own
-    revision or the prior round's complaint, and under ``unverified`` — where
-    the passage standing is the whole of what the round can say — the quote was
-    the part that mattered. The header's "Run folder | review" said nothing at
-    all: every caller hands the renderer the review directory.
-    """
-    open_run(tmp_path)
-    passages = quote_pool(srv.current(), 3)
-    srv.STATE['run'] = None
-    CODES.clear()
-    first = prior_file(tmp_path / 'first' / 'issues.json',
-                       [prior_issue('i01', 1, 'The first round said so',
-                                    members=[passages[2]])])
-
-    open_run(tmp_path / 'second', prior_issues=str(first))
-    run = srv.current()
-    uids = file_findings(run, 2)
-    close_the_others(run)
-    editor = token_for('editor')
-    srv.submit_issues(editor, [issue('A problem this round is the first to raise', 1, uids)])
-    assert close_the_review(editor, prior_rulings=[{
-        'prior_id': 'i01', 'status': 'unverified',
-        'reason': 'Nobody raised it again and I cannot show the revision fixed it.',
-    }])['accepted'] is True
-    assert srv.submit_report(editor, 'Grouped.', model=run.models.get('editor'))['closed']
-    srv.write_review(token_for('recorder'))
+    run, _, _ = a_written_review(tmp_path)
 
     review = (run.review / 'REVIEW.md').read_text(encoding='utf-8')
-    label = "**The prior round's evidence still in the manuscript:**"
-    quote = '> ' + passages[2][1]
-    assert label in review, review[-2000:]
-    assert quote in review
-    assert review.index(label) < review.index(quote), 'the label comes before the quote'
-    assert 'No ruling was made on this issue this round' in review
     assert '| Run folder | run |' in review, 'the run folder, not the folder inside it'
     assert 'review |' not in review, 'it printed the word "review" and named nothing'

@@ -58,10 +58,7 @@ def _finding(uid, title, **extra):
 def _issue_row(**fields):
     """One issue row in the shape the server writes: every field, null where it does not apply."""
     row = {'rank': None, 'members': [], 'raised_by': 0, 'rebuttal_document': None,
-           'rebuttal_line': None,
-           'rebuttal_quote': None, 'prior_id': None, 'prior_rank': None, 'status': 'new',
-           'status_reason': None, 'text_unchanged_reason': None, 'surviving_quotes': [],
-           'audits': []}
+           'rebuttal_line': None, 'rebuttal_quote': None, 'audits': []}
     row.update(fields)
     assert sorted(row) == sorted(issue_model.ISSUE_FIELDS), sorted(row)
     return row
@@ -198,12 +195,9 @@ def test_read_run_reads_a_complete_run(tmp_path):
     assert [issue['id'] for issue in run['issues']] == ['i01', 'i02']
     assert [f['finding_uid'] for f in run['findings']] == ['aaa1', 'bbb2']
     assert run['counts'] == {
-        'findings': 2, 'issues': 2, 'required': 1, 'suggestions': 1, 'resolved': 0,
-        'unverified': 0, 'issue_members': 2,
+        'findings': 2, 'issues': 2, 'required': 1, 'suggestions': 1, 'issue_members': 2,
         'by_severity': {'major': 1, 'moderate': 0, 'minor': 1},
         'by_category': {'results-and-numbers': 1, 'statistics-and-inference': 1},
-        'by_status': {'new': 2, 'persisting': 0, 'regressed': 0, 'resolved': 0,
-                      'unverified': 0},
         'quarantined': 0, 'findings_delivered': 2, 'findings_submitted': 3}
     assert run['identity']['source_sha256'] == 'cafe' * 16
     assert run['identity']['arm'] == 'full-two-track'
@@ -887,16 +881,14 @@ def test_a_malformed_field_of_an_issues_document_is_reported_not_raised(tmp_path
     # The neighbouring fields of a row, and a row that is not an object at all.
     other = complete_run(tmp_path / 'neighbours')
     document = json.loads((other / 'issues.json').read_text(encoding='utf-8'))
-    document['issues'] = [{**document['issues'][0], 'audits': 'stats',
-                           'surviving_quotes': {'quote': 'the passage'}},
-                          'i02']
+    document['issues'] = [{**document['issues'][0], 'audits': 'stats'}, 'i02']
     _write(other / 'issues.json', document)
 
     run = read_run(other)
 
     assert run['publishable'] is False
     assert [issue['id'] for issue in run['issues']] == ['i01']
-    for said in ('audits', 'surviving_quotes', 'not objects'):
+    for said in ('audits', 'not objects'):
         assert any(said in line for line in run['problems']), (said, run['problems'])
     assert set(peerreviewagents.write_reports(other)) == {'markdown', 'text'}
 

@@ -617,13 +617,12 @@ def test_a_retitled_finding_is_the_same_finding_and_both_rows_are_kept(tmp_path)
 def test_a_revision_shares_no_finding_uid_with_the_run_it_revises(tmp_path):
     """A new PDF renames every finding, because the paper's own id is in the uid.
 
-    This is the test the follow-up skill needed. The skill said to compare an
-    old run against the re-review of a revision by ``finding_uid``, and a
-    paper's id is a digest of the PDF it came from, so two runs over two files
-    never share one — the comparison would have called every finding resolved
-    and every finding new, on a revision that changed nothing at all. The same
-    reviewer, the same line and the same quote are used here, so the only
-    difference is the file.
+    A consumer comparing an old run against the re-review of a revision cannot
+    pair them by ``finding_uid``: a paper's id is a digest of the PDF it came
+    from, so two runs over two files never share one — the comparison would
+    have called every finding gone and every finding new, on a revision that
+    changed nothing at all. The same reviewer, the same line and the same quote
+    are used here, so the only difference is the file.
     """
     revision = tmp_path / 'revision.pdf'
     revision.write_bytes(FIXTURE.read_bytes() + b'\n% a revised manuscript\n')

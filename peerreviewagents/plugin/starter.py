@@ -59,7 +59,6 @@ from .server import (
     TOOLS,
     WORKFLOW_VERSION,
     citation_slots,
-    load_prior_issues,
     plan_slots,
 )
 
@@ -784,7 +783,7 @@ def rerender(review, workspace=None):
 
 
 def prompt_for(pdf, out, reviewers, arm, cutoff, tracks, models=None, citation_workers=None,
-               prior_issues=None, code=None):
+               code=None):
     text = (f'Use the peer-review-manuscript skill from the {PLUGIN} plugin. Review the '
             f'manuscript at {pdf} and write the run folder to {out}. Use {reviewers} core '
             f'reviewer(s) and the {arm} arm.')
@@ -794,12 +793,6 @@ def prompt_for(pdf, out, reviewers, arm, cutoff, tracks, models=None, citation_w
                 f'write the run folder to {out}, and run these tracks: {chosen}.')
     if cutoff:
         text += f' The literature cutoff is {cutoff}.'
-    if prior_issues:
-        # The round before this one. The editor matches its own issues to those
-        # and keeps the matched ids, so the same issue carries one id across
-        # rounds and a reader can see what was fixed.
-        text += (f' This is a later round of a review whose prior issues are at {prior_issues}: '
-                 'pass that path to ingest as prior_issues.')
     if code:
         # The code this paper is reviewed against. The session passes it to
         # ingest, which takes the snapshot and plans the lane that reads it; the
@@ -831,7 +824,7 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
            wall_timeout=WALL_TIMEOUT, directory=None, cwd=None,
            reviewer_models=None, specialist_model=None, editor_model=None,
            recorder_model=None, citation_workers=CITATION_WORKERS, citation_worker_model=None,
-           reader_model=None, prior_issues=None, code=None):
+           reader_model=None, code=None):
     """Run one review and return its summary.
 
     The summary is a dict, not an exit code: ``status``, ``blocked_reason``,
@@ -865,12 +858,6 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     starter launches reads those same variables and the two must not reach
     different answers about what the run asked for.
 
-    ``prior_issues`` is the path to an earlier round's ``issues.json`` — the
-    file itself or the run folder holding it. Given one, the editor matches the
-    issues it raises against that round's and keeps the matched ids, so one
-    issue carries one id across rounds and the new document can say what was
-    resolved, what persists and what regressed. Left out, every issue is new.
-
     ``code`` is the code this paper is reviewed against: a local folder or a git
     URL. The session passes it to ``ingest``, which copies the text source of it
     into ``<out>/code`` and plans one further lane — ``spec-code`` — that reads
@@ -891,15 +878,6 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     source = Path(pdf).resolve()
     if not source.is_file():
         raise ValueError(f'No manuscript at {source}')
-    # Read here, and the resolved file is what the session is told to pass on.
-    # A prior round named and unreadable is refused before the probe spends
-    # anything, because the alternative is a run that renumbers every issue and
-    # says nothing about it.
-    if prior_issues and not ARMS[arm]['editor']:
-        raise ValueError('The ' + str(arm) + ' arm runs no editor, and matching a round against '
-                         'an earlier one is the editor\'s judgement. Without one the issue ids '
-                         'would be re-minted from scratch and collide with the prior round. Run '
-                         'an arm with an editor, or drop --prior-issues.')
     # The code is checked here for the same reason the arm and the models are:
     # a session launched to review code against an arm that reads none, or
     # against a folder that is not there, would spend a probe and a reader
@@ -924,7 +902,6 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
                              + ', which is where this run writes its own files: the snapshot '
                              'would hold the run rather than the code. Give the folder the code '
                              'is in — a run folder inside it is left out of the snapshot.')
-    prior_path, _prior, _prior_provenance = load_prior_issues(prior_issues)
     root = Path(out).resolve()
     review_dir = root / RUN_DIRECTORY
     directory = Path(directory) if directory else plugin_dir()
@@ -996,7 +973,7 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     started = time.monotonic()
     prompt = prompt_for(source, root, reviewers, arm, literature_cutoff, tracks, wanted,
                         citation_workers=len(workers) if citation_lane else None,
-                        prior_issues=prior_path, code=code)
+                        code=code)
     watch = Completion(review_dir, accounting)
     seen, stop, code = launch(prompt, directory, started + wall_timeout,
                               accounting.on_event, cwd, chosen, watch=watch,
@@ -1053,7 +1030,6 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
         'report': report,
         'arm': arm,
         'reviewers': reviewers,
-        'prior_round': prior_path,
         'wall_seconds': round(wall, 1),
         'tokens_total': accounting.total_tokens(),
         'tokens_by_agent': {row['label']: row.get('tokens') for row in
@@ -1135,10 +1111,6 @@ def build_parser(prog='peerreview review'):
                              'URL. Its text source is copied into <out>/code and one further '
                              'lane reads the paper against that snapshot, quoting both sides. '
                              'Nothing in it is ever run')
-    parser.add_argument('--prior-issues', default=None, metavar='PATH',
-                        help="an earlier round's issues.json, or the run folder holding it: "
-                             'the editor matches this round against it, keeps the matched ids '
-                             'and says what was resolved, persists or regressed')
     parser.add_argument('--per-agent-tokens', type=int, default=PER_AGENT_TOKENS)
     parser.add_argument('--per-run-tokens', type=int, default=PER_RUN_TOKENS)
     parser.add_argument('--timeout', type=int, default=WALL_TIMEOUT,
@@ -1183,7 +1155,6 @@ def review_main(argv=None, prog='peerreview review'):
                          citation_workers=args.citation_workers,
                          citation_worker_model=args.citation_worker_model,
                          reader_model=args.reader_model,
-                         prior_issues=args.prior_issues,
                          code=args.code)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)

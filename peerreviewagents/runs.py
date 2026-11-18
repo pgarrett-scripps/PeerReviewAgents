@@ -996,12 +996,12 @@ def read_run(path):
     ``stage``
         ``startup`` when no session ever ran and no subscription usage was
         spent, ``session`` once one did.
-    ``issues``, ``issues_source``, ``prior_round``
+    ``issues``, ``issues_source``
         The review itself: one entry per issue, in the order ``issues.json``
         holds them, each with its ``id``, ``name``, ``severity`` (``major``,
         ``moderate`` or ``minor``), ``category``, ``rank``, one paragraph of
-        ``statement``, its ``status`` against the prior round, and its
-        ``members`` — the findings it is raised from, each with its
+        ``statement``, and its ``members`` — the findings it is raised from,
+        each with its
         ``finding_uid``, slot, quote, the lines it was cited on and the offsets
         of the quote within them, kept as evidence.
         ``raised_by`` is how many reviewer slots are among those members.
@@ -1020,11 +1020,6 @@ def read_run(path):
         the four reasons it was: an arm that runs no editor, a ledger past the
         editor path's stated maximum, an editor slot nobody claimed, or an
         editor that claimed it and never closed a review.
-        ``prior_round`` is the earlier round this one was
-        matched against — the prior file's name, a digest of its contents, how
-        many of its issues were carried in, and this round's tally by status —
-        or ``None``. It holds no machine path: a run folder is published, and
-        where the previous round sat on disk is not the authors' business.
         It is empty for a run written before 0.10.0, which reported a
         body and an appendix instead of issues.
     ``findings``
@@ -1285,18 +1280,14 @@ def read_run(path):
         'findings': findings,
         'issues': issue_rows,
         'issues_source': document.get('issues_source'),
-        'prior_round': document.get('prior_round'),
         'findings_source': source,
         'counts': {'findings': len(findings),
                    'issues': issue_counts['issues'],
                    'required': issue_counts['required'],
                    'suggestions': issue_counts['suggestions'],
-                   'resolved': issue_counts['resolved'],
-                   'unverified': issue_counts['unverified'],
                    'issue_members': issue_counts['issue_members'],
                    'by_severity': issue_counts['by_severity'],
                    'by_category': issue_counts['by_category'],
-                   'by_status': issue_counts['by_status'],
                    'quarantined': len(quarantined),
                    'findings_delivered': progress.get('findings_delivered'),
                    'findings_submitted': progress.get('findings_submitted')},

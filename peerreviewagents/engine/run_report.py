@@ -296,15 +296,9 @@ def _issue(issue):
               ('Findings', len(issue_model.members_of(issue)))]
     if issue.get('id'):
         inline.append(('Issue', issue['id']))
-    # Only a run given a prior round has a status to report; in a first round
-    # every issue is new and the column would say the same thing on every line.
-    if str(issue.get('status') or 'new') != 'new':
-        inline.append(('Since the prior round', issue['status']))
     blocks = [('heading3', heading), ('inline', inline)]
     if issue.get('statement'):
         blocks.append(('paragraph', issue['statement']))
-    if issue.get('status_reason'):
-        blocks.append(('labeled', 'Against the prior round', issue['status_reason']))
     if issue.get('rebuttal_quote'):
         # Where the quote was anchored, and in which document: a rebuttal
         # quoted from a supplement says so, because a line number on its own
@@ -322,18 +316,6 @@ def _issue(issue):
     if audits:
         blocks.append(('labeled', 'Specialist audit', ', '.join(audits)))
     return blocks
-
-
-#: What each prior-round status means, printed with the tally so a reader of
-#: REVIEW.md does not have to find the documentation to know what it claims.
-_STATUS_MEANINGS = (
-    ('new', 'raised for the first time this round'),
-    ('persisting', 'the prior issue was raised again, unchanged in substance'),
-    ('regressed', 'the prior issue was raised again and is worse'),
-    ('resolved', 'the editor ruled the prior issue fixed, with a reason'),
-    ('unverified', 'the prior issue was not raised again this round and was not '
-                   'verified as fixed — it is not a resolution'),
-)
 
 
 def _run_folder(run):
@@ -358,66 +340,6 @@ def _run_root(run):
     """
     run = Path(run)
     return run.parent if run.name == RUN_DIRECTORY and run.parent.name else run
-
-
-def _closed(issue):
-    """A prior issue this round closed: what it said, and the ruling against it."""
-    name = str(issue.get('name') or 'Unnamed issue')
-    heading = f"{issue['id']}: {name}" if issue.get('id') else name
-    inline = [('Ruling', issue.get('status') or 'resolved')]
-    if issue.get('prior_rank') is not None:
-        inline.append(('Rank in the prior round', issue['prior_rank']))
-    if issue.get('severity'):
-        inline.append(('Severity then', issue['severity']))
-    blocks = [('heading3', heading), ('inline', inline)]
-    if issue.get('statement'):
-        blocks.append(('paragraph', issue['statement']))
-    if issue.get('status_reason'):
-        blocks.append(('labeled', 'Why it is closed', issue['status_reason']))
-    if issue.get('text_unchanged_reason'):
-        blocks.append(('labeled', 'Why it is fixed although the passages it cited still '
-                                  'read the same', issue['text_unchanged_reason']))
-    quotes = [str(quote['quote']) for quote in issue_model.quotes_of(issue) if quote.get('quote')]
-    if quotes:
-        # Labelled, because an unlabelled blockquote under "Why it is closed"
-        # read as part of the ruling — the authors could not tell whether they
-        # were being quoted their own revision or the prior round's complaint.
-        # This is the revision as it now reads, and what it means depends on
-        # the ruling: under `unverified` nobody checked it, and the passage
-        # standing is the whole of what this round can say about the issue.
-        blocks.append((
-            'labeled',
-            'The prior round\'s evidence still in the manuscript',
-            'Quoted from the revision as it now reads. '
-            + ('No ruling was made on this issue this round, so the passage standing is all '
-               'this round can say about it.' if issue.get('status') == 'unverified' else
-               'The ruling above was made with these passages in front of it.')))
-        blocks += [('quote', quote) for quote in quotes]
-    return blocks
-
-
-def _prior_round_blocks(document, rows):
-    """The prior round: where it came from, how it was ruled, and what closed."""
-    prior = document.get('prior_round') or {}
-    closed = issue_model.closed_issues(rows)
-    if not prior and not closed:
-        return []
-    blocks = [('heading2', 'Since the prior round')]
-    if prior:
-        fields = [('Prior round file', prior.get('file')),
-                  ('Prior round digest', prior.get('digest')),
-                  ('Issues carried in', prior.get('issues'))]
-        tally = prior.get('tally') or {}
-        fields += [(status.capitalize(), tally[status])
-                   for status in issue_model.ISSUE_STATUSES if status in tally]
-        blocks.append(('fields', [(key, value) for key, value in fields if value is not None]))
-    blocks.append(('bullets', [f'{status}: {meaning}' for status, meaning in _STATUS_MEANINGS]))
-    if closed:
-        for issue in closed:
-            blocks += _closed(issue)
-    elif prior:
-        blocks.append(('paragraph', 'No prior issue was closed this round.'))
-    return blocks
 
 
 def _escalation_blocks(document, rows):
@@ -539,7 +461,7 @@ def _issue_review(document):
     """The review itself, from the issues document and from nothing else."""
     # The rows every block below is handed come through the shared guard, not
     # off the document: an `issues` that was not a list reached the escalation
-    # and prior-round blocks raw and was iterated there, so a damaged document
+    # and escalation blocks raw and was iterated there, so a damaged document
     # ended `write_reports` instead of being rendered as far as it reads.
     rows = issue_model.rows_of(document)
     counts = document.get('counts') or issue_model.counts(rows)
@@ -573,7 +495,6 @@ def _issue_review(document):
         blocks.append(('heading3', category.replace('-', ' ').capitalize()))
         for issue in group:
             blocks += _issue(issue)
-    blocks += _prior_round_blocks(document, rows)
     blocks += _escalation_blocks(document, rows)
     blocks += _code_check_blocks(document)
     if document.get('limitations'):
