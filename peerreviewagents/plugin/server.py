@@ -423,9 +423,17 @@ ARMS = {
 }
 DEFAULT_ARM = 'full-two-track'
 
+#: The arms a review runs, in name order. :data:`ARMS` is every setting of the
+#: workflow, which is one more than that: the fix-check arm is a run of it, but
+#: `peerreview review` refuses it by name because it has no problems to give
+#: it. So the choice of an arm — the ``--arm`` list, :func:`review_arms`, the
+#: refusal that names the arms — is made from this and never from the table, or
+#: a caller offering every arm it was shown offers one that cannot run.
+REVIEWABLE_ARMS = tuple(name for name in sorted(ARMS) if name != FIX_ARM)
+
 
 def review_arms():
-    """What every arm runs, by name — the public answer to "can this arm do X".
+    """What every arm a review runs runs, by name — "can this arm do X".
 
     One row per arm, in name order, each a plain dict of facts a caller can
     decide on *before* a run exists:
@@ -452,15 +460,23 @@ def review_arms():
     ``summary``
         The one line the ``--arm`` help prints.
 
+    Every row is an arm ``review`` accepts, which is the point of the function:
+    an application that offers what it finds here offers nothing that would be
+    refused. The fix-check arm is therefore not among them — it is a run of
+    this workflow, but it is the ``check-fixes`` command's, and a review has no
+    problems file to give it.
+
     Fresh dicts every call: the table they are built from is this module's
     settings, and a caller is free to keep, filter or render what it gets.
     """
-    return {name: {'reviewers': one['reviewers'], 'specialists': one['specialists'],
-                   'editor': one['editor'], 'revision': one['revision'],
-                   'code': one['specialists'],
-                   'citations': bool(one['specialists'] and 'check_citation' in one['tools']),
-                   'default': name == DEFAULT_ARM, 'summary': one['summary']}
-            for name, one in sorted(ARMS.items())}
+    return {name: {'reviewers': ARMS[name]['reviewers'],
+                   'specialists': ARMS[name]['specialists'],
+                   'editor': ARMS[name]['editor'], 'revision': ARMS[name]['revision'],
+                   'code': ARMS[name]['specialists'],
+                   'citations': bool(ARMS[name]['specialists']
+                                     and 'check_citation' in ARMS[name]['tools']),
+                   'default': name == DEFAULT_ARM, 'summary': ARMS[name]['summary']}
+            for name in REVIEWABLE_ARMS}
 
 
 def now():

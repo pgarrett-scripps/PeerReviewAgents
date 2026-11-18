@@ -551,7 +551,7 @@ added; these two do not.
 
 An arm is a setting of one workflow, and what it runs decides which arguments
 it accepts. `review_arms()` answers that before a run exists — one row per
-arm, in name order:
+arm a review runs, in name order:
 
 ```python
 from peerreviewagents import review, review_arms
@@ -579,6 +579,11 @@ accepting it and reviewing none of it. That is deliberate: a run given code and
 reviewing none would report a code review that never happened. Ask this instead
 of keeping a list of arm names of your own, which is what every wrapper was
 doing and what goes stale the next time an arm is added.
+
+Every row is an arm `review` accepts, so a menu built from this listing offers
+nothing that would be refused. The `fix-check` arm is not here and not among
+the `--arm` choices: it is a run of the same workflow, but it belongs to
+`peerreview check-fixes`, which has the problems to give it.
 
 `citations` is the arm's half of whether `run["citations"]["enabled"]` can be
 true; the other half is yours, since the `citations` track must also be among

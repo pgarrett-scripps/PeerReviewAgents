@@ -17,7 +17,8 @@ Running a review
     :func:`review_main` and :func:`report_main` are the two commands as
     functions — argument list in, JSON on stdout, exit code returned — so a
     wrapper does not have to reach into the starter or the CLI module.
-    :func:`review_arms` is what each arm runs, one row per arm: how many core
+    :func:`review_arms` is what each arm runs, one row per arm a review runs
+    — nothing it would refuse — and each row says: how many core
     reviewers it fixes, whether it runs the specialist tracks, an editor, a
     revision pass, whether it can keep a citation ledger, which arm is the
     default, and whether it accepts ``code=`` at all. The code review is a
