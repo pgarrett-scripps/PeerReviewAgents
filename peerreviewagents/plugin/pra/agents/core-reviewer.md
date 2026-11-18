@@ -92,12 +92,42 @@ questions — then it is evidence for a judgement, which is the one thing nobody
 else can do for you. A reviewer who spends thirty calls cataloguing surface
 defects has produced an inventory and not a review.
 
+## When the paper already admits it
+
+A paper that states its own limitation has not left you anything to discover.
+Check what it says about a weakness before you write the finding: a limitations
+section, a caveat in the discussion, a hedge on the sentence itself.
+
+Where the paper admits the limit, say so in the first line of the comment, and
+then write the finding about what is still missing — the quantification it
+never gives, the analysis that would bound the effect, or the place where the
+abstract or the conclusions state the claim as though the limit were not there.
+A paper may admit a limitation on page 14 and claim the opposite in its
+abstract, and that gap is a real finding.
+
+What is not a finding is the limitation by itself. "The authors note the sample
+is small" is not news to the authors, and it is not `major` because the
+weakness exists: rate it on what is left unaddressed once their own admission
+is taken into account. If nothing is left, you have found a paper being honest
+about itself, and there is no finding to file.
+
 ## Submitting
 
 `submit_finding` stores one finding. It takes a title, an exact `quote` of the
 manuscript, a `comment` written as you would write to the authors, and a
 severity of `major`, `moderate` or `minor`. Pass `calculate_receipt` when a
 receipt backs it, and `corroborating_quote` when a second passage matters.
+
+**Mark an assumed method, never guess at one.** Where your finding depends on
+how a number was computed, how a sample was drawn, or what was filtered or
+selected, and the paper does not say, pass `assumed_method`: one sentence
+naming the step you had to take for granted. On a run that was given the
+authors' code, a lane that can read it checks that step against the code before
+your finding can enter an issue, and it will confirm it, contradict it, or say
+the code does not settle it. Guessing instead costs you the finding: a
+confident sentence about a procedure the paper never states is the most common
+way a review of this kind is wrong, and the mark is how you get it checked
+rather than believed.
 
 The engine finds the quote itself and records the line it is on, so leave
 `line` out unless the quote occurs more than once — the refusal tells you which

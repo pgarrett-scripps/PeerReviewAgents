@@ -1608,6 +1608,10 @@ def test_no_registered_tool_writes_in_a_complete_folder(tmp_path):
         'list_code': lambda: srv.list_code(reviewer),
         'read_code': lambda: srv.read_code(reviewer, 'setup.py'),
         'search_code': lambda: srv.search_code(reviewer, 'threshold'),
+        # The code check's two tools. They belong to one slot this run never
+        # planned, and they read and write the ledger rather than the folder.
+        'method_claims': lambda: srv.method_claims(reviewer),
+        'submit_code_check': lambda: srv.submit_code_check(reviewer, 'whatever-uid', 'confirmed'),
         'resolve_citations': lambda: resolving(key, limit=0),
         'citation_rows': lambda: srv.citation_rows(token_for('spec-citations'), 'counts'),
         'claim_citation_batch': lambda: srv.claim_citation_batch(worker, size=10,
@@ -1640,6 +1644,10 @@ def test_no_registered_tool_writes_in_a_complete_folder(tmp_path):
     # never plans: the refusal is that this slot may not call them, which comes
     # before the run's own state and is the stronger of the two answers.
     lane_only = set(srv.CODE_TOOLS)
+    # The code check's own two tools answer for one slot and say so before they
+    # say anything about the run: this run planned no such slot, because it was
+    # given no code.
+    check_only = {'method_claims', 'submit_code_check'}
     before = folder_digests(run.root)
 
     for name, call in calls.items():
@@ -1653,6 +1661,9 @@ def test_no_registered_tool_writes_in_a_complete_folder(tmp_path):
             continue
         if name in lane_only:
             assert 'may not call' in answer['request_rejected'], (name, answer)
+            continue
+        if name in check_only:
+            assert 'Only the ' + srv.CHECK_TRACK in answer['request_rejected'], (name, answer)
             continue
         if name in reader_only:
             assert ('complete' in answer['request_rejected']

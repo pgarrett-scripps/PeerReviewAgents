@@ -6,7 +6,7 @@ inside a session, so there is nothing to wire up twice.
 
 ```
 peerreview review     peerreviewagents/plugin/pra   peerreviewagents.plugin.server
-  (the command)      →     (workflow, agents,     →   (42 MCP tools, the ledger,
+  (the command)      →     (workflow, agents,     →   (44 MCP tools, the ledger,
                             skills, .mcp.json)         the run files)
 ```
 
@@ -334,7 +334,7 @@ Then ask for one of its three skills:
 | `follow-up` | what changed since a previous run of the same paper |
 
 The agents may call only the server's tools — the allow list the starter passes
-is `Workflow`, `Skill`, `TodoWrite` and the 42 `peerreview` tools, and nothing
+is `Workflow`, `Skill`, `TodoWrite` and the 44 `peerreview` tools, and nothing
 else. No `Read`, `Write`, `Edit`, `Bash`, `WebSearch` or `WebFetch` reaches a
 reviewer, which is why a quotation cannot come from anywhere but the
 manuscript the server served.
@@ -910,6 +910,7 @@ and the renderer all go through, so a consumer can use the same one.
 | `findings_delivered`, `findings_submitted` | what reached the editor, and what was filed |
 | `quarantined_findings`, `quarantined_findings_count` | the rows the guard held back, and how many |
 | `review_guard_status` | `clean` or `quarantined` |
+| `code_check` | what the code check did, or `None` on a run that was given no code (below) |
 | `reviewer_count`, `reviewer_provenance` | how many core reviewers, and how they were drawn |
 | `arm`, `synthesis_policy` | the arm that ran, and whether an editor pooled it |
 | `finding_schema_version`, `workflow_version` | the ledger's stamp and the workflow's |
@@ -917,6 +918,24 @@ and the renderer all go through, so a consumer can use the same one.
 Every one of those keys is written on every run, and so is every field of every
 issue row: a run that had nothing of the kind writes the key with `None` —
 `prior_round` on a first round — or with an empty list or object.
+
+`code_check` is the code lane's second pass, and it exists only on a run that
+was given code: `None` everywhere else. A finding that asserts how something
+was computed, sampled, filtered or selected — one the server made `computed`
+over a receipt, or one whose reviewer named the step it assumed in
+`assumed_method` — goes to that lane after the reviewers finish and before the
+editor pools anything, and comes back `confirmed`, `contradicted` or
+`not-shown`. The key holds `cap` (the most findings the check is handed),
+`checked`, `over_cap` (how many qualified past the cap and were left exactly as
+their reviewers filed them), `counts` per verdict, and `checks`: one row per
+answer, with the finding it is about, the `code_evidence` that decides it —
+`path`, `start_line`, `end_line`, `text`, `sha256`, verified against the
+snapshot before it was stored — or the `searches` behind a `not-shown`, and the
+`note` written for the authors. **A `contradicted` finding is in no issue**:
+the editor is refused if it groups one, and the finding is on the ledger and in
+the review's own section with the code that disproved it, so a consumer that
+counts required changes must not count it and a consumer that reports what the
+review threw out reads it here.
 
 **No file meant to be published holds an absolute machine path.** `issues.json`
 and `REVIEW.md` are the two an integration hands on — to the authors, to a

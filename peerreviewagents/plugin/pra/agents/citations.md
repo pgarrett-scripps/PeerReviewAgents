@@ -206,6 +206,13 @@ reordered, a
 clause dropped — is quarantined even when the finding is right. Put the source
 URL the ledger recorded in `source_urls`.
 
+**Where the paper admits the gap, write the finding about what is left.** A
+sentence that already concedes the source is indirect, older, or from another
+setting has said it; say so in the first line of your comment and name what is
+still missing — the support the claim actually needs, or the place where the
+abstract or the conclusions drop the hedge the body sentence carries. Do not
+rate it `major` because the hedge exists.
+
 Set `escalate: true` only when the paper's central claim rests on a citation
 that does not support it.
 

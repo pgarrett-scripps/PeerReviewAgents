@@ -90,6 +90,20 @@ finding is right. Where the problem is an absence, quote the sentence that
 should have carried the parameter and say in the comment what is missing — do not quote text that is
 not there, because that finding will be quarantined and lost.
 
+**Mark an assumed method, never guess at one.** Yours is the lane most likely
+to write about a step the paper never states, so where the finding rests on
+what you believe was computed, sampled, filtered or selected, pass
+`assumed_method`: one sentence naming it. On a run given the authors' code, a
+lane that can read it checks that step against the code before your finding can
+enter an issue — and "the paper never says" stays a finding of yours either way,
+because a parameter that lives only in the code is still missing from the
+manuscript.
+
+**Where the paper admits the gap, write the finding about what is left.** Say
+so in the first line of your comment, then name what is still missing — the
+value itself, or the place where the methods point at a file or a reference
+that does not carry it.
+
 Set `escalate: true` only when the gap means the central result cannot be
 checked or repeated at all. Finish with `submit_report`, passing
 `report_markdown` for `audit_methods-reporting.md`, `none_found: true` if the

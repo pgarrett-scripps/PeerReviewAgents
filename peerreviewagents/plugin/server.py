@@ -125,6 +125,31 @@ CODE_TOOLS = ('list_code', 'read_code', 'search_code')
 #: :func:`plan_slots` as ``spec-code`` when, and only when, there is a snapshot.
 CODE_TRACK = 'code'
 
+#: The track that checks the findings against the code before synthesis. It is
+#: the same lane as :data:`CODE_TRACK` and the same model, given the findings
+#: instead of the paper: a reviewer that guessed how a number was computed is
+#: checked against the file that computes it, and a guess the code contradicts
+#: never reaches an issue. It exists only where there is a snapshot, like the
+#: code lane itself, and it reads nothing of the paper beyond the lines the
+#: findings already cite — there is no second pass over the manuscript here.
+CHECK_TRACK = 'code-check'
+
+#: The three answers a code check may give. ``confirmed`` and ``contradicted``
+#: both carry a verified passage of the snapshot, the same evidence a
+#: ``code-checked`` finding carries; ``not-shown`` carries the searches that
+#: found nothing, because "the code does not show it" is a claim about what was
+#: looked for.
+CODE_CHECK_VERDICTS = ('confirmed', 'contradicted', 'not-shown')
+
+#: How many findings go to the code check. The check is one agent reading one
+#: repository in one context, so the queue is bounded like every other lane's
+#: work: the most severe method claims are checked and the rest are left exactly
+#: as their reviewer filed them, with the number that went unchecked printed in
+#: ``issues.json`` and in REVIEW.md so nobody reads an unchecked finding as a
+#: cleared one. Twelve is what fits the lane's allowance with room to read a
+#: file per finding and search for the one that is not where it looked first.
+MAX_CODE_CHECKS = 12
+
 #: The basis words a ``minor`` issue cannot bury without an anchored rebuttal:
 #: the two the server checked itself. ``computed`` is arithmetic over numbers
 #: printed on the lines the finding cites, with the server's own receipt;
@@ -165,6 +190,12 @@ TRACK_TOOLS = {
     # is not something an investigation reads. No lookups: what a method is
     # called in the literature is another lane's question.
     CODE_TRACK: (*OFFLINE_TOOLS, 'view_page'),
+    # The code check reads findings and code, and nothing else. No paper tools
+    # at all: the whole point of the stage is that it does not review the paper
+    # a second time, and an empty entry here is not optional — a track missing
+    # from this table is granted the core lane's tools by
+    # :meth:`Run.claim`, which would hand this one the manuscript.
+    CHECK_TRACK: (),
     'editor': ('read_paper', 'search', 'calculate', 'inspect_results'),
     'recorder': (),
     # A citation worker reads one sentence and one stored passage and answers
@@ -191,6 +222,13 @@ CALL_BUDGET = {'core': 30, 'specialist': 20, 'editor': 12, 'recorder': 2,
                # it has, which is the finding without evidence this whole shape
                # refuses. Reading the paper is free, as everywhere.
                CODE_TRACK: 40,
+               # The code check is handed at most :data:`MAX_CODE_CHECKS`
+               # findings and has to be able to look for each one where the
+               # reviewer did not say it was: a search, a read, and a second
+               # search where the first was in the wrong file. Submitting a
+               # verdict costs nothing — submissions are not counted — so this
+               # is the reading allowance alone.
+               CHECK_TRACK: 40,
                # Never used: the reader's allowance is the manuscript's size.
                # Here so that a role is never missing from this table.
                'reader': 0}
@@ -198,7 +236,7 @@ EXTERNAL_BUDGET = {'core': 24, 'specialist': 16, 'editor': 0, 'recorder': 0,
                    'citation-worker': 0, 'reader': 0,
                    # No lookups at all: the code lane's evidence is in the
                    # paper and in the snapshot, both of them already here.
-                   CODE_TRACK: 0}
+                   CODE_TRACK: 0, CHECK_TRACK: 0}
 # Raised from 600 when the citation ledger arrived: a 60-reference paper has
 # roughly 90 in-text uses, and one verdict is one tool call, so the workers
 # alone can spend a hundred calls that no reviewer used to make. The reviewers'
@@ -544,6 +582,24 @@ def plan_slots(arm, reviewers, tracks=None, code=False):
     return tuple(slots)
 
 
+def code_check_slots(arm, reviewers, tracks=None, code=False):
+    """The code-check slot, ``code-check``, or no slot at all.
+
+    Deliberately *not* part of :func:`plan_slots`, for the reason the citation
+    workers are not: the check files no findings of its own and a check that
+    never reports must not be able to hold ``write_review`` open. The whole
+    stage exists only where the code lane does — it is that lane's model, given
+    the findings instead of the paper — so a run with no snapshot plans no slot
+    and behaves exactly as it did before this stage existed.
+
+    The slot is named for its track, :data:`CHECK_TRACK`, because there is one
+    of it: a second checker reading the same queue would duplicate verdicts on
+    the same findings.
+    """
+    return ((CHECK_TRACK,) if f'spec-{CODE_TRACK}' in plan_slots(arm, reviewers, tracks, code)
+            else ())
+
+
 def citation_slots(arm, count=CITATION_WORKERS, tracks=None):
     """The citation workers one arm asks for: ``cite-1``, ``cite-2``, …
 
@@ -723,6 +779,13 @@ class Run:
         self.citation_worker_count = (CITATION_WORKERS if citation_workers is None
                                       else citation_workers)
         self.citation_workers = citation_slots(arm, self.citation_worker_count, self.tracks)
+        # The code check, planned here with everything else and claimable like
+        # any other slot, required like none of them: it runs after the
+        # reviewers and before synthesis, and a check that dies holding the slot
+        # leaves every finding exactly as its reviewer filed it rather than
+        # blocking the review.
+        self.code_check_slots = code_check_slots(arm, self.reviewers, self.tracks,
+                                                 self.code_given)
         # The reader is planned with every other slot. Every PDF review has a
         # Read stage: the converter's equations and tables are its reading of a
         # picture of them, a figure is a caption with no image behind it, and a
@@ -736,6 +799,13 @@ class Run:
             reviewers=self.reviewer_models, specialist=specialist_model,
             editor=editor_model, recorder=recorder_model,
             citation_worker=citation_worker_model, reader=reader_model))
+        # The check runs the code lane's own model, copied rather than assigned:
+        # it is the same reading of the same repository, and `role_of` reads a
+        # slot name it does not know as a core reviewer's, which would put a
+        # reviewer model on the one slot that never reads the paper. The lane's
+        # model is already chosen and already cleared by `refuse` above.
+        for slot in self.code_check_slots:
+            self.models[slot] = self.models[f'spec-{CODE_TRACK}']
         self.root = Path(root).resolve()
         self.workspace = self.root / MANUSCRIPT_DIRECTORY
         self.review = self.root / RUN_DIRECTORY
@@ -806,6 +876,12 @@ class Run:
         self.slot_calls = {}
         self.findings = []
         self.quarantined = []
+        # The code check's answers, one row per finding it looked at: the
+        # verdict, the passage of the snapshot behind it or the searches that
+        # found none, and the checker's note. Kept whatever the verdict says,
+        # because a finding the code contradicted is dropped from the issues and
+        # the record of why is the only place it then exists.
+        self.code_checks = []
         self.calls = 0
         self.status = 'running'
         # True while a `resolve_citations` pass is in flight. The pass runs in a
@@ -835,7 +911,8 @@ class Run:
         self.recorder_key = secrets.token_hex(16)
         self.claim_codes = {slot: secrets.token_hex(8)
                             for slot in (*self.reader_slots, *self.required,
-                                         *self.citation_workers, 'recorder')}
+                                         *self.citation_workers, *self.code_check_slots,
+                                         'recorder')}
         self.write_progress()
         # Identity at ingest, not only at the end. A run that is killed — a
         # token ceiling, the wall clock, a rate limit, a session error — used to
@@ -999,8 +1076,14 @@ class Run:
                 'are written and every line is citable. The reader repairs a draft, this run was '
                 'handed none, and so it planned no reader slot and no Read stage. There is '
                 'nothing to read.')
-        if slot not in (*self.reader_slots, *self.required, *self.citation_workers, 'recorder'):
+        if slot not in (*self.reader_slots, *self.required, *self.citation_workers,
+                        *self.code_check_slots, 'recorder'):
             raise ValueError('Slot ' + slot + ' is not part of this run.')
+        if slot in self.code_check_slots:
+            # It sees no review stage. The findings it checks arrive through
+            # `method_claims`, which is the queue the server built for it, and
+            # it reads the code behind them and nothing else.
+            return CHECK_TRACK, CHECK_TRACK, ()
         if slot == 'recorder':
             return 'recorder', 'recorder', tuple(self.required)
         if slot == 'reader':
@@ -1178,11 +1261,17 @@ class Run:
         # investigation reads. They exist only where a snapshot does, so a
         # track named `code` in a run that was given none gets nothing rather
         # than tools over an empty folder.
-        code_tools = CODE_TOOLS if track == CODE_TRACK and self.code is not None else ()
+        code_tools = (CODE_TOOLS if track in (CODE_TRACK, CHECK_TRACK) and self.code is not None
+                      else ())
+        # The check's own two: the queue of findings that rest on a method, and
+        # the verdict on one of them. Neither spends the allowance — a
+        # submission never does — so they are here to be listed back to the
+        # agent as what it may call, beside the three that read the snapshot.
+        check_tools = ('method_claims', 'submit_code_check') if track == CHECK_TRACK else ()
         # The reader's tools are granted the same way, and for the same reason:
         # they work on the draft, which is the server's own file and not the
         # manuscript an investigation reads.
-        allowed = (*paper_tools, *ledger_tools, *code_tools,
+        allowed = (*paper_tools, *ledger_tools, *code_tools, *check_tools,
                    *(READER_TOOLS if role == 'reader' else ()))
         # Every other slot's allowance is a constant, because the work is one
         # manuscript however many findings come out of it. The editor's work is
@@ -1468,6 +1557,112 @@ class Run:
             latest[uid] = finding
         return [latest[uid] for uid in order]
 
+    def contradicted(self):
+        """Every ``finding_uid`` the code check contradicted.
+
+        One set, read by everything that groups findings into issues. A finding
+        in it stays on the ledger, in ``findings.jsonl`` and in the counts of
+        what this run found — the record of a reviewer's mistake is part of the
+        record — and it is not available to be made an issue of, because the
+        code says the claim it rests on is not what the code does.
+        """
+        return {str(row['finding_uid']) for row in self.code_checks
+                if row['verdict'] == 'contradicted'}
+
+    def for_issues(self):
+        """The pooled findings an issue may be raised from: everything not contradicted."""
+        thrown = self.contradicted()
+        return [one for one in self.pooled() if str(one['finding_uid']) not in thrown]
+
+    def method_queue(self):
+        """The findings that go to the code check, most severe first, capped.
+
+        A finding qualifies two ways. Either the server itself found it rests on
+        arithmetic — ``basis`` is ``computed``, which means a receipt over the
+        numbers printed on the lines it cites — or its reviewer said in
+        ``assumed_method`` which step of the method it took for granted. The
+        first is the case that went wrong in practice: a receipt proves the
+        arithmetic and proves nothing about the procedure the numbers came out
+        of, and a reviewer who has guessed the procedure has a finding that
+        reads as checked. The second is the reviewer's own mark, which is what
+        the briefs ask for instead of a guess.
+
+        The set is cut at :data:`MAX_CODE_CHECKS`. Order decides what survives
+        the cut: majors before moderates before minors, ``computed`` before a
+        reviewer's mark within a severity — the receipt-backed claim is the one
+        that reads as verified — and arrival order within that. The cut is made
+        over every qualifying finding, answered or not, so the number left over
+        the cap is the same before the check runs and after it: a second attempt
+        at the slot is handed what is still unanswered, not a new twelve.
+
+        Returns ``(queue, over_cap)``.
+        """
+        rank = {severity: index for index, severity in enumerate(SEVERITIES)}
+        rows = [one for one in self.pooled()
+                if one.get('basis') == 'computed'
+                or str(one.get('assumed_method') or '').strip()]
+        order = sorted(
+            enumerate(rows),
+            key=lambda pair: (rank.get(str(pair[1].get('severity')), len(SEVERITIES)),
+                              0 if pair[1].get('basis') == 'computed' else 1,
+                              pair[0]))
+        within = [one for _, one in order[:MAX_CODE_CHECKS]]
+        answered = {str(row['finding_uid']) for row in self.code_checks}
+        return ([one for one in within if str(one['finding_uid']) not in answered],
+                max(0, len(rows) - MAX_CODE_CHECKS))
+
+    def store_code_check(self, agent, finding, verdict, evidence=None, searches=(), note=''):
+        """One answer from the code check, on the ledger and on disk."""
+        row = {'finding_uid': str(finding['finding_uid']),
+               'slot': agent.slot,
+               'track': agent.track,
+               'verdict': verdict,
+               'title': finding.get('title'),
+               'severity': finding.get('severity'),
+               'document': finding.get('document'),
+               'line': finding.get('line'),
+               'end_line': finding.get('end_line'),
+               'quote': finding.get('quote'),
+               'finding_slot': finding.get('slot'),
+               'finding_track': finding.get('track'),
+               'basis': finding.get('basis'),
+               'assumed_method': finding.get('assumed_method') or '',
+               'code_evidence': dict(evidence) if evidence else None,
+               'searches': [str(one) for one in searches],
+               'note': str(note or ''),
+               'recorded': now()}
+        self.code_checks.append(row)
+        self.append(self.review / 'code-checks.jsonl', row)
+        return row
+
+    def code_check_record(self):
+        """What the code check did, for ``issues.json`` and for REVIEW.md.
+
+        ``None`` on a run that was given no code, so a review that had no
+        snapshot carries no section and no empty block about one.
+        """
+        if not self.code_check_slots:
+            return None
+        _, past_cap = self.method_queue()
+        checked = {verdict: [row for row in self.code_checks if row['verdict'] == verdict]
+                   for verdict in CODE_CHECK_VERDICTS}
+        return {
+            'cap': MAX_CODE_CHECKS,
+            'checked': len(self.code_checks),
+            # What the cap left alone. These findings are exactly as their
+            # reviewer filed them: unchecked is not cleared, and the number is
+            # printed so nobody reads it as either.
+            'over_cap': past_cap,
+            'counts': {verdict: len(rows) for verdict, rows in checked.items()},
+            'checks': list(self.code_checks),
+        }
+
+    def code_check_counts(self):
+        """The code check by the numbers alone, without the quotes: for ``progress.json``."""
+        record = self.code_check_record()
+        return None if record is None else {key: record[key] for key in
+                                            ('cap', 'checked', 'over_cap', 'counts')}
+
     def guard_status(self, slot=None):
         """``quarantined`` when the guard threw out one of *this* reviewer's findings."""
         rows = [q for q in self.quarantined if slot is None or q.get('slot') == slot]
@@ -1637,6 +1832,10 @@ class Run:
             # far. A run that was given none says so, so "the code was not
             # reviewed" is never something a reader has to infer from silence.
             'code': self.code.record() if self.code is not None else {'reviewed': False},
+            # The code check, by the numbers: how many method claims it
+            # answered, how they came back, and how many qualified past the
+            # cap. `None` on a run with no code, which has no such stage.
+            'code_check': self.code_check_counts(),
             'tool_calls': {slot: agent.calls for slot, agent in self.agents.items()},
             'tool_calls_total': self.calls,
             'started': self.started,
@@ -1749,6 +1948,12 @@ class Run:
             # The code lane, where there is one: it reads two documents, so its
             # allowance is its own and a reader of the protocol can see that.
             'code_tool_allowance': (CALL_BUDGET[CODE_TRACK] if self.code_given else None),
+            # The stage that checks the findings against the code, where there
+            # is code: its own allowance and the cap on how many findings it is
+            # handed, both read from here rather than written down twice.
+            'code_check_tool_allowance': (CALL_BUDGET[CHECK_TRACK] if self.code_check_slots
+                                          else None),
+            'code_check_limit': MAX_CODE_CHECKS if self.code_check_slots else None,
             'editor_tool_allowance': editor_call_budget(len(self.pooled())),
             'run_tool_allowance': RUN_CALL_BUDGET,
             'issues_schema_version': issue_model.ISSUES_SCHEMA_VERSION,
@@ -1913,7 +2118,7 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
         # The claim codes are minted once and go back once. A second caller
         # attaching to a live run is not the recorder: no identities, and not
         # the slot list either — nor the per-slot models, which name the slots.
-        hidden = ('slots', 'models', 'citation_workers', 'reader')
+        hidden = ('slots', 'models', 'citation_workers', 'reader', 'code_check')
         return {k: v for k, v in summary_of(run).items()
                 if k not in hidden} | {'attached': True}
     if run is not None:
@@ -1981,6 +2186,15 @@ def summary_of(run):
         # The citation workers, apart from the stages on purpose: they are
         # fanned out over the ledger and none of them is required to report.
         'citation_workers': list(run.citation_workers),
+        # The code check, apart from the stages for the same reason: it runs
+        # after them and before synthesis, files no findings and is required to
+        # report by nothing. ``None`` on a run with no code, where the stage
+        # does not exist — a workflow reads this rather than claiming a slot to
+        # find out.
+        'code_check': ({'slot': run.code_check_slots[0],
+                        'model': run.models.get(run.code_check_slots[0]),
+                        'allowance': CALL_BUDGET[CHECK_TRACK],
+                        'limit': MAX_CODE_CHECKS} if run.code_check_slots else None),
         'citations': run.citation_counts(),
         # The code, when this review was given any: what was snapshotted, so the
         # workflow can tell the code lane what it is reading and a caller can
@@ -2087,6 +2301,29 @@ def claim_agent(slot: str, claim_code: str = '') -> dict:
             + str(len(left['pages'])) + ' page(s) and '
             + str(len(left['lost_pages'])) + ' unconverted page(s) are waiting for you.')
         return answer
+    if agent.track == CHECK_TRACK:
+        # The check is told about the queue and the snapshot, not about the
+        # manuscript: it has no paper tools, files no findings, and the two
+        # general instructions above are about a lane that does both.
+        queue, over_cap = run.method_queue()
+        answer['code'] = run.code.record()
+        answer['code_check'] = {'count': len(queue), 'cap': MAX_CODE_CHECKS,
+                                'over_cap': over_cap,
+                                'verdicts': list(CODE_CHECK_VERDICTS)}
+        answer['read_first'] = (
+            'Call method_claims now. It returns the ' + str(len(queue)) + ' finding(s) that rest '
+            'on how something was computed, sampled, filtered or selected, each with the passage '
+            'of the paper it cites and what its reviewer assumed. For each one, find the code '
+            'that does the step — list_code, search_code, read_code — and answer with '
+            'submit_code_check: confirmed, contradicted, or not-shown. Then close with '
+            'submit_report.')
+        answer['reminder'] = (
+            'You are checking findings against the code, not reviewing the paper, and you file '
+            'no findings of your own. A confirmed or contradicted verdict carries the passage of '
+            'the code that decides it, quoted exactly as read_code served it; not-shown carries '
+            'the searches you ran. Contradict a finding only where the code actually disagrees '
+            "with it — a finding you contradict is dropped from the review's issues.")
+        return answer
     if agent.role != 'editor':
         return answer
     # The editor writes the issues, so it is the one slot that is handed the
@@ -2102,7 +2339,7 @@ def claim_agent(slot: str, claim_code: str = '') -> dict:
         # Grows with the ledger, so however many findings there are the issues
         # go in within a bounded number of calls. Read it from here, never from
         # a number written down anywhere else.
-        'batch_limit': issue_model.issue_batch_limit(len(run.pooled())),
+        'batch_limit': issue_model.issue_batch_limit(len(run.for_issues())),
         'schema_version': issue_model.ISSUES_SCHEMA_VERSION,
     }
     answer['prior_issues'] = [
@@ -2760,7 +2997,7 @@ def submit_finding(agent_token: str, title: str, quote: str, comment: str,
                    calculate_receipt: str = '', corroborating_quote: str = '',
                    corroborating_line: int = 0, code_path: str = '',
                    code_start_line: int = 0, code_end_line: int = 0,
-                   code_quote: str = '') -> dict:
+                   code_quote: str = '', assumed_method: str = '') -> dict:
     """Store one finding, quoting the manuscript exactly. The server places the quote.
 
     ``quote`` is the manuscript's own words. The engine finds them, records the
@@ -2784,6 +3021,15 @@ def submit_finding(agent_token: str, title: str, quote: str, comment: str,
     those lines, and the server checks it there: a quote that is not what the
     file holds is refused with the lines it does hold, and nothing is stored.
     A finding that passes is ``code-checked``.
+
+    ``assumed_method`` is for a finding that rests on how something was
+    computed, sampled, filtered or selected where the paper does not say: write
+    the step you had to assume, in one line, as you understand it. Mark it,
+    never guess at it in the comment as though the paper had said it. Where this
+    run was given the code, a marked finding goes to the code lane, which reads
+    the file that does the step and confirms or contradicts it before the
+    finding can become an issue. Where there is no code, the mark is on the
+    record as what the finding depends on.
     """
     run = current()
     try:
@@ -2882,7 +3128,12 @@ def submit_finding(agent_token: str, title: str, quote: str, comment: str,
     raw = {'title': title, 'quote': quote, 'comment': comment,
            'severity': severity, 'kind': kind if kind in KINDS else 'question',
            'replacement': replacement, 'evidence_lines': evidence,
-           'counterevidence': counterevidence, 'source_urls': list(source_urls or [])}
+           'counterevidence': counterevidence, 'source_urls': list(source_urls or []),
+           # The reviewer's own mark that this finding rests on a step of the
+           # method the paper does not state. It reaches the stored row through
+           # `line_finding`, which keeps what it is handed, and the code check
+           # reads it from there.
+           'assumed_method': ' '.join(str(assumed_method or '').split())}
     found = quotes.anchor(run.base, quote, line or None, end_line or None, document)
     if 'placement' in found:
         cited = issue_model.lines_of({**raw, 'line': found['placement']['line'],
@@ -3071,8 +3322,14 @@ def list_findings(agent_token: str, track: str = '', include_comment: bool = Tru
         agent = run.agent_for(agent_token)
     except ValueError as exc:
         return rejection(str(exc))
-    rows = [f for f in run.pooled() if f['slot'] in agent.sees or agent.role in ('editor',
-                                                                                 'recorder')]
+    # The editor is handed the findings an issue may be raised from, which is
+    # the pool less whatever the code check contradicted: a finding the code
+    # disproved is not something to group, rank or ask for a change over, and
+    # `submit_issues` refuses it by name. It is listed separately below so the
+    # editor can see what was taken out and why rather than wondering where a
+    # finding went.
+    pool = run.for_issues() if agent.role == 'editor' else run.pooled()
+    rows = [f for f in pool if f['slot'] in agent.sees or agent.role in ('editor', 'recorder')]
     if track:
         rows = [f for f in rows if f['track'] == track]
     if agent.role in ('editor', 'recorder'):
@@ -3100,8 +3357,193 @@ def list_findings(agent_token: str, track: str = '', include_comment: bool = Tru
                              'members': issue['member_uids'], 'prior_id': issue['prior_id'],
                              'status': issue['status']}
                             for issue in agent.issues.values()]
+        answer['contradicted_by_code'] = [
+            {'finding_uid': row['finding_uid'], 'title': row['title'],
+             'severity': row['severity'], 'slot': row['finding_slot'],
+             'code': row['code_evidence'], 'note': row['note']}
+            for row in run.code_checks if row['verdict'] == 'contradicted']
+        if answer['contradicted_by_code']:
+            answer['contradicted_reason'] = (
+                'The ' + CHECK_TRACK + ' lane read the code behind each of these findings and '
+                'found it does not do what the finding says it does. They are not in the list '
+                'above, they are not yours to group or rule on, and they are on record in the '
+                "review's own section with the code that contradicted them.")
         answer.update(_issue_state(run, agent))
     return answer
+
+
+def _check_agent(token):
+    """The code check behind one of its two calls, or a refusal.
+
+    Neither call spends the allowance — a submission never does, and the queue
+    is the server reading its own ledger — so there is no accounting here, only
+    identity: this is the one slot that may answer for the code.
+    """
+    run = current()
+    try:
+        agent = run.agent_for(token)
+    except ValueError as exc:
+        return None, rejection(str(exc))
+    if agent.track != CHECK_TRACK:
+        return None, rejection('Only the ' + CHECK_TRACK + ' slot checks findings against the '
+                               'code.')
+    if run.code is None:
+        return None, rejection('This run was given no code, so there is nothing to check a '
+                               'finding against.')
+    if run.status in COMPLETE_STATUSES:
+        return None, rejection('This run is ' + run.status + ' and its review is written. '
+                               'Nothing was stored.')
+    editor = run.agents.get('editor')
+    if editor is not None and editor.editor_package:
+        return None, rejection('The pooled review has already been ruled on, so a verdict now '
+                               'could not keep a finding out of it. Nothing was stored.')
+    return agent, None
+
+
+def method_claims(agent_token: str) -> dict:
+    """Code check only: the findings that rest on how something was computed.
+
+    Every finding here asserts, or assumes, a method — how a number was
+    calculated, how a sample was drawn, what was filtered or selected. Each is
+    either backed by the server's own arithmetic receipt over the lines it cites
+    (``basis: computed``, which proves the arithmetic and nothing about the
+    procedure behind the numbers) or carries its reviewer's ``assumed_method``
+    mark, the step it had to take for granted.
+
+    Your job on each: read the code that does the step and answer with
+    ``submit_code_check``. You are not reviewing the paper, and nothing you
+    answer files a finding of your own.
+    """
+    agent, refused = _check_agent(agent_token)
+    if refused:
+        return refused
+    run = current()
+    queue, over_cap = run.method_queue()
+    rows = [{'finding_uid': one['finding_uid'],
+             'title': one.get('title'),
+             'severity': one.get('severity'),
+             'slot': one.get('slot'),
+             'track': one.get('track'),
+             'basis': one.get('basis'),
+             'document': one.get('document'),
+             'line': one.get('line'),
+             'end_line': one.get('end_line'),
+             'quote': one.get('quote'),
+             'comment': one.get('comment'),
+             'assumed_method': one.get('assumed_method') or '',
+             'calculate_receipt': one.get('calculate_receipt'),
+             'why_queued': ('the server computed its arithmetic over the lines it cites, which '
+                            'says nothing about the procedure the numbers came out of'
+                            if one.get('basis') == 'computed'
+                            else 'its reviewer marked the method it assumed')}
+            for one in queue]
+    return {
+        'count': len(rows),
+        'claims': rows,
+        'cap': MAX_CODE_CHECKS,
+        'over_cap': over_cap,
+        'verdicts': list(CODE_CHECK_VERDICTS),
+        'answered': len(run.code_checks),
+        'next': ('For each claim: find the code that does what it describes, then call '
+                 'submit_code_check with confirmed, contradicted or not-shown. confirmed and '
+                 'contradicted both need the passage of the snapshot that decides it, quoted '
+                 'exactly as read_code served it; not-shown needs the searches you ran. A '
+                 'contradicted finding is kept out of the issues and kept on record with your '
+                 'quote, so quote the lines that actually decide it. Answer every claim in the '
+                 'list, then close with submit_report.'
+                 + (' ' + str(over_cap) + ' further finding(s) qualified and are past the cap of '
+                    + str(MAX_CODE_CHECKS) + ': they are not yours to check and are left exactly '
+                    'as their reviewers filed them.' if over_cap else '')),
+    }
+
+
+def submit_code_check(agent_token: str, finding_uid: str, verdict: str, code_path: str = '',
+                      code_start_line: int = 0, code_end_line: int = 0, code_quote: str = '',
+                      searches: list = None, note: str = '') -> dict:
+    """Code check only: one verdict on one finding, with the code behind it.
+
+    ``verdict`` is one of: confirmed (the code does what the finding says),
+    contradicted (the code does something else, and the finding's reasoning does
+    not survive it), not-shown (the code does not settle it).
+
+    ``confirmed`` and ``contradicted`` carry ``code_path``,
+    ``code_start_line``, ``code_end_line`` and ``code_quote`` — the passage that
+    decides it, quoted exactly as ``read_code`` served it, checked against the
+    snapshot before anything is stored. ``not-shown`` carries ``searches``
+    instead: the queries and paths you actually looked in, because "the code
+    does not show it" is a claim about what was looked for.
+
+    ``note`` is one or two sentences for the author: what the code does, against
+    what the finding assumed. A contradicted finding is dropped from the issues
+    and this note and quote are the whole record of why, so write it for
+    someone who will read it without the finding in front of them.
+    """
+    agent, refused = _check_agent(agent_token)
+    if refused:
+        return refused
+    run = current()
+    if verdict not in CODE_CHECK_VERDICTS:
+        return rejection('verdict is one of ' + ', '.join(CODE_CHECK_VERDICTS) + '.')
+    uid = str(finding_uid or '').strip()
+    finding = next((one for one in run.pooled() if str(one['finding_uid']) == uid), None)
+    if finding is None:
+        return rejection('No finding in this run has the uid ' + (uid or '(none given)')
+                         + '. The uids are in method_claims.')
+    queue, _ = run.method_queue()
+    answered = {str(row['finding_uid']) for row in run.code_checks}
+    if uid in answered:
+        return rejection('You have already answered ' + uid + '. One verdict per finding; '
+                         'nothing was stored.')
+    if uid not in {str(one['finding_uid']) for one in queue}:
+        return rejection('Finding ' + uid + ' is not in your queue: method_claims is the set '
+                         'this stage checks, and a finding outside it is left as its reviewer '
+                         'filed it. Nothing was stored.')
+    evidence, looked = None, []
+    names = ('code_path', 'code_start_line', 'code_end_line', 'code_quote')
+    given = [name for name, value in zip(names, (code_path, code_start_line, code_end_line,
+                                                 code_quote)) if value]
+    if verdict == 'not-shown':
+        if given:
+            return rejection('not-shown says the code does not settle it, so it carries no '
+                             'passage of the code. Give searches instead, or answer confirmed '
+                             'or contradicted with the passage that decides it.')
+        looked = [' '.join(str(one).split()) for one in (searches or []) if str(one).strip()]
+        if not looked:
+            return rejection('not-shown needs the searches you ran: the queries and the paths '
+                             'you looked in. "The code does not show it" is a claim about what '
+                             'was looked for, and without them nothing distinguishes it from '
+                             'not having looked. Nothing was stored.')
+    else:
+        if searches:
+            return rejection('searches belong to not-shown. ' + verdict + ' rests on the passage '
+                             'of the code that decides it, not on what was searched.')
+        if len(given) < len(names):
+            return rejection(verdict + ' carries the code that decides it: all four of '
+                             + ', '.join(names) + '. Missing: '
+                             + ', '.join(name for name in names if name not in given) + '.')
+        try:
+            evidence = run.code.verify(code_path, code_start_line, code_end_line, code_quote)
+        except (ValueError, OSError) as exc:
+            return rejection('Nothing was stored. ' + str(exc))
+    note = str(note or '').strip()
+    if not note:
+        return rejection('Say in a sentence or two what the code does, against what the finding '
+                         'assumed. On a contradicted finding this note is the whole record the '
+                         'author gets. Nothing was stored.')
+    row = run.store_code_check(agent, finding, verdict, evidence=evidence, searches=looked,
+                               note=note)
+    run.write_progress()
+    left, over_cap = run.method_queue()
+    return {'stored': True, 'finding_uid': row['finding_uid'], 'verdict': verdict,
+            'code_evidence': row['code_evidence'], 'searches': row['searches'],
+            'claims_left': len(left), 'over_cap': over_cap,
+            'effect': ('This finding is out of the issues and out of the required changes. It '
+                       'stays on the ledger and in the review\'s own section with your quote '
+                       'and your note.' if verdict == 'contradicted'
+                       else 'The finding stands, and the review will show your quote beside it.'
+                       if verdict == 'confirmed'
+                       else 'The finding stands as its reviewer filed it, with your note that '
+                            'the code does not settle it.')}
 
 
 def _record_editor_call(run, agent, tool, accepted, refusal=None, **extra):
@@ -3177,7 +3619,14 @@ def _issue_problems(run, agent, batch, retiring=()):
     clean: a batch that is half-stored is a working set the editor cannot
     reason about, and re-sending the fixed batch would then double what landed.
     """
-    by_uid = {f['finding_uid']: f for f in run.pooled()}
+    # The findings this editor may group: the pool minus whatever the code
+    # check contradicted. A contradicted finding is not a finding the editor
+    # weighs and sets aside — the code it rests on does not say what it says —
+    # so it is not groupable at all, and the refusal below names it as such
+    # rather than letting it fall through as an unknown uid.
+    by_uid = {f['finding_uid']: f for f in run.for_issues()}
+    thrown_out = {row['finding_uid']: row for row in run.code_checks
+                  if row['verdict'] == 'contradicted'}
     # The uids and prior ids already spoken for, excluding the issues this call
     # replaces by name or retires — re-submitting an issue frees its own
     # members, and retiring one frees them for whatever this batch does next.
@@ -3290,6 +3739,15 @@ def _issue_problems(run, agent, batch, retiring=()):
         if not members:
             problems.append(f'issue {index} ({name}): members is the finding_uid of every finding '
                             'this issue is raised from, and an issue needs at least one')
+            continue
+        contradicted = [uid for uid in members if uid in thrown_out]
+        if contradicted:
+            problems.append(f'issue {index} ({name}): ' + ', '.join(contradicted[:5])
+                            + ' was contradicted by the code. The ' + CHECK_TRACK + ' lane read '
+                            'the code behind it and the code does not do what the finding says: '
+                            + '; '.join(thrown_out[uid]['note'] for uid in contradicted[:2])
+                            + ' It is out of the issues and already on record in the review with '
+                              'the code that contradicted it. Leave it out of your members.')
             continue
         unknown = [uid for uid in members if uid not in by_uid]
         if unknown:
@@ -3475,7 +3933,7 @@ def submit_issues(agent_token: str, issues=None, retire=None) -> dict:
                    'stored.')
         _record_editor_call(run, agent, 'submit_issues', False, refusal)
         return rejection(refusal, issues_held=len(agent.issues))
-    limit = issue_model.issue_batch_limit(len(run.pooled()))
+    limit = issue_model.issue_batch_limit(len(run.for_issues()))
     # Types first, and every refusal logged. An `issues` that is not a list
     # used to raise inside `list()` before anything reached the editor log, so
     # the one trace of a malformed call was a traceback in a session nobody
@@ -3576,9 +4034,13 @@ def submit_issues(agent_token: str, issues=None, retire=None) -> dict:
 def _issue_state(run, agent):
     """What the editor still owes: the findings no issue holds, and the ranks so far."""
     taken = {uid for issue in agent.issues.values() for uid in issue['member_uids']}
-    without = [f['finding_uid'] for f in run.pooled() if f['finding_uid'] not in taken]
+    # The pool the editor owes an issue for is the pool it was shown: a finding
+    # the code check contradicted is in neither, so it can never be the one
+    # finding holding `submit_editor` open.
+    pool = run.for_issues()
+    without = [f['finding_uid'] for f in pool if f['finding_uid'] not in taken]
     return {'issues_held': len(agent.issues),
-            'findings_in_ledger': len(run.pooled()),
+            'findings_in_ledger': len(pool),
             'findings_without_issue': len(without),
             'findings_without_issue_uids': without[:20],
             'ranks_used': sorted(issue['rank'] for issue in agent.issues.values())}
@@ -3742,7 +4204,7 @@ def _finalize_issues(run, agent, ruled=None):
     ``resolved`` or ``unverified`` — so one file says what was fixed, what was
     not raised again, and what still stands, without the three being confused.
     """
-    by_uid = {f['finding_uid']: f for f in run.pooled()}
+    by_uid = {f['finding_uid']: f for f in run.for_issues()}
     audits = {path.name.split('audit_', 1)[1].removesuffix('.md'): path.name
               for path in sorted(run.review.glob('audit_*.md'))}
     # Every id the earlier rounds spent, not only the ones still open. A
@@ -3907,8 +4369,9 @@ def submit_editor(agent_token: str, summary=None, significance=None,
                    + '. The review was not accepted and your issues are still held.')
         _record_editor_call(run, agent, 'submit_editor', False, refusal, problems=wrong)
         return rejection(refusal, problems=wrong)
-    # One row per uid, the latest submission of each: what the editor was shown.
-    by_uid = {f['finding_uid']: f for f in run.pooled()}
+    # One row per uid, the latest submission of each: what the editor was shown,
+    # which is the pool less whatever the code check contradicted.
+    by_uid = {f['finding_uid']: f for f in run.for_issues()}
     state = _issue_state(run, agent)
     problems = []
     if by_uid and not agent.issues:
@@ -4389,6 +4852,10 @@ def run_status(recorder_key: str = '') -> dict:
               'review': str(run.review / 'REVIEW.md') if run.status in COMPLETE_STATUSES
               else None,
               'tool_calls': run.calls, 'run': str(run.root),
+              # How the code check came back, where this run has one: a caller
+              # watching the run sees that findings were thrown out and how
+              # many, without opening the review.
+              'code_check': run.code_check_counts(),
               'citations': run.citation_counts()}
     if recorder_key and secrets.compare_digest(str(recorder_key), run.recorder_key):
         status['ledger'] = ledger
@@ -4530,7 +4997,7 @@ def _public(finding):
             'evidence_lines', 'counterevidence', 'source_urls', 'basis', 'basis_reason',
             'escalate', 'corroborating', 'calculate_receipt', 'start', 'end', 'anchor_text',
             'quoted_exactly', 'section', 'page', 'bbox', 'piece_kind', 'piece_lines',
-            'fingerprint',
+            'fingerprint', 'assumed_method',
             'placement', 'issue_status', 'edit_decision', 'edit_withheld', 'schema_version')
     return {key: finding.get(key) for key in keys if key in finding}
 
@@ -4545,7 +5012,16 @@ def _issues_document(run):
     """
     editor = run.agents.get('editor')
     package = editor.editor_package if editor and editor.editor_package else None
-    pooled = run.pooled()
+    # Two pools, and the difference between them is the whole of what the code
+    # check did. `delivered` is every finding the reviewers filed and the
+    # ledger holds — what this run produced, which is what the counts and the
+    # provenance report. `pooled` is the set the issues are raised from, which
+    # is `delivered` less the findings the code contradicted: an arm with no
+    # editor synthesizes one issue per finding, and synthesizing one over a
+    # finding the code disproved would put it back into the required changes by
+    # the one path that has no editor to refuse it.
+    delivered = run.pooled()
+    pooled = run.for_issues()
     # Why the server grouped these findings itself, in the run's own words. It
     # used to be inferred downstream as "this arm runs no editor", which is one
     # of the three ways it happens and the wrong one to print over a run whose
@@ -4561,7 +5037,7 @@ def _issues_document(run):
         surviving={identifier: _surviving_quotes(run, prior)
                    for identifier, prior in run.prior_by_id.items()})
     counts = {}
-    for finding in pooled:
+    for finding in delivered:
         counts[finding['track']] = counts.get(finding['track'], 0) + 1
     reports = [a.report for a in run.agents.values() if a.report]
     return {
@@ -4595,6 +5071,13 @@ def _issues_document(run):
         'verdict': (package or {}).get('verdict'),
         'escalation_rulings': (package or {}).get('escalation_rulings', []),
         'escalated_count': sum(1 for f in pooled if f['escalate']),
+        # What the code check answered, where this run had one: every verdict
+        # with the code behind it, the cap it worked under, and how many
+        # findings qualified past that cap. The contradicted rows are the only
+        # record of a finding that is in no issue, so this is not a summary of
+        # something else in the file — REVIEW.md's own section is rendered from
+        # it. `None` on a run that was given no code.
+        'code_check': run.code_check_record(),
         'findings_by_track': counts,
         'reviewer_count': run.reviewers,
         # `assigned_model` is the plan — what the run asked that slot to run —
@@ -4612,7 +5095,7 @@ def _issues_document(run):
         'workflow_version': WORKFLOW_VERSION,
         'finding_schema_version': FINDING_SCHEMA_VERSION,
         'review_guard_status': run.guard_status(),
-        'findings_delivered': len(pooled),
+        'findings_delivered': len(delivered),
         'findings_submitted': len(run.findings),
         'quarantined_findings_count': len(run.quarantined),
         'quarantined_findings': run.quarantined,
@@ -4722,6 +5205,7 @@ TOOLS = (ingest, claim_agent, reissue_claim_code, read_paper, search, calculate,
          seal_manuscript, seal_as_converted,
          check_citation, search_literature, resolve_identifier,
          lookup_source, inspect_results, record_comparison, validate_synthesis, submit_finding,
+         method_claims, submit_code_check,
          submit_report, list_findings, submit_issues, submit_editor, resolve_citations,
          citation_rows,
          claim_citation_batch, submit_citation_verdict, mark_blocked, run_status, write_review)

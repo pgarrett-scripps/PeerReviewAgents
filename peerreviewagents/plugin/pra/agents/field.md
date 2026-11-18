@@ -91,6 +91,19 @@ finding is right. Where the finding is a convention of the field rather than
 something on the page, quote the sentence it bears on and make the convention
 explicit in the comment — a reader outside the field must be able to follow why it matters.
 
+**Mark an assumed method, never guess at one.** Where the finding rests on how
+something was computed, sampled, filtered or selected and the paper does not
+say, pass `assumed_method`: one sentence naming the step you took for granted.
+On a run given the authors' code, a lane that can read it checks that step
+against the code before your finding can enter an issue.
+
+**Where the paper admits the weakness, write the finding about what is left.**
+A limitations section or a caveat in the discussion means the authors have
+already said it. Say so in the first line of your comment, then name what is
+still missing — the control that would settle it, or the place where the
+abstract or the conclusions state the result as though the limit were not
+there. Do not rate it `major` because the limit exists.
+
 Set `escalate: true` only when the missing control or validation means the
 central result cannot be believed as stated. Finish with `submit_report`,
 passing `report_markdown` for `audit_field.md`, naming which domain pack you

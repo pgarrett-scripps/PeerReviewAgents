@@ -450,6 +450,76 @@ def _escalation_blocks(document, rows):
     return blocks
 
 
+def _code_check_blocks(document):
+    """What reading the code did to the findings that rested on a method.
+
+    Nothing where this run was given no code, which is most of them. Where
+    there was code, this is the only place a contradicted finding appears: it
+    is in no issue and in no required change, and an author who is told nothing
+    about it cannot see that it was raised, read against the code, and thrown
+    out. So each one is printed with the passage of the paper it was raised
+    against, the passage of the code that decided it, and the one or two
+    sentences the check wrote about the difference.
+
+    Confirmed findings are in the issues like any other, and are listed here
+    with their code quote so the author can see the method claim was not taken
+    on trust. ``not-shown`` says what was searched, because a finding the code
+    does not settle stands on the reviewer's reading alone, and the author is
+    better off knowing the code was looked at than guessing.
+    """
+    record = document.get('code_check')
+    if not isinstance(record, dict):
+        return []
+    checks = issue_model.objects_in(record.get('checks'))
+    over_cap = int(record.get('over_cap') or 0)
+    if not checks and not over_cap:
+        return []
+    blocks = [('heading2', 'Checked against the code'),
+              ('paragraph', 'Each finding below asserted how something was computed, sampled, '
+                            'filtered or selected. The code was read at the passage that decides '
+                            'it before the finding was allowed into this review.')]
+    titles = {'contradicted': 'Thrown out: the code does not do what the finding said',
+              'confirmed': 'Confirmed by the code',
+              'not-shown': 'The code does not settle it'}
+    for verdict in ('contradicted', 'confirmed', 'not-shown'):
+        group = [row for row in checks if str(row.get('verdict')) == verdict]
+        if not group:
+            continue
+        blocks.append(('heading3', titles[verdict]))
+        if verdict == 'contradicted':
+            blocks.append(('paragraph', 'These are in no issue and in no required change. They '
+                                        'are printed here because they were raised, and because '
+                                        'the reason they were dropped is itself something an '
+                                        'author may want to argue with.'))
+        for row in group:
+            label = ' · '.join(str(part) for part in
+                               (row.get('finding_slot'), row.get('finding_track'),
+                                _location(row)) if part)
+            blocks.append(('paragraph', (label + ': ' + str(row.get('title') or '')).strip(' :')))
+            if row.get('quote'):
+                blocks.append(('quote', str(row['quote'])))
+            evidence = row.get('code_evidence')
+            if isinstance(evidence, dict) and evidence.get('text'):
+                where = str(evidence.get('path') or '')
+                start, end = evidence.get('start_line'), evidence.get('end_line')
+                if start:
+                    where += ' lines ' + str(start) + ('–' + str(end) if end and end != start
+                                                       else '')
+                blocks += [('labeled', 'Code', where.strip()),
+                           ('quote', str(evidence['text']))]
+            searched = [str(one) for one in (row.get('searches') or []) if str(one).strip()]
+            if searched:
+                blocks.append(('labeled', 'Searched', '; '.join(searched)))
+            if row.get('note'):
+                blocks.append(('paragraph', str(row['note'])))
+    if over_cap:
+        blocks.append(('labeled', 'Not checked',
+                       f'{over_cap} further finding(s) rested on a method and were past the '
+                       f"stage's limit of {record.get('cap')}. They were left exactly as their "
+                       'reviewers filed them, and the code was not read against them.'))
+    return blocks
+
+
 def _verdict_blocks(document):
     verdict = document.get('verdict') or {}
     if not verdict:
@@ -505,6 +575,7 @@ def _issue_review(document):
             blocks += _issue(issue)
     blocks += _prior_round_blocks(document, rows)
     blocks += _escalation_blocks(document, rows)
+    blocks += _code_check_blocks(document)
     if document.get('limitations'):
         blocks += [('heading2', 'Limitations'),
                    ('bullets', [str(item) for item in document['limitations']])]

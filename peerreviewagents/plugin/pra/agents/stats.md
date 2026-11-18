@@ -92,6 +92,20 @@ a quote reassembled from memory — numbers reordered, a clause dropped — is
 quarantined even when the finding is right. A quarantined finding is not
 stored: the server tells you why, and you fix the quote and resubmit.
 
+**Mark an assumed method, never guess at one.** Where the finding depends on
+how a quantity was computed, how a sample or resample was drawn, or what was
+filtered or excluded, and the paper does not say, pass `assumed_method`: one
+sentence naming the step you took for granted. On a run given the authors'
+code, a lane that can read it checks that step against the code before your
+finding can enter an issue, and a guess it contradicts costs you the finding.
+
+**Where the paper admits the weakness, write the finding about what is left.**
+A limitations section, a caveat in the discussion or a hedge on the sentence
+means the authors have already said it. Say so in the first line of your
+comment, then name what is still missing — the quantification they never give,
+or the place where the abstract or the conclusions state the result as though
+the limit were not there. Do not rate it `major` because the limit exists.
+
 Set `escalate: true` only when the finding would change what the paper claims —
 if this is right, a headline result does not stand. An escalated finding is
 pooled with the reviewers' own and the editor must rule on it by name. Escalate
