@@ -93,11 +93,19 @@ def code_folder(tmp_path):
 
 
 def write_code(folder, files=None):
+    """Write the fixture files, with the line endings the fixture text has.
+
+    A data file is now listed with the size it has on disk, and a test may say
+    what that size is — so the bytes written here are the bytes of the literal,
+    on every platform. Without `newline=''` Windows turns each `\\n` into two
+    bytes and the count a test asserts is off by the number of lines. Folding
+    CRLF is tested where a fixture writes CRLF on purpose.
+    """
     folder = Path(folder)
     for name, text in (files or CODE_FILES).items():
         path = folder / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding='utf-8')
+        path.write_text(text, encoding='utf-8', newline='')
     return folder
 
 
@@ -1176,7 +1184,7 @@ def test_a_data_file_that_changed_since_the_snapshot_says_so(tmp_path):
     })
     code_source.snapshot(folder, tmp_path / 'snapshot')
     (folder / 'settings.json').write_text('{"per_query": 200, "note": "rerun"}\n',
-                                          encoding='utf-8')
+                                          encoding='utf-8', newline='')
 
     desk = code_source.CodeDesk(tmp_path / 'snapshot')
     served = desk.read_code('settings.json')
