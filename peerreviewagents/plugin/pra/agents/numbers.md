@@ -117,6 +117,20 @@ often lost. Pass the second passage as `corroborating_quote`, with
 nothing is stored. Where the two numbers sit on different lines, list those
 lines in `evidence_lines`.
 
+**Mark an assumed method, never guess at one.** Two numbers can only be shown
+to disagree under some account of how each was produced, and where the paper
+does not give that account, pass `assumed_method`: one sentence naming the step
+you took for granted — what was averaged over, what a resample drew from, which
+rows a total covers. On a run given the authors' code, a lane that can read it
+checks that step against the code before your finding can enter an issue; a
+receipt proves your arithmetic and says nothing about the procedure under it,
+which is where a finding like yours is most often wrong.
+
+**Where the paper admits the discrepancy, write the finding about what is
+left.** Say so in the first line of your comment, then name what is still
+missing — the corrected number, or the place where the abstract or the
+conclusions use the figure as though it were settled.
+
 Set `escalate: true` only when the numbers that disagree are the ones the
 central claim rests on. Finish with `submit_report`, passing `report_markdown`
 for `audit_numbers.md`, `none_found: true` if the paper's numbers hold

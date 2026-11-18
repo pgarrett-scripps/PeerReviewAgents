@@ -8,6 +8,7 @@ export const meta = {
     { title: 'Citations', detail: 'resolve every reference, then judge each in-text use against the source' },
     { title: 'Review', detail: 'core reviewers and specialists, in parallel, each isolated' },
     { title: 'Revision', detail: 'single-revision arm only: the reviewer revises its own findings' },
+    { title: 'Code check', detail: 'runs with code only: the findings that rest on how something was computed are read against the code before they can enter an issue' },
     { title: 'Editor', detail: 'group the findings into ranked issues, rule on escalations' },
     { title: 'Record', detail: 'write the run files, or mark the run blocked' },
   ],
@@ -85,6 +86,19 @@ const OPENED = {
     citation_workers: {
       type: 'array', items: { type: 'string' },
       description: 'the citation_workers list ingest returned, verbatim; [] where the arm has none',
+    },
+    // The code check, planned beside the stages and not one of them: it runs
+    // after the reviewers and before the editor, files no report the ledger
+    // waits for, and exists only where this run was given code.
+    code_check: {
+      type: 'object',
+      properties: {
+        slot: { type: 'string' },
+        model: { type: 'string' },
+        limit: { type: 'integer', description: 'how many findings the check is handed at most' },
+      },
+      description: 'the code_check entry ingest returned; omit it where it returned '
+                   + 'code_check: null',
     },
     // How long the reference list is, which is what the lookup stage below is
     // sized from. Without it the stage would run on a constant and stop
@@ -182,6 +196,24 @@ const STAGE = {
     summary: { type: 'string', description: 'one or two sentences' },
   },
   required: ['closed', 'findings_stored', 'summary'],
+}
+
+// The code check's own account of what it did: how many method claims it was
+// handed and how the verdicts came out. `closed` is what `stage` reads, as for
+// every other slot; the counts are logged, and the run folder holds the rows.
+const CHECKED = {
+  type: 'object',
+  properties: {
+    closed: { type: 'boolean', description: 'true only if submit_report returned closed' },
+    claims: { type: 'integer', description: 'how many claims method_claims handed you' },
+    confirmed: { type: 'integer' },
+    contradicted: { type: 'integer' },
+    not_shown: { type: 'integer', description: 'verdicts of not-shown' },
+    over_cap: { type: 'integer', description: 'over_cap from method_claims, verbatim' },
+    model: { type: 'string', description: 'the model you are running as' },
+    summary: { type: 'string', description: 'one or two sentences' },
+  },
+  required: ['closed', 'claims', 'summary'],
 }
 
 const EDITED = {
@@ -400,7 +432,8 @@ const opened = await agent(
   + ' they are the only copies, and each stage is handed its own code and its own model'
   + ' from here.'
   + ' Report sealed as the response gives it, and — where the response holds them'
-  + ' rather than null — the reader entry and the draft\'s pages and pieces. A response with'
+  + ' rather than null — the reader entry, the code_check entry and the draft\'s pages and'
+  + ' pieces. A response with'
   + ' sealed: false has no line count: leave that field out rather than reporting a zero. Do not'
   + ' claim the reader slot and do not call any other tool: the Read stage is a separate agent'
   + ' and the code is handed to it from here.',
@@ -448,7 +481,14 @@ const workerSlots = Object.keys(spawns).filter(slot => /^cite-[0-9]+$/.test(slot
 // writes, and a reader running a model the run did not record is a manuscript
 // nobody can account for.
 const readerSlot = opened.reader && opened.reader.slot ? opened.reader.slot : ''
+// The code check, planned beside the stages for the same reason and checked for
+// a model for the same reason: it decides which findings reach the editor at
+// all, so one running a model the run did not record is a decision nobody can
+// account for. Only runs given code have one.
+const checkSlot = opened.code_check && opened.code_check.slot ? opened.code_check.slot : ''
+const checkLimit = (opened.code_check && opened.code_check.limit) || 0
 const unplanned = slots.concat(workerSlots).concat(readerSlot ? [readerSlot] : [])
+  .concat(checkSlot ? [checkSlot] : [])
   .filter(slot => !spawns[slot])
 if (unplanned.length > 0) {
   await block('ingest returned no model for ' + unplanned.join(', ') + ', so '
@@ -736,12 +776,24 @@ const citationWork = specSlots.indexOf('spec-citations') >= 0
   : Promise.resolve(null)
 
 phase('Review')
+// Said to the reviewers only where it is true: on a run with the authors' code
+// there is a lane that can settle a method they would otherwise have to assume,
+// and a finding that marks the assumption gets read against the code instead of
+// taken on trust. On a run without code there is nothing to check it against.
+const markMethods = checkSlot
+  ? ' This run was given the code behind the paper. Where a finding of yours depends on how a'
+  + ' number was computed, how a sample was drawn, or what was filtered or selected, and the'
+  + ' paper does not say, pass assumed_method naming the step you took for granted rather than'
+  + ' writing it as fact: a lane that can read the code checks every such step before the'
+  + ' finding enters an issue.'
+  : ''
 const reviewPrompt = slot => code =>
   'You are reviewing a manuscript that has already been ingested into this run.'
   + ' Call claim_agent with slot="' + slot + '" and claim_code="' + code + '" first: it returns'
   + ' your token, the paper outline and the domain guidance. The code is yours alone and works'
   + ' once, so do not claim any other slot. Then read what you need and submit the findings you'
   + ' would defend, or none. Close with submit_report.'
+  + markMethods
 
 const specialistPrompt = slot => {
   const track = slot.slice('spec-'.length)
@@ -751,6 +803,7 @@ const specialistPrompt = slot => {
     + SPECIALIST_BRIEF[track]
     + '. Submit the findings you would defend, or none, and set escalate only where the finding'
     + ' bears on the central claim. Close with submit_report, passing report_markdown.'
+    + markMethods
 }
 
 // The code lane is briefed here rather than from SPECIALIST_BRIEF: those six
@@ -860,6 +913,56 @@ if (hasRevision) {
   )
   if (!revised) await block('The revision stage returned nothing twice')
   reported.push(revised)
+}
+
+// Every reviewer has reported and nothing has been grouped yet, which is the
+// one moment this stage can run: the findings exist, and the editor has not
+// yet built an issue on one of them. Only runs given code have the slot, and a
+// run without it goes straight to the editor exactly as before.
+let codeCheck = null
+if (checkSlot) {
+  phase('Code check')
+  const checked = await stage(
+    checkSlot, 'pra:code-check', 'Code check',
+    code => 'Every reviewer and specialist has reported. Some of their findings rest on how a'
+    + ' number was computed, how a sample was drawn, or what was filtered or selected — and this'
+    + ' run has the code that does it. Claim slot="' + checkSlot + '" with claim_code="' + code
+    + '", then call method_claims: it hands you the findings that assert or assume a method,'
+    + ' each with the passage of the paper it cites'
+    + (checkLimit ? ', at most ' + checkLimit + ' of them' : '')
+    + '. For each one, find the code that does the step with list_code, search_code and'
+    + ' read_code, and answer with submit_code_check: confirmed where the code does what the'
+    + ' finding says, contradicted where it does something else and the finding does not survive'
+    + ' it, not-shown where the code does not settle it. confirmed and contradicted carry the'
+    + ' passage of the code that decides it, quoted exactly as read_code served it; not-shown'
+    + ' carries the searches you ran. You review no part of the paper and file no findings of'
+    + ' your own. Answer every claim, then close with submit_report: how many you checked and'
+    + ' how they came out.',
+    CHECKED,
+  )
+  if (!checked) {
+    // Not a blocked run. The check only ever takes findings out, so a run
+    // whose check never answered is this review with its findings as the
+    // reviewers filed them — which is every review before this stage existed.
+    // It is logged rather than hidden, because "the code was checked" is not
+    // true of this run and nothing in the folder will say it was.
+    log(checkSlot + ': returned nothing twice, so no finding was checked against the code and'
+      + ' every one of them stands as its reviewer filed it')
+  } else {
+    reported.push(checked)
+    codeCheck = {
+      claims: checked.claims || 0,
+      confirmed: checked.confirmed || 0,
+      contradicted: checked.contradicted || 0,
+      not_shown: checked.not_shown || 0,
+      over_cap: checked.over_cap || 0,
+    }
+    log(checkSlot + ': ' + (checked.claims || 0) + ' method claim(s) checked — '
+      + (checked.confirmed || 0) + ' confirmed by the code, '
+      + (checked.contradicted || 0) + ' contradicted and kept out of the issues, '
+      + (checked.not_shown || 0) + ' not settled by it'
+      + (checked.over_cap ? '; ' + checked.over_cap + ' past the cap, left as filed' : ''))
+  }
 }
 
 let edited = null
@@ -1023,6 +1126,10 @@ return {
     attempts: edited.attempts,
   },
   citations: citations,
+  // What reading the code did to the findings: `null` on a run with no code,
+  // and on one whose check never answered — which is a run whose findings
+  // stand as filed, not a run where the code agreed with them.
+  code_check: codeCheck,
   findings_stored: findingsStored,
   prior_issues: run.prior_issues || null,
   issues: recorded.issues,

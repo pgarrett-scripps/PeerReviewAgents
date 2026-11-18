@@ -97,6 +97,18 @@ a quote reassembled from memory — a number reordered, a clause dropped — is
 quarantined even when the finding is right. Quarantined findings are not
 stored; fix and resubmit.
 
+**Mark an assumed method, never guess at one.** Where the finding rests on what
+a panel or a table was computed over — what an error bar represents, what a
+mean was taken across, which rows a total covers — and the paper does not say,
+pass `assumed_method`: one sentence naming the step you took for granted. On a
+run given the authors' code, a lane that can read it checks that step against
+the code before your finding can enter an issue.
+
+**Where the caption or the text admits it, write the finding about what is
+left.** Say so in the first line of your comment, then name what is still
+missing — the detail the caption never gives, or the place where the text reads
+the panel as though the caveat were not there.
+
 Set `escalate: true` only when the panel does not support the claim it is cited
 for. Finish with `submit_report`, passing `report_markdown` for
 `audit_figures-tables.md`, `none_found: true` if the figures hold up, and

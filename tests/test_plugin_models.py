@@ -241,7 +241,7 @@ def test_the_agent_files_pin_the_same_models_this_module_defaults_to():
         assert found, f'{path.name} pins no model, so its slot would inherit one'
         pinned[path.stem] = found.group(1)
 
-    assert len(pinned) == 12, pinned
+    assert len(pinned) == 13, pinned
     assert pinned['core-reviewer'] == model_plan.DEFAULT_REVIEWER_MODELS[0]
     assert pinned['editor'] == model_plan.DEFAULT_EDITOR_MODEL
     assert pinned['recorder'] == model_plan.DEFAULT_RECORDER_MODEL
@@ -249,13 +249,17 @@ def test_the_agent_files_pin_the_same_models_this_module_defaults_to():
     assert pinned['reader'] == model_plan.DEFAULT_READER_MODEL
     specialists = {name: model for name, model in pinned.items()
                    if name not in ('core-reviewer', 'editor', 'recorder', 'citation-worker',
-                                   'reader', srv.CODE_TRACK)}
+                                   'reader', srv.CODE_TRACK, srv.CHECK_TRACK)}
     assert set(specialists) == set(srv.SPECIALIST_TRACKS), 'one file per specialist track'
     assert set(specialists.values()) == {model_plan.DEFAULT_SPECIALIST_MODEL}
     # The code lane is a specialist too, and is deliberately not one of the
     # six: it is planned only where the run was given code. It is pinned to the
     # same model they are, because it is the same kind of work on two documents.
     assert pinned[srv.CODE_TRACK] == model_plan.DEFAULT_SPECIALIST_MODEL
+    # The code check is that same lane again, reading its own findings instead
+    # of the paper, so it is pinned to the model the code lane runs — and a run
+    # copies the code lane's resolved model onto it rather than reading this.
+    assert pinned[srv.CHECK_TRACK] == pinned[srv.CODE_TRACK]
     assert set(pinned.values()) <= set(model_plan.KNOWN)
 
 
