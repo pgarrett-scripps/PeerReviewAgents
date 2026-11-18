@@ -568,10 +568,11 @@ keys.
 | `kind`, `source` | `git-clone` or `folder`, and where it came from as the caller named it: the URL for a clone, the resolved path for a folder |
 | `commit`, `branch`, `dirty` | the state the code was in. `dirty` is `None` for a snapshot of something that is not a repository |
 | `snapshot` | the absolute path of `<run>/code/`, which holds `manifest.json` and the text under `files/` |
-| `files_in_snapshot`, `files_skipped` | what was taken, and how many paths were left out — a binary, a data file, one over the size caps, one that may hold secrets, a run folder of this package, or a whole folder or symbolic link never walked into, which each count once. What a repository does not track is one row per top folder with a count, not a row per file |
+| `files_in_snapshot`, `files_skipped` | what was taken, and how many paths were left out — a file that is neither code nor data, one over the size caps, one that may hold secrets, a run folder of this package, or a whole folder or symbolic link never walked into, which each count once. What a repository does not track is one row per top folder with a count, not a row per file. A fetched data file joins `files_in_snapshot` when it is fetched |
 | `truncated` | why the snapshot stopped early, in words, including how many files of each kind a cap left out; empty for one that holds the whole of what it was pointed at |
 | `source_cut` | how many program source files a cap left out. Above zero, the snapshot is not the whole of the code and no finding may say the code never does something |
-| `manifest` | the snapshot's own manifest, which names everything either way, with a digest per file taken and a reason per path skipped |
+| `data_listed`, `data_fetched`, `data_partial`, `data_refused`, `data_bytes` | the data files the code ships, and what the reviewer asked for: `data_partial` counts the ones served only as a head, `data_refused` the ones a budget, a format or a changed file turned down, `data_bytes` what was stored |
+| `manifest` | the snapshot's own manifest, which names everything either way, with a digest per file taken, a reason per path skipped, and a row per data file under `data` |
 | `files_opened`, `opened`, `searches` | what a reviewer actually did with it |
 
 The last row is the one worth printing beside the first. A lane that opened no
@@ -600,12 +601,30 @@ git's list chose the files, which is the case for a checkout and for a clone of
 a URL. A folder that is no checkout is walked instead, and the walk leaves
 hidden folders and known cache and build folders alone.
 
-**When there is more text than the caps hold, the snapshot keeps what a
+**The data the code ships is listed, not copied, and fetched when the reviewer
+asks for it.** `manifest["data"]` is a row per data file — path, kind, size,
+whether it can be read as text, and why not where it cannot — and those rows
+spend neither cap, because a repository's data runs to gigabytes and one
+196 KB JSON of it may hold the answer to a finding. `read_code` on a listed
+path fetches it then and there: the engine copies it in, records its bytes and
+`sha256` at that moment, and from then on serves and verifies it exactly like
+source, so a `code-checked` finding on a data line checks the same way. A file
+up to `limits["max_file_bytes"]` is fetched whole; a larger text file is never
+read whole, and what is stored is a head of `limits["data_head_bytes"]` cut
+back to the last whole line, marked `partial` everywhere, with the file's total
+size, its line count and a table's column names beside it — a finding may quote
+only the lines that were stored. Binary data (parquet, h5, npy, xlsx, images,
+archives) and a file stored in Git LFS stay listed with a size and a reason and
+are never opened. `limits["max_data_fetches"]` and `limits["max_data_bytes"]`
+bound a run, and a spent budget is a refusal in words rather than a silence.
+For a local folder the fetch reads the working file: one that changed since the
+snapshot was taken says so in the answer and in the manifest.
+
+**When there is more code than the caps hold, the snapshot keeps what a
 reviewer needs.** The order is program source (scripts, pipelines, notebooks),
-then build and environment files, then configuration and prose, and data-like
-text (JSON, YAML, TOML, CSV-like, lock files) last; inside a kind, shallower
-paths before deeper ones. Both caps cut in that order, the file count and the
-byte total alike. `manifest["counts"]["kinds"]` is what was taken per kind,
+then build and environment files, then configuration and prose; inside a kind,
+shallower paths before deeper ones. Both caps cut in that order, the file count
+and the byte total alike. `manifest["counts"]["kinds"]` is what was taken per kind,
 `manifest["left_out_kinds"]` what a cap left out per kind, and
 `manifest["source_cut"]` the program source count on its own — the one that
 limits what the review may claim, which is why it is repeated in `truncated`,

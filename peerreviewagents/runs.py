@@ -614,7 +614,8 @@ def _code_reviewed(progress, manifest, problems):
     empty = {'reviewed': False, 'kind': '', 'source': '', 'commit': '', 'branch': '',
              'dirty': None, 'snapshot': None, 'files_in_snapshot': 0, 'files_skipped': 0,
              'truncated': '', 'source_cut': 0, 'files_opened': [], 'opened': 0,
-             'searches': 0, 'manifest': None}
+             'searches': 0, 'data_listed': 0, 'data_fetched': 0, 'data_partial': 0,
+             'data_refused': 0, 'data_bytes': 0, 'manifest': None}
     progress, manifest = progress or {}, manifest or {}
     record = progress.get('code')
     if record is None or record == {}:
@@ -655,6 +656,16 @@ def _code_reviewed(progress, manifest, problems):
         'files_opened': [str(name) for name in (record.get('files_opened') or [])],
         'opened': _count(record.get('opened')),
         'searches': _count(record.get('searches')),
+        # Data files are listed by the snapshot and copied into it only when a
+        # reviewer asks, so what was read is a different number from what was
+        # there. A file fetched only as far as its head is ``partial`` and a
+        # finding may quote only the lines that were stored; a file the budget
+        # or its own format refused was never opened at all.
+        'data_listed': _count(record.get('data_listed')),
+        'data_fetched': _count(record.get('data_fetched')),
+        'data_partial': _count(record.get('data_partial')),
+        'data_refused': _count(record.get('data_refused')),
+        'data_bytes': _count(record.get('data_bytes')),
         'manifest': taken if isinstance(taken, dict) else None,
     }
 

@@ -2349,12 +2349,16 @@ def view_supplement(agent_token: str, id: str, page: int = 1) -> dict:
 
 
 def list_code(agent_token: str, path: str = '', pattern: str = '') -> dict:
-    """The files in the code snapshot, with their line counts, and what was left out.
+    """The files in the code snapshot, the data it can fetch, and what was left out.
 
     ``path`` narrows to a folder of the snapshot and ``pattern`` is a glob such
     as ``*.py``. The answer also says how many files were skipped and why, and
     whether a cap cut the snapshot short — so "the code never does that" is
     never read off a snapshot that simply left the file out.
+
+    ``data`` lists every data file the code ships, with its size and whether it
+    can be read as text. Those are not copied up front; ``read_code`` on one
+    fetches it, and from then on it is a file of the snapshot like any other.
     """
     return _call(agent_token, 'list_code', {'path': path, 'pattern': pattern})
 
@@ -2366,6 +2370,12 @@ def read_code(agent_token: str, path: str, part: int = 1) -> dict:
     cites: ``submit_finding`` stores a code quote only if the snapshot holds
     that text at the lines you name. Which files you opened is reported with
     the review.
+
+    A path ``list_code`` lists under ``data`` is fetched by reading it. A file
+    larger than the per-file cap comes back ``partial``: its first lines, its
+    size, its line count and a table's column names, and a finding may quote
+    only the lines served. Binary data, a Git LFS pointer, a spent data budget
+    and a file that changed since the snapshot are each said in the answer.
     """
     return _call(agent_token, 'read_code', {'path': path, 'part': part})
 
@@ -2376,6 +2386,10 @@ def search_code(agent_token: str, query: str, regex: bool = False, path: str = '
     This is how a threshold, a filter or a version named in the methods section
     is found in the code: search for the number or the name, then read the file
     around the hit before concluding anything about it.
+
+    Data files are searched only where ``path`` names them — a data file, or a
+    folder of them — because searching them means fetching them, and the
+    answer says which ones it fetched and which the budget refused.
     """
     return _call(agent_token, 'search_code', {'query': query, 'regex': regex, 'path': path})
 
