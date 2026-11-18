@@ -153,10 +153,10 @@ def normalised(text) -> str:
 def fingerprint(text) -> str:
     """The identity of a passage across versions: a digest of its normal form.
 
-    Line numbers move when a manuscript is re-imported or reflowed, so a prior
-    round matches its issues to the new manuscript by the text itself. Hashing
-    the normal form rather than the printed characters means a changed dash or
-    a respaced sentence is still the same passage, which is what a reader would
+    Line numbers move when a manuscript is re-imported or reflowed, so a
+    passage is matched by its text rather than by where it sat. Hashing the
+    normal form rather than the printed characters means a changed dash or a
+    respaced sentence is still the same passage, which is what a reader would
     say too.
     """
     return digest(normalised(text))

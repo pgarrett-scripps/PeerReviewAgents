@@ -25,12 +25,6 @@ files.
    `"specialist_model": "sonnet"` or `"editor_model": "fable"` only when the
    request names models. Left out, the workflow uses its own defaults.
 
-   Add `"prior_issues": "<path>"` when the request is a later round of a review
-   this machine already ran — the `issues.json` of the earlier run, or that
-   run's folder. The editor then matches this round's issues against that one's
-   and keeps the matched ids, so one problem carries one id across rounds and
-   the new review says what was resolved, what persists and what regressed.
-
 3. The workflow runs in the background. Wait for it, then report the object it
    returns: the status, the findings by track, how many were escalated, the
    issue count with its required changes and suggestions, and the run folder. If

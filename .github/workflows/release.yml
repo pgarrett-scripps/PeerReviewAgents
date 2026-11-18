@@ -140,7 +140,6 @@ jobs:
               'workflows/review.js',
               'skills/peer-review-manuscript/SKILL.md',
               'skills/check-draft/SKILL.md',
-              'skills/follow-up/SKILL.md',
           ]
           required += ['agents/' + name + '.md' for name in (
               'citation-worker', 'citations', 'core-reviewer', 'editor',

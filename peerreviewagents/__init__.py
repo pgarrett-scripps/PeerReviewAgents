@@ -45,16 +45,11 @@ Reading a run
     for each, with the fetched abstract and full text left out unless asked
     for — for a consumer that shows which reference resolved to which record.
 
-Checking a file before publishing it
-    :func:`validate_prior_issues` is every problem that would stop an issues
-    document being read as the prior round of a later review, in words; an
-    empty list means ``peerreview review --prior-issues`` will load it. It is
-    the check that loader runs rather than a copy of it, so a consumer holds a
-    file it is about to publish against the code that will read it next round.
-    :mod:`peerreviewagents.issues` also holds the tolerant readers a consumer
-    of a document it did not write needs — ``rows_of``, ``members_of``,
-    ``quotes_of`` — and ``field_problems``, which is the list of malformed
-    fields :func:`read_run` reports a damaged document through.
+Reading a document this tool did not write
+    :mod:`peerreviewagents.issues` holds the tolerant readers a consumer of an
+    issues document needs — ``rows_of``, ``members_of`` — and
+    ``field_problems``, which is the list of malformed fields
+    :func:`read_run` reports a damaged document through.
 
 Checking an installation
     :func:`plugin_directory` is the ``pra`` plugin that ships inside this
@@ -125,8 +120,8 @@ Names
     and :data:`FINDING_SCHEMA_VERSION` is the schema every stored finding is
     stamped with. :data:`ISSUES_SCHEMA_VERSION` is the schema of ``issues.json``,
     the one versioned source of truth a run's review is rendered from, and
-    :data:`ISSUE_SEVERITIES`, :data:`ISSUE_CATEGORIES` and
-    :data:`ISSUE_STATUSES` are the vocabularies an issue is written in.
+    :data:`ISSUE_SEVERITIES` and :data:`ISSUE_CATEGORIES` are the vocabularies
+    an issue is written in.
     :data:`BASE_SCHEMA_VERSION` is the schema of a manuscript workspace's
     ``map.json`` and ``manifest.json``, and :data:`MAIN_DOCUMENT` is the name of
     its main document, the one every workspace holds.
@@ -147,7 +142,6 @@ from typing import TYPE_CHECKING
 from .issues import (
     ISSUE_CATEGORIES,
     ISSUE_SEVERITIES,
-    ISSUE_STATUSES,
     ISSUES_SCHEMA_VERSION,
 )
 from .names import (
@@ -188,7 +182,6 @@ __all__ = [
     "review_arms",
     "read_run",
     "read_citation_ledger",
-    "validate_prior_issues",
     "locate_run",
     "NotARunFolder",
     "import_paper",
@@ -220,7 +213,6 @@ __all__ = [
     "ISSUES_SCHEMA_VERSION",
     "ISSUE_SEVERITIES",
     "ISSUE_CATEGORIES",
-    "ISSUE_STATUSES",
 ]
 
 _LAZY = {
@@ -235,9 +227,6 @@ _LAZY = {
     # The ledger rows themselves, for the consumers that were re-implementing
     # "the last row for a row_id is the row" against the engine module.
     "read_citation_ledger": (".runs", "read_citation_ledger"),
-    # The check `--prior-issues` runs, for a consumer holding a file it is about
-    # to publish against the code that will read it next round.
-    "validate_prior_issues": (".issues", "validate_prior_issues"),
     # The run-folder resolution and the error both of those raise, so an app
     # that lists folders never imports `runs` for them.
     "locate_run": (".runs", "locate"),

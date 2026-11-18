@@ -125,7 +125,6 @@ the review's options:
 | `--track` | all six | Repeatable; limits the specialist tracks (used by `draft-check`) |
 | `--citation-workers` | `4` | Workers judging in-text citations against the resolved sources, 0 to 12; only where the `citations` track runs |
 | `--citation-worker-model` | `claude-haiku-5-5` | Every citation worker |
-| `--prior-issues` | none | An earlier run's `issues.json`, or its run folder: the editor matches this round's issues against it, keeps the matched ids, and marks each prior issue persisting, regressed or resolved |
 | `--code` | none | A folder or repository URL holding the code behind the paper: its text is snapshotted into the run folder and one more specialist reads the paper against it |
 | `--literature-cutoff` | today | Latest eligible publication date |
 | `--per-agent-tokens` | `500000` | Per-agent token ceiling, enforced from the session stream |
@@ -402,10 +401,9 @@ starts through the `peerreview-plugin-server` console script instead: install
 this package in the environment that shell uses, or the plugin loads with its
 tools absent. `peerreview review` needs nothing of the sort.
 
-It carries three skills: `peer-review-manuscript` for a full review,
-`check-draft` for a draft of your own, and `follow-up` for what changed since
-the last run. Each one runs the same server and the same guarantees as
-`peerreview review`.
+It carries two skills: `peer-review-manuscript` for a full review and
+`check-draft` for a draft of your own. Each one runs the same server and the
+same guarantees as `peerreview review`.
 
 ## As a library
 
@@ -488,11 +486,10 @@ them:
 | `cause`, `note` | why a run that is not complete stopped, and a limit that fired after the review was written |
 | `stage` | `startup` when no session ever ran and no subscription usage was spent, `session` once one did |
 | `findings` | every stored finding, de-duplicated per `finding_uid` |
-| `issues` | the review: one row per issue, with `id`, `name`, `severity`, `category`, `rank`, `statement`, `raised_by`, its `members` (the findings that evidence it), the specialist `audits` it cites, and `prior_id`/`status`/`status_reason` where a prior round was given |
+| `issues` | the review: one row per issue, with `id`, `name`, `severity`, `category`, `rank`, `statement`, `raised_by`, its `members` (the findings that evidence it), and the specialist `audits` it cites |
 | `issues_source` | `editor` where an editor grouped the findings, `server` where the arm runs no editor and the server synthesised one issue per finding |
-| `prior_round` | the earlier run's `issues.json` the issues were matched against, or `None` |
 | `findings_source` | `issues`, `ledger` or `none` |
-| `counts` | `findings`, `issues`, `required`, `suggestions`, `resolved`, `issue_members`, `by_severity`, `by_category`, `quarantined`, and the server's own `findings_delivered`/`findings_submitted` |
+| `counts` | `findings`, `issues`, `required`, `suggestions`, `issue_members`, `by_severity`, `by_category`, `quarantined`, and the server's own `findings_delivered`/`findings_submitted` |
 | `quarantined`, `guard_status` | what the guard threw out, and `clean` or `quarantined` |
 | `citations` | the citation ledger: `enabled`, the absolute `ledger` path, `counts` (references resolved, not found, could not be checked, mismatched, retracted; in-text uses judged and how), `complete`, a one-sentence `summary`, and `problems` — one line per stage that did not finish |
 | `escalations`, `escalation_rulings` | the specialist findings that asked for a ruling, and the rulings given |
