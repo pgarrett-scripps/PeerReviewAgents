@@ -448,6 +448,10 @@ check['problems']      # the problems it was given, as --problems held them
 check['reports']       # absolute paths to fix-check.json, FIXES.md and fix-checks.jsonl
 ```
 
+For a fixture of one of these folders in your own tests, without a model and
+without hand-writing the JSON, see
+[`scripted_fix_check`](#building-a-written-fix-check-for-your-tests-scripted_fix_check).
+
 `complete-without-findings` on a check means it was written with no verdict in
 it: every problem it was given is reported as not checked. `NotARunFolder` for
 a folder that is not a run, `ValueError` for a symlink under the review folder,
@@ -1853,6 +1857,69 @@ base = read.base()          # the sealed workspace: `text`, `rows`, `manifest`
 - One run is open per process, so use it as a context manager (or call
   `close()`): leaving the block puts back whatever run was attached before.
   The folder stays as it is, sealed, for the test to read.
+
+### Building a written fix check for your tests: `scripted_fix_check`
+
+**For tests and fixtures,** like `scripted_read` and for the same reason. An
+application that shows a fix check renders `fix-check.json` and `FIXES.md` — a
+verdict, what it rests on, the quotation of the new draft behind it, the
+problems nobody checked — and until this function the only folder holding those
+came out of a model run, so a consumer's fixture was hand-written JSON copying
+the shape by eye. `scripted_fix_check` opens a real check on a PDF with a
+problems file, seals the manuscript, claims every checker slot and hands back a
+handle whose methods are the checker's own tools:
+
+```python
+from peerreviewagents import CheckRefused, read_fix_check, scripted_fix_check
+
+PROBLEMS = [
+    {'id': 'i01', 'statement': 'The abstract reports a 42% improvement …',
+     'severity': 'major',
+     'evidence': [{'document': '', 'quote': 'a 42% improvement over the baseline'}]},
+    {'id': 'i02', 'statement': 'The experiment is reported once.',
+     'severity': 'moderate',
+     'evidence': [{'document': '', 'quote': 'measured on a single instrument'}]},
+]
+
+with scripted_fix_check('paper-v2.pdf', folder, PROBLEMS) as check:
+    check.submit_fix_check('i01', 'fixed', quote=check.line(14),
+                           note='The abstract now reports 24%.')
+    check.submit_fix_check('i02', 'cannot-tell',
+                           reason='A repeated experiment is not in this draft.')
+    check.write()                      # fix-check.json and FIXES.md
+
+reading = read_fix_check(folder)       # or check.read(), while it is open
+```
+
+- `problems` — the third argument — is the `--problems` file: a path to one, or
+  the document itself (a list of rows, or an object with `problems`), which is
+  written to `<folder>/problems.json` for you. Either way the ingest validates
+  it, so a row the check cannot look for raises `CheckRefused` naming every
+  reason instead of being checked against nothing.
+- The manuscript is sealed as the converter read it
+  (`peerreviewagents.scripted.SCRIPTED_SEAL` is the recorded reason): a verdict
+  quotes the lines of the new draft, and there are no lines until the
+  manuscript is sealed. For a fixture whose manuscript was *read*, build that
+  one with `scripted_read`.
+- `submit_fix_check` routes each verdict to the checker whose batch holds that
+  problem, so a script does not have to know how the server split them —
+  `check.slots` names the slots, `check.batches` is `{problem id: slot}`,
+  `check.slot_of(id)` is one, and `slot=` overrides the routing, which is how a
+  test sends a verdict to the wrong checker on purpose.
+- `fix_queue(slot='')` is the queue tool, and every tool the slot was granted —
+  `read_paper`, `search`, `view_page`, the offline tools — is a method under
+  its own name. `check.tools` lists them.
+- `line(n, document='')` is line *n* of the new draft as `read_paper` served
+  it, which is where a script takes an exact quotation from; `served()` is the
+  whole of a document in one string.
+- `write()` writes the check as the recorder and returns the server's answer
+  (also kept on `check.written`); `read()` is `read_fix_check` on the folder.
+- A refusal raises `CheckRefused`, with the tool on `.tool` and the server's
+  whole answer on `.answer`. `ToolRefused` is the base class of that and of
+  `ReaderRefused`, for a test that catches either.
+- One run is open per process, so use it as a context manager (or call
+  `close()`): leaving the block puts back whatever run was attached before. The
+  folder stays as it is, with whatever `write()` wrote in it.
 
 ### Writing files the engine reads: `peerreviewagents.workspace`
 

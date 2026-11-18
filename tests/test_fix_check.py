@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 from manuscripts import seal_converted
 
+import peerreviewagents
 from peerreviewagents import names
 from peerreviewagents import problems as problem_list
 from peerreviewagents.cli import main as cli
@@ -29,6 +30,12 @@ from peerreviewagents.plugin import models as model_plan
 from peerreviewagents.plugin import server as srv
 from peerreviewagents.plugin import starter
 from peerreviewagents.runs import NotARunFolder, read_fix_check
+from peerreviewagents.scripted import (
+    CheckRefused,
+    ReaderRefused,
+    ToolRefused,
+    scripted_fix_check,
+)
 
 FIXTURE = Path(__file__).parent / 'fixtures' / 'single-column.pdf'
 
@@ -649,3 +656,151 @@ def test_the_check_has_its_own_ceilings(tmp_path):
     assert defaults['per_agent_tokens'] == starter.FIX_PER_AGENT_TOKENS
     assert defaults['per_run_tokens'] == starter.FIX_PER_RUN_TOKENS
     assert defaults['timeout'] == starter.FIX_WALL_TIMEOUT
+
+
+# -- the check driven from a script -----------------------------------------
+#
+# `scripted_fix_check` is this lane with a script in the checker's seat. The
+# tests below are a consumer's: they drive it the way an application's own
+# fixtures will, through the public name only, and what they hold down is that
+# the folder it leaves is the folder a model run leaves.
+
+
+def problem_rows(pairs):
+    """Problem rows in memory, from ``(id, quote of the old draft)`` pairs."""
+    return [{'id': identity,
+             'statement': f'Problem {identity}: the draft says something it cannot show.',
+             'severity': 'major',
+             'evidence': [{'document': '', 'quote': quote}]}
+            for identity, quote in pairs]
+
+
+def test_a_scripted_check_writes_the_folder_a_consumer_renders(tmp_path, draft_lines):
+    """Three verdicts, three bases, and a written check read back by the public reader.
+
+    This is the whole point of the function: a fixture for ``fix-check.json``
+    and ``FIXES.md`` written by the lane that writes them, rather than JSON
+    copied by eye from the engine's output shape.
+    """
+    rows = problem_rows([('i01', draft_lines[0]), ('i02', GONE[0]), ('i03', draft_lines[1])])
+    with scripted_fix_check(FIXTURE, tmp_path / 'run', rows) as check:
+        assert check.slots == ('fix-1',)
+        assert check.fix_queue()['count'] == 3
+        # The lane has no finding tools, and the handle holds exactly what the
+        # server granted the slot — not a list of its own.
+        assert 'submit_finding' not in check.tools
+        assert {*srv.FIX_TOOLS, 'read_paper'} <= set(check.tools)
+
+        number = next(index for index in range(1, check.base().line_count() + 1)
+                      if draft_lines[2] in check.line(index))
+        quoted = check.submit_fix_check('i01', 'fixed', quote=check.line(number).strip(),
+                                        line=number, note='Rewritten: it now reports 24%.')
+        gone = check.submit_fix_check('i02', 'fixed', searches=[GONE[0], 'withdrawn'],
+                                      note='The sentence is gone from this draft.')
+        open_one = check.submit_fix_check('i03', 'cannot-tell',
+                                          reason='A repeated experiment is not in this draft.',
+                                          note='Nothing here settles it either way.')
+        assert [one['basis'] for one in (quoted, gone, open_one)] == ['quote', 'old-quote-gone',
+                                                                     '']
+        assert draft_lines[2] in check.served()
+
+        written = check.write()
+        assert written['counts'] == {'fixed': 2, 'not-fixed': 0, 'cannot-tell': 1}
+        reading = check.read()
+
+    assert srv.STATE['run'] is None, 'the handle left a run attached'
+    assert reading['status'] == 'complete'
+    assert reading['counts'] == written['counts']
+    assert Path(reading['reports']['markdown']).is_file()
+    assert {row['problem_id']: row['verdict'] for row in reading['checks']} == {
+        'i01': 'fixed', 'i02': 'fixed', 'i03': 'cannot-tell'}
+    # And the same folder, read by the public reader after the handle is closed.
+    assert read_fix_check(tmp_path / 'run')['counts'] == written['counts']
+
+
+def test_a_scripted_check_takes_a_problems_file_or_the_rows_themselves(tmp_path, draft_lines):
+    """A test with a file uses it; a test without one does not have to write it."""
+    given = problems_file(tmp_path / 'given.json', [('i01', draft_lines[0])])
+    with scripted_fix_check(FIXTURE, tmp_path / 'from-file', given) as check:
+        assert [one['id'] for one in check.problems] == ['i01']
+        assert not (tmp_path / 'from-file' / 'problems.json').exists()
+
+    rows = {'problems': problem_rows([('i01', draft_lines[0])])}
+    with scripted_fix_check(FIXTURE, tmp_path / 'from-rows', rows) as check:
+        assert [one['id'] for one in check.problems] == ['i01']
+        beside = json.loads((tmp_path / 'from-rows' / 'problems.json').read_text(encoding='utf-8'))
+        assert beside['schema_version'] == names.PROBLEMS_SCHEMA_VERSION
+        assert problem_list.problems_in_document(beside) == []
+
+
+def test_a_scripted_check_sends_each_verdict_to_the_checker_that_holds_it(tmp_path, draft_lines):
+    """The server splits the problems between checkers; a script should not have to.
+
+    The routing is the server's own batches, read from the queue at the open,
+    so ``slot=`` is left for a test that means to answer from the wrong slot.
+    """
+    rows = problem_rows([(f'i{index:02d}', draft_lines[index])
+                         for index in range(srv.FIX_BATCH + 2)])
+    with scripted_fix_check(FIXTURE, tmp_path / 'run', rows) as check:
+        assert check.slots == ('fix-1', 'fix-2')
+        assert check.fix_queue('fix-1')['count'] == srv.FIX_BATCH
+        assert check.fix_queue('fix-2')['count'] == 2
+        assert check.slot_of('i00') == 'fix-1' and check.slot_of('i11') == 'fix-2'
+
+        with pytest.raises(CheckRefused) as wrong_slot:
+            check.submit_fix_check('i11', 'not-fixed', slot='fix-1',
+                                   searches=['the old wording'], note='Still there.')
+        assert 'not in your batch' in wrong_slot.value.answer['request_rejected']
+
+        answered = check.submit_fix_check('i11', 'not-fixed', searches=['the old wording'],
+                                          note='Unchanged in this draft.')
+        assert answered['basis'] == 'old-quote-stands'
+
+        with pytest.raises(LookupError, match='i99'):
+            check.slot_of('i99')
+        with pytest.raises(LookupError, match='fix-9'):
+            check.fix_queue('fix-9')
+
+
+def test_a_scripted_check_raises_the_refusal_a_model_would_have_read(tmp_path, draft_lines):
+    """Nothing reads a script's answers, so a refusal is raised rather than returned."""
+    with pytest.raises(CheckRefused) as no_quotation:
+        scripted_fix_check(FIXTURE, tmp_path / 'refused',
+                           [{'id': 'i01', 'statement': 'A problem nobody can point at.',
+                             'severity': 'major'}])
+    assert 'evidence' in no_quotation.value.answer['request_rejected']
+    assert no_quotation.value.tool == 'ingest'
+    assert srv.STATE['run'] is None, 'a refused open left a run attached'
+
+    assert issubclass(CheckRefused, ToolRefused) and issubclass(ReaderRefused, ToolRefused)
+    with scripted_fix_check(FIXTURE, tmp_path / 'run',
+                            problem_rows([('i01', draft_lines[0])])) as check:
+        with pytest.raises(ToolRefused) as bad_verdict:
+            check.submit_fix_check('i01', 'maybe', note='Something in between.')
+        assert bad_verdict.value.tool == 'submit_fix_check'
+        assert 'verdict is one of' in bad_verdict.value.answer['request_rejected']
+
+        with pytest.raises(AttributeError, match='submit_finding'):
+            check.submit_finding('i01')
+
+        check.submit_fix_check('i01', 'not-fixed', searches=['the old wording'],
+                               note='Unchanged in this draft.')
+        check.write()
+        with pytest.raises(CheckRefused, match='already written'):
+            check.write()
+
+
+def test_the_scripted_check_is_public_and_puts_back_the_run_it_found(tmp_path, draft_lines):
+    """One run is open per process, and a fixture must not cost the caller its own."""
+    assert peerreviewagents.scripted_fix_check is scripted_fix_check
+    assert peerreviewagents.CheckRefused is CheckRefused
+    assert 'scripted_fix_check' in peerreviewagents.__all__
+
+    opened = srv.ingest(str(FIXTURE), str(tmp_path / 'mine'))
+    assert 'request_rejected' not in opened, opened
+    before = srv.current()
+    with scripted_fix_check(FIXTURE, tmp_path / 'run',
+                            problem_rows([('i01', draft_lines[0])])) as check:
+        assert srv.current() is not before
+        assert check.folder == tmp_path / 'run'
+    assert srv.current() is before
