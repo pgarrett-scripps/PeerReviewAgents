@@ -399,7 +399,7 @@ def test_review_arms_says_what_each_arm_runs_before_a_run_exists():
     """
     arms = peerreviewagents.review_arms()
 
-    assert set(arms) == set(srv.ARMS), 'an arm an application cannot see'
+    assert set(arms) == set(srv.REVIEWABLE_ARMS), 'an arm an application cannot see'
     assert list(arms) == sorted(arms)
     assert [name for name, row in arms.items() if row['default']] == [srv.DEFAULT_ARM]
     for name, row in arms.items():
@@ -425,6 +425,33 @@ def test_review_arms_says_what_each_arm_runs_before_a_run_exists():
 
     arms[srv.DEFAULT_ARM]['code'] = 'edited by the caller'
     assert peerreviewagents.review_arms()[srv.DEFAULT_ARM]['code'] is True
+
+
+def test_every_arm_this_surface_offers_is_an_arm_a_review_runs(tmp_path):
+    """An arm a listing offers and the command refuses is a broken button.
+
+    `fix-check` was in both the listing and the ``--arm`` choices while
+    :func:`review` refused it by name, so an application that offered every
+    arm it was shown offered one that could not run. Each arm here is pushed
+    through the command and through the parser: the arm is accepted when the
+    next thing refused is something else about the call, and this test is how
+    an arm added to the table without a thought about `review` is caught.
+    """
+    nothing = tmp_path / 'no-plugin'
+    for name in peerreviewagents.review_arms():
+        with pytest.raises(ValueError) as past_the_arm:
+            starter.review(FIXTURE, tmp_path / name, arm=name, directory=nothing)
+        assert str(past_the_arm.value).startswith('No plugin at'), name
+        assert starter.build_parser().parse_args(
+            [str(FIXTURE), str(tmp_path / name), '--arm', name]).arm == name
+
+    # And the arm that is not a review is refused by both, by name.
+    with pytest.raises(ValueError, match='check-fixes'):
+        starter.review(FIXTURE, tmp_path / 'fix', arm=srv.FIX_ARM, directory=nothing)
+    with pytest.raises(SystemExit), contextlib.redirect_stderr(io.StringIO()) as said:
+        starter.build_parser().parse_args([str(FIXTURE), str(tmp_path / 'fix'),
+                                           '--arm', srv.FIX_ARM])
+    assert srv.FIX_ARM not in said.getvalue().split('choose from')[-1]
 
 
 def test_read_run_statuses_are_all_in_the_published_tuple(tmp_path):

@@ -57,6 +57,7 @@ from .server import (
     MANUSCRIPT_DIRECTORY,
     MAX_CITATION_WORKERS,
     MAX_FIX_CHECKS,
+    REVIEWABLE_ARMS,
     RUN_DIRECTORY,
     SPECIALIST_TRACKS,
     TOOLS,
@@ -887,7 +888,7 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     and the exit code 2.
     """
     if arm not in ARMS:
-        raise ValueError(f'Unknown arm {arm}. Arms: ' + ', '.join(sorted(ARMS)))
+        raise ValueError(f'Unknown arm {arm}. Arms: ' + ', '.join(REVIEWABLE_ARMS))
     source = Path(pdf).resolve()
     if not source.is_file():
         raise ValueError(f'No manuscript at {source}')
@@ -898,8 +899,8 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     if code and not ARMS[arm]['specialists']:
         raise ValueError('The ' + str(arm) + ' arm runs no specialists, and the code review is '
                          'one. Run an arm with specialists, or drop --code. Arms that run them: '
-                         + ', '.join(sorted(name for name, one in ARMS.items()
-                                            if one['specialists'])) + '.')
+                         + ', '.join(name for name in REVIEWABLE_ARMS
+                                     if ARMS[name]['specialists']) + '.')
     # The fix-check arm is not a review and this is not the command that runs
     # it: it takes problems rather than reviewers, its own ceilings and its own
     # written document. Refused here by name, after the code refusal above, so
@@ -909,7 +910,7 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
         raise ValueError('The ' + FIX_ARM + ' arm reads a new draft against problems a review '
                          'already raised, which is not a review: run `peerreview check-fixes '
                          '<pdf> <out> --problems FILE`. Arms this command runs: '
-                         + ', '.join(sorted(name for name in ARMS if name != FIX_ARM)) + '.')
+                         + ', '.join(REVIEWABLE_ARMS) + '.')
     if code and not code_source.is_url(code) and not Path(code).expanduser().is_dir():
         raise ValueError('No code folder at ' + str(Path(code).expanduser())
                          + '. Give a folder that exists or a repository URL.')
@@ -1095,7 +1096,7 @@ def build_parser(prog='peerreview review'):
         description='Review one manuscript with the pra plugin in a headless Claude Code session.')
     parser.add_argument('workspace', help='the manuscript PDF')
     parser.add_argument('output', help='the run folder to write')
-    parser.add_argument('--arm', default=DEFAULT_ARM, choices=sorted(ARMS),
+    parser.add_argument('--arm', default=DEFAULT_ARM, choices=list(REVIEWABLE_ARMS),
                         help='which study arm to run (default: %(default)s)')
     parser.add_argument('--reviewers', type=int, default=3,
                         help='core reviewers, where the arm does not fix it (default: 3)')

@@ -472,6 +472,17 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **No arm a review is offered is an arm it refuses.** `review_arms()` and the
+  `--arm` choices listed `fix-check`, which `review` then refused by name: it
+  is a run of the same workflow, but it answers problems a review already
+  raised and a review has no problems file to give it. An application that
+  offered every arm it was shown therefore offered one that could not run. The
+  arm is still in the engine's table, because a check is a run of it, and
+  `peerreview check-fixes` is still the only command that runs it — but every
+  listing a review's arm is chosen from now comes from the arms a review runs,
+  and a test pushes each of them through `review` and the parser so an arm
+  added to the table without a thought about `review` is caught.
+
 - **The code reviewer can read the data the authors shipped, and never chokes
   on a big file.** On the first real run of the code lane the file-count cap
   left out 555 data-like files, and one of them —
