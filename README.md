@@ -159,6 +159,10 @@ on them.
                               the findings into, ranked, with their members
 <run>/review/editor-log.jsonl every editor submission and every refusal
 <run>/review/findings.jsonl   every stored finding, with its basis
+<run>/review/quarantined.jsonl  every finding the guard threw out, and why
+<run>/review/code-checks.jsonl  one row per method claim read against the
+                                code: the verdict, the passage of the code
+                                behind it, or the searches that found nothing
 <run>/review/reviewer-<n>/    each core reviewer's own package view
 <run>/review/audit_<track>.md the specialist audits
 <run>/review/protocol.json    arm, slots, models, versions, provenance hashes
@@ -496,6 +500,7 @@ them:
 | `identity` | paper id, source hash, PDF path, arm, reviewers, specialist tracks, versions, `provider`, `code_hashes` — the manifest's digest of each engine and plugin file that served the run — and `models`/`reviewer_models`, the model each slot was started with (both empty for a run from before 0.9.0), with `models_unverified` naming the slots that never reported running one |
 | `manuscript` | what state the workspace is in, which is not what state the run is in: `state` is one of `MANUSCRIPT_STATES` — `absent` for a run that stopped before the import, `draft` for a converted paper the Read stage never sealed (no line numbers, nothing can cite it), `sealed-by-reader` for a base a model read the pages of, `sealed-without-read` for one written with no page read at all — plus `sealed`, `reason` (why nothing read the pages, in the manifest's own words), `reader_model`, `lost_pages` (each page the converter returned nothing from, with the document and lines its transcription became) and `documents` |
 | `code` | whether code was reviewed beside the paper: `reviewed` is false for every run given none, and otherwise `kind` (`git-clone` or `folder`), `source`, `commit`, `branch`, `dirty`, the `snapshot` folder, `files_in_snapshot`, `files_skipped`, `truncated`, the snapshot's own `manifest`, what the data it lists came to — `data_listed`, `data_fetched`, `data_partial`, `data_refused`, `data_bytes` — and what a reviewer did with it: `files_opened`, `opened`, `searches` |
+| `code_check` | what the code lane's second pass answered, and `None` for a run given no code: `cap` (the most findings it is handed), `checked`, `over_cap` (how many qualified past the cap and were left exactly as filed), `counts` per verdict, and `checks` — one row per answer, with the finding, the verdict (`confirmed`, `contradicted` or `not-shown`), the `code_evidence` verified against the snapshot or the `searches` behind a `not-shown`, and the `note` for the authors. A `contradicted` finding is in no issue and in no required change: it is here and in the review's thrown-out section |
 | `stages` | the stage ledger the run recorded, or `None`: `required`, `reported`, `missing`, and `missing` split in two — `silent` (stored nothing, filed nothing, so the run is blocked) and `missing_with_findings` (findings delivered and ruled on, no report filed, so the review is written and `note` names the gap) — plus `editor_trace`, what the editor's submission calls did and the last refusals it could not satisfy |
 | `runtime` | wall time, total tokens, rate limits, both token ceilings, the Claude Code version |
 | `agents` | one row per agent slot: role, track, `assigned_model` and the `model` it reported running as, tool calls, tokens, state |

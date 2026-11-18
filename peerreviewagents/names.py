@@ -97,6 +97,16 @@ RUN_STATUSES = (RUNNING, BLOCKED, COMPLETE, COMPLETE_WITHOUT_FINDINGS)
 #: findings is finished: it is not an error and not an empty folder.
 COMPLETE_STATUSES = (COMPLETE, COMPLETE_WITHOUT_FINDINGS)
 
+#: The three answers a code check may give a finding that rests on a method.
+#: ``confirmed`` and ``contradicted`` both carry a verified passage of the code
+#: snapshot, the same evidence a ``code-checked`` finding carries; ``not-shown``
+#: carries the searches that found nothing, because "the code does not show it"
+#: is a claim about what was looked for. A ``contradicted`` finding is in no
+#: issue and in no required change — it is on the ledger and in the review's own
+#: thrown-out section — so a consumer counting a review's problems reads these
+#: words rather than inferring them.
+CODE_CHECK_VERDICTS = ('confirmed', 'contradicted', 'not-shown')
+
 #: Every command ``peerreview`` has, in the order its help lists them. A wrapper
 #: that offers its own commands checks them against this rather than against a
 #: list of its own: ``review`` runs a review and ``report`` re-renders one, and
@@ -110,5 +120,5 @@ __all__ = ['RUN_DIRECTORY', 'MANUSCRIPT_DIRECTORY', 'CODE_DIRECTORY', 'RUN_MARKE
            'BASE_SCHEMA_VERSION', 'DRAFT_SCHEMA_VERSION',
            'MAIN_DOCUMENT', 'RUN_STATUSES', 'COMPLETE_STATUSES', 'MANUSCRIPT_STATES',
            'MANUSCRIPT_DRAFT', 'MANUSCRIPT_SEALED_BY_READER', 'MANUSCRIPT_SEALED_WITHOUT_READ',
-           'MANUSCRIPT_ABSENT',
+           'MANUSCRIPT_ABSENT', 'CODE_CHECK_VERDICTS',
            'RUNNING', 'BLOCKED', 'COMPLETE', 'COMPLETE_WITHOUT_FINDINGS', 'CLI_COMMANDS']

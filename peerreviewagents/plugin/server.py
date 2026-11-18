@@ -49,6 +49,7 @@ from ..engine.investigation import Investigation
 from ..engine.storage import digest, read, relative_name, write
 from ..names import (
     BLOCKED,
+    CODE_CHECK_VERDICTS,
     CODE_DIRECTORY,
     COMPLETE_STATUSES,
     FINDING_SCHEMA_VERSION,
@@ -57,10 +58,12 @@ from ..names import (
 )
 from . import models as model_plan
 
-# The folder names, the statuses and the finding schema version are imported
-# from `peerreviewagents.names` because this module writes them; that module is
-# where they are defined and where an integration reads them from. Importing
-# them from here instead is not supported and nothing in the repository does.
+# The folder names, the statuses, the finding schema version and the three
+# code-check verdicts are imported from `peerreviewagents.names` because this
+# module writes them; that module is where they are defined and where an
+# integration reads them from — `runs.read_run` reads the verdicts from there
+# to report them. Importing them from here instead is not supported and nothing
+# in the repository does.
 WORKFLOW_VERSION = 'plugin-two-track-v1'
 #: One lane each, and the lanes are meant not to overlap: `numbers` owns every
 #: printed quantity and the arithmetic between them, `stats` the inference
@@ -133,13 +136,6 @@ CODE_TRACK = 'code'
 #: code lane itself, and it reads nothing of the paper beyond the lines the
 #: findings already cite — there is no second pass over the manuscript here.
 CHECK_TRACK = 'code-check'
-
-#: The three answers a code check may give. ``confirmed`` and ``contradicted``
-#: both carry a verified passage of the snapshot, the same evidence a
-#: ``code-checked`` finding carries; ``not-shown`` carries the searches that
-#: found nothing, because "the code does not show it" is a claim about what was
-#: looked for.
-CODE_CHECK_VERDICTS = ('confirmed', 'contradicted', 'not-shown')
 
 #: How many findings go to the code check. The check is one agent reading one
 #: repository in one context, so the queue is bounded like every other lane's

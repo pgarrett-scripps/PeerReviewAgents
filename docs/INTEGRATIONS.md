@@ -529,10 +529,10 @@ Keys: `status`, `complete`, `publishable`, `not_publishable_reasons`, `blocked`,
 `cause`, `note`, `stage`, `findings`, `issues`, `issues_source`, `prior_round`,
 `findings_source`, `counts`, `quarantined`, `citations`, `guard_status`,
 `escalations`, `escalation_rulings`, `summary`, `verdict`, `limitations`,
-`identity`, `manuscript`, `code`, `stages`, `runtime`, `agents`, `usage`,
-`reports`, `startup`, `startup_problems`, `problems`, `files`, `run`, `review`.
-The same 36 keys come back for every folder, in every state, so a consumer
-never has to test whether a key is there.
+`identity`, `manuscript`, `code`, `code_check`, `stages`, `runtime`, `agents`,
+`usage`, `reports`, `startup`, `startup_problems`, `problems`, `files`, `run`,
+`review`. The same 37 keys come back for every folder, in every state, so a
+consumer never has to test whether a key is there.
 
 #### What state the manuscript is in
 
@@ -647,6 +647,31 @@ text the lines were counted in: line endings are folded to LF on the way into
 the snapshot, so a CRLF repository is numbered the way its author's editor
 numbers it, and the manifest row's `bytes` and `sha256` are of that stored
 copy rather than of the original file.
+
+#### What the code check answered
+
+`run["code_check"]` is the lane's second pass as the reader hands it over, and
+it is the same record `issues.json` publishes — `cap`, `checked`, `over_cap`,
+`counts` per verdict and `checks`, described field by field under
+[`issues.json` itself](#issuesjson-itself) below, with `CODE_CHECK_VERDICTS`
+the three words a row can carry. `None` means this run
+had no code check at all: every run that was given no code, and every run
+written before the lane existed. **Read it from here rather than opening
+`issues.json`** — a run that stopped before the review was written has no
+published block and may still have answered claims, and the reader falls back
+to the lane's own append-only `review/code-checks.jsonl` for exactly that case,
+with the cap from `progress.json`. The counts are taken over the rows that come
+back either way, so a tally and the rows it was given cannot disagree.
+
+A run whose every finding came back `contradicted` is a finished review with no
+surviving problem in it, and reads that way: `status`
+`complete-without-findings`, `publishable` `True`,
+`not_publishable_reasons` empty, and `findings_source` `issues` — the findings
+are accounted for, in this block and in the review's own thrown-out section,
+rather than unheld. `counts["quarantined"]` and
+`code_check["counts"]["contradicted"]` are how a consumer tells which of the
+three empty reviews it has: nothing raised, everything held by the guard, or
+everything disproved by the authors' own code.
 
 #### Highlighting a citation
 

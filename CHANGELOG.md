@@ -612,6 +612,52 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   `already_resolving` immediately while one is held — so a pass still running
   when that second write lands refuses it again, and the stage reports that
   refusal by name instead of reporting a run that would not be written.
+- **A method claim is read against the code before it becomes a required
+  change.** A finding that rests on how something was computed, sampled,
+  filtered or selected used to reach the editor on the reviewer's reading of
+  the methods section alone, and the code snapshot that could settle it was
+  read by one specialist for its own audit. Between the reviewers and the
+  synthesis, every finding whose basis is `computed` and every one whose
+  reviewer named the step it assumed in the new `assumed_method` field now goes
+  to a check of its own — a slot with the snapshot's three read-only tools and
+  nothing else — and comes back `confirmed`, `contradicted` or `not-shown`.
+  `confirmed` and `contradicted` each carry a passage of the snapshot, verified
+  at those lines before it is stored, exactly as a `code-checked` finding is;
+  `not-shown` carries the searches that found nothing, because "the code does
+  not show it" is a claim about what was looked for. A `contradicted` finding
+  is in no issue and in no required change: the editor is refused if it groups
+  one, and the finding is reported in `REVIEW.md`'s own "Checked against the
+  code" section with the code that disproved it, which is more use to the
+  authors than its silent absence. The record is `code_check` in `issues.json`
+  and in `read_run`, one append-only row per answer in
+  `review/code-checks.jsonl`, and the counts in `progress.json`. At most twelve
+  findings are checked in a run; a finding that qualified past that cap is left
+  exactly as its reviewer filed it, and `over_cap` says how many, so nobody
+  reads an unchecked finding as a cleared one. A run given no code has no check
+  and `code_check` is `None` — nothing about a review of a paper alone changes.
+- **`read_run` returns the code check, so no application opens `issues.json`
+  itself.** The record was published and documented but absent from the
+  reading, which left an app that wanted to show what the check did reading the
+  one file this package promises to read for it. `read_run(path)['code_check']`
+  is now that record — `cap`, `checked`, `over_cap`, `counts` per verdict and
+  `checks` — taken from `issues.json` where the review was written, and
+  otherwise from `review/code-checks.jsonl` and `progress.json`, so a run that
+  stopped before the review still reports the claims it answered. The counts
+  are taken over the rows that come back, so a consumer's tally and its rows
+  cannot disagree. `review/code-checks.jsonl` is documented in README's list of
+  what a run writes, beside `quarantined.jsonl`, which was missing from it too.
+  `CODE_CHECK_VERDICTS` — the three words a row can carry — moves to
+  `peerreviewagents.names` with the rest of the vocabulary a consumer reads.
+- **A review whose every finding the code disproved is a finished review.** It
+  read as the opposite: `findings_source` came back `ledger` and the run was
+  not publishable, with the reason that the findings come from the ledger and
+  no issue accounts for them — over a review that is written, correct and has
+  nothing wrong with it at all. A contradicted finding *is* accounted for: it
+  is in the review's own thrown-out section with the passage of the authors'
+  code that settled it. Such a run now reads `findings_source` `issues` and
+  `publishable` `True`, and `complete-without-findings` has a third way to
+  happen beside nothing raised and the guard emptying it, which
+  `code_check['counts']['contradicted']` distinguishes.
 
 ## [0.10.0] — 2026-11-15
 
