@@ -557,6 +557,18 @@ def _code_line(progress):
     files, opened = record.get('files_in_snapshot'), record.get('opened')
     if isinstance(files, int) and isinstance(opened, int):
         line += f', {opened} of {files} file(s) opened'
+    listed, got = record.get('data_listed'), record.get('data_fetched')
+    if isinstance(listed, int) and listed and isinstance(got, int):
+        # Data is listed and fetched on demand, so the honest number is how
+        # much of what was there a reviewer actually asked for — and a file
+        # read only as far as its head, or refused, is not a file read.
+        line += f', {got} of {listed} data file(s) fetched'
+        partial, refused = record.get('data_partial'), record.get('data_refused')
+        said = [f'{partial} partial' if isinstance(partial, int) and partial else '',
+                f'{refused} refused' if isinstance(refused, int) and refused else '']
+        said = [one for one in said if one]
+        if said:
+            line += ' (' + ', '.join(said) + ')'
     skipped = record.get('files_skipped')
     if isinstance(skipped, int) and skipped:
         # Paths, not files: a folder never walked into is one entry, which is

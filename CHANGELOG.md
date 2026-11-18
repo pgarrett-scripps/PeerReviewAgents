@@ -72,8 +72,9 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 - **A review can read the code behind the paper: `--code <folder or
   repository URL>`, `code=` on `review()` and on `ingest`.** A URL is cloned
   shallow with hooks and submodules off; either way the *text* of that code —
-  source, configuration, notebooks, documentation, skipping binaries, data
-  files and anything over the size caps — is snapshotted into `<run>/code/`
+  source, configuration, notebooks, documentation, skipping binaries and
+  anything over the size caps, and listing the data files it ships for the
+  reviewer to fetch — is snapshotted into `<run>/code/`
   beside a manifest naming the origin, the commit, every file taken with its
   digest and everything left out with the reason. The snapshot is what the
   review reads, so a finding cites code that is still there a year later.
@@ -400,8 +401,40 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The code reviewer can read the data the authors shipped, and never chokes
+  on a big file.** On the first real run of the code lane the file-count cap
+  left out 555 data-like files, and one of them —
+  `study/frozen-v1/corpus-selection.json`, 196 KB — held the answer to the
+  finding the lane was writing: the paper said 200 records per query, the
+  script's default was 100, and the file that said which one ran was the file
+  the cap had dropped, so the reviewer could only write "I could not see it".
+  Data is now listed rather than copied, and fetched when the reviewer asks
+  for it. Program source, build and configuration are copied up front as
+  before; every tracked data file — csv, tsv, json, jsonl, ndjson, yaml, toml,
+  txt, lock — is a row in `manifest["data"]` and in `list_code` with its path,
+  size and kind, and those rows spend neither cap. `read_code` on a listed
+  path, and `search_code` scoped to one, fetches it then and there: the engine
+  copies it in, records its bytes and `sha256` at that moment, and from then
+  on serves and verifies it exactly like source, so a `code-checked` finding
+  on a data line checks the same way. A file up to the per-file cap is fetched
+  whole; a larger text file is never read whole, and what is stored is a head
+  of 20,000 bytes cut back to the last whole line, marked `partial` everywhere,
+  with the file's total size, its line count and a table's column names beside
+  it — a finding may quote only the lines that were stored, because the rest is
+  not evidence the review has. Binary data (parquet, h5, npy, xlsx, images,
+  archives) and a file stored in Git LFS stay listed with a size and a reason
+  and are never opened. A run may fetch 40 files and 4 MB of them, and a spent
+  budget is a refusal in words that tells the lane to report what it did not
+  read. Nothing is stat-ed or hashed twice and nothing is loaded whole: a
+  50 MB table costs one streamed read and a megabyte of memory. For a local
+  folder the fetch reads the working file, and one that changed since ingest
+  says so in the answer and in the manifest. `read_run`, `progress.json` and
+  the `REVIEW.md` "Code reviewed" line carry `data_listed`, `data_fetched`,
+  `data_partial`, `data_refused` and `data_bytes`, and the lane's brief tells
+  it to list first, fetch the data a claim depends on, and say which files
+  were partial or unreadable.
 - **A code snapshot of a repository holds the files it tracks, and a cap cuts
-  data before code.** Pointed at a real paper repository — 1,998 tracked
+  the least useful code first.** Pointed at a real paper repository — 1,998 tracked
   files, 113 of them Python — the snapshot filled its 600-file cap with 582
   files of a gitignored build cache and none of the analysis scripts, so the
   code reviewer would have read a build cache and reported on it as the
@@ -414,8 +447,9 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   and known cache and build folders alone. And the caps no longer cut in walk
   order, which was alphabetical and therefore arbitrary: candidates are kept
   in the order a reviewer needs them — program source, then build and
-  environment files, then configuration and prose, then data-like text, with
-  shallower paths first inside a kind — and both the file count and the byte
+  environment files, then configuration and prose, with shallower paths first
+  inside a kind, and data no longer spending a cap at all (above) — and both
+  the file count and the byte
   total cut in that order. The manifest says how many files of each kind a cap
   left out (`left_out_kinds`, `counts["kinds"]`), and when program source
   itself was cut, `source_cut` and the words of `truncated` say so, in the

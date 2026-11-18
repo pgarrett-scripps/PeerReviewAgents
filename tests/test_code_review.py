@@ -10,6 +10,10 @@ What they pin is the part a prompt cannot be trusted with:
 
 * the snapshot holds text source and says what it left out, so "the code never
   does that" is never read off a file the snapshot skipped;
+* the data the code ships is listed with its size and fetched when the reviewer
+  asks for it, whole below the per-file cap and as a bounded head above it, so
+  the answer to a finding is one call away and a repository of gigabytes is
+  never copied or loaded;
 * nothing in the snapshot is executed, and no path outside it is reachable;
 * only the lane that was given the code may read it;
 * a code finding carries the code it rests on, checked by the server against
@@ -26,6 +30,8 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import time
+import tracemalloc
 from pathlib import Path
 
 import pytest
@@ -87,11 +93,19 @@ def code_folder(tmp_path):
 
 
 def write_code(folder, files=None):
+    """Write the fixture files, with the line endings the fixture text has.
+
+    A data file is now listed with the size it has on disk, and a test may say
+    what that size is — so the bytes written here are the bytes of the literal,
+    on every platform. Without `newline=''` Windows turns each `\\n` into two
+    bytes and the count a test asserts is off by the number of lines. Folding
+    CRLF is tested where a fixture writes CRLF on purpose.
+    """
     folder = Path(folder)
     for name, text in (files or CODE_FILES).items():
         path = folder / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding='utf-8')
+        path.write_text(text, encoding='utf-8', newline='')
     return folder
 
 
@@ -205,15 +219,23 @@ def test_the_snapshot_holds_the_text_source_and_names_what_it_left_out(tmp_path,
     assert len(row['sha256']) == 64
 
     skipped = {one['path']: one['reason'] for one in manifest['skipped']}
-    assert 'not text source: .csv' in skipped['measurements.csv']
     assert 'not text source: .dat' in skipped['notes.dat']
-    # A folder that holds data is never walked into, so it is one row of the
-    # manifest and its files are neither copied nor listed one by one: a
-    # directory of ten thousand readings would otherwise be ten thousand rows.
+    # A data file is listed and not copied, so it is neither in the snapshot
+    # nor missing from the record: the reviewer can see it exists, with its
+    # size, and fetch it when a claim turns on it.
+    listed = {one['path']: one for one in manifest['data']}
+    assert listed['measurements.csv']['kind'] == code_source.KIND_DATA
+    assert listed['measurements.csv']['bytes'] == len(CODE_FILES['measurements.csv'])
+    assert listed['measurements.csv']['readable'] is True
+    assert 'measurements.csv' not in copied and 'measurements.csv' not in skipped
+    # A folder that holds data is never walked into outside a checkout, so it
+    # is one row of the manifest and its files are neither copied nor listed
+    # one by one: git has said nothing here about what the authors put there.
     assert skipped['data'] == code_source.DIRECTORY_REASON
-    assert 'data/every-reading.csv' not in skipped and 'data/every-reading.csv' not in copied
+    assert 'data/every-reading.csv' not in skipped and 'data/every-reading.csv' not in listed
     assert [one['path'] for one in manifest['skipped']] == sorted(skipped)
-    assert manifest['counts']['files'] == 4
+    assert [one['path'] for one in manifest['data']] == sorted(listed)
+    assert manifest['counts']['files'] == 4 and manifest['counts']['data'] == 1
     assert manifest['truncated'] == ''
     assert json.loads((taken / code_source.MANIFEST_FILE).read_text(
         encoding='utf-8')) == manifest
@@ -377,7 +399,30 @@ def test_a_cloned_repository_is_not_mistaken_for_the_run_folder(tmp_path, monkey
     assert {one['path']: one['reason'] for one in manifest['skipped']}[
         'docs/example-review'] == code_source.RUN_FOLDER_REASON
     assert not [path for path in copied if path.startswith('docs/example-review/')]
-    assert not (out / CODE_DIRECTORY / '.checkout').exists(), 'the checkout was left behind'
+    # The clone is kept, because this repository holds data a reviewer may
+    # fetch and for a URL the checkout is the only place that data is. It is
+    # recorded relative to the snapshot, so a run folder that was moved still
+    # finds it, and nothing of it is in the snapshot but what was copied.
+    assert manifest['data_root'] == {'kind': 'checkout', 'path': '.checkout'}
+    assert (out / CODE_DIRECTORY / '.checkout' / 'measurements.csv').is_file()
+    desk = code_source.CodeDesk(out / CODE_DIRECTORY)
+    assert desk.read_code('measurements.csv')['data'] is True
+
+    # And removed where it is of no further use: a repository whose data is
+    # all binary has nothing a fetch could read.
+    def binary_only(source, into):
+        write_code(into, {'analysis/pipeline.py': 'STEP = 1\n'})
+        (Path(into) / 'counts.parquet').write_bytes(b'PAR1' + b'\0' * 64)
+        return {'kind': 'git-clone', 'source': str(source), 'commit': 'b' * 40,
+                'branch': 'trunk', 'dirty': False}
+
+    monkeypatch.setattr(code_source, 'clone', binary_only)
+    second = tmp_path / 'second'
+    held = code_source.snapshot('https://example.invalid/other.git',
+                                second / CODE_DIRECTORY, run=second)
+    assert [one['kind'] for one in held['data']] == [code_source.KIND_BINARY]
+    assert held['data_root'] == {'kind': '', 'path': ''}
+    assert not (second / CODE_DIRECTORY / '.checkout').exists()
 
 
 def test_a_checkout_is_snapshotted_from_the_files_git_tracks(tmp_path):
@@ -424,15 +469,19 @@ def test_a_checkout_is_snapshotted_from_the_files_git_tracks(tmp_path):
         code_source.NOT_LOOKED_AT + code_source.UNTRACKED_REASON.format(count=1))
 
 
-def test_the_caps_keep_program_source_and_cut_data_like_text_first(tmp_path):
+def test_the_caps_keep_program_source_and_data_never_spends_them(tmp_path):
     """What survives a cap is what a reviewer needs, not what sorts first.
 
     The cap used to cut in walk order, which is alphabetical, so which files a
     snapshot of a repository larger than the cap held was arbitrary. Program
     source first, then build and environment files, then configuration and
-    prose, and data-like text last; shallower paths before deeper ones inside
-    a kind. Both caps cut in that order, the file count and the byte total
-    alike.
+    prose; shallower paths before deeper ones inside a kind. Both caps cut in
+    that order, the file count and the byte total alike.
+
+    Data spends neither cap. Forty rows of evidence used to be forty files of
+    the count — on the first real repository, 555 of them, one holding the
+    answer to a finding — and they are now listed and fetched on demand
+    instead, so a cap of eight holds all eight files of code there are.
     """
     files = {f'analysis/step{number:02d}.py': f'STEP = {number}\n' for number in range(5)}
     files.update({f'evidence/row{number:03d}.json': '{"step": %d}\n' % number
@@ -449,30 +498,43 @@ def test_the_caps_keep_program_source_and_cut_data_like_text_first(tmp_path):
                                        code_source.KIND_BUILD: 1,
                                        code_source.KIND_CONFIG: 1,
                                        code_source.KIND_DATA: 0}
-    assert kept['left_out_kinds'][code_source.KIND_DATA] == 40
-    assert kept['source_cut'] == 0
-    assert kept['truncated'] == ('more than 8 files of text source: left out 40 data-like '
-                                 'text file(s)')
-    assert code_source.SOURCE_CUT_WARNING not in kept['truncated']
+    assert kept['counts']['data'] == 40
+    assert {row['path'] for row in kept['data']} == {
+        name for name in files if name.startswith('evidence/')}
+    assert kept['left_out_kinds'][code_source.KIND_DATA] == 0
+    assert kept['source_cut'] == 0 and kept['truncated'] == ''
 
     # Shallower first inside a kind: the one file a cap of one keeps is the
     # pipeline at the root, not the first script alphabetically under a folder.
     one = code_source.snapshot(folder, tmp_path / 'one', limits={'max_files': 1})
     assert [row['path'] for row in one['files']] == ['Snakefile']
     assert one['source_cut'] == 5 and code_source.SOURCE_CUT_WARNING in one['truncated']
+    assert one['counts']['data'] == 40, 'the cap cut code, not the listing'
 
     # The byte cap cuts in the same order: a total that holds the source holds
-    # the source, and the data-like text is what goes.
+    # the source, and the build and prose files are what go.
     full = code_source.snapshot(folder, tmp_path / 'full')
     source_bytes = sum(row['bytes'] for row in full['files']
                        if code_source.kind(row['path']) == code_source.KIND_SOURCE)
     tight = code_source.snapshot(folder, tmp_path / 'tight',
                                  limits={'max_total_bytes': source_bytes})
     assert tight['counts']['kinds'][code_source.KIND_SOURCE] == 6
-    assert tight['counts']['kinds'][code_source.KIND_DATA] == 0
     assert tight['source_cut'] == 0
     assert 'bytes of text source' in tight['truncated']
-    assert tight['left_out_kinds'][code_source.KIND_DATA] == 40
+    assert tight['left_out_kinds'] == {code_source.KIND_SOURCE: 0,
+                                       code_source.KIND_BUILD: 1,
+                                       code_source.KIND_CONFIG: 1,
+                                       code_source.KIND_DATA: 0}
+
+    # And the listing has a cap of its own, because a committed folder of ten
+    # thousand readings is not an inventory anybody reads. What is past it is
+    # in the skipped rows and said in `truncated`.
+    listed = code_source.snapshot(folder, tmp_path / 'listed',
+                                  limits={'max_data_files': 4})
+    assert listed['counts']['data'] == 4
+    assert 'past the data listing cap' in listed['truncated']
+    assert sum('past the data listing cap' in one['reason']
+               for one in listed['skipped']) == 36
 
 
 def test_a_folder_that_is_no_checkout_leaves_hidden_and_cache_folders_alone(tmp_path):
@@ -851,9 +913,18 @@ def test_the_code_tools_read_the_snapshot_and_nothing_outside_it(tmp_path, code_
     listed = srv.list_code(token)
     assert listed['files_in_snapshot'] == 4
     assert {row['path'] for row in listed['files']} >= {'analysis/pipeline.py'}
-    assert listed['skipped_count'] == len(listed['skipped']) == 3
+    assert listed['skipped_count'] == len(listed['skipped']) == 2
     assert listed['truncated'] == ''
     assert srv.list_code(token, path='analysis')['count'] == 2
+    # The data the code holds is listed beside the files, with its size, so
+    # the lane knows what it can ask for.
+    assert listed['data'] == [{'path': 'measurements.csv',
+                               'bytes': len(CODE_FILES['measurements.csv']),
+                               'kind': code_source.KIND_DATA, 'readable': True,
+                               'reason': '', 'fetched': False}]
+    assert listed['data_count'] == 1 and listed['data_folders'] == {
+        '': {'files': 1, 'bytes': len(CODE_FILES['measurements.csv'])}}
+    assert 'Data files are listed, not copied' in listed['data_note']
 
     served = srv.read_code(token, 'analysis/pipeline.py')
     assert served['part'] == 1 and served['of'] == 1 and served['first_line'] == 1
@@ -868,13 +939,293 @@ def test_the_code_tools_read_the_snapshot_and_nothing_outside_it(tmp_path, code_
     assert found['complete'] is True
     assert 'at least two characters' in srv.search_code(token, 'x')['request_rejected']
 
-    for path in ('../../etc/passwd', '/etc/passwd', 'measurements.csv', 'data/every-reading.csv'):
+    # A listed data file is fetched by reading it, and then it is a file of
+    # the snapshot like any other.
+    fetched = srv.read_code(token, 'measurements.csv')
+    assert fetched['data'] is True and fetched['partial'] is False
+    assert fetched['columns'] == ['widget', 'mm']
+    assert '1\twidget,mm' in fetched['text']
+    assert srv.list_code(token)['files_in_snapshot'] == 5
+
+    for path in ('../../etc/passwd', '/etc/passwd', 'notes.dat',
+                 'data/every-reading.csv'):
         refusal = srv.read_code(token, path)['request_rejected']
         assert 'not a file in the code snapshot' in refusal, path
 
     # Reading is recorded: a review says how much of the code it opened.
-    assert run.code.record()['files_opened'] == ['analysis/pipeline.py']
+    assert run.code.record()['files_opened'] == ['analysis/pipeline.py',
+                                                 'measurements.csv']
     assert run.code.record()['searches'] == 1
+    assert run.code.record()['data_listed'] == 1
+    assert run.code.record()['data_fetched'] == 1
+
+
+# -- data, fetched when the reviewer asks for it -----------------------------
+#
+# The first real run of the code lane left out 555 data-like files, and one of
+# them held the answer to the finding the lane was trying to write: the paper
+# said 200 records per query and the script's default was 100, and the file
+# that said which one ran was the one the cap had dropped. So data is no longer
+# copied up front and no longer counts against the file cap. It is listed, and
+# it is fetched when a reviewer asks for the file a claim turns on.
+
+
+def test_small_data_is_fetched_when_asked_for_and_a_finding_may_quote_it(tmp_path):
+    """The real case: the number is in a 196 KB JSON nobody had copied.
+
+    Listed with its size, fetched on the `read_code` that asks for it, and
+    from that moment a file of the snapshot like any other — so a finding
+    quoting one of its lines is checked against the stored copy and recorded
+    as ``code-checked``, exactly as a finding on a line of Python is.
+    """
+    folder = commit_code(write_code(tmp_path / 'with-data', {
+        'analysis/pipeline.py': 'DEFAULT_PER_QUERY = 100\n',
+        'study/corpus-selection.json': json.dumps(
+            {'per_query': 100, 'queries': ['alpha', 'beta']}, indent=2) + '\n',
+    }))
+    run, token = code_run(tmp_path, folder)
+
+    listed = srv.list_code(token)
+    assert [row['path'] for row in listed['files']] == ['analysis/pipeline.py']
+    assert [(row['path'], row['bytes'], row['readable'], row['fetched'])
+            for row in listed['data']] == [
+        ('study/corpus-selection.json',
+         (folder / 'study' / 'corpus-selection.json').stat().st_size, True, False)]
+
+    # Until it is fetched there is nothing to check a quote against, and the
+    # server says which call would fetch it rather than refusing blankly.
+    with pytest.raises(ValueError) as refused:
+        run.code.verify('study/corpus-selection.json', 2, 2, '  "per_query": 100,')
+    assert 'lists and has not stored' in str(refused.value)
+    assert 'Read it with read_code first' in str(refused.value)
+
+    served = srv.read_code(token, 'study/corpus-selection.json')
+    assert served['data'] is True and served['partial'] is False
+    assert served['changed'] == '' and served['columns'] == []
+    assert 'Fetched whole from the code' in served['note']
+    numbered = served['text'].splitlines()
+    number = next(index for index, line in enumerate(numbered, start=1)
+                  if 'per_query' in line)
+    quoted = '  "per_query": 100,'
+    assert numbered[number - 1] == f'{number}\t{quoted}'
+    assert srv.list_code(token)['files_in_snapshot'] == 2
+    assert srv.list_code(token)['data'][0]['fetched'] is True
+
+    line, quote = quote_from(run)
+    stored = srv.submit_finding(
+        token, title='The records per query in the methods is not the one the study ran',
+        line=line, quote=quote, severity='major',
+        comment='The paper reports 200 records per query and the frozen selection this '
+                'run was made from holds 100.',
+        code_path='study/corpus-selection.json', code_start_line=number,
+        code_end_line=number, code_quote=quoted)
+    assert 'request_rejected' not in stored, stored
+    assert stored['basis'] == 'code-checked'
+    assert stored['code_evidence']['path'] == 'study/corpus-selection.json'
+    assert stored['code_evidence']['text'] == quoted
+
+    # A search scoped to the data fetches what it searches, and says so.
+    found = srv.search_code(token, 'per_query', path='study')
+    assert found['data_fetched'] == [] and found['data_refused'] == []
+    assert [(hit['path'], hit['line']) for hit in found['matches']] == [
+        ('study/corpus-selection.json', number)]
+
+    record = run.code.record()
+    assert record['data_listed'] == 1 and record['data_fetched'] == 1
+    assert record['data_partial'] == 0 and record['data_refused'] == 0
+    assert record['data_bytes'] == len(quoted.encode('utf-8')) + 0 or record['data_bytes'] > 0
+    assert 'study/corpus-selection.json' in record['files_opened']
+
+
+def test_a_large_text_file_comes_back_as_a_head_and_nothing_more(tmp_path):
+    """Fifty megabytes, read once, streamed, and never held in memory.
+
+    Other papers ship data files of gigabytes, so the rule is not a bigger cap
+    but a bounded head: the first lines up to a small byte limit, cut back to a
+    whole line, with the total size, the line count and the columns. What was
+    not stored is not evidence the review has, which is why a quote from past
+    the head does not verify.
+    """
+    folder = write_code(tmp_path / 'big-data', {'analysis/pipeline.py': 'OK = 1\n'})
+    big = folder / 'readings.csv'
+    chunk = ''.join(f'{number},{number * 2}\n' for number in range(100_000))
+    with big.open('w', encoding='utf-8', newline='') as handle:
+        handle.write('id,value\n')
+        for _ in range(42):
+            handle.write(chunk)
+    size = big.stat().st_size
+    assert size > 50_000_000, size
+
+    manifest = code_source.snapshot(folder, tmp_path / 'snapshot')
+    row = next(one for one in manifest['data'] if one['path'] == 'readings.csv')
+    assert row['bytes'] == size and row['readable'] is True
+    assert row['path'] not in {one['path'] for one in manifest['files']}
+
+    desk = code_source.CodeDesk(tmp_path / 'snapshot')
+    tracemalloc.start()
+    started = time.monotonic()
+    served = desk.read_code('readings.csv')
+    took = time.monotonic() - started
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    # Bounded memory and bounded time: the file is read once, in chunks, and
+    # the head is all that is stored. Both bounds are far above what this
+    # costs and far below the file, so neither is a timing test.
+    assert peak < 8_000_000, peak
+    assert took < 30, took
+
+    assert served['partial'] is True and served['data'] is True
+    assert served['source_bytes'] == size
+    assert served['columns'] == ['id', 'value']
+    assert served['total_lines'] == 42 * 100_000 + 1
+    stored = (tmp_path / 'snapshot' / code_source.FILES_DIRECTORY / 'readings.csv')
+    assert 0 < stored.stat().st_size <= code_source.DATA_HEAD_BYTES
+    # Cut back to a whole line, so the last row stored is a row and not the
+    # half of one the byte limit happened to fall in.
+    assert re.fullmatch(r'\d+,\d+', stored.read_text(encoding='utf-8').splitlines()[-1])
+    assert served['lines'] < served['total_lines']
+    assert f'Partial: {stored.stat().st_size} of {size} byte(s) were stored' in served['note']
+    assert '4200001 line(s)' in served['note']
+    assert 'may quote only these lines' in served['note']
+
+    # The head verifies like any other file; a line below it is not evidence
+    # this review holds, however true it may be of the file on disk.
+    first = served['text'].splitlines()[0].split('\t', 1)[1]
+    assert desk.verify('readings.csv', 1, 1, first)['text'] == first
+    with pytest.raises(ValueError) as refused:
+        desk.verify('readings.csv', 3_000_000, 3_000_000, '1,2')
+    assert 'line' in str(refused.value)
+    assert desk.record()['data_partial'] == 1 and desk.record()['data_fetched'] == 1
+
+
+def test_binary_data_is_listed_with_its_size_and_never_opened(tmp_path):
+    """Parquet, h5, npy, xlsx, an image, an archive: a size and a reason.
+
+    A reviewer that can see the file exists, and how big it is, can say the
+    value it needed is in it. One that cannot see it at all says the code never
+    sets that value, which is the failure this list prevents.
+    """
+    folder = write_code(tmp_path / 'binary-data', {'analysis/pipeline.py': 'OK = 1\n'})
+    (folder / 'counts.parquet').write_bytes(b'PAR1' + b'\x00' * 2048)
+    # Text by its suffix and not by its bytes: the fetch is what finds out, and
+    # it says so rather than storing mojibake a finding could quote.
+    (folder / 'readings.csv').write_bytes(b'id,value\n\xff\xfe\x00\x01\n')
+
+    manifest = code_source.snapshot(folder, tmp_path / 'snapshot')
+    rows = {one['path']: one for one in manifest['data']}
+    assert rows['counts.parquet']['kind'] == code_source.KIND_BINARY
+    assert rows['counts.parquet']['bytes'] == 2052
+    assert rows['counts.parquet']['readable'] is False
+    assert rows['counts.parquet']['reason'] == code_source.NOT_TEXT_DATA_REASON
+    assert code_source.KIND_BINARY not in code_source.KIND_ORDER, \
+        'binary data is listed, never a kind the snapshot copies'
+
+    desk = code_source.CodeDesk(tmp_path / 'snapshot')
+    refusal = desk.call('read_code', {'path': 'counts.parquet'})['request_rejected']
+    assert code_source.NOT_TEXT_DATA_REASON in refusal
+    assert 'A finding cannot quote it' in refusal
+    assert not (tmp_path / 'snapshot' / code_source.FILES_DIRECTORY / 'counts.parquet').exists()
+
+    said = desk.call('read_code', {'path': 'readings.csv'})['request_rejected']
+    assert 'not decodable as UTF-8 text' in said
+    assert desk.list_code()['data'][1]['readable'] is False
+    assert desk.record()['data_fetched'] == 0 and desk.record()['data_refused'] == 2
+
+
+def test_the_data_budget_refuses_in_words_when_it_is_spent(tmp_path):
+    """A run may fetch so many data files and so many bytes, and then it says so.
+
+    The refusal is the answer, not an error: it names what is left and tells
+    the lane to report that the file was not fetched, because a review that
+    quietly stopped reading data is a review whose silence means nothing.
+    """
+    files = {'analysis/pipeline.py': 'OK = 1\n'}
+    files.update({f'tables/reading-{number}.csv': f'id,value\n{number},{number * 2}\n'
+                  for number in range(4)})
+    folder = write_code(tmp_path / 'budgeted', files)
+
+    code_source.snapshot(folder, tmp_path / 'by-count', limits={'max_data_fetches': 2})
+    counted = code_source.CodeDesk(tmp_path / 'by-count')
+    assert counted.read_code('tables/reading-0.csv')['data'] is True
+    assert counted.read_code('tables/reading-1.csv')['data'] is True
+    refusal = counted.call('read_code', {'path': 'tables/reading-2.csv'})['request_rejected']
+    assert 'fetched its 2 data file(s), which is all one run may' in refusal
+    assert 'say in the report that it was not fetched' in refusal
+    assert counted.record()['data_fetched'] == 2
+    assert counted.record()['data_refused'] == 1
+    assert counted.list_code()['data_use'] == {'fetched': 2, 'partial': 0, 'refused': 1,
+                                               'bytes': counted.record()['data_bytes']}
+
+    code_source.snapshot(folder, tmp_path / 'by-bytes', limits={'max_data_bytes': 12})
+    sized = code_source.CodeDesk(tmp_path / 'by-bytes')
+    said = sized.call('read_code', {'path': 'tables/reading-0.csv'})['request_rejected']
+    assert 'of its data budget of 12 left' in said
+    assert 'was not read' in said
+    assert sized.record()['data_fetched'] == 0
+
+    # A search scoped to a spent budget stops at the first refusal rather than
+    # saying the same thing once per file, and is not `complete`.
+    found = code_source.CodeDesk(tmp_path / 'by-bytes').search_code('value', path='tables')
+    assert found['data_fetched'] == [] and len(found['data_refused']) == 1
+    assert found['complete'] is False
+
+
+def test_a_data_file_that_changed_since_the_snapshot_says_so(tmp_path):
+    """For a local folder the fetch reads the working file, whatever it holds now.
+
+    What ingest recorded is the size and the modification time, so a file
+    rewritten between the snapshot and the question is not quietly served as
+    the one the snapshot saw: the answer and the manifest both say it changed,
+    and a finding on it has to say so too.
+    """
+    folder = write_code(tmp_path / 'moving', {
+        'analysis/pipeline.py': 'OK = 1\n',
+        'settings.json': '{"per_query": 100}\n',
+    })
+    code_source.snapshot(folder, tmp_path / 'snapshot')
+    (folder / 'settings.json').write_text('{"per_query": 200, "note": "rerun"}\n',
+                                          encoding='utf-8', newline='')
+
+    desk = code_source.CodeDesk(tmp_path / 'snapshot')
+    served = desk.read_code('settings.json')
+    assert '"per_query": 200' in served['text']
+    assert 'changed since the snapshot was taken' in served['changed']
+    assert '19 byte(s) then' in served['changed'] and '36 now' in served['changed']
+    assert 'what was read just now' in served['note']
+
+    held = json.loads((tmp_path / 'snapshot' / code_source.MANIFEST_FILE).read_text(
+        encoding='utf-8'))
+    row = next(one for one in held['files'] if one['path'] == 'settings.json')
+    assert 'changed since the snapshot was taken' in row['changed']
+    # And the quote verifies against what was stored, which is the file as the
+    # reviewer read it rather than as ingest found it.
+    assert desk.verify('settings.json', 1, 1,
+                       '{"per_query": 200, "note": "rerun"}')['text']
+
+
+def test_a_git_lfs_pointer_is_reported_as_stored_in_lfs(tmp_path):
+    """A pointer file is a hundred bytes that are not the data.
+
+    It is text, it is decodable, and it would be fetched and quoted as the
+    file's contents if nothing said otherwise — so the listing says the data is
+    in LFS and was not fetched, rather than serving three lines of metadata as
+    the authors' readings.
+    """
+    folder = write_code(tmp_path / 'lfs', {'analysis/pipeline.py': 'OK = 1\n'})
+    (folder / 'readings.csv').write_text(
+        'version https://git-lfs.github.com/spec/v1\n'
+        'oid sha256:' + '0' * 64 + '\n'
+        'size 3221225472\n', encoding='utf-8')
+
+    manifest = code_source.snapshot(folder, tmp_path / 'snapshot')
+    row = next(one for one in manifest['data'] if one['path'] == 'readings.csv')
+    assert row['readable'] is False and row['reason'] == code_source.LFS_REASON
+
+    desk = code_source.CodeDesk(tmp_path / 'snapshot')
+    assert desk.list_code()['data'][0]['reason'] == code_source.LFS_REASON
+    refusal = desk.call('read_code', {'path': 'readings.csv'})['request_rejected']
+    assert code_source.LFS_REASON in refusal
+    assert not (tmp_path / 'snapshot' / code_source.FILES_DIRECTORY / 'readings.csv').exists()
 
 
 def test_a_run_given_no_code_has_no_snapshot_to_read(tmp_path):
@@ -1022,13 +1373,18 @@ def test_the_run_reports_which_code_was_reviewed_and_how_much_was_opened(tmp_pat
     assert re.fullmatch(r'[0-9a-f]{40}', read['commit']) and read['branch'] == 'trunk'
     assert read['dirty'] is False
     assert Path(read['snapshot']) == run.root / 'code'
-    # Three paths left out: two files and the data folder, each one row. No
-    # `.git` row, because a checkout is snapshotted from the files git tracks
-    # and its own internals were never a candidate; and no untracked row,
-    # because every file here is committed.
-    assert read['files_in_snapshot'] == 4 and read['files_skipped'] == 3
-    assert {one['path'] for one in read['manifest']['skipped']} == {
-        'data', 'measurements.csv', 'notes.dat'}
+    # One path left out, the one file that is neither code nor data. No `.git`
+    # row, because a checkout is snapshotted from the files git tracks and its
+    # own internals were never a candidate; no untracked row, because every
+    # file here is committed; and no row for the data, which is listed.
+    assert read['files_in_snapshot'] == 4 and read['files_skipped'] == 1
+    assert {one['path'] for one in read['manifest']['skipped']} == {'notes.dat'}
+    # Committed data is listed, wherever in the repository it sits: git has
+    # already said the authors put it there.
+    assert {one['path'] for one in read['manifest']['data']} == {
+        'measurements.csv', 'data/every-reading.csv'}
+    assert read['data_listed'] == 2 and read['data_fetched'] == 0
+    assert read['data_partial'] == 0 and read['data_refused'] == 0
     assert read['manifest']['tracked'] is True
     assert read['truncated'] == ''
     assert read['files_opened'] == ['analysis/pipeline.py'] and read['opened'] == 1
@@ -1048,7 +1404,8 @@ def test_the_run_reports_which_code_was_reviewed_and_how_much_was_opened(tmp_pat
     assert str(tmp_path) not in said
     assert read['commit'][:12] in said
     assert '1 of 4 file(s) opened' in said
-    assert '3 path(s) left out of the snapshot' in said
+    assert '0 of 2 data file(s) fetched' in said
+    assert '1 path(s) left out of the snapshot' in said
 
 
 def test_a_run_given_no_code_says_the_code_was_not_reviewed(tmp_path):

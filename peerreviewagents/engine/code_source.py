@@ -32,6 +32,21 @@ and when program source itself was cut it says so in words, in the manifest,
 in the review and in the code lane's brief: a reader who cannot see every
 script cannot report that no script does a thing.
 
+Data is the exception to "copied in once", because data is where the answer
+often is: a paper that says 200 records per query against the selection file
+that says 100. A data file — ``csv``, ``tsv``, ``json``, ``jsonl``, ``yaml``,
+``toml``, ``txt`` — is not copied up front and does not count against the
+caps. Every one a repository tracks is *listed* in the manifest with its size
+and kind, and the reviewer fetches the one a claim depends on: the engine
+copies it in at that moment, records its bytes and hash then, and from then on
+serves and quotes it exactly like source, so a ``code-checked`` finding on a
+data line verifies the same way. A file over the per-file cap is never read
+whole — what is stored is a bounded head, with the total size, the line count
+and the columns or keys where they are cheap to get, marked partial everywhere,
+and a finding may quote only the lines that were stored. Binary data is listed
+with its size and :data:`NOT_TEXT_DATA_REASON` and never opened. A per-run
+budget on fetched bytes and fetch count refuses in words once it is spent.
+
 Line endings are folded to LF on the way in and the copy
 is written and read back with the platform's own translation turned off, so a
 CRLF repository is numbered the way its author's editor numbers it, on
@@ -87,6 +102,10 @@ SCHEMA_VERSION = 'code-snapshot-v1'
 #: being here, which is why this is an allowlist and not a deny list: a
 #: repository holds file types nobody listed, and copying an unknown one into
 #: the run folder is how a 400 MB array of measurements gets there.
+#:
+#: A suffix here that is also in :data:`DATA_SUFFIXES` is readable text, but it
+#: is not copied up front: :func:`_data_role` takes it out of the walk's
+#: candidates and lists it as data a reviewer fetches on demand.
 TEXT_SUFFIXES = (
     '.py', '.pyi', '.R', '.r', '.Rmd', '.jl', '.m', '.do', '.sas',
     '.c', '.h', '.cc', '.cpp', '.hpp', '.cu', '.rs', '.go', '.java', '.kt',
@@ -160,17 +179,29 @@ TEXT_NAMES = (
 )
 
 #: Folders never walked into: version control internals, dependency trees,
-#: build output, caches, and the places data is kept. A vendored dependency is
-#: not the authors' method, and copying one buries the code that is.
+#: build output and caches. A vendored dependency is not the authors' method,
+#: and copying one buries the code that is.
 SKIPPED_DIRECTORIES = (
     '.git', '.hg', '.svn', '.github', '.idea', '.vscode',
     'node_modules', 'bower_components', 'vendor', 'third_party', 'thirdparty',
     '.venv', 'venv', 'env', '.env', 'virtualenv', 'site-packages',
     '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox',
     'build', 'dist', 'target', '.next', '.cache', 'renv',
-    'data', 'Data', 'datasets', 'raw', 'results', 'output', 'outputs',
-    'figures', 'figs', 'logs', '.ipynb_checkpoints',
+    '.ipynb_checkpoints',
     'coverage', 'htmlcov', '_build', 'cmake-build-debug', 'cmake-build-release',
+)
+
+#: The folders data and output are kept in, left out of a walk and *walked* in
+#: a checkout. Outside git there is nothing to say whether ``results/`` is the
+#: authors' input or last night's output, so it is one row never looked at, as
+#: it always was. Inside a checkout git has already answered: a file under
+#: ``data/`` that is committed is a file the authors put there, and since a
+#: data file is now listed rather than copied, listing it costs the snapshot
+#: nothing and is the only way the reviewer can learn it exists. What
+#: ``.gitignore`` names is still out, in the counted rows.
+DATA_DIRECTORIES = (
+    'data', 'Data', 'datasets', 'raw', 'results', 'output', 'outputs',
+    'figures', 'figs', 'logs',
 )
 
 #: Why a hidden folder is not in the snapshot, outside a git checkout. A dot
@@ -240,23 +271,85 @@ BUILD_SUFFIXES = frozenset({'.mk', '.cmake'})
 BUILD_NAMES = frozenset({
     'Dockerfile', 'Containerfile', 'CMakeLists.txt', 'nextflow.config',
     'pyproject.toml', 'setup.cfg', 'environment.yml', 'environment.yaml',
-    'requirements.txt', 'DESCRIPTION', 'NAMESPACE', 'Pipfile',
+    'requirements.txt', 'DESCRIPTION', 'NAMESPACE', 'Pipfile', 'renv.lock',
 })
 
 #: What makes a file :data:`KIND_DATA`: text that holds values rather than
 #: instructions. A lock file is here for the same reason — it is a resolved
-#: list of versions, and the file that asked for them is the build file.
+#: list of versions, and the file that asked for them is the build file. These
+#: are the files listed rather than copied, and fetched when a reviewer asks
+#: for one; the name is looked at first, so a ``pyproject.toml`` is still a
+#: build file copied up front.
 DATA_SUFFIXES = frozenset({'.json', '.yaml', '.yml', '.toml', '.csv', '.tsv',
-                           '.lock', '.ndjson', '.jsonl'})
+                           '.lock', '.ndjson', '.jsonl', '.txt'})
+
+#: Data that is not text at all: listed with its size and
+#: :data:`NOT_TEXT_DATA_REASON`, never opened. A reviewer who can see that
+#: ``study/counts.parquet`` exists and is 2 GB knows why a claim about it
+#: cannot be checked here, which is a different answer from silence.
+DATA_BINARY_SUFFIXES = frozenset({
+    '.parquet', '.feather', '.arrow', '.orc', '.avro',
+    '.h5', '.hdf5', '.h5ad', '.nc', '.npy', '.npz', '.mat', '.loom',
+    '.pkl', '.pickle', '.joblib', '.rds', '.rdata', '.rda', '.sav', '.dta',
+    '.db', '.sqlite', '.sqlite3', '.xlsx', '.xls', '.xlsm', '.ods',
+    '.zip', '.gz', '.tgz', '.bz2', '.xz', '.zst', '.7z', '.tar', '.rar',
+    '.png', '.jpg', '.jpeg', '.gif', '.tif', '.tiff', '.bmp', '.webp', '.ico',
+    '.pdf', '.eps', '.ps', '.mp4', '.mov', '.wav', '.mp3',
+    '.bam', '.cram', '.bai', '.pt', '.pth', '.ckpt', '.onnx', '.safetensors',
+})
+
+#: The label a data row carries when the file is not text. Not one of
+#: :data:`KIND_ORDER`: nothing of this kind is ever copied or counted against
+#: the caps, so it has no place in the order the caps cut in.
+KIND_BINARY = 'binary data'
+
+#: Why a data file is listed and not fetched.
+NOT_TEXT_DATA_REASON = 'not readable as text'
+LFS_REASON = 'stored in LFS, not fetched'
+
+#: What a Git LFS pointer file is: a few lines of text standing in for a file
+#: that is not in the checkout at all. Fetching one would serve the reviewer
+#: the pointer as though it were the data, so it is reported for what it is.
+LFS_POINTER_PREFIX = b'version https://git-lfs.github.com/spec/v1'
+LFS_POINTER_MAX_BYTES = 1024
 
 #: The caps. A file over :data:`MAX_FILE_BYTES` is skipped as too large — a
-#: generated table with a ``.txt`` suffix is not source — and the walk stops
-#: adding files once either the total or the count is reached, recording what
-#: it left out. They are what keeps "snapshot the code" from meaning "copy a
-#: repository of unknown size into the run folder".
+#: generated table is not source — and the walk stops adding files once either
+#: the total or the count is reached, recording what it left out. They are what
+#: keeps "snapshot the code" from meaning "copy a repository of unknown size
+#: into the run folder". A data file is counted against none of them: it is
+#: listed, and what a fetch of one may spend is the data budget below.
 MAX_FILE_BYTES = 200_000
 MAX_TOTAL_BYTES = 8_000_000
 MAX_FILES = 600
+
+#: How many data files one snapshot lists, and how many rows one ``list_code``
+#: answers with. The listing is the only way a reviewer learns a data file
+#: exists, so it is generous; the answer is bounded because a folder of ten
+#: thousand readings is not an inventory anybody reads, and
+#: ``data_folders`` says where the rest are.
+MAX_DATA_FILES = 2_000
+DATA_ROWS = 200
+
+#: What fetching data may spend in one run: how many files, and how many bytes
+#: of them are stored. A reviewer who has spent it is told so plainly rather
+#: than served a truncated answer, because "I could not see it" and "it says
+#: 100" are different findings.
+MAX_DATA_FETCHES = 40
+MAX_DATA_BYTES = 4_000_000
+
+#: The head of a data file too large to fetch whole: enough to see a header
+#: row, the shape of a record and the first values, and never more. The file
+#: is read once, streamed, this many bytes at most, and cut back to the last
+#: whole line.
+DATA_HEAD_BYTES = 20_000
+
+#: Up to what size the lines of a partial data file are counted. Counting is
+#: one streaming pass over the bytes, which is cheap next to a reviewer not
+#: knowing whether a head of 240 lines is most of the file or a thousandth of
+#: it — but it is not free, and past this the answer says the count is unknown
+#: rather than spending a minute on it.
+MAX_LINE_COUNT_BYTES = 200_000_000
 
 #: The one cap that is read off the file on disk rather than off the text
 #: stored. A notebook holding a figure is megabytes of base64 and a few
@@ -388,7 +481,9 @@ def _wanted(path):
     """Whether one file is text source this snapshot copies, or why it is not.
 
     The secret-name rule is first, so a ``prod.env`` is left out for what it
-    holds rather than kept for what it looks like.
+    holds rather than kept for what it looks like. Data is not asked about
+    here: :func:`_data_role` has already taken it out of the candidates, so
+    what reaches this is source, build, configuration or nothing.
     """
     if _secret(path.name):
         return SECRET_REASON
@@ -397,6 +492,27 @@ def _wanted(path):
     if path.suffix in TEXT_SUFFIXES:
         return None
     return 'not text source: ' + (path.suffix or 'no suffix')
+
+
+def _data_role(path):
+    """How one file reads as data: ``'text'``, ``'binary'``, or ``''``.
+
+    ``''`` for everything that is not data — source, build files,
+    configuration, prose, and a suffix nobody listed. The name is looked at
+    before the suffix for the same reason :func:`kind` looks at it first: a
+    ``requirements.txt`` is what the code was run with and a
+    ``pyproject.toml`` is a build file, and both belong in the snapshot up
+    front rather than behind a fetch.
+    """
+    name = Path(path).name
+    if name in SOURCE_NAMES or name in BUILD_NAMES or name in TEXT_NAMES:
+        return ''
+    suffix = Path(path).suffix
+    if suffix in DATA_SUFFIXES:
+        return 'text'
+    if suffix.lower() in DATA_BINARY_SUFFIXES:
+        return 'binary'
+    return ''
 
 
 def kind(path):
@@ -545,19 +661,24 @@ def _whole_paths(paths):
     return {os.path.normcase(str(Path(one).resolve())) for one in paths if one is not None}
 
 
-def _folder_left_out(path, excluded, hidden):
+def _folder_left_out(path, excluded, hidden, data=False):
     """Why one folder is not walked into, or ``''`` when it is.
 
     The one rule, used by the walk and by the tracked-file list alike, so
     that a repository and a plain folder leave the same things out for the
     same stated reasons. *hidden* turns on the dot-folder rule, which applies
-    outside a checkout only — see :data:`HIDDEN_REASON`.
+    outside a checkout only — see :data:`HIDDEN_REASON`. *data* turns off the
+    :data:`DATA_DIRECTORIES` rule, which a checkout does not need: git has
+    said what is committed, and a committed data file is listed rather than
+    copied.
     """
     if path.is_symlink():
         return LINK_REASON
     if os.path.normcase(str(path)) in excluded:
         return THIS_RUN_REASON
     if path.name in SKIPPED_DIRECTORIES:
+        return DIRECTORY_REASON
+    if not data and path.name in DATA_DIRECTORIES:
         return DIRECTORY_REASON
     if hidden and path.name.startswith('.'):
         return HIDDEN_REASON
@@ -661,7 +782,9 @@ def _tracked(root, excluded):
     scripts. The folder rules still apply on top of the tracked list: a
     committed vendored dependency, a committed run folder of this package and
     a symbolic link are left out of a checkout exactly as they are out of a
-    plain folder.
+    plain folder. The one that does not apply here is
+    :data:`DATA_DIRECTORIES`: a committed ``data/`` folder is the authors'
+    own, and its files are listed rather than copied.
     """
     if not _git(root, 'rev-parse', '--is-inside-work-tree'):
         return None
@@ -675,7 +798,7 @@ def _tracked(root, excluded):
         for name in parts[:-1]:
             folder = folder + '/' + name if folder else name
             if folder not in decided:
-                decided[folder] = _folder_left_out(root / folder, excluded, False)
+                decided[folder] = _folder_left_out(root / folder, excluded, False, data=True)
             if decided[folder]:
                 reason = decided[folder]
                 break
@@ -718,9 +841,13 @@ def snapshot(source, folder, *, limits=None, run=None):
     """Copy the text source of *source* into *folder* and write its manifest.
 
     *source* is a local folder or a repository URL; a URL is cloned first, into
-    a temporary checkout beside the snapshot that is removed once the text is
-    copied, so what the run folder keeps is the text and the record of it and
-    not a working tree.
+    a checkout beside the snapshot, so what the run folder keeps is the text
+    and the record of it and not a working tree. The checkout is removed once
+    the text is copied — unless the repository holds data a reviewer may fetch,
+    because a fetch reads the file where it is and for a URL there is nowhere
+    else it could be. For a local folder the fetch reads the working file, and
+    a file that changed since this moment is said to have changed, in the
+    answer and in the manifest, rather than passed off as the snapshot's.
 
     *run* is the run folder this snapshot is being taken for, when there is
     one. The normal way to review a repository is from inside it — the out
@@ -746,6 +873,19 @@ def snapshot(source, folder, *, limits=None, run=None):
         snapshot, ``bytes``, ``lines`` and ``sha256``, plus ``extracted`` on a
         file whose stored text was pulled out of something else — a notebook,
         stored as its cells.
+    ``data``
+        Every data file, listed and not copied, in path order: its ``path``,
+        ``bytes`` and ``mtime_ns`` as they were at this moment, its ``kind``
+        (:data:`KIND_DATA` or :data:`KIND_BINARY`), whether it is ``readable``
+        as text and the ``reason`` when it is not, and ``fetched``. A reviewer
+        who fetches one turns it into a ``files`` row — with ``data``,
+        ``partial``, ``source_bytes``, ``total_lines``, ``columns`` and
+        ``changed`` on it — and the ``data`` row records what the fetch stored.
+    ``data_root``, ``data_use``
+        Where a fetch reads from (``kind`` ``folder`` with an absolute path, or
+        ``checkout`` with a path inside this snapshot, or empty when nothing
+        can be fetched), and what fetching has spent: ``fetched``, ``partial``,
+        ``refused`` and ``bytes``.
     ``skipped``
         Everything left out, in path order, with ``path`` and ``reason``: not
         text source, may hold secrets, too large, not decodable as text, past
@@ -769,11 +909,14 @@ def snapshot(source, folder, *, limits=None, run=None):
         code and :data:`SOURCE_CUT_WARNING` is in ``truncated`` as well.
 
     Raises :class:`CodeRefused` when there is nothing to review: a folder that
-    is not there, a URL git refuses, or a repository holding no text source.
+    is not there, a URL git refuses, or a repository holding no text source —
+    data alone is not code, however much of it is listed.
     """
     folder = Path(folder)
     caps = {'max_file_bytes': MAX_FILE_BYTES, 'max_total_bytes': MAX_TOTAL_BYTES,
-            'max_files': MAX_FILES, **(limits or {})}
+            'max_files': MAX_FILES, 'max_data_files': MAX_DATA_FILES,
+            'max_data_fetches': MAX_DATA_FETCHES, 'max_data_bytes': MAX_DATA_BYTES,
+            'data_head_bytes': DATA_HEAD_BYTES, **(limits or {})}
     folder.mkdir(parents=True, exist_ok=True)
     files_root = folder / FILES_DIRECTORY
     # The run folder and the snapshot folder, as whole paths: what the walk
@@ -807,20 +950,38 @@ def snapshot(source, folder, *, limits=None, run=None):
                     'code is in — a run folder inside it is left out of the snapshot.')
         origin = {'kind': 'folder', 'source': str(root), **_git_state(root)}
         temporary = False
+    keep = False
     try:
         record = _copy(root, files_root, caps, excluded)
+        # The clone stays only to be read from. A repository whose data is all
+        # binary, or that has none, keeps nothing a fetch could use, so the
+        # working tree goes as it always did.
+        if not record['files']:
+            # Data alone is not code. A reviewer handed a snapshot of nothing
+            # but readings has no methods to audit, and listing them would
+            # dress up an empty review as a code review.
+            raise CodeRefused(
+                'No text source in ' + str(origin['source'])
+                + ': every file in it was skipped, so there is no code to review. '
+                + 'Left out ' + str(len(record['skipped'])) + ' path(s)'
+                + (', and listed ' + str(len(record['data'])) + ' data file(s), which are '
+                   'not code' if record['data'] else '') + '.'
+                + (' A git repository is snapshotted from the files it tracks, so code that is '
+                   'untracked or ignored is not in it.' if record['tracked'] else ''))
+        keep = temporary and any(row['readable'] for row in record['data'])
     finally:
-        if temporary:
+        if temporary and not keep:
             shutil.rmtree(root, ignore_errors=True)
-    if not record['files']:
-        raise CodeRefused(
-            'No text source in ' + str(origin['source'])
-            + ': every file in it was skipped, so there is no code to review. '
-            + 'Left out ' + str(len(record['skipped'])) + ' path(s).'
-            + (' A git repository is snapshotted from the files it tracks, so code that is '
-               'untracked or ignored is not in it.' if record['tracked'] else ''))
+    if keep:
+        data_root = {'kind': 'checkout', 'path': root.name}
+    elif temporary:
+        data_root = {'kind': '', 'path': ''}
+    else:
+        data_root = {'kind': 'folder', 'path': str(root)}
     manifest = {'schema_version': SCHEMA_VERSION, 'origin': origin,
-                'limits': caps, **record}
+                'limits': caps, 'data_root': data_root,
+                'data_use': {'fetched': 0, 'partial': 0, 'refused': 0, 'bytes': 0},
+                **record}
     write(folder / MANIFEST_FILE, manifest)
     return manifest
 
@@ -883,21 +1044,147 @@ def _notebook_contents(path, caps):
             'extracted': 'notebook cells'}
 
 
+def _is_lfs_pointer(path):
+    """Whether a file is a Git LFS pointer rather than the data it stands for.
+
+    The first bytes are enough: a pointer file begins with the spec line and is
+    a few hundred bytes long. Serving one as the data would hand a reviewer an
+    OID where the numbers should be, so it is reported for what it is.
+    """
+    try:
+        with path.open('rb') as handle:
+            return handle.read(len(LFS_POINTER_PREFIX)) == LFS_POINTER_PREFIX
+    except OSError:
+        return False
+
+
+def _data_row(path, relative, role):
+    """One data file as the manifest lists it, without opening it.
+
+    The size and the modification time are read once, here, and they are what
+    a later fetch compares against to say whether the file changed since the
+    snapshot was taken. Nothing is read of the file itself except the first
+    bytes of a small one, to tell a Git LFS pointer from the data.
+    """
+    row = {'path': relative, 'kind': KIND_DATA if role == 'text' else KIND_BINARY,
+           'bytes': 0, 'mtime_ns': 0, 'readable': role == 'text', 'reason': '',
+           'fetched': False}
+    try:
+        stat = path.stat()
+    except OSError as exc:
+        return {**row, 'readable': False, 'reason': 'could not be read: ' + str(exc)}
+    row['bytes'], row['mtime_ns'] = stat.st_size, stat.st_mtime_ns
+    if role != 'text':
+        row['reason'] = NOT_TEXT_DATA_REASON
+    elif stat.st_size <= LFS_POINTER_MAX_BYTES and _is_lfs_pointer(path):
+        row.update({'readable': False, 'reason': LFS_REASON})
+    return row
+
+
+def _head_text(data, whole):
+    """The text of what was read, cut back to a whole line when it is a head.
+
+    A head stops wherever the byte limit fell, which is usually mid-line and
+    may be mid-character. Cutting at the last line feed fixes both at once; a
+    head of a file with no line feed in it at all — one long JSON document —
+    is cut back by the few bytes a multi-byte character can straddle instead,
+    so a reviewer gets the first values rather than "not decodable".
+    """
+    if whole or b'\n' in data:
+        return _text(data if whole else data.rsplit(b'\n', 1)[0])
+    for back in range(4):
+        text = _text(data[:len(data) - back] if back else data)
+        if text is not None:
+            return text
+    return None
+
+
+def _count_lines(path, size):
+    """The lines of a file, in one streaming pass, or ``0`` for too large to count.
+
+    Bounded memory: a megabyte at a time, counting line feeds, so a 50 MB
+    table costs one read and no allocation that grows with the file. The count
+    is of line feeds, the same thing :func:`_split` counts, plus a last line
+    with no ending on it. *size* is the size already known from the one stat
+    the fetch did, so nothing is stat-ed twice.
+    """
+    if size > MAX_LINE_COUNT_BYTES:
+        return 0
+    total, last = 0, b''
+    try:
+        with path.open('rb') as handle:
+            while True:
+                chunk = handle.read(1 << 20)
+                if not chunk:
+                    break
+                total += chunk.count(b'\n')
+                last = chunk[-1:]
+    except OSError:
+        return 0
+    if last not in (b'', b'\n'):
+        total += 1
+    return total
+
+
+def _columns(relative, text):
+    """The column names, or the keys of the first record, of a data file's head.
+
+    Only where the format says plainly what they are: the header line of a
+    ``csv`` or ``tsv``, the keys of the first object of a ``jsonl``. Guessing
+    at the fields of a partly read JSON document would be inventing them.
+    """
+    first = next((line for line in text.split('\n') if line.strip()), '')
+    if not first:
+        return []
+    suffix = Path(relative).suffix
+    if suffix == '.csv':
+        return [one.strip().strip('"') for one in first.split(',')][:60]
+    if suffix == '.tsv':
+        return [one.strip() for one in first.split('\t')][:60]
+    if suffix in ('.jsonl', '.ndjson'):
+        try:
+            held = json.loads(first)
+        except ValueError:
+            return []
+        return [str(key) for key in held][:60] if isinstance(held, dict) else []
+    return []
+
+
 def _copy(root, files_root, caps, excluded=()):
-    """The selection itself: what was copied, what was skipped, and why.
+    """The selection itself: what was copied, what was listed, what was skipped.
 
     The candidates are taken in :func:`_order` and not in walk order, so that
     when there is more text than the caps hold what survives is what a
     reviewer needs rather than whatever came first alphabetically. Both caps
     cut in that order, the file count and the byte total alike, and what each
     one cut is counted by kind so the manifest can say so plainly.
+
+    Data is not a candidate at all. It is listed — every data file with its
+    size and kind, in ``data`` — and copied only when a reviewer fetches one,
+    so a repository whose data outnumbers its scripts no longer spends the
+    file cap on readings nobody asked for. That is what the cap was spending
+    it on: the first real run left out 555 data files, one of which held the
+    answer to a finding.
     """
     root = Path(root)
     found, left_out, tracked = _select(root, excluded)
-    files, skipped = [], list(left_out)
-    candidates = []
+    files, skipped, data = [], list(left_out), []
+    candidates, data_cut = [], 0
     for path in found:
         relative = path.relative_to(root).as_posix()
+        if _secret(path.name):
+            # Before the data rule, so a `credentials.json` is left out for
+            # what it holds rather than listed as data to be fetched.
+            skipped.append({'path': relative, 'reason': SECRET_REASON})
+            continue
+        role = _data_role(path)
+        if role:
+            if len(data) >= caps['max_data_files']:
+                data_cut += 1
+                skipped.append({'path': relative, 'reason': 'past the data listing cap'})
+            else:
+                data.append(_data_row(path, relative, role))
+            continue
         reason = _wanted(path)
         if reason:
             skipped.append({'path': relative, 'reason': reason})
@@ -947,6 +1234,7 @@ def _copy(root, files_root, caps, excluded=()):
         files.append(row)
         held_kinds[kind(relative)] += 1
     files.sort(key=lambda one: one['path'])
+    data.sort(key=lambda one: one['path'])
     skipped.sort(key=lambda one: one['path'])
     if truncated:
         truncated += ': left out ' + ', '.join(
@@ -956,9 +1244,16 @@ def _copy(root, files_root, caps, excluded=()):
             # brief, because a snapshot that is missing program source is one
             # no reader may conclude "the code never does that" from.
             truncated += '. ' + SOURCE_CUT_WARNING
-    return {'files': files, 'skipped': skipped, 'truncated': truncated, 'tracked': tracked,
+    if data_cut:
+        said = (str(data_cut) + ' data file(s) past the data listing cap of '
+                + str(caps['max_data_files']) + ': they are in the skipped rows, '
+                'and a claim that rests on one of them cannot be checked here')
+        truncated = truncated + '. ' + said if truncated else said
+    return {'files': files, 'data': data, 'skipped': skipped, 'truncated': truncated,
+            'tracked': tracked,
             'counts': {'files': len(files), 'bytes': total, 'skipped': len(skipped),
-                       'kinds': held_kinds},
+                       'kinds': held_kinds, 'data': len(data),
+                       'data_listed_bytes': sum(one['bytes'] for one in data)},
             'left_out_kinds': cut, 'source_cut': cut[KIND_SOURCE]}
 
 
@@ -982,6 +1277,15 @@ class CodeDesk:
     reports as "files opened out of files in the snapshot": a code review that
     opened two files out of four hundred is a different thing from one that
     read the pipeline, and a reader of the review can see which it was.
+
+    Data is the one thing this desk brings in rather than only serves. A data
+    file is listed and not copied, and :meth:`read_code` on a listed path — or
+    :meth:`search_code` scoped to one — fetches it: the bytes are stored under
+    ``files/`` and hashed at that moment, and from then on the file is served
+    and quoted from the stored copy exactly like source. What was fetched goes
+    into the manifest as it happens, so a recovered run and ``read_run`` say
+    the same thing this desk does. A fetch is still reading: nothing is run,
+    and nothing outside the snapshot's own listing can be named.
     """
 
     def __init__(self, folder):
@@ -989,8 +1293,159 @@ class CodeDesk:
         self.manifest = read(self.folder / MANIFEST_FILE)
         self.files_root = self.folder / FILES_DIRECTORY
         self.rows = {row['path']: row for row in self.manifest.get('files') or []}
+        self.data = {row['path']: row for row in self.manifest.get('data') or []}
         self.opened = set()
         self.searches = []
+
+    # --- data, fetched when a reviewer asks for it -------------------------
+
+    @property
+    def caps(self):
+        """The limits this snapshot was taken under, as it recorded them."""
+        held = dict(self.manifest.get('limits') or {})
+        return {'max_file_bytes': MAX_FILE_BYTES, 'max_data_fetches': MAX_DATA_FETCHES,
+                'max_data_bytes': MAX_DATA_BYTES, 'data_head_bytes': DATA_HEAD_BYTES,
+                **held}
+
+    @property
+    def data_use(self):
+        """What fetching data has spent in this run, live in the manifest."""
+        use = self.manifest.setdefault(
+            'data_use', {'fetched': 0, 'partial': 0, 'refused': 0, 'bytes': 0})
+        for name in ('fetched', 'partial', 'refused', 'bytes'):
+            use.setdefault(name, 0)
+        return use
+
+    @property
+    def data_root(self):
+        """Where a fetch reads from, or ``None`` when nothing can be fetched."""
+        held = dict(self.manifest.get('data_root') or {})
+        where, named = str(held.get('kind') or ''), str(held.get('path') or '')
+        if not where or not named:
+            return None
+        # A checkout's path is kept relative to the snapshot, so a run folder
+        # that was moved or copied still fetches from its own clone.
+        return self.folder / named if where == 'checkout' else Path(named)
+
+    def _save(self):
+        """Write the manifest back, so what was fetched survives this process."""
+        write(self.folder / MANIFEST_FILE, self.manifest)
+
+    def _refuse(self, row, said):
+        """Record a refused fetch and raise it in words."""
+        self.data_use['refused'] += 1
+        row['reason'] = said
+        self._save()
+        raise ValueError(said)
+
+    def _fetch(self, row):
+        """Bring one listed data file into the snapshot and return its file row.
+
+        The file is read once, streamed, and never loaded whole: up to the
+        per-file cap it is stored entire, and over it what is stored is a head
+        of :data:`DATA_HEAD_BYTES` cut back to the last whole line, marked
+        partial, with the total size, the line count where counting is cheap,
+        and the columns or keys where the format says them plainly. Bytes and
+        hash are of what was stored, at this moment, so a finding quoting a
+        fetched line verifies against the copy and not against a file that may
+        have changed since.
+        """
+        caps, use = self.caps, self.data_use
+        if not row['readable']:
+            self._refuse(row, row['path'] + ' is listed in the snapshot and not fetched: '
+                         + (row['reason'] or NOT_TEXT_DATA_REASON)
+                         + '. A finding cannot quote it.')
+        root = self.data_root
+        if root is None:
+            self._refuse(row, row['path'] + ' cannot be fetched: this snapshot has no '
+                         'working copy of the code to read it from.')
+        if use['fetched'] >= caps['max_data_fetches']:
+            self._refuse(row, 'This review has fetched its ' + str(caps['max_data_fetches'])
+                         + ' data file(s), which is all one run may. ' + row['path']
+                         + ' was not read: say in the report that it was not fetched.')
+        source = root / row['path']
+        try:
+            stat = source.stat()
+        except OSError as exc:
+            self._refuse(row, row['path'] + ' is listed in the snapshot but could not be '
+                         'read from the code: ' + str(exc))
+        whole = stat.st_size <= caps['max_file_bytes']
+        asking = stat.st_size if whole else caps['data_head_bytes']
+        left = caps['max_data_bytes'] - use['bytes']
+        if asking > left:
+            self._refuse(row, 'This review has ' + str(max(0, left)) + ' byte(s) of its data '
+                         + 'budget of ' + str(caps['max_data_bytes']) + ' left, and '
+                         + row['path'] + ' needs ' + str(asking)
+                         + '. It was not read: say in the report that it was not fetched.')
+        try:
+            with source.open('rb') as handle:
+                data = handle.read(asking)
+        except OSError as exc:
+            self._refuse(row, row['path'] + ' could not be read: ' + str(exc))
+        if data[:len(LFS_POINTER_PREFIX)] == LFS_POINTER_PREFIX:
+            row['readable'] = False
+            self._refuse(row, row['path'] + ': ' + LFS_REASON
+                         + '. The checkout holds a pointer to the file, not the file.')
+        text = _head_text(data, whole)
+        if text is None:
+            row['readable'] = False
+            self._refuse(row, row['path'] + ' is not decodable as UTF-8 text, so it is '
+                         'listed and not fetched.')
+        stored = text.encode('utf-8')
+        destination = self.files_root / row['path']
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with destination.open('wb') as handle:
+            handle.write(stored)
+        held = _split(text)
+        new = {'path': row['path'], 'bytes': len(stored), 'lines': len(held),
+               'sha256': digest(stored), 'data': True, 'partial': not whole,
+               'source_bytes': stat.st_size,
+               'total_lines': len(held) if whole else _count_lines(source, stat.st_size),
+               'columns': _columns(row['path'], text),
+               'changed': ''}
+        if stat.st_size != row['bytes'] or stat.st_mtime_ns != row.get('mtime_ns'):
+            # Said rather than smoothed over: the reviewer is quoting a file
+            # that is not the one the snapshot recorded, and a finding on it
+            # has to say so.
+            new['changed'] = ('changed since the snapshot was taken: '
+                              + str(row['bytes']) + ' byte(s) then, '
+                              + str(stat.st_size) + ' now')
+        self.rows[row['path']] = new
+        self.manifest['files'] = sorted(
+            [one for one in (self.manifest.get('files') or []) if one['path'] != row['path']]
+            + [new], key=lambda one: one['path'])
+        row.update({'fetched': True, 'stored_bytes': new['bytes'],
+                    'partial': new['partial'], 'sha256': new['sha256'],
+                    'changed': new['changed'], 'reason': ''})
+        use['fetched'] += 1
+        use['bytes'] += new['bytes']
+        use['partial'] += 1 if new['partial'] else 0
+        counts = self.manifest.setdefault('counts', {})
+        counts['files'] = len(self.manifest['files'])
+        counts['bytes'] = sum(one['bytes'] for one in self.manifest['files'])
+        self._save()
+        return new
+
+    def _data_note(self, row):
+        """What a reviewer has to be told about a fetched data file."""
+        said = []
+        if row.get('changed'):
+            said.append('This file ' + row['changed'] + '. What is served is what was '
+                        'read just now, and a finding on it should say so.')
+        if row.get('partial'):
+            said.append(
+                'Partial: ' + str(row['bytes']) + ' of ' + str(row.get('source_bytes') or 0)
+                + ' byte(s) were stored'
+                + (' of ' + str(row['total_lines']) + ' line(s)'
+                   if row.get('total_lines') else '')
+                + ', because the file is larger than one the snapshot holds whole. A '
+                'finding may quote only these lines, and the rest of the file is not '
+                'evidence you have.')
+        else:
+            said.append('Fetched whole from the code and stored in the snapshot.')
+        if row.get('columns'):
+            said.append('Columns or keys: ' + ', '.join(row['columns']) + '.')
+        return ' '.join(said)
 
     # --- what the run records ---------------------------------------------
 
@@ -1019,6 +1474,15 @@ class CodeDesk:
             'files_opened': sorted(self.opened),
             'opened': len(self.opened),
             'searches': len(self.searches),
+            # Data: what the reviewer could see existed, what it asked for,
+            # and what it only partly got or did not get at all. A review that
+            # fetched nothing of a hundred listed data files is a different
+            # thing from one that read the file a claim turned on.
+            'data_listed': len(self.data),
+            'data_fetched': int(self.data_use['fetched']),
+            'data_partial': int(self.data_use['partial']),
+            'data_refused': int(self.data_use['refused']),
+            'data_bytes': int(self.data_use['bytes']),
         }
 
     # --- the tools ---------------------------------------------------------
@@ -1035,16 +1499,27 @@ class CodeDesk:
         except (ValueError, KeyError, TypeError, OSError, re.error) as exc:
             return {'request_rejected': str(exc)}
 
-    def _path(self, path):
+    def _path(self, path, fetch=False):
         """The manifest row for *path*, or a refusal naming what is there.
 
         The snapshot's own list is the only way in, which is what makes a path
-        outside it unreachable rather than guarded against.
+        outside it unreachable rather than guarded against. A listed data file
+        is in that list too: with *fetch* it is brought in and served, and
+        without it — the check behind a finding — it is refused for not being
+        stored, because a finding may quote only what the snapshot holds.
         """
         wanted = str(path or '').strip().lstrip('./')
         row = self.rows.get(wanted)
+        if row is None and wanted in self.data:
+            listed = self.data[wanted]
+            if fetch:
+                return self._fetch(listed)
+            raise ValueError(
+                wanted + ' is a data file the snapshot lists and has not stored. Read it '
+                'with read_code first; a finding may quote only lines the snapshot holds.')
         if row is None:
-            near = [name for name in self.rows if wanted and wanted in name][:8]
+            near = [name for name in list(self.rows) + list(self.data)
+                    if wanted and wanted in name][:8]
             raise ValueError(
                 (str(path) or 'an empty path') + ' is not a file in the code snapshot. '
                 + ('Did you mean: ' + ', '.join(near) + '? ' if near else '')
@@ -1058,20 +1533,49 @@ class CodeDesk:
         with (self.files_root / row['path']).open(encoding='utf-8', newline='') as handle:
             return _split(handle.read())
 
-    def list_code(self, path='', pattern=''):
-        """The files in the snapshot, with their sizes, and what was left out."""
-        prefix = str(path or '').strip().lstrip('./')
-        glob = str(pattern or '').strip()
-        rows = [row for row in self.manifest.get('files') or []
+    def _matching(self, rows, prefix, glob):
+        """The rows under *prefix* that match *glob*, in the order they are in."""
+        return [row for row in rows
                 if (not prefix or row['path'] == prefix or row['path'].startswith(prefix + '/'))
                 and (not glob or Path(row['path']).match(glob))]
+
+    def list_code(self, path='', pattern=''):
+        """The files in the snapshot, the data it lists, and what was left out."""
+        prefix = str(path or '').strip().lstrip('./')
+        glob = str(pattern or '').strip()
+        rows = self._matching(self.manifest.get('files') or [], prefix, glob)
+        held = self._matching(self.manifest.get('data') or [], prefix, glob)
+        folders = {}
+        for row in held:
+            where = str(Path(row['path']).parent)
+            where = '' if where == '.' else where
+            seen = folders.setdefault(where, {'files': 0, 'bytes': 0})
+            seen['files'] += 1
+            seen['bytes'] += int(row['bytes'] or 0)
         return {
             'origin': self.origin,
             'files': [{'path': row['path'], 'lines': row['lines'], 'bytes': row['bytes'],
-                       'extracted': str(row.get('extracted') or '')}
+                       'extracted': str(row.get('extracted') or ''),
+                       'data': bool(row.get('data')), 'partial': bool(row.get('partial'))}
                       for row in rows],
             'count': len(rows),
             'files_in_snapshot': len(self.rows),
+            # The data the code holds: listed, not copied, and fetched when
+            # this lane asks for one. It is the only way the reviewer learns
+            # that the file an answer is in exists at all.
+            'data': [{'path': row['path'], 'bytes': row['bytes'], 'kind': row['kind'],
+                      'readable': bool(row['readable']), 'reason': str(row['reason'] or ''),
+                      'fetched': bool(row.get('fetched'))}
+                     for row in held[:DATA_ROWS]],
+            'data_count': len(held),
+            'data_folders': dict(sorted(folders.items())),
+            'data_use': dict(self.data_use),
+            'data_note': ('Data files are listed, not copied. Call read_code on one to '
+                          'fetch it — a file over ' + str(self.caps['max_file_bytes'])
+                          + ' bytes comes back as a head, marked partial, and a finding may '
+                          'quote only the lines it served. A row that is not readable is '
+                          'never opened: say so rather than guessing at it.'
+                          ) if held else '',
             # What is not here, so that "the code does not do that" is never
             # read off a snapshot that simply left the file out.
             'skipped': [dict(one) for one in (self.manifest.get('skipped') or [])[:40]],
@@ -1094,8 +1598,14 @@ class CodeDesk:
         ``extracted`` says when the lines are not the lines of the file on
         disk: a notebook is served as its cells, each marked with its cell
         number, with every output dropped.
+
+        A path the snapshot lists as data is fetched here, on this call, and
+        from then on served like any other file. ``data``, ``partial``,
+        ``source_bytes``, ``total_lines``, ``columns`` and ``note`` say what
+        was stored and what was not, because a finding may quote only the
+        lines that were.
         """
-        row = self._path(path)
+        row = self._path(path, fetch=True)
         lines = self._lines(row)
         parts = max(1, -(-len(lines) // PART_LINES))
         if type(part) is not int or isinstance(part, bool) or not 1 <= part <= parts:
@@ -1104,7 +1614,7 @@ class CodeDesk:
         first = (part - 1) * PART_LINES + 1
         served = lines[first - 1:first - 1 + PART_LINES]
         self.opened.add(row['path'])
-        return {
+        answer = {
             'path': row['path'],
             'part': part,
             'of': parts,
@@ -1116,13 +1626,58 @@ class CodeDesk:
             'text': '\n'.join(str(first + index) + '\t' + _clip(line)
                               for index, line in enumerate(served)),
         }
+        if row.get('data'):
+            answer.update({
+                'data': True,
+                'partial': bool(row.get('partial')),
+                'source_bytes': int(row.get('source_bytes') or row['bytes']),
+                'total_lines': int(row.get('total_lines') or 0),
+                'columns': list(row.get('columns') or []),
+                'changed': str(row.get('changed') or ''),
+                'note': self._data_note(row),
+            })
+        return answer
+
+    def _fetch_under(self, prefix):
+        """Fetch the data listed under a named path, for a search scoped to it.
+
+        Only under a named path. An unscoped search would otherwise pull a
+        repository's whole data folder into the snapshot to answer one phrase,
+        which is the budget spent on nobody's question. What could not be
+        fetched comes back as rows saying why, so the search's answer says
+        which data it did not look in.
+        """
+        fetched, refused = [], []
+        for name, row in sorted(self.data.items()):
+            if not (name == prefix or name.startswith(prefix + '/')):
+                continue
+            if name in self.rows:
+                continue
+            try:
+                self._fetch(row)
+            except (ValueError, OSError) as exc:
+                refused.append({'path': name, 'reason': str(exc)})
+                if not row['readable']:
+                    continue
+                # A spent budget refuses every file after this one too, and
+                # saying so forty times is not forty answers.
+                break
+            else:
+                fetched.append(name)
+        return fetched, refused
 
     def search_code(self, query, regex=False, path=''):
-        """Find a phrase, or a regular expression, in the snapshot by line."""
+        """Find a phrase, or a regular expression, in the snapshot by line.
+
+        Scoped to a path that names data the snapshot has listed, the data
+        under it is fetched first and then searched, so a phrase can be looked
+        for in the authors' own values and not only in their code.
+        """
         wanted = str(query or '')
         if len(wanted.strip()) < 2:
             raise ValueError('search_code takes a phrase of at least two characters.')
         prefix = str(path or '').strip().lstrip('./')
+        fetched, refused = self._fetch_under(prefix) if prefix else ([], [])
         pattern = re.compile(wanted if regex else re.escape(wanted))
         hits, searched = [], 0
         for row in self.manifest.get('files') or []:
@@ -1139,7 +1694,9 @@ class CodeDesk:
         self.searches.append(wanted)
         return {'query': wanted, 'regex': bool(regex), 'files_searched': searched,
                 'matches': hits, 'count': len(hits),
-                'complete': len(hits) < SEARCH_HITS,
+                'complete': len(hits) < SEARCH_HITS and not refused,
+                'data_fetched': fetched,
+                'data_refused': refused,
                 'note': ('The first ' + str(SEARCH_HITS) + ' matches. Narrow the search or '
                          'name a path.') if len(hits) >= SEARCH_HITS else ''}
 
@@ -1154,6 +1711,11 @@ class CodeDesk:
         and the kind of line ending are not part of the comparison; everything
         else is. Returns the stored evidence, or raises :class:`ValueError`
         with what the lines actually hold.
+
+        This never fetches. A data file the reviewer read is stored and
+        verifies exactly like source; one it never read, or the unread rest of
+        a partial one, has no lines here to check a quote against, which is
+        the whole of the rule that a finding may quote only what was stored.
         """
         row = self._path(path)
         lines = self._lines(row)

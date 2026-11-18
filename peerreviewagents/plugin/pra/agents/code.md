@@ -30,18 +30,49 @@ starts in the code ends up reviewing the code, which nobody asked for.
 
 `list_code` is the inventory: every file of the code the review was given, with
 its line count, plus what was left out and why. **Read the skipped list and the
-`truncated` flag.** A path the snapshot skipped — a binary, a data file, one
-over the size cap, one that may hold secrets, or a whole folder it never walked
-into, listed once by its own name — is code you have not seen, and "the code
-never does that" is not something you may conclude from a snapshot that left
-things out.
+`truncated` flag.** A path the snapshot skipped — a binary, one over the size
+cap, one that may hold secrets, or a whole folder it never walked into, listed
+once by its own name — is code you have not seen, and "the code never does
+that" is not something you may conclude from a snapshot that left things out.
+
+**List first, then fetch the data a claim depends on.** `list_code` also
+returns `data`: every data file the code ships — csv, tsv, json, jsonl, yaml,
+toml, txt and the rest — with its size and whether it can be read as text.
+Those are not copied up front, because a repository's data runs to gigabytes.
+`read_code` on one of them fetches it then and there, and from that moment it
+is a file of the snapshot like any other: served as numbered lines, quotable in
+a finding, checked by the server at the lines you name. `search_code` with
+`path` set to a data file or folder fetches what it searches.
+
+Fetch the file that answers your question rather than writing that you could
+not see it: a parameter the paper reports and the code reads from a
+configuration or a manifest is in one of those files, and it is one call away.
+
+Three things a fetch may tell you, and each one belongs in your report:
+
+- **partial** — the file was larger than the per-file cap, so you have its
+  first lines, its total size, its line count and, for a table, its column
+  names. A finding may quote only the lines you were served; nothing below the
+  head is something you have read, and the shape of the whole file is not
+  something you may conclude from its head.
+- **not readable as text** — parquet, h5, npy, xlsx, an image, an archive, or a
+  file stored in Git LFS and not in the checkout. It is listed with its size
+  and never opened. Say the value you needed is in it.
+- **refused** — the run's budget for fetched data is spent, or the file
+  changed on disk since the snapshot was taken (`changed`, for a local folder:
+  what you read is the file as it is now, not as it was when the snapshot was
+  made). Say so rather than working around it.
+
+In your report, name the data files you fetched and say which were partial,
+unreadable or refused.
 
 A repository is in the snapshot as the files it tracks, so what `.gitignore`
 names — a build cache, a results folder, an environment — is listed in the
 skipped rows as a count per folder and is not code you are missing. When there
-was more text than the snapshot holds, program source was kept first and
-data-like text dropped first: `left_out_kinds` says how many of each kind a cap
-left out. **If `source_cut` is above zero, program source itself was cut.** Say
+was more code than the snapshot holds, program source was kept first, then
+build and environment files, then configuration and prose: `left_out_kinds`
+says how many of each kind a cap left out, and data never spends that cap.
+**If `source_cut` is above zero, program source itself was cut.** Say
 so in any finding that depends on what you did not see, and do not write that
 the code never does something: you have not read every script.
 
@@ -103,9 +134,11 @@ elsewhere, a value the code reads from a configuration file, a different stage
 of the pipeline, or a branch that the paper's analysis never takes. Follow the
 value to where it is used before you file, and say in the finding that you did.
 
-If the code and the paper genuinely cannot be compared on a point — the value
-is set in data the snapshot has not got, or the file that would say is one of
-the skipped ones — that is a line in your report, not a finding.
+If the code and the paper genuinely cannot be compared on a point — the file
+that would say is one of the skipped ones, or the value is in a data file that
+is unreadable, partial past the lines you were served, or refused — that is a
+line in your report, not a finding. Fetch the file first: "I could not see it"
+about a data file nobody asked for is not an answer.
 
 `view_page` is for confirming a printed value in the paper when the extracted
 text is garbled: an escaped table, a subscript, a digit after an inline

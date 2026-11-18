@@ -236,13 +236,24 @@ peerreview review manuscript.pdf run-output --code https://github.com/lab/analys
 
 A URL is cloned shallow, with hooks and submodules off. Either way the **text**
 of the code is snapshotted into `<run>/code/` — source, configuration, notebooks
-and documentation, skipping binaries, data files and anything over the size caps
-— beside a manifest naming the origin, the commit, every file taken with its
-digest, and everything left out with the reason. The snapshot is what the review
-reads, so the finding you get back cites code that is still there a year later.
+and documentation, skipping binaries and anything over the size caps — beside a
+manifest naming the origin, the commit, every file taken with its digest, every
+data file the code ships, and everything left out with the reason. The snapshot
+is what the review reads, so the finding you get back cites code that is still
+there a year later.
 
-Three rules about what lands there, because a snapshot nobody can describe is
+Four rules about what lands there, because a snapshot nobody can describe is
 not evidence:
+
+- **The data is listed, and fetched when the reviewer asks for it.** A paper's
+  repository ships anything from a 2 KB configuration to a 40 GB table, so
+  none of it is copied up front and none of it spends the size caps: each data
+  file is a row with its path, size and kind, and reading one brings it into
+  the snapshot, where it is quoted and checked exactly like source. A file
+  over the per-file cap comes back as a bounded head with the file's size, its
+  line count and its column names, marked partial, and a finding may quote
+  only the lines that were stored. Binary data and anything held in Git LFS
+  stay listed and are never opened.
 
 - **A notebook is stored as its cells**, code and markdown in order, each marked
   with its cell number, every output dropped — and the size cap is applied to
@@ -253,9 +264,9 @@ not evidence:
   skipped by name, with that as the reason. The snapshot is served to a model,
   so a credential copied into it is a credential handed out.
 - **What was never looked at is named once.** A folder the walk refuses —
-  `node_modules`, `data`, `.git` — and a symbolic link out of the snapshot are
-  each one row of the manifest rather than none, so "the code never does that"
-  is never read off a tree nobody opened.
+  `node_modules`, `.git`, a build cache — and a symbolic link out of the
+  snapshot are each one row of the manifest rather than none, so "the code
+  never does that" is never read off a tree nobody opened.
 
 The lane's three tools list, read and search that snapshot and nothing else.
 None of them executes anything, reaches the network, or can name a path outside
@@ -484,7 +495,7 @@ them:
 | `summary`, `verdict`, `limitations` | the editor's own three, or `None`/`[]` |
 | `identity` | paper id, source hash, PDF path, arm, reviewers, specialist tracks, versions, `provider`, `code_hashes` — the manifest's digest of each engine and plugin file that served the run — and `models`/`reviewer_models`, the model each slot was started with (both empty for a run from before 0.9.0), with `models_unverified` naming the slots that never reported running one |
 | `manuscript` | what state the workspace is in, which is not what state the run is in: `state` is one of `MANUSCRIPT_STATES` — `absent` for a run that stopped before the import, `draft` for a converted paper the Read stage never sealed (no line numbers, nothing can cite it), `sealed-by-reader` for a base a model read the pages of, `sealed-without-read` for one written with no page read at all — plus `sealed`, `reason` (why nothing read the pages, in the manifest's own words), `reader_model`, `lost_pages` (each page the converter returned nothing from, with the document and lines its transcription became) and `documents` |
-| `code` | whether code was reviewed beside the paper: `reviewed` is false for every run given none, and otherwise `kind` (`git-clone` or `folder`), `source`, `commit`, `branch`, `dirty`, the `snapshot` folder, `files_in_snapshot`, `files_skipped`, `truncated`, the snapshot's own `manifest`, and what a reviewer did with it — `files_opened`, `opened`, `searches` |
+| `code` | whether code was reviewed beside the paper: `reviewed` is false for every run given none, and otherwise `kind` (`git-clone` or `folder`), `source`, `commit`, `branch`, `dirty`, the `snapshot` folder, `files_in_snapshot`, `files_skipped`, `truncated`, the snapshot's own `manifest`, what the data it lists came to — `data_listed`, `data_fetched`, `data_partial`, `data_refused`, `data_bytes` — and what a reviewer did with it: `files_opened`, `opened`, `searches` |
 | `stages` | the stage ledger the run recorded, or `None`: `required`, `reported`, `missing`, and `missing` split in two — `silent` (stored nothing, filed nothing, so the run is blocked) and `missing_with_findings` (findings delivered and ruled on, no report filed, so the review is written and `note` names the gap) — plus `editor_trace`, what the editor's submission calls did and the last refusals it could not satisfy |
 | `runtime` | wall time, total tokens, rate limits, both token ceilings, the Claude Code version |
 | `agents` | one row per agent slot: role, track, `assigned_model` and the `model` it reported running as, tool calls, tokens, state |
