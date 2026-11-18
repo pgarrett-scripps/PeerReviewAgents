@@ -1072,23 +1072,32 @@ def test_the_installation_checks_are_public_and_are_the_ones_the_review_uses():
     assert version is None or isinstance(version, str)
 
 
-def test_the_two_parsers_and_the_command_list_are_public():
+def test_the_three_parsers_and_the_command_list_are_public():
     """The real parsers, so a wrapper's documented options cannot drift from them."""
-    assert peerreviewagents.CLI_COMMANDS == names.CLI_COMMANDS == ('review', 'report')
+    assert (peerreviewagents.CLI_COMMANDS == names.CLI_COMMANDS
+            == ('review', 'check-fixes', 'report'))
     # The CLI module keeps its historical name for the same tuple.
     from peerreviewagents.cli import main as cli_main
 
     assert cli_main.COMMANDS is names.CLI_COMMANDS
     assert peerreviewagents.review_parser is starter.build_parser
     assert peerreviewagents.report_parser is cli_main.report_parser
+    assert peerreviewagents.check_fixes_parser is starter.check_fixes_parser
 
     review = peerreviewagents.review_parser(prog='wrapper review')
     report = peerreviewagents.report_parser(prog='wrapper report')
+    check = peerreviewagents.check_fixes_parser(prog='wrapper check-fixes')
 
     assert review.prog == 'wrapper review' and report.prog == 'wrapper report'
+    assert check.prog == 'wrapper check-fixes'
     options = {action.dest for action in review._actions}
     assert {'workspace', 'output', 'arm'} <= options, sorted(options)
     assert {'run', 'workspace', 'output_dir'} <= {a.dest for a in report._actions}
+    # The check takes the problems and not the arm: there is one arm it runs,
+    # and an `--arm` would be a way of asking it to run a review.
+    checking = {action.dest for action in check._actions}
+    assert {'workspace', 'output', 'problems'} <= checking, sorted(checking)
+    assert 'arm' not in checking
 
 
 def test_read_run_carries_the_facts_an_integration_read_from_the_folder(tmp_path):

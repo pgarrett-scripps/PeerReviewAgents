@@ -39,7 +39,8 @@ import anyio.from_thread
 import anyio.to_thread
 
 from .. import issues as issue_model
-from ..engine import citation_ledger, code_source, paper_base, paper_view, quotes
+from .. import problems as problem_list
+from ..engine import citation_ledger, code_source, fix_report, paper_base, paper_view, quotes
 from ..engine import reader as engine_reader
 from ..engine.annotations import line_finding, quarantine_findings
 from ..engine.domain_registry import context as domain_context
@@ -51,9 +52,14 @@ from ..names import (
     BLOCKED,
     CODE_CHECK_VERDICTS,
     CODE_DIRECTORY,
+    COMPLETE,
     COMPLETE_STATUSES,
     FINDING_SCHEMA_VERSION,
+    FIX_CHECK_FILE,
+    FIX_CHECK_SCHEMA_VERSION,
+    FIX_VERDICTS,
     MANUSCRIPT_DIRECTORY,
+    PROBLEMS_SCHEMA_VERSION,
     RUN_DIRECTORY,
 )
 from . import models as model_plan
@@ -146,6 +152,37 @@ CHECK_TRACK = 'code-check'
 #: file per finding and search for the one that is not where it looked first.
 MAX_CODE_CHECKS = 12
 
+#: The track that reads a new draft against the problems a previous review
+#: raised. It is the whole of the ``check-fixes`` command: no reviewer, no
+#: specialist, no editor and no finding — one lane that answers a queue of
+#: problems with ``fixed``, ``not-fixed`` or ``cannot-tell``, each verdict
+#: anchored in the new draft the same way a finding is anchored in a review.
+FIX_TRACK = 'fix-check'
+
+#: The arm the ``check-fixes`` command runs. It is in :data:`ARMS` because a fix
+#: check is a run of this one workflow — the same ingest, the same Read stage,
+#: the same identity and the same run folder — and it is refused by
+#: ``peerreview review``, which has no problems to give it.
+FIX_ARM = 'fix-check'
+
+#: How many problems go to the checkers. The cap is the run's, not one agent's:
+#: the problems are dealt out in batches across however many checker slots a
+#: run plans, and the ones past the cap are reported as not checked rather than
+#: answered by a lane that has run out of reading. Forty is a large review's
+#: whole required-changes list, so an ordinary re-read of a revised paper never
+#: reaches it.
+MAX_FIX_CHECKS = 40
+
+#: How many problems one checker slot is dealt. The queue tool hands a slot its
+#: own batch — never another slot's — so two checkers never answer the same
+#: problem and a checker that dies takes only its own batch down with it.
+FIX_BATCH = 10
+
+#: The fix check's own two tools: the batch of problems this slot is to answer,
+#: and the verdict on one of them. Neither spends the reading allowance, as the
+#: code check's two do not.
+FIX_TOOLS = ('fix_queue', 'submit_fix_check')
+
 #: The basis words a ``minor`` issue cannot bury without an anchored rebuttal:
 #: the two the server checked itself. ``computed`` is arithmetic over numbers
 #: printed on the lines the finding cites, with the server's own receipt;
@@ -192,6 +229,13 @@ TRACK_TOOLS = {
     # from this table is granted the core lane's tools by
     # :meth:`Run.claim`, which would hand this one the manuscript.
     CHECK_TRACK: (),
+    # The fix check reads one document: the new draft. It gets the offline
+    # paper tools, because a verdict on a problem is a passage of the paper
+    # found and quoted, and `view_page` for a problem about a figure or a table,
+    # where the printed page settles what the converted text does not. No
+    # lookups: whether the authors' fix is right in the literature is a
+    # reviewer's question and this lane files no findings.
+    FIX_TRACK: (*OFFLINE_TOOLS, 'view_page'),
     'editor': ('read_paper', 'search', 'calculate', 'inspect_results'),
     'recorder': (),
     # A citation worker reads one sentence and one stored passage and answers
@@ -225,6 +269,13 @@ CALL_BUDGET = {'core': 30, 'specialist': 20, 'editor': 12, 'recorder': 2,
                # verdict costs nothing — submissions are not counted — so this
                # is the reading allowance alone.
                CHECK_TRACK: 40,
+               # The fix check is handed at most :data:`FIX_BATCH` problems and
+               # has to answer each one in the new draft: a search for the old
+               # wording, a second search where the authors reworded it, and a
+               # read of the part it landed in. Six calls a problem, and
+               # `read_paper` is free as everywhere, so a checker that spends
+               # this has looked for every problem in its batch twice over.
+               FIX_TRACK: 60,
                # Never used: the reader's allowance is the manuscript's size.
                # Here so that a role is never missing from this table.
                'reader': 0}
@@ -232,7 +283,10 @@ EXTERNAL_BUDGET = {'core': 24, 'specialist': 16, 'editor': 0, 'recorder': 0,
                    'citation-worker': 0, 'reader': 0,
                    # No lookups at all: the code lane's evidence is in the
                    # paper and in the snapshot, both of them already here.
-                   CODE_TRACK: 0, CHECK_TRACK: 0}
+                   CODE_TRACK: 0, CHECK_TRACK: 0,
+                   # And none here: a fix check reads the new draft against the
+                   # problems it was given, both of them already in the run.
+                   FIX_TRACK: 0}
 # Raised from 600 when the citation ledger arrived: a 60-reference paper has
 # roughly 90 in-text uses, and one verdict is one tool call, so the workers
 # alone can spend a hundred calls that no reviewer used to make. The reviewers'
@@ -358,6 +412,14 @@ ARMS = {
     'draft-check': {'reviewers': 0, 'specialists': True, 'editor': False,
                     'revision': False, 'tools': PAPER_TOOLS,
                     'summary': 'Chosen specialists on a draft: no core track and no editor'},
+    # Not a study arm either, and not a review: what `peerreview check-fixes`
+    # runs. There is no reviewer, no specialist and no editor, because nothing
+    # here is looking for a problem — the problems are given, and one lane
+    # answers each of them against the new draft. `peerreview review` refuses
+    # this arm: it has no problems file to give it.
+    FIX_ARM: {'reviewers': 0, 'specialists': False, 'editor': False,
+              'revision': False, 'tools': (*OFFLINE_TOOLS, 'view_page'),
+              'summary': 'One fix-check lane reading a new draft against problems already raised'},
 }
 DEFAULT_ARM = 'full-two-track'
 
@@ -614,13 +676,32 @@ def citation_slots(arm, count=CITATION_WORKERS, tracks=None):
     return tuple(f'cite-{index}' for index in range(1, count + 1))
 
 
+def checker_slots(arm, problems=0):
+    """The fix-check slots this run asks for: ``fix-1``, ``fix-2``, …
+
+    One slot per :data:`FIX_BATCH` problems, up to :data:`MAX_FIX_CHECKS`
+    problems in all. They exist in the :data:`FIX_ARM` and nowhere else: every
+    other arm is a review, and a review has no problems to check.
+
+    Deliberately *not* part of :func:`plan_slots`, for the reason the citation
+    workers and the code check are not: a checker that never reports must not
+    be able to hold the run open. A batch nobody answered is reported as not
+    checked, which is the honest answer and not a blocked run.
+    """
+    if arm != FIX_ARM:
+        return ()
+    count = max(0, min(int(problems or 0), MAX_FIX_CHECKS))
+    slots = -(-count // FIX_BATCH)  # one slot per batch, rounding up
+    return tuple(f'fix-{index}' for index in range(1, slots + 1))
+
+
 class Run:
     """One review in one folder. Created by ``ingest``, finished by ``write_review``."""
 
     def __init__(self, pdf, root, reviewers, arm, literature_cutoff, plugin_root, title=None,
                  tracks=None, reviewer_models=None, specialist_model=None, editor_model=None,
                  recorder_model=None, citation_workers=None, citation_worker_model=None,
-                 supplements=None, reader_model=None, code=None):
+                 supplements=None, reader_model=None, code=None, problems=None):
         if arm not in ARMS:
             raise ValueError('Unknown arm: ' + arm + '. Arms: ' + ', '.join(sorted(ARMS)))
         self.arm = arm
@@ -696,6 +777,28 @@ class Run:
         # blocking the review.
         self.code_check_slots = code_check_slots(arm, self.reviewers, self.tracks,
                                                  self.code_given)
+        # The problems this run is checking a new draft against, already
+        # validated by :mod:`peerreviewagents.problems`: the fix arm's whole
+        # input, and nothing any other arm has. A review that was handed
+        # problems would quietly ignore them, and a fix check with none has
+        # nothing to check, so both are refused here rather than discovered
+        # by a lane with an empty queue.
+        self.problems = list(problems or ())
+        if self.problems and arm != FIX_ARM:
+            raise ValueError(
+                'The ' + str(arm) + ' arm is a review, and a review raises its own problems '
+                'rather than checking a list of them. Problems are checked by the ' + FIX_ARM
+                + ' arm, which `peerreview check-fixes` runs.')
+        if arm == FIX_ARM and not self.problems:
+            raise ValueError(
+                'A fix check needs the problems it is checking. Give --problems a file of them: '
+                'one problem per row with its statement and the quotations of the old draft it '
+                'was raised against. `peerreviewagents.problems_from_run` writes one from a '
+                'finished review.')
+        # The checkers, planned here with everything else and claimable like
+        # any other slot, required like none of them: a batch nobody answered
+        # is reported as not checked.
+        self.checker_slots = checker_slots(arm, len(self.problems))
         # The reader is planned with every other slot. Every PDF review has a
         # Read stage: the converter's equations and tables are its reading of a
         # picture of them, a figure is a caption with no image behind it, and a
@@ -705,7 +808,8 @@ class Run:
         # run without the stage is the one that was handed a manuscript already
         # sealed, which is what ``read_stage`` above settles.
         self.models = model_plan.refuse(model_plan.assign(
-            (*self.reader_slots, *self.required_slots(), *self.citation_workers, 'recorder'),
+            (*self.reader_slots, *self.required_slots(), *self.citation_workers,
+             *self.checker_slots, 'recorder'),
             reviewers=self.reviewer_models, specialist=specialist_model,
             editor=editor_model, recorder=recorder_model,
             citation_worker=citation_worker_model, reader=reader_model))
@@ -774,6 +878,11 @@ class Run:
         # because a finding the code contradicted is dropped from the issues and
         # the record of why is the only place it then exists.
         self.code_checks = []
+        # The fix check's answers, one row per problem a checker reached: the
+        # verdict, the passage of the *new* draft behind it or the searches
+        # that found the old one gone, and the checker's note. A problem with
+        # no row here was not checked, and the written check says so.
+        self.fix_checks = []
         self.calls = 0
         self.status = 'running'
         # True while a `resolve_citations` pass is in flight. The pass runs in a
@@ -804,7 +913,7 @@ class Run:
         self.claim_codes = {slot: secrets.token_hex(8)
                             for slot in (*self.reader_slots, *self.required,
                                          *self.citation_workers, *self.code_check_slots,
-                                         'recorder')}
+                                         *self.checker_slots, 'recorder')}
         self.write_progress()
         # Identity at ingest, not only at the end. A run that is killed — a
         # token ceiling, the wall clock, a rate limit, a session error — used to
@@ -969,8 +1078,13 @@ class Run:
                 'handed none, and so it planned no reader slot and no Read stage. There is '
                 'nothing to read.')
         if slot not in (*self.reader_slots, *self.required, *self.citation_workers,
-                        *self.code_check_slots, 'recorder'):
+                        *self.code_check_slots, *self.checker_slots, 'recorder'):
             raise ValueError('Slot ' + slot + ' is not part of this run.')
+        if slot in self.checker_slots:
+            # It sees no review stage either: there is none in this arm. Its
+            # batch of problems arrives through `fix_queue`, and it reads the
+            # new draft against them.
+            return FIX_TRACK, FIX_TRACK, ()
         if slot in self.code_check_slots:
             # It sees no review stage. The findings it checks arrive through
             # `method_claims`, which is the queue the server built for it, and
@@ -1159,10 +1273,14 @@ class Run:
         # submission never does — so they are here to be listed back to the
         # agent as what it may call, beside the three that read the snapshot.
         check_tools = ('method_claims', 'submit_code_check') if track == CHECK_TRACK else ()
+        # And the fix check's own two, for the same reason: the queue of
+        # problems this slot is to answer, and the verdict on one of them.
+        # Neither spends the reading allowance.
+        fix_tools = FIX_TOOLS if track == FIX_TRACK else ()
         # The reader's tools are granted the same way, and for the same reason:
         # they work on the draft, which is the server's own file and not the
         # manuscript an investigation reads.
-        allowed = (*paper_tools, *ledger_tools, *code_tools, *check_tools,
+        allowed = (*paper_tools, *ledger_tools, *code_tools, *check_tools, *fix_tools,
                    *(READER_TOOLS if role == 'reader' else ()))
         # Every other slot's allowance is a constant, because the work is one
         # manuscript however many findings come out of it. The editor's work is
@@ -1518,6 +1636,139 @@ class Run:
         return None if record is None else {key: record[key] for key in
                                             ('cap', 'checked', 'over_cap', 'counts')}
 
+    # -- fix check ----------------------------------------------------------
+
+    def fix_problems(self):
+        """The problems this run will check, cut at :data:`MAX_FIX_CHECKS`."""
+        return list(self.problems[:MAX_FIX_CHECKS])
+
+    def fix_over_cap(self):
+        """How many problems the cap left out. They are reported as not checked."""
+        return max(0, len(self.problems) - MAX_FIX_CHECKS)
+
+    def quote_presence(self, quote, document=None):
+        """Whether one quotation of the *old* draft is still in the new one.
+
+        The answer the checker is given before it looks for anything: a problem
+        whose quoted sentence is still there word for word was not fixed by
+        rewriting that sentence, and a problem whose quotation is gone was
+        fixed, moved or deleted — three different things the checker then has
+        to tell apart. ``exact`` is a match in the manuscript's own normal form
+        (whitespace folded, nothing else); a match that differs only in case is
+        reported as a match that is not exact, because a capital letter is not
+        a fix and pretending the words are gone would be wrong.
+        """
+        name = str(document or paper_base.MAIN_DOCUMENT)
+        if self.base is None or name not in self.base.documents:
+            return {'present': False, 'exact': False, 'lines': [], 'document': name,
+                    'known_document': self.base is not None and name in self.base.documents}
+        found = quotes.placements(self.base, quote, document=name)
+        return {'present': bool(found),
+                'exact': any(one.get('quoted_exactly') for one in found),
+                'lines': [one['line'] for one in found[:8]],
+                'document': name,
+                'known_document': True}
+
+    def fix_batch(self, slot):
+        """The problems one checker slot is to answer: ``(rows, over_cap)``.
+
+        The problems are dealt out in order, :data:`FIX_BATCH` to a slot, so
+        two checkers never answer the same problem and a checker that dies
+        takes only its own batch with it. A problem this slot already answered
+        is not in the rows it is handed again, which is what makes a second
+        attempt at the slot pick up where the first stopped rather than start
+        the batch over.
+
+        Each row carries the problem as it was given, its quotations of the old
+        draft, and for each quotation whether those words are still in the new
+        draft — the server's own reading, so the checker starts from a fact
+        rather than from a search.
+        """
+        try:
+            index = int(str(slot).rsplit('-', 1)[1])
+        except (IndexError, ValueError):
+            return [], self.fix_over_cap()
+        batch = self.fix_problems()[(index - 1) * FIX_BATCH:index * FIX_BATCH]
+        answered = {str(row['problem_id']) for row in self.fix_checks}
+        rows = []
+        for problem in batch:
+            if str(problem['id']) in answered:
+                continue
+            rows.append({**problem,
+                         'evidence': [{**one, 'in_new_draft': self.quote_presence(
+                             one.get('quote'), one.get('document'))}
+                             for one in problem.get('evidence') or ()]})
+        return rows, self.fix_over_cap()
+
+    def problem(self, problem_id):
+        """One problem of this run by its id, or ``None``."""
+        for one in self.fix_problems():
+            if str(one['id']) == str(problem_id):
+                return one
+        return None
+
+    def store_fix_check(self, agent, problem, verdict, evidence=None, searches=(), reason='',
+                        note='', basis=''):
+        """One answer from the fix check, on the ledger and on disk."""
+        row = {'problem_id': str(problem['id']),
+               'slot': agent.slot,
+               'track': agent.track,
+               'verdict': verdict,
+               'statement': problem.get('statement'),
+               'severity': problem.get('severity'),
+               'author_reply': problem.get('author_reply') or '',
+               'old_evidence': [{'document': one.get('document'), 'quote': one.get('quote'),
+                                 'in_new_draft': self.quote_presence(one.get('quote'),
+                                                                     one.get('document'))}
+                                for one in problem.get('evidence') or ()],
+               # What the verdict rests on, in the server's own words: a
+               # quotation of the new draft it anchored, the old quotation it
+               # confirmed is gone, or the old quotation it confirmed is still
+               # there. Empty on `cannot-tell`, which rests on a reason.
+               'basis': str(basis or ''),
+               'draft_evidence': dict(evidence) if evidence else None,
+               'searches': [str(one) for one in searches],
+               'reason': str(reason or ''),
+               'note': str(note or ''),
+               'recorded': now()}
+        self.fix_checks.append(row)
+        self.append(self.review / 'fix-checks.jsonl', row)
+        return row
+
+    def fix_check_record(self):
+        """What the fix check did, for ``fix-check.json`` and for FIXES.md.
+
+        ``None`` on a run that is not a fix check, so nothing else carries an
+        empty block about one.
+        """
+        if not self.checker_slots:
+            return None
+        answered = {str(row['problem_id']) for row in self.fix_checks}
+        unchecked = [one for one in self.problems if str(one['id']) not in answered]
+        return {
+            'cap': MAX_FIX_CHECKS,
+            'problems': len(self.problems),
+            'checked': len(self.fix_checks),
+            # Every problem that has no verdict: the ones past the cap and the
+            # ones a checker never reached. Unchecked is not fixed and not
+            # unfixed, and the count is printed so nobody reads it as either.
+            'not_checked': len(unchecked),
+            'over_cap': self.fix_over_cap(),
+            'counts': {verdict: len([row for row in self.fix_checks
+                                     if row['verdict'] == verdict])
+                       for verdict in FIX_VERDICTS},
+            'checks': list(self.fix_checks),
+            'unchecked': [{'id': one['id'], 'statement': one['statement'],
+                           'severity': one['severity']} for one in unchecked],
+        }
+
+    def fix_check_counts(self):
+        """The fix check by the numbers alone, without the quotes: for ``progress.json``."""
+        record = self.fix_check_record()
+        return None if record is None else {
+            key: record[key] for key in
+            ('cap', 'problems', 'checked', 'not_checked', 'over_cap', 'counts')}
+
     def guard_status(self, slot=None):
         """``quarantined`` when the guard threw out one of *this* reviewer's findings."""
         rows = [q for q in self.quarantined if slot is None or q.get('slot') == slot]
@@ -1691,6 +1942,10 @@ class Run:
             # answered, how they came back, and how many qualified past the
             # cap. `None` on a run with no code, which has no such stage.
             'code_check': self.code_check_counts(),
+            # The fix check, by the numbers: how many of the problems it was
+            # given have verdicts, how those came back, and how many are not
+            # checked. `None` on a review, which checks no problems.
+            'fix_check': self.fix_check_counts(),
             'tool_calls': {slot: agent.calls for slot, agent in self.agents.items()},
             'tool_calls_total': self.calls,
             'started': self.started,
@@ -1839,7 +2094,8 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
            editor_model: str = '', recorder_model: str = '',
            citation_workers: int = CITATION_WORKERS,
            citation_worker_model: str = '',
-           supplements: str = '', reader_model: str = '', code: str = '') -> dict:
+           supplements: str = '', reader_model: str = '', code: str = '',
+           problems: str = '') -> dict:
     """Open a run: import the manuscript PDF and fix the plan. Safe to call twice.
 
     ``tracks`` narrows the specialist track to the ones named; the default is
@@ -1884,6 +2140,14 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
     in the snapshot is ever executed. Without ``code`` there is no such lane and
     the review says the code was not reviewed; an arm that runs no specialists
     is refused rather than quietly reviewing none of it.
+
+    ``problems`` is the path to a file of problems a previous review raised,
+    and it makes this run a fix check rather than a review: the manuscript is
+    the *new* draft, the arm is ``fix-check``, and the slots are the checkers
+    that answer those problems against it. The file is validated here, as the
+    launcher validated it before starting the session, so a run never opens on
+    a file that cannot be read. A review takes no problems and a fix check
+    cannot run without them.
     """
     try:
         # The arguments over the environment, once, in the module that owns the
@@ -1893,6 +2157,10 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
         settled = model_plan.settle(reviewer_models, specialist_model, editor_model,
                                     recorder_model, citation_worker_model, reader_model)
     except ValueError as exc:
+        return rejection(str(exc))
+    try:
+        asked_problems = problem_list.read(problems)['problems'] if problems else []
+    except (ValueError, OSError) as exc:
         return rejection(str(exc))
     run = STATE['run']
     if run is not None and str(Path(out).resolve()) == str(run.root):
@@ -1929,10 +2197,20 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
                  else 'This run was given no code')
                 + ', and you asked for ' + (asked or 'none') + '. An attach does not change '
                 'what is reviewed: review that code in a fresh out folder.')
+        # The problems are the plan of a fix check: they are what the slots
+        # were cut from and what the written check reports on. A second caller
+        # asking for a different list is not attaching to this run.
+        if [str(one['id']) for one in asked_problems] != [str(one['id']) for one in run.problems]:
+            return rejection(
+                ('This run checks ' + str(len(run.problems)) + ' problem(s) given at ingest'
+                 if run.problems else 'This run is a review and was given no problems')
+                + ', and you asked for ' + (str(len(asked_problems)) + ' other problem(s)'
+                                            if asked_problems else 'none') + '. An attach does '
+                'not change what is checked: check them in a fresh out folder.')
         # The claim codes are minted once and go back once. A second caller
         # attaching to a live run is not the recorder: no identities, and not
         # the slot list either — nor the per-slot models, which name the slots.
-        hidden = ('slots', 'models', 'citation_workers', 'reader', 'code_check')
+        hidden = ('slots', 'models', 'citation_workers', 'reader', 'code_check', 'fix_check')
         return {k: v for k, v in summary_of(run).items()
                 if k not in hidden} | {'attached': True}
     if run is not None:
@@ -1948,7 +2226,8 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
                   citation_worker_model=settled.get('citation_worker'),
                   supplements=supplements or None,
                   reader_model=settled.get('reader'),
-                  code=code or None)
+                  code=code or None,
+                  problems=asked_problems)
     except (ValueError, KeyError, TypeError, OSError) as exc:
         return rejection(record_import_refusal(out, str(exc)))
     STATE['run'] = run
@@ -2008,6 +2287,19 @@ def summary_of(run):
                         'model': run.models.get(run.code_check_slots[0]),
                         'allowance': CALL_BUDGET[CHECK_TRACK],
                         'limit': MAX_CODE_CHECKS} if run.code_check_slots else None),
+        # The fix check: every slot it plans, the model each runs, and the
+        # problems they are between them to answer. ``None`` on a review, which
+        # has no such stage — a workflow reads this rather than claiming a slot
+        # to find out, and the batch size is here because the workflow states
+        # the reach of the run from the server's own numbers.
+        'fix_check': ({'slots': list(run.checker_slots),
+                       'model': run.models.get(run.checker_slots[0]),
+                       'allowance': CALL_BUDGET[FIX_TRACK],
+                       'batch': FIX_BATCH,
+                       'limit': MAX_FIX_CHECKS,
+                       'problems': len(run.problems),
+                       'over_cap': run.fix_over_cap(),
+                       'verdicts': list(FIX_VERDICTS)} if run.checker_slots else None),
         'citations': run.citation_counts(),
         # The code, when this review was given any: what was snapshotted, so the
         # workflow can tell the code lane what it is reading and a caller can
@@ -2110,6 +2402,37 @@ def claim_agent(slot: str, claim_code: str = '') -> dict:
             + str(len(left['pieces'])) + ' piece(s), '
             + str(len(left['pages'])) + ' page(s) and '
             + str(len(left['lost_pages'])) + ' unconverted page(s) are waiting for you.')
+        return answer
+    if agent.track == FIX_TRACK:
+        # The checker is told about its batch and about the new draft, not
+        # about findings: it files none, and the two general instructions above
+        # are about a lane that does. What it is handed instead is the one
+        # thing it cannot work out for itself cheaply — whether each quotation
+        # of the old draft is still in this one, word for word.
+        batch, over_cap = run.fix_batch(agent.slot)
+        gone = sum(1 for one in batch
+                   if not any((row.get('in_new_draft') or {}).get('present')
+                              for row in one.get('evidence') or ()))
+        answer['fix_check'] = {'count': len(batch), 'batch': FIX_BATCH,
+                               'cap': MAX_FIX_CHECKS, 'over_cap': over_cap,
+                               'verdicts': list(FIX_VERDICTS),
+                               'quotes_gone': gone}
+        answer['read_first'] = (
+            'Call read_paper now and read every line of what it returns: this is the new draft, '
+            'and every verdict you give is a passage of it. It costs nothing from your '
+            'allowance. Then call fix_queue, which returns the ' + str(len(batch)) + ' problem(s) '
+            'this slot is to answer, each with the quotation(s) of the old draft it was raised '
+            'against and whether those words are still in this one. Answer each with '
+            'submit_fix_check: fixed, not-fixed, or cannot-tell.')
+        answer['reminder'] = (
+            'You are reading one paper against a list of problems somebody else raised. You do '
+            'not review it, you file no problems of your own, and you do not judge whether a '
+            'problem was worth raising. A fixed or not-fixed verdict carries a quotation of this '
+            'new draft, exact as read_paper served it, and the server refuses one the draft does '
+            'not say — except where the fix was a deletion, which rests on the old quotation '
+            'being gone and the searches you ran for it. cannot-tell carries the reason, and it '
+            'is the honest answer where the draft does not settle the question: '
+            + str(gone) + ' of your problem(s) have no quotation left in this draft at all.')
         return answer
     if agent.track == CHECK_TRACK:
         # The check is told about the queue and the snapshot, not about the
@@ -3341,6 +3664,267 @@ def submit_code_check(agent_token: str, finding_uid: str, verdict: str, code_pat
                        if verdict == 'confirmed'
                        else 'The finding stands as its reviewer filed it, with your note that '
                             'the code does not settle it.')}
+
+
+def _fix_agent(token):
+    """The fix check behind one of its two calls, or a refusal.
+
+    Neither call spends the allowance — a submission never does, and the queue
+    is the server reading its own list — so there is no accounting here, only
+    identity: a checker slot, in a run that has problems to check, before the
+    check is written.
+    """
+    run = current()
+    try:
+        agent = run.agent_for(token)
+    except ValueError as exc:
+        return None, rejection(str(exc))
+    if agent.track != FIX_TRACK:
+        return None, rejection('Only a ' + FIX_TRACK + ' slot answers a problem against the new '
+                               'draft.')
+    if not run.problems:
+        return None, rejection('This run was given no problems, so there is nothing to check the '
+                               'draft against.')
+    if run.status in COMPLETE_STATUSES:
+        return None, rejection('This run is ' + run.status + ' and its check is written. '
+                               'Nothing was stored.')
+    return agent, None
+
+
+def fix_queue(agent_token: str) -> dict:
+    """Fix check only: the problems this slot is to answer against the new draft.
+
+    Each row is a problem a previous review raised, as it was given to this
+    run: its statement, its severity, the quotation(s) of the *old* draft it
+    was raised against, and the authors' reply where there is one. Beside every
+    quotation is ``in_new_draft`` — whether those words are still in this draft
+    word for word, which is the server's own reading of its own manuscript and
+    the one thing you would otherwise spend your allowance finding out.
+
+    Your job on each: decide whether this draft fixes it, and answer with
+    ``submit_fix_check``. You review nothing and you raise no problem of your
+    own.
+    """
+    agent, refused = _fix_agent(agent_token)
+    if refused:
+        return refused
+    run = current()
+    rows, over_cap = run.fix_batch(agent.slot)
+    return {
+        'count': len(rows),
+        'problems': rows,
+        'batch': FIX_BATCH,
+        'cap': MAX_FIX_CHECKS,
+        'over_cap': over_cap,
+        'verdicts': list(FIX_VERDICTS),
+        'answered': len([row for row in run.fix_checks if row['slot'] == agent.slot]),
+        'next': ('For each problem: read what this draft now says where the problem was, then '
+                 'call submit_fix_check with fixed, not-fixed or cannot-tell. fixed and '
+                 'not-fixed carry a quotation of this draft, exact as read_paper served it, '
+                 'which the server checks before anything is stored; where the fix was a '
+                 'deletion there is nothing left to quote, so answer fixed with the searches you '
+                 'ran and the server will confirm the old words are gone. cannot-tell carries '
+                 'the reason the draft does not settle it. Answer every problem in this list; '
+                 'the problems are split between the checkers and these are yours.'
+                 + (' ' + str(over_cap) + ' further problem(s) are past the cap of '
+                    + str(MAX_FIX_CHECKS) + ': they are nobody\'s to check in this run and the '
+                    'written check counts them as not checked.' if over_cap else '')),
+    }
+
+
+def submit_fix_check(agent_token: str, problem_id: str, verdict: str, quote: str = '',
+                     document: str = '', line: int = 0, end_line: int = 0,
+                     searches: list = None, reason: str = '', note: str = '') -> dict:
+    """Fix check only: one verdict on one problem, with the new draft behind it.
+
+    ``verdict`` is one of: fixed (this draft no longer has the problem),
+    not-fixed (it still does), cannot-tell (this draft does not settle it).
+
+    ``fixed`` and ``not-fixed`` carry ``quote`` — the passage of *this* draft
+    that decides it, quoted exactly as ``read_paper`` served it, with
+    ``document`` and ``line`` where the same words occur more than once. The
+    server anchors it before anything is stored, exactly as it anchors a
+    finding's quote.
+
+    A fix by deletion has nothing left to quote. Answer it with ``searches``
+    and no quote: the server stores the verdict only where every quotation the
+    problem was raised against is gone from this draft, which it checks itself.
+    ``not-fixed`` works the same way where the problem is something the paper
+    still does not say — the server stores it only where a quotation the
+    problem was raised against is still in this draft word for word.
+
+    ``cannot-tell`` carries ``reason``: what you looked for and what the draft
+    does not say. It is the honest answer where the fix is outside this
+    document — an added dataset, a repeated experiment, a change to the code —
+    and it is not a weaker ``not-fixed``.
+
+    ``note`` is a sentence or two for the author: what the draft now says,
+    against what the problem asked for.
+    """
+    agent, refused = _fix_agent(agent_token)
+    if refused:
+        return refused
+    run = current()
+    if verdict not in FIX_VERDICTS:
+        return rejection('verdict is one of ' + ', '.join(FIX_VERDICTS) + '.')
+    given_id = str(problem_id or '').strip()
+    problem = run.problem(given_id)
+    if problem is None:
+        return rejection('No problem in this run has the id ' + (given_id or '(none given)')
+                         + '. The ids are in fix_queue.')
+    if any(str(row['problem_id']) == given_id for row in run.fix_checks):
+        return rejection('Problem ' + given_id + ' has already been answered. One verdict per '
+                         'problem; nothing was stored.')
+    mine, _ = run.fix_batch(agent.slot)
+    if given_id not in {str(one['id']) for one in mine}:
+        return rejection('Problem ' + given_id + ' is not in your batch: the problems are split '
+                         'between the checkers and fix_queue is yours. Nothing was stored.')
+    looked = [' '.join(str(one).split()) for one in (searches or []) if str(one).strip()]
+    said = ' '.join(str(reason or '').split())
+    presence = [run.quote_presence(one.get('quote'), one.get('document'))
+                for one in problem.get('evidence') or ()]
+    evidence, basis = None, ''
+    if verdict == 'cannot-tell':
+        if quote:
+            return rejection('cannot-tell says this draft does not settle the problem, so it '
+                             'carries no passage of it. Give the reason instead, or answer fixed '
+                             'or not-fixed with the passage that decides it.')
+        if not said:
+            return rejection('cannot-tell needs the reason: what you looked for and what this '
+                             'draft does not say. Without it nothing distinguishes a problem the '
+                             'paper cannot settle from one nobody looked for. Nothing was '
+                             'stored.')
+    elif quote:
+        if said:
+            return rejection('reason belongs to cannot-tell. ' + verdict + ' rests on the '
+                             'passage of this draft that decides it.')
+        placement = run.locate(quote, line or None, document or None)
+        if placement is None:
+            found = quotes.anchor(run.base, quote, line or None, None, document or None)
+            return rejection('Nothing was stored. ' + (found.get('refused') or 'That quote is '
+                             'not in this draft.'))
+        evidence = {key: placement.get(key) for key in
+                    ('document', 'line', 'end_line', 'text', 'quoted_exactly', 'page', 'section',
+                     'kind')}
+        evidence['quote'] = quote
+        basis = 'quote'
+    elif verdict == 'fixed':
+        if any(one['present'] for one in presence):
+            return rejection(
+                'fixed carries the passage of this draft that fixes it, quoted exactly as '
+                'read_paper served it — and this problem\'s own quotation is still in this draft '
+                'word for word, so it was not fixed by deleting it either. Quote the passage, or '
+                'answer not-fixed or cannot-tell. Nothing was stored.')
+        if not looked:
+            return rejection('A fix by deletion rests on what you looked for: give the searches '
+                             'you ran for the words that are gone. Nothing was stored.')
+        basis = 'old-quote-gone'
+    else:
+        if not any(one['present'] and one['exact'] for one in presence):
+            return rejection(
+                'not-fixed carries the passage of this draft that still has the problem, quoted '
+                'exactly as read_paper served it. None of this problem\'s own quotations is in '
+                'this draft word for word, so the server cannot stand the verdict on them '
+                'either: quote the passage, or answer cannot-tell. Nothing was stored.')
+        if not looked:
+            return rejection('A problem this draft still does not answer rests on what you '
+                             'looked for: give the searches you ran. Nothing was stored.')
+        basis = 'old-quote-stands'
+    note = str(note or '').strip()
+    if not note:
+        return rejection('Say in a sentence or two what this draft now says, against what the '
+                         'problem asked for. That note is what the author reads beside your '
+                         'verdict. Nothing was stored.')
+    row = run.store_fix_check(agent, problem, verdict, evidence=evidence, searches=looked,
+                              reason=said, note=note, basis=basis)
+    run.write_progress()
+    left, over_cap = run.fix_batch(agent.slot)
+    return {'stored': True, 'problem_id': row['problem_id'], 'verdict': verdict,
+            'basis': row['basis'], 'draft_evidence': row['draft_evidence'],
+            'searches': row['searches'], 'problems_left': len(left), 'over_cap': over_cap,
+            'effect': ('The written check records this problem as fixed, with your quotation of '
+                       'this draft.' if verdict == 'fixed'
+                       else 'The written check records this problem as still open, with your '
+                            'quotation of this draft.' if verdict == 'not-fixed'
+                       else 'The written check records this problem as one this draft does not '
+                            'settle, with your reason. It is not recorded as either fixed or '
+                            'unfixed.')}
+
+
+def write_fix_check(recorder_key: str) -> dict:
+    """Recorder only: write the fix check — ``fix-check.json`` and ``FIXES.md``.
+
+    Written from whatever the checkers answered, and never blocked by what they
+    did not: a problem with no verdict is written down as not checked, which is
+    the honest answer and is not the same as a run that failed. A checker that
+    died holding its batch costs that batch and nothing else.
+
+    Written once, like a review. The paths come back with the refusal of a
+    second call, so a recorder whose first answer was lost reports the check
+    that was written rather than writing it again.
+    """
+    run = current()
+    if not secrets.compare_digest(str(recorder_key or ''), run.recorder_key):
+        return rejection('The fix check is written by the recorder, with the run key ingest '
+                         'returned.')
+    if not run.checker_slots:
+        return rejection('This run is a review, not a fix check: it was given no problems. The '
+                         'review is written by write_review.')
+    if run.status in COMPLETE_STATUSES:
+        try:
+            written = read(run.review / FIX_CHECK_FILE)
+        except (OSError, ValueError):
+            written = {}
+        return rejection(
+            'This run is ' + run.status + ' and its check is already written. The files are '
+            'where they were written; nothing was rewritten. The counts of the check that was '
+            'written are in this answer: report them as they are.',
+            status=run.status, run=str(run.root),
+            fix_check=str(run.review / FIX_CHECK_FILE),
+            fixes=str(run.review / 'FIXES.md'),
+            counts=written.get('counts'), not_checked=written.get('not_checked'))
+    document = _fix_check_document(run)
+    write(run.review / FIX_CHECK_FILE, document)
+    # A check that answered nothing is finished, not blocked: the problems it
+    # was given are all written down as not checked, and that document is the
+    # run's answer. The status is the one the reader of a run folder already
+    # knows — there is no third kind of finished run — and `read_fix_check`
+    # reports the counts either way.
+    run.status = COMPLETE if run.fix_checks else 'complete-without-findings'
+    run.error = None
+    run.write_progress()
+    run.write_protocol()
+    run.write_manifest()
+    report = fix_report.write_fix_report(run.review, document)
+    run.write_progress()
+    return {'status': run.status, 'run': str(run.root),
+            'fix_check': str(run.review / FIX_CHECK_FILE), 'fixes': report,
+            'counts': document['counts'], 'checked': document['checked'],
+            'not_checked': document['not_checked'], 'problems': document['problems']}
+
+
+def _fix_check_document(run):
+    """``fix-check.json``: the one versioned source of truth a fix check is read from."""
+    record = run.fix_check_record()
+    return {
+        'schema_version': FIX_CHECK_SCHEMA_VERSION,
+        'problems_schema_version': PROBLEMS_SCHEMA_VERSION,
+        'paper_id': run.paper_id,
+        'title': (run.base.title if run.base is not None else run.draft.get('title')),
+        'arm': run.arm,
+        'cap': record['cap'],
+        'problems': record['problems'],
+        'checked': record['checked'],
+        'not_checked': record['not_checked'],
+        'over_cap': record['over_cap'],
+        'counts': record['counts'],
+        'checks': record['checks'],
+        'unchecked': record['unchecked'],
+        'given': list(run.problems),
+        'tool_calls': {slot: agent.calls for slot, agent in run.agents.items()},
+        'tool_calls_total': run.calls,
+        'written': now(),
+    }
 
 
 def _record_editor_call(run, agent, tool, accepted, refusal=None, **extra):
@@ -4746,6 +5330,7 @@ TOOLS = (ingest, claim_agent, reissue_claim_code, read_paper, search, calculate,
          check_citation, search_literature, resolve_identifier,
          lookup_source, inspect_results, record_comparison, validate_synthesis, submit_finding,
          method_claims, submit_code_check,
+         fix_queue, submit_fix_check, write_fix_check,
          submit_report, list_findings, submit_issues, submit_editor, resolve_citations,
          citation_rows,
          claim_citation_batch, submit_citation_verdict, mark_blocked, run_status, write_review)

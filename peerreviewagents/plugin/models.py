@@ -256,6 +256,12 @@ def role_of(slot):
         return 'specialist'
     if str(slot).startswith('cite-'):
         return 'citation-worker'
+    # A fix-check slot reads one document closely and answers a fixed list of
+    # questions about it, which is a specialist's work and not a reviewer's: it
+    # looks for nothing of its own. So it takes the specialist's model rather
+    # than a role of its own, and ``--specialist-model`` moves it.
+    if str(slot).startswith('fix-'):
+        return 'specialist'
     return 'core'
 
 

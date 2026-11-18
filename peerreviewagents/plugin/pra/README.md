@@ -13,11 +13,12 @@ can only ask it for text and hand it findings.
 
 | Part | Where | What it is |
 | --- | --- | --- |
-| `peerreview` server | `.mcp.json` → `peerreviewagents.plugin.server` | 44 tools, and every piece of state worth forging |
-| Agents | `agents/*.md` | `core-reviewer`, six specialists, `citation-worker`, `reader`, `editor`, `recorder`; each pins `maxTurns:` and a fallback `model:`, and may call only server tools |
+| `peerreview` server | `.mcp.json` → `peerreviewagents.plugin.server` | 47 tools, and every piece of state worth forging |
+| Agents | `agents/*.md` | `core-reviewer`, six specialists, `citation-worker`, `reader`, `editor`, `recorder`, `fix-check`; each pins `maxTurns:` and a fallback `model:`, and may call only server tools |
 | Models | `peerreviewagents/plugin/models.py` | which model each slot runs, and the refusal when one is not available |
 | Workflow | `workflows/review.js` | ingest → read → reviewers ∥ specialists (the citation lane first resolves, then fans out workers) → (revision) → editor → record |
-| Skills | `skills/*/SKILL.md` | `peer-review-manuscript` (a full review), `check-draft` (your own draft) |
+| Fix check | `workflows/check-fixes.js` | ingest → read → one `fix-check` lane per batch of problems a review already raised → record. No reviewer, no specialist, no editor: nothing here raises anything |
+| Skills | `skills/*/SKILL.md` | `peer-review-manuscript` (a full review), `check-draft` (your own draft), `check-fixes` (a new draft against problems already raised) |
 | Starter | `peerreviewagents/plugin/starter.py` | probes, launches the headless session, enforces token budgets, records models and wall time |
 
 ## Running one

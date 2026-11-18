@@ -107,13 +107,42 @@ COMPLETE_STATUSES = (COMPLETE, COMPLETE_WITHOUT_FINDINGS)
 #: words rather than inferring them.
 CODE_CHECK_VERDICTS = ('confirmed', 'contradicted', 'not-shown')
 
+#: The three answers a fix check may give one problem a previous review raised,
+#: read against a new draft of the paper. ``fixed`` and ``not-fixed`` both carry
+#: a verified quotation of the *new* draft — the passage the fix is in, or the
+#: passage the problem is still in — except for a problem fixed by deletion,
+#: where the evidence is that the old quotation is gone and the searches that
+#: looked for it. ``cannot-tell`` carries a reason, because "the new draft does
+#: not settle it" is a claim about what was looked for rather than a verdict on
+#: the paper. A problem nobody reached has no row at all: it is counted as not
+#: checked, which is not the same as ``cannot-tell``.
+FIX_VERDICTS = ('fixed', 'not-fixed', 'cannot-tell')
+
+#: What ``fix-check.json`` is: one checked problem per row, each with its
+#: verdict, its evidence in the new draft and the searches behind it.
+FIX_CHECK_SCHEMA_VERSION = 'fix-check-v1'
+
+#: What a ``--problems`` file is: the problems a fix check is asked to check,
+#: each with the quotations of the *old* draft that it was raised against.
+#: Written by :func:`peerreviewagents.problems_from_run` from a finished run, or
+#: by hand, or by an application that keeps its own issue list.
+PROBLEMS_SCHEMA_VERSION = 'review-problems-v1'
+
+#: The folder inside a fix-check run that holds the check: the problems it was
+#: given, the verdicts, ``fix-check.json`` and ``FIXES.md``. The same name a
+#: review's folder has, because a fix check is a run of this package and a
+#: reader finds its files the same way.
+FIX_CHECK_FILE = 'fix-check.json'
+
 #: Every command ``peerreview`` has, in the order its help lists them. A wrapper
 #: that offers its own commands checks them against this rather than against a
-#: list of its own: ``review`` runs a review and ``report`` re-renders one, and
-#: there is no third. The parsers behind them are
-#: :func:`peerreviewagents.review_parser` and
+#: list of its own: ``review`` runs a review, ``check-fixes`` reads a new draft
+#: against the problems a review raised, and ``report`` re-renders a finished
+#: run. There is no fourth. The parsers behind them are
+#: :func:`peerreviewagents.review_parser`,
+#: :func:`peerreviewagents.check_fixes_parser` and
 #: :func:`peerreviewagents.report_parser`.
-CLI_COMMANDS = ('review', 'report')
+CLI_COMMANDS = ('review', 'check-fixes', 'report')
 
 __all__ = ['RUN_DIRECTORY', 'MANUSCRIPT_DIRECTORY', 'CODE_DIRECTORY', 'RUN_MARKERS',
            'FINDING_SCHEMA_VERSION',
@@ -121,4 +150,6 @@ __all__ = ['RUN_DIRECTORY', 'MANUSCRIPT_DIRECTORY', 'CODE_DIRECTORY', 'RUN_MARKE
            'MAIN_DOCUMENT', 'RUN_STATUSES', 'COMPLETE_STATUSES', 'MANUSCRIPT_STATES',
            'MANUSCRIPT_DRAFT', 'MANUSCRIPT_SEALED_BY_READER', 'MANUSCRIPT_SEALED_WITHOUT_READ',
            'MANUSCRIPT_ABSENT', 'CODE_CHECK_VERDICTS',
+           'FIX_VERDICTS', 'FIX_CHECK_SCHEMA_VERSION', 'PROBLEMS_SCHEMA_VERSION',
+           'FIX_CHECK_FILE',
            'RUNNING', 'BLOCKED', 'COMPLETE', 'COMPLETE_WITHOUT_FINDINGS', 'CLI_COMMANDS']

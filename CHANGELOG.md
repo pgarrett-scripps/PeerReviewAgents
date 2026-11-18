@@ -58,6 +58,70 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A new draft can be checked against the problems a review raised:
+  `peerreview check-fixes paper-v2.pdf out/ --problems problems.json`.** The
+  third command, and the other half of a review rather than a second one:
+  nothing in it looks for a problem, so it runs no core reviewer, no
+  specialist, no editor, no citation ledger and no finding guard. The problems
+  are given, and every one of them gets a verdict against the new draft —
+  `fixed`, `not-fixed` or `cannot-tell`, in `FIX_VERDICTS`.
+  A `fixed` or `not-fixed` verdict carries a quotation of the *new* draft,
+  anchored by the machinery that anchors a finding's quotation, so a verdict
+  cannot rest on words the draft does not say. Two cases have no new words to
+  quote and rest on the server's own reading instead, recorded on the row as
+  `basis`: a problem fixed by deletion is `old-quote-gone`, stored only after
+  the server confirms every quotation the problem was raised against is gone
+  from this draft, and a problem the draft still does not answer is
+  `old-quote-stands`, stored only after it confirms one of those quotations is
+  still there word for word. Both also carry the searches the checker ran, so
+  the record says what was looked for and a reader can run it themselves. A
+  deletion-only rule was the obvious design and the wrong one: it made "the
+  draft changed nothing here" the one verdict with nothing behind it.
+  `cannot-tell` carries a reason and is a real answer, not a hedge — a fix that
+  lives in the code, the data, a repeated experiment or a reply letter cannot
+  be read out of the manuscript, and this run reads the manuscript only.
+  The problems come in through their own small schema,
+  `peerreviewagents.problems` and `review-problems-v1`: an id, a statement, a
+  severity, the quotations of the old draft the problem was raised against, and
+  the authors' reply where there is one. It is deliberately not `issues.json` —
+  an application that keeps its own issue list writes five fields instead of a
+  whole review's shape — and a problem with no evidence is refused rather than
+  checked against its statement alone, which is a reading nobody can verify.
+  `problems_from_run('first-run')` writes the file from a finished run's
+  issues, replies included, and a run that raised nothing writes an empty list
+  the command then refuses by name. The check reads the new draft the way a
+  review reads a manuscript: the same import, the same Read stage, the same
+  seal, and the server tells each checker up front which old quotations still
+  appear verbatim, so nobody spends a call confirming what the server already
+  read. One checker per batch of ten problems, capped at 40 for the run; a
+  larger file is accepted and the problems past the cap are reported as not
+  checked, with `over_cap` saying how many, because a problem with no verdict
+  is neither fixed nor unfixed.
+  It writes `fix-check.json`, `FIXES.md` — not fixed first, then cannot tell,
+  then fixed, each row saying what its verdict rests on — and the lane's own
+  `fix-checks.jsonl`, and `read_fix_check(folder)` is the one call that reads
+  them: status by the same rule a review's status follows, one row per answered
+  problem, the counts per verdict, `not_checked` with the problems it names,
+  the problems it was given, what it spent, and `file_problems` for whatever
+  could not be read. It is `read_run`'s counterpart rather than `read_run`
+  itself, since a check has no findings, no issues and no editor, and
+  `complete-without-findings` on one means the check was written with no
+  verdict in it at all.
+  Its ceilings are its own — 150,000 tokens an agent, 900,000 for the run, a
+  45-minute wall clock, against a review's millions — because a review's
+  six-million ceiling would never fire on a run this size, which makes it no
+  ceiling at all. `peerreview review --arm fix-check` refuses by name and says
+  which command to run. There is no `--code`: every verdict a check can give
+  rests on the words of the new draft, so a snapshot would add a second input
+  and a second verification path in support of no verdict at all, and a problem
+  whose fix is in the code is what `cannot-tell` is for.
+  Three tools (`fix_queue`, `submit_fix_check`, `write_fix_check`) bring the
+  server to 47, inside the same per-run server rather than a second one, so
+  identity, the claim codes, the quotation check, the budgets and the folder
+  guard are the ones a review already uses. In the plugin: the `check-fixes`
+  skill, the `check-fixes.js` workflow and the `fix-check` agent, whose tool
+  list is the paper tools, the queue and the submit tool and nothing else — it
+  has no way to file a finding of its own.
 - **`review_arms()`: what each arm runs, asked before a run exists.** One row
   per arm — how many core reviewers it fixes (or `None` where the count is the
   caller's), whether it runs the specialist tracks, an editor and a revision
@@ -367,26 +431,14 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   `import_paper` reads the sizes from the PDF; `write_manuscript` takes them as
   `pages=`. An empty list means the sizes were not recorded — no pages, or no
   `pdfinfo` on the importing machine — and never a default page size.
-- **`validate_prior_issues(document)` on the public surface.** Every problem
-  that would stop an issues document being read as the prior round of a later
-  review, in words, worst first; an empty list means `peerreview review
-  --prior-issues` will load it. A consumer that writes an `issues.json` for a
-  later round to read had one way to find out whether that round could read it —
-  start the round — because the rules lived inside the loader. This is that
-  loader's own check rather than a copy of it: the loader refuses with this
-  list's first problem, and asks nothing outside it, so a file this says nothing
-  about is a file the next round loads. What it requires of a prior file is what
-  that loader requires: the `issues` list and `issue_ids_used` are both present,
-  every row carries a non-empty text `id`, no id appears twice, and something is
-  left once the resolved rows are dropped. A list field held as `null` —
-  `members`, `surviving_quotes`, `audits` — is malformed rather than empty,
-  because every one of them is a list in what this engine writes, empty where it
-  does not apply. `label=` names the file the problems are written against, for
-  a tool that checks several.
-  Documented in `docs/INTEGRATIONS.md`, with the tolerant readers behind it —
-  `rows_of`, `objects_in`, `members_of`, `quotes_of`, `block_ids_of`,
-  `audits_of` — and `field_problems`, the malformed fields `read_run` reports a
-  damaged document through.
+- **The tolerant readers of an issues document are documented**: `rows_of`,
+  `objects_in`, `members_of`, `quotes_of`, `block_ids_of` and `audits_of` in
+  `docs/INTEGRATIONS.md`, beside `field_problems`, the malformed fields
+  `read_run` reports a damaged document through. A list field held as `null` —
+  `members`, `audits` — is malformed rather than empty, because every one of
+  them is a list in what this engine writes, empty where it does not apply.
+  (The `validate_prior_issues` surface this release first added went out again
+  with `--prior-issues` before the release: see **Removed**.)
 - **`read_run` says what state the manuscript is in**, under a new
   `manuscript` key: `state` is one of `MANUSCRIPT_STATES` — `absent`, `draft`,
   `sealed-by-reader`, `sealed-without-read` — beside `sealed`, `reason`,
