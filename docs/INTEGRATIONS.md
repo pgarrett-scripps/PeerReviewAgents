@@ -6,9 +6,13 @@ inside a session, so there is nothing to wire up twice.
 
 ```
 peerreview review     peerreviewagents/plugin/pra   peerreviewagents.plugin.server
-  (the command)      →     (workflow, agents,     →   (44 MCP tools, the ledger,
+  (the command)      →     (workflow, agents,     →   (47 MCP tools, the ledger,
                             skills, .mcp.json)         the run files)
 ```
+
+`peerreview check-fixes` is the same three boxes with one lane in the middle:
+the problems a review already raised go in, and one verdict per problem comes
+out. [Checking the fixes](#checking-the-fixes) is the whole of it.
 
 The command launches a headless Claude Code session on the plugin. A session
 you drive yourself loads the same plugin and the same server. Either way the
@@ -325,18 +329,140 @@ claude plugin marketplace add /absolute/path/to/PeerReviewAgents
 claude plugin install pra@peer-review-agents-local
 ```
 
-Then ask for one of its two skills:
+Then ask for one of its three skills:
 
 | Skill | What it runs |
 | --- | --- |
 | `peer-review-manuscript` | a full review: core reviewers, specialists, editor |
 | `check-draft` | the specialist tracks you name on a draft of your own |
+| `check-fixes` | a new draft against the problems a review already raised |
 
 The agents may call only the server's tools — the allow list the starter passes
-is `Workflow`, `Skill`, `TodoWrite` and the 44 `peerreview` tools, and nothing
+is `Workflow`, `Skill`, `TodoWrite` and the 47 `peerreview` tools, and nothing
 else. No `Read`, `Write`, `Edit`, `Bash`, `WebSearch` or `WebFetch` reaches a
 reviewer, which is why a quotation cannot come from anywhere but the
 manuscript the server served.
+
+## Checking the fixes
+
+```bash
+peerreview check-fixes paper-v2.pdf fixes-out --problems problems.json
+```
+
+One verdict per problem, against a **new** draft, for problems a review already
+raised. It is the other half of a review and not a second one: nothing here
+looks for a problem, so there is no reviewer, no specialist, no editor, no
+citation ledger and no finding guard. What runs is one lane of checkers — the
+`fix-check` agent, one per batch of ten problems — with the paper tools, a
+queue and a submit tool, and nothing else.
+
+The command is the `review` command's shape: it probes the same way, launches
+the same headless session on the same plugin, writes `startup.json` beside its
+own run, and prints a summary dict rather than a report. Its ceilings are its
+own, because a check is a much smaller run than a review: 150,000 tokens per
+agent, 900,000 for the run and a 45-minute wall clock, against a review's
+millions. `--per-agent-tokens`, `--per-run-tokens` and `--timeout` move them,
+and `--specialist-model`, `--recorder-model` and `--reader-model` choose the
+models exactly as `review` does.
+
+### The problems file
+
+`--problems` is required and is its own small schema —
+`peerreviewagents.problems` is the whole contract, and
+`peerreviewagents.names.PROBLEMS_SCHEMA_VERSION` names its version:
+
+```json
+{"schema_version": "review-problems-v1",
+ "problems": [
+   {"id": "i01",
+    "statement": "The abstract reports a 42% improvement the results do not show.",
+    "severity": "major",
+    "evidence": [{"document": "", "quote": "a 42% improvement over the baseline"}],
+    "author_reply": "Corrected to 24% throughout."}]}
+```
+
+A bare JSON list of those rows reads as the same document. `severity` is
+`major`, `moderate` or `minor`; `document` is empty for the manuscript and the
+supplement's name otherwise; `author_reply` is the only optional field. A
+problem with no `evidence` is refused rather than checked against its statement
+alone — the quotations of the *old* draft are what make a verdict checkable,
+and the server tells each checker up front which of them still appear verbatim
+in the new one. At most 200 problems in a file (`problems.MAX_PROBLEMS`), and
+one bad row refuses the file before a session is started rather than being
+dropped quietly.
+
+From a run this package already finished, the file is written for you:
+
+```python
+from peerreviewagents import problems_from_run
+
+held = problems_from_run('first-run')          # writes first-run/review/problems.json
+held = problems_from_run('first-run', 'p.json')  # or wherever you want it
+```
+
+It reads that run's `issues.json`, keeps the issue id, the statement, the
+severity and the member findings' quotations, and carries the authors' replies
+where the run recorded any. A run that raised nothing writes a file with an
+empty list, which `check-fixes` refuses: there is nothing to check.
+
+### The three verdicts, and what each rests on
+
+`fixed`, `not-fixed`, `cannot-tell` — `peerreviewagents.names.FIX_VERDICTS`.
+A `fixed` or `not-fixed` verdict carries a quotation of the new draft, anchored
+by the same machinery that anchors a finding's quotation, so a verdict cannot
+rest on words the draft does not say. Two verdicts have no quotation to carry
+and rest on the server's own reading instead, recorded on the row as `basis`:
+
+| `basis` | What the verdict rests on |
+| --- | --- |
+| `quote` | a passage of the new draft, anchored |
+| `old-quote-gone` | `fixed` by deletion: the server confirmed every quotation the problem was raised against is gone, plus the searches the checker ran |
+| `old-quote-stands` | `not-fixed` with nothing new to quote: the server confirmed a quotation it was raised against is still there word for word, plus those searches |
+
+`cannot-tell` carries a reason and no quotation. It is a real answer: a fix
+that lives in the code, the data, a repeated experiment or a reply letter
+cannot be read out of the manuscript, and this run reads the manuscript only.
+
+**The cap is 40 problems** (`server.MAX_FIX_CHECKS`), ten to a checker. A file
+with more is still accepted and the problems past the cap are reported as not
+checked — `over_cap` says how many. A problem with no verdict is neither fixed
+nor unfixed, and `not_checked` is there so that nobody reads it as either.
+
+### What it writes, and how to read it
+
+`fixes-out/review/fix-check.json` is the check, `FIXES.md` is it as prose —
+not fixed first, then cannot tell, then fixed, each row saying what its verdict
+rests on — and `fix-checks.jsonl` is the lane's own log. The reading is one
+call, and it is `read_run`'s counterpart rather than `read_run` itself, because
+a check has no findings, no issues, no guard and no editor:
+
+```python
+from peerreviewagents import read_fix_check
+
+check = read_fix_check('fixes-out')
+check['status']        # a run status, by the same rule a review's status follows
+check['checks']        # one row per answered problem: verdict, basis, quotations, note
+check['counts']        # one key per verdict
+check['not_checked']   # every problem with no verdict; check['unchecked'] names them
+check['problems']      # the problems it was given, as --problems held them
+check['reports']       # absolute paths to fix-check.json, FIXES.md and fix-checks.jsonl
+```
+
+`complete-without-findings` on a check means it was written with no verdict in
+it: every problem it was given is reported as not checked. `NotARunFolder` for
+a folder that is not a run, `ValueError` for a symlink under the review folder,
+and nothing else raised for anything on disk — `file_problems` names whatever
+could not be read, including a folder that holds a review rather than a check.
+
+### Why there is no `--code`
+
+`peerreview review --code` gives the code lane a snapshot of the repository.
+This command takes no such argument, and the omission is deliberate rather than
+unfinished: every verdict a check can give rests on the words of the new draft,
+so a snapshot would add a second input and a second verification path in
+support of no verdict at all. A problem whose fix is in the code is what
+`cannot-tell` is for, and its reason says so. If that is the question you have,
+the answer is a review of the revision with `--code`, not a fix check.
 
 ## Other MCP clients
 

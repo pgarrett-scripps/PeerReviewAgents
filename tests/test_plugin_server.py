@@ -1396,4 +1396,7 @@ def test_the_tool_list_is_the_one_the_agents_are_allowed_to_call(tmp_path):
     # did not, which is not a thing the reader may choose to do.
     assert 'seal_as_converted' in names and 'seal_as_converted' not in srv.READER_TOOLS
     assert {'method_claims', 'submit_code_check'} <= names
-    assert len(srv.TOOLS) == len(names) == 44
+    # The fix check's three: the queue, the verdict and the one call that
+    # writes the check. Its slots hold the first two and the recorder the last.
+    assert {*srv.FIX_TOOLS, 'write_fix_check'} <= names
+    assert len(srv.TOOLS) == len(names) == 47

@@ -7,11 +7,13 @@ parallel, then an editor — and ``<run folder>/review/REVIEW.md`` is written wi
 every finding anchored to an exact quotation. ``peerreview manuscript.pdf
 <run folder>`` means the same thing.
 
-There are two commands and no third. ``review`` runs the review and is the only
-way to run one. ``report`` re-renders the reports of a run that already
-finished, which makes no model call at all. Everything the review itself owns —
-the manuscript, the agent identities, the ledger and the budgets — belongs to
-the plugin's MCP server, not to this command.
+There are three commands and no fourth. ``review`` runs the review and is the
+only way to run one. ``check-fixes`` reads a *new* draft against the problems a
+review already raised — one verdict per problem, nothing new raised — and
+writes ``FIXES.md`` beside its own ``fix-check.json``. ``report`` re-renders the
+reports of a run that already finished, which makes no model call at all.
+Everything a run itself owns — the manuscript, the agent identities, the ledger
+and the budgets — belongs to the plugin's MCP server, not to this command.
 
 The review runs on a Claude Code subscription login installed on this machine,
 so there is no API key and no PeerReviewAgents service.
@@ -26,7 +28,7 @@ from pathlib import Path
 
 from ..names import CLI_COMMANDS
 
-# The two commands, kept in :mod:`peerreviewagents.names` so that a consumer
+# The three commands, kept in :mod:`peerreviewagents.names` so that a consumer
 #: can read them without importing this module, and spelled here under the name
 #: this module has always used them by.
 COMMANDS = CLI_COMMANDS
@@ -38,16 +40,20 @@ DESCRIPTION = (
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """The two commands, for ``peerreview --help`` and for an unusable invocation.
+    """The three commands, for ``peerreview --help`` and for an unusable invocation.
 
     Each command parses its own arguments, so the subparsers here carry no
-    options: ``peerreview review -h`` and ``peerreview report -h`` are answered
-    by the command itself.
+    options: ``peerreview review -h``, ``peerreview check-fixes -h`` and
+    ``peerreview report -h`` are answered by the command itself.
     """
     parser = argparse.ArgumentParser(prog="peerreview", description=DESCRIPTION)
-    sub = parser.add_subparsers(dest="command", required=True, metavar="{review,report}")
+    sub = parser.add_subparsers(dest="command", required=True,
+                                metavar="{" + ",".join(COMMANDS) + "}")
     sub.add_parser("review", add_help=False,
                    help="review one manuscript PDF (peerreview review -h for its options)")
+    sub.add_parser("check-fixes", add_help=False,
+                   help="check a new draft against the problems a review raised "
+                        "(peerreview check-fixes -h for its options)")
     sub.add_parser("report", add_help=False,
                    help="re-render the reports of a finished run, offline")
     return parser
@@ -164,6 +170,10 @@ def run() -> None:
         from peerreviewagents.plugin.starter import review_main
 
         raise SystemExit(review_main(argv))
+    if command == "check-fixes":
+        from peerreviewagents.plugin.starter import check_fixes_main
+
+        raise SystemExit(check_fixes_main(argv))
     if command == "report":
         raise SystemExit(report_main(argv[1:]))
     build_parser().parse_args(argv)  # Prints the help, or names the bad command.

@@ -44,6 +44,7 @@ import threading
 import time
 from pathlib import Path
 
+from .. import problems as problem_list
 from ..engine import code_source
 from ..engine.storage import digest, read, write
 from ..names import BLOCKED, COMPLETE_STATUSES, FINDING_SCHEMA_VERSION
@@ -52,12 +53,15 @@ from .server import (
     ARMS,
     CITATION_WORKERS,
     DEFAULT_ARM,
+    FIX_ARM,
     MANUSCRIPT_DIRECTORY,
     MAX_CITATION_WORKERS,
+    MAX_FIX_CHECKS,
     RUN_DIRECTORY,
     SPECIALIST_TRACKS,
     TOOLS,
     WORKFLOW_VERSION,
+    checker_slots,
     citation_slots,
     plan_slots,
 )
@@ -69,6 +73,15 @@ HARNESS_TOOLS = ('Workflow', 'Skill', 'TodoWrite')
 PER_AGENT_TOKENS = 500_000
 PER_RUN_TOKENS = 6_000_000
 WALL_TIMEOUT = 5400
+# A fix check is a much smaller run than a review and its ceilings say so. One
+# checker reads the new draft once and answers up to ten questions about it
+# with no literature, no code and no synthesis; there is no editor, no
+# specialist and no citation ledger. A review's six-million ceiling would never
+# fire here, which makes it no ceiling at all: a checker stuck in a search loop
+# would burn a review's budget on ten problems before the wall clock noticed.
+FIX_PER_AGENT_TOKENS = 150_000
+FIX_PER_RUN_TOKENS = 900_000
+FIX_WALL_TIMEOUT = 2700
 PROBE_TIMEOUT = 180
 #: The harness variable that says how long a headless ``-p`` session waits for
 #: its own background tasks once its last turn is over. The review is that
@@ -887,6 +900,16 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
                          'one. Run an arm with specialists, or drop --code. Arms that run them: '
                          + ', '.join(sorted(name for name, one in ARMS.items()
                                             if one['specialists'])) + '.')
+    # The fix-check arm is not a review and this is not the command that runs
+    # it: it takes problems rather than reviewers, its own ceilings and its own
+    # written document. Refused here by name, after the code refusal above, so
+    # that `--code` against an arm that runs no specialists still answers the
+    # question the caller actually asked.
+    if arm == FIX_ARM:
+        raise ValueError('The ' + FIX_ARM + ' arm reads a new draft against problems a review '
+                         'already raised, which is not a review: run `peerreview check-fixes '
+                         '<pdf> <out> --problems FILE`. Arms this command runs: '
+                         + ', '.join(sorted(name for name in ARMS if name != FIX_ARM)) + '.')
     if code and not code_source.is_url(code) and not Path(code).expanduser().is_dir():
         raise ValueError('No code folder at ' + str(Path(code).expanduser())
                          + '. Give a folder that exists or a repository URL.')
@@ -1157,6 +1180,223 @@ def review_main(argv=None, prog='peerreview review'):
                          reader_model=args.reader_model,
                          code=args.code)
     except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(json.dumps(summary, indent=2))
+    return exit_code(summary)
+
+
+def fix_prompt_for(pdf, out, problems, count, models=None):
+    text = (f'Use the check-fixes skill from the {PLUGIN} plugin. Check the new draft at {pdf} '
+            f'against the {count} problem(s) in {problems}, and write the run folder to {out}. '
+            f'Pass that problems file to ingest as problems and run the {FIX_ARM} arm: this is '
+            'not a review, nothing new is raised, and every verdict is on a problem from that '
+            'file.')
+    if models:
+        text += (' The models for this run are already set in this session, one per slot: '
+                 + ', '.join(f'{slot} {model}' for slot, model in models.items())
+                 + '. Pass no model arguments to the workflow.')
+    return text + ' Report exactly what the workflow returns.'
+
+
+def check_fixes(pdf, out, problems, per_agent_tokens=FIX_PER_AGENT_TOKENS,
+                per_run_tokens=FIX_PER_RUN_TOKENS, wall_timeout=FIX_WALL_TIMEOUT,
+                directory=None, cwd=None, specialist_model=None, recorder_model=None,
+                reader_model=None):
+    """Read one new draft against the problems a review raised, and return the summary.
+
+    The same launch as :func:`review` — the same probe, the same headless
+    session, the same accounting and the same folder-watched completion — for a
+    run that raises nothing. ``problems`` is the path to a file of problems in
+    the shape :mod:`peerreviewagents.problems` validates, which
+    :func:`peerreviewagents.problems_from_run` writes from a finished review.
+    The manuscript is the *new* draft and it is read from the PDF as a review
+    reads one: there is no way to check a draft nobody has read.
+
+    The summary is a dict, not an exit code: ``status``, ``blocked_reason``,
+    the run and review folders, the wall time, the tokens, the models asked for
+    and the models the session reported running, and the check's own counts —
+    ``problems``, ``checked``, ``counts`` per verdict, ``not_checked``.
+    :func:`exit_code` turns it into a process status and nothing here prints.
+    :func:`peerreviewagents.read_fix_check` is the reading of the folder it
+    leaves behind.
+
+    The ceilings are the fix check's own and are far below a review's, because
+    the run is far smaller: :data:`FIX_PER_AGENT_TOKENS` per agent against a
+    review's 500k, :data:`FIX_PER_RUN_TOKENS` for the run against six million.
+
+    There is no ``code`` here, and that is deliberate rather than unfinished:
+    every verdict this run can give rests on the new draft — a quotation of it,
+    or the server's own confirmation that an old quotation is gone or still
+    there — so a code snapshot would add a second input and a second
+    verification path to support no verdict at all. A problem whose fix is in
+    the code is what ``cannot-tell`` is for, and the reason it carries says so.
+
+    A problems file that cannot be read, a manuscript that is not there, a
+    missing plugin and a model this login cannot run all raise ``ValueError``
+    before anything is written or any usage is spent.
+    """
+    source = Path(pdf).resolve()
+    if not source.is_file():
+        raise ValueError(f'No manuscript at {source}')
+    # The problems are read here, before the probe, for the same reason the arm
+    # and the models are: a session launched against a file the server will
+    # refuse would spend a probe and a reader first, and the complaint would
+    # arrive from inside a run folder instead of from the command line.
+    document = problem_list.read(problems)
+    rows = document['problems']
+    if not rows:
+        raise ValueError(str(Path(problems)) + ' holds no problems, so there is nothing to check '
+                         'the draft against.')
+    root = Path(out).resolve()
+    review_dir = root / RUN_DIRECTORY
+    directory = Path(directory) if directory else plugin_dir()
+    cwd = Path(cwd) if cwd else Path(__file__).resolve().parent.parent.parent
+    if not (directory / '.claude-plugin' / 'plugin.json').is_file():
+        raise ValueError(f'No plugin at {directory}')
+    settled = model_plan.settle(None, specialist_model, None, recorder_model, None, reader_model)
+    reader_slots = (() if (root / MANUSCRIPT_DIRECTORY / 'manifest.json').is_file()
+                    else ('reader',))
+    slots = checker_slots(FIX_ARM, len(rows))
+    wanted = model_plan.assign((*reader_slots, *slots, 'recorder'), **settled)
+    model_plan.refuse(wanted)
+    outranked = model_plan.subagent_override(claude_version())
+    if outranked:
+        raise ValueError(outranked)
+    chosen = model_plan.to_environment(**settled)
+    review_dir.mkdir(parents=True, exist_ok=True)
+    supersede(review_dir)
+
+    checked = min(len(rows), MAX_FIX_CHECKS)
+    startup_problems, found = probe(directory, cwd)
+    write(review_dir / 'startup.json', {'probe': found['raw'], 'problems': startup_problems,
+                                        'tools_expected': list(tool_names()), 'at': now()})
+    if startup_problems:
+        reason = 'the start-up probe failed: ' + '; '.join(startup_problems)
+        write_identity(review_dir, source, FIX_ARM, 0, models=wanted)
+        finish(review_dir, 'blocked', reason,
+               Accounting(per_agent_tokens, per_run_tokens), 0.0, None)
+        return {'status': 'blocked', 'blocked_reason': reason, 'stage': 'startup',
+                'probe_problems': startup_problems, 'run': str(root), 'review': str(review_dir),
+                'arm': FIX_ARM, 'problems': len(rows), 'models_requested': dict(wanted)}
+
+    accounting = Accounting(per_agent_tokens, per_run_tokens)
+    started = time.monotonic()
+    prompt = fix_prompt_for(source, root, Path(problems).resolve(), checked, wanted)
+    watch = Completion(review_dir, accounting)
+    seen, stop, exited = launch(prompt, directory, started + wall_timeout,
+                                accounting.on_event, cwd, chosen, watch=watch,
+                                deadline=time.time() + wall_timeout)
+    wall = time.monotonic() - started
+    result = accounting.last_result()
+    recorded = recorded_progress(review_dir)
+    written = str(recorded.get('status') or '') in COMPLETE_STATUSES
+    recorded_cause = str(recorded.get('error') or '') or None
+    blocked = None
+    if accounting.rate_limits:
+        blocked = accounting.rate_limits[-1]['reason']
+    elif stop and stop not in SETTLED:
+        blocked = stop
+    elif recorded_cause and not written:
+        blocked = recorded_cause
+    elif result and result.get('is_error') and not written:
+        blocked = 'the session ended in an error: ' + str(result.get('subtype'))
+
+    status = 'blocked' if blocked else None
+    if status is None:
+        status = str(recorded.get('status') or '') or None
+        if status not in COMPLETE_STATUSES:
+            blocked = recorded.get('error') or '; '.join(part for part in (
+                (f'the workflow ended without writing the fix check or marking the run blocked,'
+                 f' the server last recorded {status}' if status
+                 else 'the server wrote no progress file'),
+                watch.note, accounting.failures()) if part)
+            status = 'blocked'
+    write_identity(review_dir, source, FIX_ARM, 0, models=wanted)
+    finish(review_dir, status, blocked, accounting, wall, result)
+    summary = {
+        'status': status,
+        'blocked_reason': blocked,
+        'stage': 'session',
+        'run': str(root),
+        'review': str(review_dir),
+        'arm': FIX_ARM,
+        'problems': len(rows),
+        'problems_file': str(Path(problems).resolve()),
+        'wall_seconds': round(wall, 1),
+        'tokens_total': accounting.total_tokens(),
+        'tokens_by_agent': {row['label']: row.get('tokens') for row in
+                            sorted(accounting.agents.values(), key=lambda r: r['label'])},
+        'models_requested': dict(wanted),
+        'models': sorted({str(row.get('model')) for row in accounting.agents.values()
+                          if row.get('model')}),
+        'stream_events': seen,
+        'exit_code': exited,
+    }
+    progress = review_dir / 'progress.json'
+    if progress.is_file():
+        done = read(progress)
+        record = done.get('fix_check') if isinstance(done.get('fix_check'), dict) else {}
+        summary['checked'] = record.get('checked')
+        summary['not_checked'] = record.get('not_checked')
+        summary['counts'] = record.get('counts')
+        summary['over_cap'] = record.get('over_cap')
+        summary['stages'] = done.get('stages')
+    return summary
+
+
+def check_fixes_parser(prog='peerreview check-fixes'):
+    """The argument parser behind ``peerreview check-fixes``."""
+    parser = argparse.ArgumentParser(
+        prog=prog,
+        description='Read a new draft against the problems a review already raised, in a '
+                    'headless Claude Code session. Nothing new is raised.')
+    parser.add_argument('workspace', help='the new draft, as a PDF')
+    parser.add_argument('output', help='the run folder to write')
+    parser.add_argument('--problems', required=True, metavar='FILE',
+                        help='the problems to check the draft against: a JSON file of them, as '
+                             'peerreviewagents.problems_from_run writes from a finished review')
+    parser.add_argument('--specialist-model', default=None, metavar='MODEL',
+                        help='the model every checker runs (default: '
+                             + model_plan.DEFAULT_SPECIALIST_MODEL + ')')
+    parser.add_argument('--recorder-model', default=None, metavar='MODEL',
+                        help='the model the recorder runs: ingest and the written check '
+                             '(default: ' + model_plan.DEFAULT_RECORDER_MODEL + ')')
+    parser.add_argument('--reader-model', default=None, metavar='MODEL',
+                        help='the model that reads the new draft against its page images before '
+                             'anything is checked (default: '
+                             + model_plan.DEFAULT_READER_MODEL + ')')
+    parser.add_argument('--per-agent-tokens', type=int, default=FIX_PER_AGENT_TOKENS)
+    parser.add_argument('--per-run-tokens', type=int, default=FIX_PER_RUN_TOKENS)
+    parser.add_argument('--timeout', type=int, default=FIX_WALL_TIMEOUT,
+                        help='wall-clock seconds before the run is blocked')
+    parser.add_argument('--plugin-dir', default=None, help='override the plugin folder')
+    return parser
+
+
+def check_fixes_main(argv=None, prog='peerreview check-fixes'):
+    """``peerreview check-fixes`` as a function: parse, run, print the summary, return a code.
+
+    The supported entry point for an application that wraps the command, and
+    the twin of :func:`review_main`: it takes the argument list the user typed
+    — with or without a leading ``check-fixes`` — prints the summary as JSON on
+    stdout and returns the exit code rather than raising it. An argument no run
+    can be made from, a problems file among them, is a message on stderr and
+    the code 2.
+    """
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == 'check-fixes':
+        argv = argv[1:]
+    args = check_fixes_parser(prog=prog).parse_args(argv)
+    try:
+        summary = check_fixes(args.workspace, args.output, args.problems,
+                              per_agent_tokens=args.per_agent_tokens,
+                              per_run_tokens=args.per_run_tokens,
+                              wall_timeout=args.timeout, directory=args.plugin_dir,
+                              specialist_model=args.specialist_model,
+                              recorder_model=args.recorder_model,
+                              reader_model=args.reader_model)
+    except (ValueError, OSError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
     print(json.dumps(summary, indent=2))

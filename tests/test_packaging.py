@@ -25,12 +25,14 @@ PLUGIN_FILES = (
     'peerreviewagents/plugin/pra/.mcp.json',
     'peerreviewagents/plugin/pra/README.md',
     'peerreviewagents/plugin/pra/workflows/review.js',
+    'peerreviewagents/plugin/pra/workflows/check-fixes.js',
     'peerreviewagents/plugin/pra/skills/peer-review-manuscript/SKILL.md',
     'peerreviewagents/plugin/pra/skills/check-draft/SKILL.md',
+    'peerreviewagents/plugin/pra/skills/check-fixes/SKILL.md',
 )
 AGENTS = ('citation-worker', 'citations', 'code', 'code-check', 'core-reviewer', 'editor',
-          'field', 'figures-tables', 'methods-reporting', 'numbers', 'reader', 'recorder',
-          'stats')
+          'field', 'figures-tables', 'fix-check', 'methods-reporting', 'numbers', 'reader',
+          'recorder', 'stats')
 
 
 @pytest.fixture(scope='module')

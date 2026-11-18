@@ -36,6 +36,9 @@ from .names import (
     COMPLETE,
     COMPLETE_STATUSES,
     COMPLETE_WITHOUT_FINDINGS,
+    FIX_CHECK_FILE,
+    FIX_CHECK_SCHEMA_VERSION,
+    FIX_VERDICTS,
     MANUSCRIPT_ABSENT,
     MANUSCRIPT_DIRECTORY,
     MANUSCRIPT_DRAFT,
@@ -1323,6 +1326,153 @@ def read_run(path):
     }
 
 
+def read_fix_check(path):
+    """Everything a caller needs about one fix-check run folder, from its own files.
+
+    The reading :func:`read_run` is for a review: one call, the same keys for
+    every folder, whatever state it is in, and no exception for anything on
+    disk. A fix check is a different kind of run — it raises nothing, so it has
+    no findings, no issues, no guard and no editor — and this is its reading.
+
+    ``status``
+        One of :data:`peerreviewagents.names.RUN_STATUSES`, or ``unknown``,
+        by the same rule :func:`run_status` applies to a review.
+        ``complete-without-findings`` on a fix check means the check was
+        written with no verdict in it: every problem it was given is reported
+        as not checked.
+    ``complete``, ``blocked``, ``cause``, ``note``
+        As in :func:`read_run`: ``complete`` is true for both complete
+        statuses, and ``cause`` is why a run that is not complete stopped.
+    ``problems``
+        The problems the check was given, as ``--problems`` held them: ``id``,
+        ``statement``, ``severity``, the quotations of the *old* draft and the
+        authors' reply. Empty for a folder whose check was never written and
+        whose given list cannot be read. Not to be confused with
+        ``file_problems``, which is this reading's own damage report — the
+        fix check's vocabulary and the reader's collided, and the problems
+        under review won the name.
+    ``checks``
+        One row per problem that was answered, in the order they were
+        answered: ``problem_id``, ``verdict`` (one of
+        :data:`peerreviewagents.names.FIX_VERDICTS`), ``statement``,
+        ``severity``, ``author_reply``, ``old_evidence`` (each old quotation
+        with whether it is still in the new draft), ``basis``,
+        ``draft_evidence`` (the anchored quotation of the new draft, or
+        ``None``), ``searches``, ``reason``, ``note`` and ``recorded``.
+    ``counts``, ``checked``, ``not_checked``, ``over_cap``, ``cap``
+        The check in numbers. ``counts`` is one key per verdict.
+        ``not_checked`` is every problem with no verdict — the ones past the
+        cap and the ones a checker never reached — and ``unchecked`` names
+        them. A problem that was not checked is neither fixed nor unfixed, and
+        the count is here so that nobody reads it as either.
+    ``tokens``, ``agents``, ``usage``, ``runtime``
+        What the check spent: the run's own total and ceilings, the per-slot
+        rows :func:`read_run` reports, and the usage receipts behind them.
+    ``reports``
+        Absolute paths to what is on disk — ``fix-check.json``, ``FIXES.md``
+        and the lane's own ``fix-checks.jsonl`` — and nothing else.
+    ``file_problems``
+        Every file that could not be read in full, named, one line each, plus
+        one line for a folder that is a review rather than a fix check. Empty
+        for a whole folder.
+
+    Raises :class:`NotARunFolder` for a folder that is not a run, and
+    ``ValueError`` for a symlink anywhere under the review folder. Nothing else
+    is raised for anything on disk.
+    """
+    root, review = locate(path)
+    refuse_symlinks(review)
+    file_problems: list[str] = []
+    progress = _mapping(review / 'progress.json', file_problems) or {}
+    runtime = _mapping(review / 'runtime.json', file_problems) or {}
+    startup = _mapping(review / 'startup.json', file_problems) or {}
+    protocol = _mapping(review / 'protocol.json', file_problems)
+    state = run_status(progress, runtime, startup, file_problems)
+
+    document = _mapping(review / FIX_CHECK_FILE, file_problems) or {}
+    stamped = str(document.get('schema_version') or '')
+    if document and stamped != FIX_CHECK_SCHEMA_VERSION:
+        # The same rule the review reading applies to issues.json: a document
+        # from an engine this version does not read is not read optimistically.
+        # The lane's own append-only file is still real, so it is what is
+        # reported, with the version named as the reason.
+        file_problems.append(f'{FIX_CHECK_FILE} is stamped {stamped or "nothing"} and this '
+                             f'version reads {FIX_CHECK_SCHEMA_VERSION}, so what is below is the '
+                             "lane's own rows and not the written check")
+        document = {}
+    # The written document first, then the lane's file for a run that stopped
+    # before anything was written. Either way the counts are taken over the
+    # rows that come back, so a consumer's tally and the rows cannot disagree.
+    if document:
+        checks = [dict(row) for row in (document.get('checks') or []) if isinstance(row, dict)]
+        record = document
+    else:
+        # One row per problem, latest wins: the lane's file is append-only like
+        # every other ledger here, and a retried slot can write a second row
+        # for a problem whose first answer was lost.
+        rows, seen = [], {}
+        for row in _rows(review / 'fix-checks.jsonl', file_problems):
+            key = str(row.get('problem_id'))
+            if key not in seen:
+                rows.append(key)
+            seen[key] = row
+        checks = [seen[key] for key in rows]
+        record = progress.get('fix_check') if isinstance(progress.get('fix_check'), dict) else {}
+    if not record and not checks and progress.get('fix_check') is None:
+        file_problems.append('this run folder holds no fix check: it is a review, and read_run '
+                             'is the reading for one')
+    given = [dict(one) for one in (document.get('given') or []) if isinstance(one, dict)]
+    answered = {str(row.get('problem_id')) for row in checks}
+    unchecked = ([dict(one) for one in (document.get('unchecked') or [])
+                  if isinstance(one, dict)]
+                 or [{'id': one.get('id'), 'statement': one.get('statement'),
+                      'severity': one.get('severity')}
+                     for one in given if str(one.get('id')) not in answered])
+    cap = record.get('cap')
+    total = record.get('problems')
+    agents = _agent_rows(review, protocol, runtime, file_problems)
+    reports = {name: str(review / filename) for name, filename in
+               (('fix_check', FIX_CHECK_FILE), ('markdown', 'FIXES.md'),
+                ('checks', 'fix-checks.jsonl'))
+               if (review / filename).is_file()}
+    return {
+        'run': str(root),
+        'review': str(review),
+        'status': state['status'],
+        'complete': state['status'] in COMPLETE_STATUSES,
+        'blocked': state['status'] == BLOCKED,
+        'cause': state['cause'],
+        'note': state['note'],
+        'paper_id': document.get('paper_id') or (protocol or {}).get('paper_id'),
+        'title': document.get('title'),
+        'arm': document.get('arm') or (protocol or {}).get('arm'),
+        'cap': cap if isinstance(cap, int) and not isinstance(cap, bool) else None,
+        'problems': given,
+        'checks': checks,
+        'checked': len(checks),
+        'not_checked': len(unchecked) if (given or document) else _count(record.get('not_checked')),
+        'unchecked': unchecked,
+        'over_cap': _count(record.get('over_cap')),
+        'counts': {verdict: sum(1 for row in checks if row.get('verdict') == verdict)
+                   for verdict in FIX_VERDICTS},
+        'problems_given': total if isinstance(total, int) and not isinstance(total, bool)
+        else len(given) or None,
+        'tokens': runtime.get('tokens_total'),
+        'runtime': {'wall_seconds': runtime.get('wall_seconds'),
+                    'tokens_total': runtime.get('tokens_total'),
+                    'rate_limits': runtime.get('rate_limits') or [],
+                    'per_agent_token_ceiling': runtime.get('per_agent_token_ceiling'),
+                    'per_run_token_ceiling': runtime.get('per_run_token_ceiling'),
+                    'claude_code_version': runtime.get('claude_code_version'),
+                    'recorded': runtime.get('recorded')},
+        'agents': agents,
+        'usage': observed_usage(review, on_problem=file_problems.append),
+        'reports': reports,
+        'written': document.get('written'),
+        'file_problems': file_problems,
+    }
+
+
 def read_citation_ledger(path, source_text=False):
     """The citation ledger's own rows, for a caller that needs more than counts.
 
@@ -1477,5 +1627,6 @@ def _without_source_text(row):
     return {**row, 'resolution': {**kept, 'has_source_text': True}}
 
 
-__all__ = ['read_run', 'read_citation_ledger', 'locate', 'dedupe', 'run_status', 'cause_of',
+__all__ = ['read_run', 'read_fix_check', 'read_citation_ledger', 'locate', 'dedupe', 'run_status',
+           'cause_of',
            'stage_gap_line', 'refuse_symlinks', 'NotARunFolder', 'RUN_MARKERS', 'UNKNOWN']

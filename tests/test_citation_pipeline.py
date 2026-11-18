@@ -1618,6 +1618,13 @@ def test_no_registered_tool_writes_in_a_complete_folder(tmp_path):
                                                                  model='claude-haiku-5-5'),
         'submit_citation_verdict': lambda: srv.submit_citation_verdict(
             worker, row_id, 'contradicts', passage=ABSTRACT.split('. ')[0] + '.'),
+        # The fix check's three. This run is a review, so it holds no problems
+        # and no checker slot, and it is written besides: refused three times
+        # over, and the folder is not theirs to write in any case.
+        'fix_queue': lambda: srv.fix_queue(reviewer),
+        'submit_fix_check': lambda: srv.submit_fix_check(reviewer, 'i01', 'fixed',
+                                                         quote=quote, note='A late verdict.'),
+        'write_fix_check': lambda: srv.write_fix_check(key),
         'mark_blocked': lambda: srv.mark_blocked(key, 'Something went wrong after all.'),
         'run_status': lambda: srv.run_status(key),
         'write_review': lambda: srv.write_review(recorder),
@@ -1648,6 +1655,12 @@ def test_no_registered_tool_writes_in_a_complete_folder(tmp_path):
     # say anything about the run: this run planned no such slot, because it was
     # given no code.
     check_only = {'method_claims', 'submit_code_check'}
+    # The fix check's queue and verdict answer for a fix-check slot, which a
+    # review never plans — so they, too, say which slot before they say
+    # anything about this run. `write_fix_check` is the recorder's, and what it
+    # answers first is that this run is a review — which is the stronger thing
+    # to say about a folder that holds a written review and no problems.
+    fix_only = {*srv.FIX_TOOLS, 'write_fix_check'}
     before = folder_digests(run.root)
 
     for name, call in calls.items():
@@ -1664,6 +1677,10 @@ def test_no_registered_tool_writes_in_a_complete_folder(tmp_path):
             continue
         if name in check_only:
             assert 'Only the ' + srv.CHECK_TRACK in answer['request_rejected'], (name, answer)
+            continue
+        if name in fix_only:
+            assert ('fix-check slot' in answer['request_rejected']
+                    or 'not a fix check' in answer['request_rejected']), (name, answer)
             continue
         if name in reader_only:
             assert ('complete' in answer['request_rejected']

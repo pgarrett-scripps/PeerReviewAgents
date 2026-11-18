@@ -25,6 +25,26 @@ Running a review
     reviewing it silently — ask this instead of holding a list of arm names of
     your own.
 
+Checking a new draft against a review
+    :func:`check_fixes` is the second run this package knows how to start, and
+    the only one that raises nothing: it reads a *new* draft against problems a
+    review already raised and answers each one ``fixed``, ``not-fixed`` or
+    ``cannot-tell``, with a quotation of the new draft behind every verdict
+    that has one. :func:`problems_from_run` writes the input it takes from a
+    finished run's own issues, so a revision is checked against the review it
+    came from without a consumer composing that file by hand;
+    :mod:`peerreviewagents.problems` is the same schema for a caller composing
+    one from somewhere else — an editor's decision letter, a reviewer's list —
+    and :data:`FIX_VERDICTS` is the vocabulary a verdict is written in.
+    :func:`read_fix_check` is the reading of what it leaves behind, the twin of
+    :func:`read_run`: the status and the cause, one row per problem with its
+    verdict and its anchored quotation, the counts per verdict, the problems
+    nobody answered, and the tokens. It takes no ``code``: every verdict rests
+    on the new draft, so a code snapshot would support none of them, and a
+    problem whose fix is in the code is what ``cannot-tell`` is for.
+    :func:`check_fixes_main` is the command as a function and
+    :func:`check_fixes_parser` its real parser.
+
 Reading a run
     :func:`read_run` reads any run folder: complete, complete without
     findings, blocked, killed by the starter on a token ceiling, a wall-clock
@@ -61,12 +81,13 @@ Checking an installation
 
 Checking a wrapper's own commands
     :data:`CLI_COMMANDS` is every command ``peerreview`` has, and
-    :func:`review_parser` and :func:`report_parser` are the real parsers behind
-    the two of them. A wrapper that documents its own options can compare them
-    against these instead of against a copy, so an option added here shows up
-    as a difference rather than as a wrapper that silently drops it. Use
-    :func:`review_main` and :func:`report_main` to *run* a command; these three
-    are for checking one.
+    :func:`review_parser`, :func:`check_fixes_parser` and
+    :func:`report_parser` are the real parsers behind the three of them. A
+    wrapper that documents its own options can compare them against these
+    instead of against a copy, so an option added here shows up as a
+    difference rather than as a wrapper that silently drops it. Use
+    :func:`review_main`, :func:`check_fixes_main` and :func:`report_main` to
+    *run* a command; these four are for checking one.
 
 Manuscripts and workspaces
     :func:`import_paper` imports a PDF into a manuscript workspace without any
@@ -116,7 +137,7 @@ Names
     :data:`RUN_DIRECTORY` and :data:`MANUSCRIPT_DIRECTORY` are the two folders
     every run holds and :data:`CODE_DIRECTORY` the third one a run given code
     holds, :data:`RUN_STATUSES` and :data:`COMPLETE_STATUSES` are the
-    statuses a run folder can record, :data:`CLI_COMMANDS` is the two commands,
+    statuses a run folder can record, :data:`CLI_COMMANDS` is the three commands,
     and :data:`FINDING_SCHEMA_VERSION` is the schema every stored finding is
     stamped with. :data:`ISSUES_SCHEMA_VERSION` is the schema of ``issues.json``,
     the one versioned source of truth a run's review is rendered from, and
@@ -150,6 +171,7 @@ from .names import (
     CODE_DIRECTORY,
     COMPLETE_STATUSES,
     FINDING_SCHEMA_VERSION,
+    FIX_VERDICTS,
     MAIN_DOCUMENT,
     MANUSCRIPT_DIRECTORY,
     MANUSCRIPT_STATES,
@@ -168,10 +190,17 @@ if TYPE_CHECKING:  # Static tooling sees the real objects, not the fallback.
     from .engine.run_report import write_reports
     from .plugin.server import review_arms
     from .plugin.starter import build_parser as review_parser
+    from .plugin.starter import (
+        check_fixes,
+        check_fixes_main,
+        check_fixes_parser,
+        review,
+        review_main,
+    )
     from .plugin.starter import claude_version as claude_code_version
     from .plugin.starter import plugin_dir as plugin_directory
-    from .plugin.starter import review, review_main
-    from .runs import NotARunFolder, read_citation_ledger, read_run
+    from .problems import problems_from_run
+    from .runs import NotARunFolder, read_citation_ledger, read_fix_check, read_run
     from .runs import locate as locate_run
     from .scripted import ReaderRefused, ScriptedRead, scripted_read
 
@@ -180,6 +209,10 @@ __all__ = [
     "review_main",
     "report_main",
     "review_arms",
+    "check_fixes",
+    "check_fixes_main",
+    "problems_from_run",
+    "read_fix_check",
     "read_run",
     "read_citation_ledger",
     "locate_run",
@@ -199,6 +232,7 @@ __all__ = [
     "plugin_directory",
     "claude_code_version",
     "review_parser",
+    "check_fixes_parser",
     "report_parser",
     "RUN_DIRECTORY",
     "MANUSCRIPT_DIRECTORY",
@@ -213,6 +247,7 @@ __all__ = [
     "ISSUES_SCHEMA_VERSION",
     "ISSUE_SEVERITIES",
     "ISSUE_CATEGORIES",
+    "FIX_VERDICTS",
 ]
 
 _LAZY = {
@@ -223,6 +258,14 @@ _LAZY = {
     # arms accept `code=`, which keep a citation ledger, which is the default.
     # Lazy like the rest, so an app that only reads runs never imports it.
     "review_arms": (".plugin.server", "review_arms"),
+    # The fix check: the run that answers problems a review raised against a
+    # new draft, the file of problems it takes written from a finished run, and
+    # the reading of the folder it leaves behind.
+    "check_fixes": (".plugin.starter", "check_fixes"),
+    "check_fixes_main": (".plugin.starter", "check_fixes_main"),
+    "check_fixes_parser": (".plugin.starter", "check_fixes_parser"),
+    "problems_from_run": (".problems", "problems_from_run"),
+    "read_fix_check": (".runs", "read_fix_check"),
     "read_run": (".runs", "read_run"),
     # The ledger rows themselves, for the consumers that were re-implementing
     # "the last row for a row_id is the row" against the engine module.
