@@ -14,19 +14,19 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 from manuscripts import seal_converted
 
+from peerreviewagents import agents as agent_pack
 from peerreviewagents import issues as issue_model
 from peerreviewagents.engine.storage import relative_name
+from peerreviewagents.plugin import orchestrator
 from peerreviewagents.plugin import server as srv
 from peerreviewagents.runs import read_run
 
 FIXTURE = Path(__file__).parent / 'fixtures' / 'single-column.pdf'
-EDITOR_FILE = Path(srv.__file__).parent / 'pra' / 'agents' / 'editor.md'
 
 CODES: dict = {}
 
@@ -380,10 +380,7 @@ def test_ranks_with_a_tie_or_a_gap_refuse_the_close(tmp_path):
 
 def test_the_turn_cap_in_the_agent_file_is_the_one_the_budget_is_built_on():
     """`maxTurns` and the call ceiling drift apart in silence otherwise."""
-    front = EDITOR_FILE.read_text(encoding='utf-8').split('---')[1]
-    stated = re.search(r'^maxTurns:\s*(\d+)\s*$', front, re.MULTILINE)
-    assert stated, front
-    assert int(stated.group(1)) == srv.EDITOR_MAX_TURNS
+    assert agent_pack.definition('editor').max_turns == srv.EDITOR_MAX_TURNS
     assert srv.EDITOR_CALL_CEILING == srv.EDITOR_MAX_TURNS - srv.EDITOR_TURN_RESERVE
 
 
@@ -1120,37 +1117,110 @@ def test_the_session_that_wrote_the_review_does_not_attach_to_it_either(tmp_path
     assert srv.STATE['run'] is run, 'and the session still serves the run it wrote'
 
 
+class Scripted:
+    """A service that answers the Record stage's tools from a script.
+
+    One entry per tool: a dict is that tool's answer every time, and a list is
+    its answers in order, so a stage that calls one tool twice is told two
+    different things.
+    """
+
+    address = ''
+
+    def __init__(self, **answers):
+        self.answers = {tool: list(said) if isinstance(said, list) else said
+                        for tool, said in answers.items()}
+        self.calls = []
+
+    def call(self, tool, *args, **keywords):
+        self.calls.append(tool)
+        said = self.answers.get(tool, {})
+        if isinstance(said, list):
+            return said.pop(0) if said else {}
+        return said
+
+
+class Nowhere:
+    """A runner that starts nothing: the Record stage runs no agent."""
+
+    remote = False
+
+    def describe(self):
+        return 'scripted'
+
+
+def a_record_stage(**answers):
+    panel = orchestrator.Review(Scripted(**answers), Nowhere())
+    panel.recorder_key = 'RECORDER-KEY'
+    panel.codes['recorder'] = 'RECORDER-CODE'
+    return panel
+
+
 def test_the_record_stage_treats_an_already_written_review_as_the_run_it_is():
-    """The workflow's Record stage had one attempt at the one call that writes.
+    """The Record stage had one attempt at the one call that writes.
 
     A ``write_review`` that landed and an answer that was lost left the stage
-    with nothing: it returned success with the counts undefined, or called
-    ``block()`` and threw "the run files were never written" over a folder
-    holding a finished review. Asserted on the source, because the workflow is
-    JavaScript the plugin ships and no test runner here loads it.
+    with nothing: it reported success with the counts undefined, or blocked
+    the run over "the run files were never written" with a finished review in
+    the folder. So the folder is asked what it holds before anything is
+    blocked, and a complete folder is the success.
     """
-    source = (Path(srv.__file__).parent / 'pra' / 'workflows' / 'review.js').read_text(
-        encoding='utf-8')
-    record = source.split("phase('Record')", 1)[1]
+    panel = a_record_stage(
+        claim_agent={'agent_token': 'RECORDER-TOKEN'},
+        write_review={},
+        run_status={'status': 'complete', 'issues': {'issues': 2, 'required': 1}})
 
-    assert 'run_status with recorder_key=' in record, 'the folder is asked what it holds'
-    assert 'Do not call write_review twice' in record
-    assert record.index('const asFound') < record.index('await block('), (
-        'and it is asked before the run is blocked')
-    assert 'written(asFound.status)' in record, 'a complete folder is the success'
-    # And a count the run did not report is unknown, not zero. The stage used
-    # to tell the recorder to report 0 where a count was absent, and `issues`
-    # is absent from run_status on every arm that runs no editor — so a lost
-    # answer came back as a review with no issues while two sat in issues.json.
-    assert 'Where a count is absent' not in record, 'a count nobody read is not a count of none'
-    assert 'never report 0 for a count that is absent' in record
-    assert 'counts_unknown' in record, 'and the result says which counts those were'
-    # And the refusal that is not final is retried rather than read as a run
-    # that will not be written: a resolve pass holds the writing stage for as
-    # long as its lookups take, and it writes nothing while it does.
-    assert 'resolve_citations pass is still' in record, 'the stage knows that refusal'
-    assert 'write_review once more' in record, 'and writes after the pass it waited for'
-    assert 'not calling write_review twice' in record, 'a refused write is not a write'
+    recorded, unknown = panel.record()
+
+    assert recorded['status'] == 'complete', 'the folder holds a written review'
+    assert (recorded['issues'], recorded['required_changes']) == (2, 1)
+    # A count nobody read is not a count of none: absent is unknown, and the
+    # result says which counts those were. `issues` is absent from run_status
+    # on every arm that runs no editor, so a 0 here would read as a review
+    # that found nothing while two sat in issues.json.
+    assert sorted(unknown) == ['escalated', 'suggestions']
+    assert 'suggestions' not in recorded and 'escalated' not in recorded
+    assert panel.service.calls.count('write_review') == 1, 'and it is not written twice'
+    assert 'mark_blocked' not in panel.service.calls
+
+
+def test_a_write_held_by_the_resolve_pass_is_waited_out_and_not_read_as_a_refusal():
+    """The refusal that answers differently twice: a pass still running.
+
+    A resolve pass holds the writing stage for as long as its lookups take and
+    says so in as many words. That refusal writes nothing, so the call after
+    it is the first write and not a second one.
+    """
+    panel = a_record_stage(
+        claim_agent={'agent_token': 'RECORDER-TOKEN'},
+        write_review=[
+            {'request_rejected': 'a resolve_citations pass is still running; wait for it'},
+            {'status': 'complete', 'issue_counts': {'issues': 3},
+             'required_changes': 2, 'suggestions': 1, 'escalated': 0},
+        ])
+
+    recorded, unknown = panel.record()
+
+    assert recorded['status'] == 'complete' and unknown is None
+    assert (recorded['issues'], recorded['required_changes']) == (3, 2)
+    assert (recorded['suggestions'], recorded['escalated']) == (1, 0)
+    written = [tool for tool in panel.service.calls
+               if tool in ('write_review', 'resolve_citations')]
+    assert written == ['write_review', 'resolve_citations', 'write_review']
+    assert 'run_status' not in panel.service.calls, 'a written review is not asked after'
+
+
+def test_a_review_nothing_wrote_anywhere_blocks_the_run_and_says_so():
+    panel = a_record_stage(
+        claim_agent={'agent_token': 'RECORDER-TOKEN'},
+        write_review={},
+        run_status={'status': 'running'})
+
+    with pytest.raises(orchestrator.Blocked) as refused:
+        panel.record()
+
+    assert 'the run files were never written' in str(refused.value).lower()
+    assert 'mark_blocked' in panel.service.calls
 
 
 # -- the editor closes after its review, not before ------------------------

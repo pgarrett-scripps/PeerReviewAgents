@@ -5,18 +5,20 @@ the only way a review runs, whether you start it from the command line or from
 inside a session, so there is nothing to wire up twice.
 
 ```
-peerreview review     peerreviewagents/plugin/pra   peerreviewagents.plugin.server
-  (the command)      →     (workflow, agents,     →   (47 MCP tools, the ledger,
-                            skills, .mcp.json)         the run files)
+peerreview review  →  peerreviewagents.plugin  →  peerreviewagents.plugin.server
+  (the command)         (the orchestrator and      (47 MCP tools, the ledger,
+                         one Claude Code             the run files, served over
+                         session per agent)          loopback for this run)
 ```
 
 `peerreview check-fixes` is the same three boxes with one lane in the middle:
 the problems a review already raised go in, and one verdict per problem comes
 out. [Checking the fixes](#checking-the-fixes) is the whole of it.
 
-The command launches a headless Claude Code session on the plugin. A session
-you drive yourself loads the same plugin and the same server. Either way the
-server owns the manuscript, the agent identities, the tool allowances, the
+The command runs the panel itself and starts one headless Claude Code session
+per agent. A session you drive yourself asks for the same command through one
+of the plugin's skills, so there is one panel and one server either way, and
+the server owns the manuscript, the agent identities, the tool allowances, the
 budgets and the files.
 
 ## Requirements
@@ -25,11 +27,10 @@ budgets and the files.
   `PATH`. Claude Desktop alone does not install it; see
   [the quickstart](https://code.claude.com/docs/en/quickstart).
 - This package installed in any Python environment — a checkout or a wheel. The
-  plugin ships inside it, and `peerreview review` starts the server with the
-  interpreter running the command, passed in `PEERREVIEW_MCP_COMMAND`. A
-  session you load by hand has nothing setting that variable, so there the
-  server starts through the `peerreview-plugin-server` console script and that
-  shell's PATH has to carry it.
+  plugin ships inside it, and `peerreview review` serves the tools from the
+  interpreter running the command, over loopback, for the length of that run.
+  Nothing launches a server by stdio, and a session you load by hand runs a
+  review by shelling out to `peerreview`, so that shell's PATH has to carry it.
 - Poppler's `pdftotext` on `PATH`, which does the PDF text extraction:
   `sudo apt install poppler-utils`, `brew install poppler`, or `choco install
   poppler`.
@@ -42,12 +43,13 @@ budgets and the files.
 peerreview review manuscript.pdf run-output
 ```
 
-Before spending anything, the starter runs a throwaway session and reads its
-start-up event: the review only begins once that event shows the `pra` plugin
-loaded, the `peerreview` server **connected**, and every tool the agents are
-allowed to call present. What it saw is written to
-`run-output/review/startup.json` either way, and a failed probe is a `blocked`
-run with its reasons, not a traceback.
+Before spending anything, the run asks the runner whether it can run agents at
+all and opens its own tool server. Both answers are written to
+`run-output/review/startup.json` — the runner, the address the server opened
+on, the tools the agents are to be granted, and one line per problem — and a
+run that cannot begin is `blocked` with its reasons, not a traceback. The first
+thing each agent does is call a tool, so a session that cannot reach the server
+says so in its own row rather than reviewing from nothing.
 
 ### Models
 
@@ -63,8 +65,9 @@ peerreview review manuscript.pdf run-output --reviewers 3 \
 ```
 
 Those three are the defaults — `--reviewer-models sonnet,opus,haiku`,
-`--specialist-model claude-sonnet-5-5`, `--editor-model claude-fable-5-2`, with
-the recorder on `claude-haiku-5-5`. Each takes one of the four models this
+`--specialist-model claude-sonnet-5-5`, `--editor-model claude-fable-5-2`. The
+recorder slot has no model of its own: its work is done in the command's own
+process. Each flag takes one of the four models this
 version knows — `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-haiku-5-5` and
 `claude-fable-5-2` — by alias or by id, and anything else is refused by name as
 a model this version does not know rather than as one your login may not run.
@@ -74,8 +77,8 @@ its own findings. Pinning every reviewer to one model is
 recorded Stage A result wants. **None of this is gated on billing or usage:**
 which models your login may run is yours to decide.
 
-A model this login cannot run is refused at start-up, before the probe spends
-anything, with one line naming the slot, the model and the flag that changes
+A model this login cannot run is refused at start-up, before a folder is
+written, with one line naming the slot, the model and the flag that changes
 it — Claude Code answers a model it may not run by quietly running another, so
 a run that asked for Opus could otherwise be recorded as an arm it was not.
 Availability is the `availableModels` allowlist in the settings files Claude
@@ -87,15 +90,15 @@ own model: `--citation-workers N` (0 to 12, default 4) and
 arm that runs the `citations` specialist, and a model that login cannot run is
 refused at start-up like any other.
 
-A session that drives the workflow itself passes `reviewer_models`,
-`specialist_model` and `editor_model` to the `ingest` tool instead; its answer
-gains `models`, one `{slot, model, spawn}` row per agent, where `spawn` is the
-family alias the workflow hands Claude Code and `model` is the version the run
-records; `citation_workers` and `citation_worker_model` go the same way.
-`PEERREVIEW_REVIEWER_MODELS`, `PEERREVIEW_SPECIALIST_MODEL`,
-`PEERREVIEW_EDITOR_MODEL`, `PEERREVIEW_RECORDER_MODEL` and
-`PEERREVIEW_CITATION_WORKER_MODEL` do the same for a session the starter
-launched, and an explicit `ingest` argument wins over the environment.
+The orchestrator passes `reviewer_models`, `specialist_model` and
+`editor_model` to the `ingest` tool, and its answer gains `models`, one
+`{slot, model, spawn}` row per agent, where `spawn` is the family alias handed
+to the runner and `model` is the version the run records; `citation_workers`
+and `citation_worker_model` go the same way. `PEERREVIEW_REVIEWER_MODELS`,
+`PEERREVIEW_SPECIALIST_MODEL`, `PEERREVIEW_EDITOR_MODEL`,
+`PEERREVIEW_RECORDER_MODEL` and `PEERREVIEW_CITATION_WORKER_MODEL` do the same
+for a caller reaching `ingest` directly, and an explicit `ingest` argument wins
+over the environment.
 
 ### The Read stage
 
@@ -337,11 +340,11 @@ Then ask for one of its three skills:
 | `check-draft` | the specialist tracks you name on a draft of your own |
 | `check-fixes` | a new draft against the problems a review already raised |
 
-The agents may call only the server's tools — the allow list the starter passes
-is `Workflow`, `Skill`, `TodoWrite` and the 47 `peerreview` tools, and nothing
-else. No `Read`, `Write`, `Edit`, `Bash`, `WebSearch` or `WebFetch` reaches a
-reviewer, which is why a quotation cannot come from anywhere but the
-manuscript the server served.
+The agents may call only the server's tools — each session is started with the
+`peerreview` tools its own definition grants and the one tool that answers, the
+built-ins turned off outright, and no user or project settings read. No `Read`,
+`Write`, `Edit`, `Bash`, `WebSearch` or `WebFetch` reaches a reviewer, which is
+why a quotation cannot come from anywhere but the manuscript the server served.
 
 ## Checking the fixes
 
@@ -356,9 +359,9 @@ citation ledger and no finding guard. What runs is one lane of checkers — the
 `fix-check` agent, one per batch of ten problems — with the paper tools, a
 queue and a submit tool, and nothing else.
 
-The command is the `review` command's shape: it probes the same way, launches
-the same headless session on the same plugin, writes `startup.json` beside its
-own run, and prints a summary dict rather than a report. Its ceilings are its
+The command is the `review` command's shape: the same start-up checks, the same
+tool server, the same runner starting one session per checker, `startup.json`
+beside its own run, and a summary dict printed rather than a report. Its ceilings are its
 own, because a check is a much smaller run than a review: 150,000 tokens per
 agent, 900,000 for the run and a 45-minute wall clock, against a review's
 millions. `--per-agent-tokens`, `--per-run-tokens` and `--timeout` move them,
@@ -470,8 +473,8 @@ the answer is a review of the revision with `--code`, not a fix check.
 
 ## Other MCP clients
 
-The server is a plugin server. It takes `--plugin-root`, derives a per-run salt
-for agent tokens, and expects the workflow to claim slots in order, so pointing
+The server is this panel's server. It takes `--plugin-root`, derives a per-run
+salt for agent tokens, and expects the orchestrator to claim slots in order, so pointing
 another client at it directly gives you the tools without the protocol that
 makes them meaningful. There is no supported generic-client configuration in
 0.10, and the standalone `peerreview-mcp` server that offered one was deleted
@@ -549,7 +552,7 @@ added; these two do not.
 
 ### What each arm runs: `review_arms()`
 
-An arm is a setting of one workflow, and what it runs decides which arguments
+An arm is a setting of one panel, and what it runs decides which arguments
 it accepts. `review_arms()` answers that before a run exists — one row per
 arm a review runs, in name order:
 
@@ -582,7 +585,7 @@ doing and what goes stale the next time an arm is added.
 
 Every row is an arm `review` accepts, so a menu built from this listing offers
 nothing that would be refused. The `fix-check` arm is not here and not among
-the `--arm` choices: it is a run of the same workflow, but it belongs to
+the `--arm` choices: it is a run of the same panel, but it belongs to
 `peerreview check-fixes`, which has the problems to give it.
 
 `citations` is the arm's half of whether `run["citations"]["enabled"]` can be
@@ -1037,11 +1040,12 @@ itself:
 - `identity['provider']` is what ran the review — `claude-code` for every run
   this version writes, from `protocol.json` rather than inferred. `None` when
   the protocol does not say.
-- `startup` is `{'probe': ..., 'problems': [...]}` from `startup.json`: the
-  harness's own start-up event and what the probe refused to launch over.
-  `probe` is `None` when no probe was written or it holds the wrong shape, and
-  `problems` is the probe's own list. The long-standing `startup_problems` key
-  is the same list, kept as it was.
+- `startup` is `{'probe': ..., 'problems': [...]}` from `startup.json`:
+  `problems` is what a run that could not begin was stopped over, and `probe`
+  is the harness's own start-up event from a 0.9 folder that probed for one —
+  `None` for every run this version writes, and `None` too where it holds the
+  wrong shape. The long-standing `startup_problems` key is the same list, kept
+  as it was.
 
 Damage in any of the three is named in `problems` and read as absent or empty,
 like every other damaged file.
@@ -1461,8 +1465,8 @@ worker slots are named `cite-1`, `cite-2`, … and appear in `run['agents']` and
 in `protocol.json` with `assigned_model` and the observed `model` like every
 other slot, with `role` `citation-worker`. They are deliberately not required
 slots: a worker that never reported does not block `write_review` and is not a
-reason a run is unpublishable. A session driving the workflow itself passes
-`citation_workers` and `citation_worker_model` to `ingest`.
+reason a run is unpublishable. A caller reaching `ingest` directly passes
+`citation_workers` and `citation_worker_model` to it.
 
 ### The status rule
 
@@ -1477,7 +1481,7 @@ and another way in its own report. The rule, in order:
 2. Otherwise `runtime.json`'s status, which is how a killed run reports itself
    while `progress.json` still says `running`.
 3. Otherwise `progress.json`'s status.
-4. Otherwise `blocked`, if there is a cause or the start-up probe refused.
+4. Otherwise `blocked`, if there is a cause or start-up recorded a problem.
 5. Otherwise `unknown` — and a status word this version does not know is
    `unknown` with a line in `problems`, never passed through.
 
@@ -2072,27 +2076,30 @@ folder.
 
 ## Troubleshooting
 
-### The probe says the plugin was not loaded
+### The run was blocked at start-up
 
-`claude --plugin-dir` has to point at `peerreviewagents/plugin/pra`, not at the
-repository root. Check `run-output/review/startup.json`: it records the plugins,
-MCP servers, agents and slash commands the session reported.
+Read `run-output/review/startup.json`: it records which runner was asked, the
+address the tool server opened on (`null` where none did), the tools the agents
+were to be granted, and one line per problem that stopped the run. The same
+line is `blocked_reason` in `runtime.json`, and `peerreview report` prints it.
 
-### The probe says the server did not connect
-
-`peerreview review` launches the server with its own interpreter, so confirm
-that interpreter can import it:
+`claude` not installed or not on this PATH is the common one; the rest is
+usually the tool server, which runs in the command's own interpreter, so
+confirm that interpreter can import it:
 
 ```bash
 python -c "import peerreviewagents.plugin.server"
 ```
 
-In a session you started yourself, the launcher is the
-`peerreview-plugin-server` script instead: check that `which
-peerreview-plugin-server` finds it.
+A missing MCP SDK is the usual cause on an old environment. It is a dependency,
+so `pip install -e .` installs it; re-run that after upgrading.
 
-A missing MCP SDK is the usual cause on an old environment. It is a dependency
-in 0.9, so `pip install -e .` installs it; re-run that after upgrading.
+### An agent reported the tools missing
+
+A session that starts but cannot reach the tools says so in its own
+`detail` line and in `runtime.json`. Nothing on this machine is at fault when
+the server opened: check that no outbound-loopback firewall rule blocks the
+address `startup.json` records.
 
 ### `claude` is missing or not signed in
 

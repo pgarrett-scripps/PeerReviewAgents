@@ -87,13 +87,11 @@ Repository = "https://github.com/pgarrett-scripps/PeerReviewAgents"
 Issues = "https://github.com/pgarrett-scripps/PeerReviewAgents/issues"
 
 [project.scripts]
+# One command. The tool server used to be a second console script, because the
+# plugin's `.mcp.json` had to name something a session could launch over
+# stdio; a run serves its own tools in process now, so there is nothing left
+# to launch from outside.
 peerreview = "peerreviewagents.cli.main:run"
-# The plugin's `.mcp.json` launches its MCP server through this name by
-# default, so an installed wheel can start a review without a checkout and
-# without guessing an interpreter. `peerreview review` overrides it with
-# PEERREVIEW_MCP_COMMAND set to the very interpreter running the starter, so a
-# venv that is not on PATH still serves its own run.
-peerreview-plugin-server = "peerreviewagents.plugin.server:main"
 
 [tool.ruff]
 # Pinned explicitly: ruff's default rule selection widens between releases, so
@@ -126,14 +124,17 @@ include = ["peerreviewagents*"]
     "domains/*/skills/*/SKILL.md",
     "domains/*/fixtures/cases.json",
 ]
-# The plugin *is* the review in 0.9, so the wheel has to carry it: the starter
-# loads `pra` from the installed package, not from a checkout. The two dotted
-# paths are named in full because a `*` glob does not match a leading dot.
+# The instruction text every slot is given. It is not plugin data any more —
+# nothing is loaded as a plugin, and a runner other than Claude Code reads the
+# same definitions — so it ships beside the engine and the wheel has to carry
+# it: the runner loads a definition from the installed package.
+"peerreviewagents.agents" = ["*.md"]
+# The plugin is the skills now: three SKILL.md files that shell out to
+# `peerreview review` and `peerreview check-fixes`. The wheel carries it so a
+# session can pick the skills up without a checkout. The dotted path is named
+# in full because a `*` glob does not match a leading dot.
 "peerreviewagents.plugin" = [
     "pra/.claude-plugin/plugin.json",
-    "pra/.mcp.json",
     "pra/README.md",
-    "pra/agents/*.md",
     "pra/skills/*/SKILL.md",
-    "pra/workflows/*.js",
 ]

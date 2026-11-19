@@ -1,155 +1,77 @@
-"""The starter: the probe, the stream accounting and the blocked outcomes.
+"""The starter: what it validates, what it writes, and how a run ends.
 
-Every test here runs offline. One of them puts a stub ``claude`` on PATH that
-replays a canned stream; the rest run with nothing on PATH at all, which is
-also the check that a missing provider is a blocked run rather than a
-traceback. No test can reach Codex or an API key: the stub records the argv it
-was called with, and PATH holds nothing else.
+The starter owns the *run*, not the review: it checks the arguments, resolves
+the plugin folder, refuses a model this login cannot run, opens the panel, and
+then writes the accounting — ``runtime.json``, one usage receipt per attempt,
+and a blocked reason a person can act on. Everything about the panel itself is
+in ``tests/test_scripted_panel.py``, which runs whole reviews with Python where
+the models go, and everything about starting a session is in
+``tests/test_claude_code_runner.py``, the only file here that starts a process.
+
+So there is no stub ``claude`` in this file. The runs here either never start —
+nothing on PATH, which is itself the check that a missing harness is a blocked
+run rather than a traceback — or they are assembled from the starter's own
+pieces: a :class:`~peerreviewagents.plugin.orchestrator.Budget`, a panel stub,
+and the files the two of them produce.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import re
-import stat
-import sys
-import time
 from pathlib import Path
 
 import pytest
 
+from peerreviewagents import agents as agent_pack
 from peerreviewagents.cli.main import review_argv
 from peerreviewagents.engine import citation_ledger as cl
-from peerreviewagents.plugin import starter
+from peerreviewagents.plugin import claude_code, orchestrator, starter
+from peerreviewagents.plugin import runner as agent_runner
+from peerreviewagents.plugin.service import TOOL_PREFIX, TOOLS
 
 FIXTURE = Path(__file__).resolve().parent / 'fixtures' / 'single-column.pdf'
-
-STUB = '''import json, os, re, sys
-
-argv = sys.argv[1:]
-if argv == ['--version']:
-    print('2.1.999 (Claude Code stub)', flush=True)
-    sys.exit(0)
-log = os.environ['PEERREVIEW_STUB_LOG']
-with open(log, 'a', encoding='utf-8') as stream:
-    stream.write(json.dumps(argv) + '\\n')
-prompt = argv[argv.index('-p') + 1] if '-p' in argv else ''
-print(json.dumps({
-    'type': 'system', 'subtype': 'init',
-    'plugins': [{'name': 'pra', 'path': '/plugins/pra'}],
-    'mcp_servers': [{'name': 'plugin:pra:peerreview', 'status': 'connected'}],
-    'agents': ['pra:core-reviewer', 'pra:editor', 'pra:recorder'],
-    'tools': json.loads(os.environ['PEERREVIEW_STUB_TOOLS']),
-    'api_key_seen': 'ANTHROPIC_API_KEY' in os.environ,
-}), flush=True)
-if prompt.startswith('Reply with'):
-    print(json.dumps({'type': 'result', 'subtype': 'success', 'result': 'ready'}), flush=True)
-    sys.exit(0)
-print(json.dumps({'type': 'result', 'subtype': 'success',
-                  'result': 'the workflow is still running'}), flush=True)
-print(json.dumps({'type': 'system', 'subtype': 'task_progress', 'workflow_progress': [
-    {'label': 'core-1', 'tokens': 120000, 'toolCalls': 18, 'state': 'completed',
-     'attempt': 1, 'agentType': 'pra:core-reviewer', 'model': 'claude-sonnet-5-5'},
-    {'label': 'write review', 'tokens': 4000, 'toolCalls': 2, 'state': 'completed',
-     'attempt': 1, 'agentType': 'pra:recorder', 'model': 'claude-haiku-5-5'}]}), flush=True)
-print(json.dumps({'type': 'system', 'subtype': 'task_notification',
-                  'task': {'status': 'completed'}}), flush=True)
-# What the server would have written, written from inside the session: the
-# starter has to read the real file rather than be handed one by the test.
-wanted = os.environ.get('PEERREVIEW_STUB_PROGRESS') or ''
-found = re.search(r'run folder to (.+?)[,.](?:\\s|$)', prompt)
-if wanted and found:
-    review = os.path.join(found.group(1), 'review')
-    os.makedirs(review, exist_ok=True)
-    with open(os.path.join(review, 'progress.json'), 'w', encoding='utf-8') as stream:
-        stream.write(wanted)
-print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False, 'num_turns': 7,
-                  'session_id': 'stub', 'result': {'status': 'complete'}}), flush=True)
-'''
+#: Not a surface any more. The driving session, its prompt, its event stream
+#: and its allow-list were how a review was relayed to a workflow script; the
+#: orchestrator runs the panel in this process, so every one of them is gone
+#: rather than kept working alongside it.
+RELAYED = ('allow_list', 'prompt_for', 'launch', 'Accounting', 'probe', 'watch_workflow',
+           'BG_WAIT', 'NOTHING_LEFT_WRITING', 'handles')
 
 
-RACE_STUB = '''import json, os, re, sys, time
+def ticking(start=0.0):
+    """A clock a test moves by hand, for the parts that watch the wall."""
+    held = [start]
 
-argv = sys.argv[1:]
-if argv == ['--version']:
-    print('2.1.999 (Claude Code stub)', flush=True)
-    sys.exit(0)
-log = os.environ['PEERREVIEW_STUB_LOG']
-with open(log, 'a', encoding='utf-8') as stream:
-    stream.write(json.dumps(argv) + '\\n')
-prompt = argv[argv.index('-p') + 1] if '-p' in argv else ''
-print(json.dumps({
-    'type': 'system', 'subtype': 'init',
-    'plugins': [{'name': 'pra', 'path': '/plugins/pra'}],
-    'mcp_servers': [{'name': 'plugin:pra:peerreview', 'status': 'connected'}],
-    'agents': ['pra:core-reviewer', 'pra:editor', 'pra:recorder'],
-    'tools': json.loads(os.environ['PEERREVIEW_STUB_TOOLS']),
-}), flush=True)
-if prompt.startswith('Reply with'):
-    print(json.dumps({'type': 'result', 'subtype': 'success', 'result': 'ready'}), flush=True)
-    sys.exit(0)
-# A few turns, the last of which says the review is running in the background.
-# Then the turn ends: no task notification ever arrives, and the event stream
-# closes with the workflow alive. This is the shape that killed a live review.
-print(json.dumps({'type': 'system', 'subtype': 'task_progress', 'workflow_progress': [
-    {'label': 'core-1', 'tokens': 120000, 'toolCalls': 18, 'state': 'completed',
-     'attempt': 1, 'agentType': 'pra:core-reviewer', 'model': 'claude-sonnet-5-5'}]}), flush=True)
-print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False, 'num_turns': 7,
-                  'session_id': 'stub',
-                  'result': 'The review workflow is running in the background, no result yet.'}),
-      flush=True)
-sys.stdout.flush()
-os.close(1)
-# The workflow carries on without the turn that launched it. With a progress
-# file to write it finishes; with none it never does.
-time.sleep(float(os.environ.get('PEERREVIEW_STUB_DELAY') or 1.5))
-wanted = os.environ.get('PEERREVIEW_STUB_PROGRESS') or ''
-found = re.search(r'run folder to (.+?)[,.](?:\\s|$)', prompt)
-if wanted and found:
-    review = os.path.join(found.group(1), 'review')
-    os.makedirs(review, exist_ok=True)
-    half = os.path.join(review, 'progress.json.part')
-    with open(half, 'w', encoding='utf-8') as stream:
-        stream.write(wanted)
-    os.replace(half, os.path.join(review, 'progress.json'))
-# This session does not exit on its own: the driver has to end it, and only
-# once the review is written or nothing is coming.
-time.sleep(600)
-'''
+    def clock():
+        return held[0]
+
+    clock.held = held
+    return clock
 
 
-def install_stub(tmp_path, monkeypatch, progress=None, script=None):
-    """A fake ``claude`` on PATH, and nothing else: no codex, no real provider.
+def spent(label='core-1', agent='core-reviewer', tokens=1000, ending=agent_runner.ANSWERED,
+          model='claude-sonnet-5-5', detail='', calls=3):
+    """One attempt, as the runner hands it back."""
+    task = agent_runner.Task.of(agent, 'do the stage', {'type': 'object'}, label=label,
+                                model=model)
+    return task, agent_runner.Outcome(ending=ending, answer={'ok': True}, tokens=tokens,
+                                      model=model, tool_calls=calls, seconds=1.5, detail=detail)
 
-    ``progress`` is what the stub session writes to ``review/progress.json``,
-    the way the server would: no test pre-writes that file, because then the
-    starter's reading of it is never exercised. ``script`` is which stub
-    session runs — :data:`STUB` by default, or :data:`RACE_STUB` for the
-    session that ends its turn with the workflow still going.
-    """
-    binaries = tmp_path / 'bin'
-    binaries.mkdir()
-    body = script or STUB
-    if os.name == 'nt':
-        # A shebang means nothing on Windows. A real install puts `claude.cmd`
-        # on PATH and the shell finds it through PATHEXT, so the stub does too.
-        script_file = binaries / 'stub.py'
-        script_file.write_text(body, encoding='utf-8')
-        (binaries / 'claude.cmd').write_text(
-            f'@"{sys.executable}" "{script_file}" %*\n', encoding='utf-8')
-    else:
-        stub = binaries / 'claude'
-        stub.write_text(f'#!{sys.executable}\n{body}', encoding='utf-8')
-        stub.chmod(stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-    log = tmp_path / 'argv.jsonl'
-    monkeypatch.setenv('PATH', str(binaries))
-    monkeypatch.setenv('PEERREVIEW_STUB_LOG', str(log))
-    monkeypatch.setenv('PEERREVIEW_STUB_TOOLS', json.dumps(list(starter.tool_names())))
-    monkeypatch.setenv('PEERREVIEW_STUB_PROGRESS', json.dumps(progress) if progress else '')
-    monkeypatch.setenv('ANTHROPIC_API_KEY', 'must-not-be-used')
-    starter.VERSIONS.clear()  # each stub is a new binary path, not the cached one
-    return log
+
+class Panel:
+    """What :func:`starter.finish` reads off a panel that has stopped."""
+
+    def __init__(self, budget, calls=7, notes=()):
+        self.budget = budget
+        self.calls = calls
+        self.notes = list(notes)
+
+
+@pytest.fixture
+def no_allowlist(monkeypatch):
+    """No ``availableModels`` anywhere, which is the ordinary login."""
+    monkeypatch.setattr(starter.model_plan, 'allowlist', lambda **kwargs: None)
 
 
 # -- the one route ----------------------------------------------------------
@@ -178,48 +100,44 @@ def test_there_is_one_route_and_the_starter_owns_it(monkeypatch):
     assert seen['options']['arm'] == 'full-two-track'
 
 
+def test_nothing_relays_a_review_to_a_session_any_more():
+    """The whole relay is gone, not kept working beside the orchestrator.
 
-# -- the launch -------------------------------------------------------------
+    A leftover ``prompt_for`` or ``launch`` would be a second way to run a
+    review that nothing tests and nothing calls — and the first thing a reader
+    would find when asking how a review runs.
+    """
+    for name in RELAYED:
+        assert not hasattr(starter, name), f'starter.{name} is the relay this replaced'
+    source = Path(starter.__file__).read_text(encoding='utf-8')
+    for stale in ('review.js', 'check-fixes.js', 'Workflow(', 'workflow_progress',
+                  'task_notification', '.mcp.json'):
+        assert stale not in source, f'the starter still names {stale}'
 
 
-def test_the_allow_list_names_every_server_tool_and_nothing_else():
-    allowed = starter.allow_list().split(',')
-    assert allowed[:3] == ['Workflow', 'Skill', 'TodoWrite']
-    assert set(starter.tool_names()) == set(allowed[3:])
-    assert all(name.startswith('mcp__plugin_pra_peerreview__') for name in allowed[3:])
-    assert 'mcp__plugin_pra_peerreview__submit_editor' in allowed
-    assert 'mcp__plugin_pra_peerreview__write_review' in allowed
-    for forbidden in ('Read', 'Write', 'Edit', 'Bash', 'WebSearch', 'WebFetch'):
-        assert forbidden not in allowed
+def test_the_tool_names_are_the_servers_own_under_the_wire_prefix():
+    names = starter.tool_names()
+    assert set(names) == {TOOL_PREFIX + tool for tool in TOOLS}
+    assert names == tuple(sorted(names)), 'one order, so the record reads the same twice'
+    assert f'{TOOL_PREFIX}submit_editor' in names
+    assert f'{TOOL_PREFIX}write_review' in names
+    for built_in in ('Read', 'Write', 'Edit', 'Bash', 'WebSearch', 'WebFetch', 'Workflow',
+                     'Skill', 'TodoWrite'):
+        assert built_in not in names, 'an agent is granted our tools and nothing else'
 
 
 def test_the_plugin_folder_is_the_one_that_ships():
+    """Three skills and a manifest. No agents, no workflows, no server to launch."""
     directory = starter.plugin_dir()
     assert (directory / '.claude-plugin' / 'plugin.json').is_file()
-    assert (directory / '.mcp.json').is_file()
-    assert (directory / 'workflows' / 'review.js').is_file()
-
-
-def test_the_reference_lookups_are_sized_for_a_long_reference_list():
-    """Two numbers in two files, and the shorter one used to truncate the list.
-
-    The workflow asked the recorder for twelve lookup calls of twenty
-    references; the recorder's agent file allowed it eight turns in all. A
-    review with more than a hundred and forty references therefore stopped
-    part-way through its reference list, and the only trace was a count.
-    """
-    directory = starter.plugin_dir()
-    workflow = (directory / 'workflows' / 'review.js').read_text(encoding='utf-8')
-    numbers = dict(re.findall(r'^const ([A-Z_]+) = (\d+)$', workflow, re.MULTILINE))
-    batch, ceiling = int(numbers['LOOKUP_LIMIT']), int(numbers['RESOLVE_CALL_CEILING'])
-    recorder = (directory / 'agents' / 'recorder.md').read_text(encoding='utf-8')
-    turns = int(re.search(r'^maxTurns: (\d+)$', recorder, re.MULTILINE).group(1))
-    assert ceiling < turns, 'the agent file must allow every call the workflow asks for'
-    assert (ceiling - 1) * batch >= 400, 'a long review has hundreds of references'
-    # The call count is the paper's, and what it cannot reach is said out loud.
-    assert 'Math.ceil(referenceCount / LOOKUP_LIMIT)' in workflow
-    assert 'reported as never looked up' in workflow
-    assert 'reported as never judged' in workflow
+    assert not (directory / '.mcp.json').exists(), 'a run serves its own tools in process'
+    assert not (directory / 'workflows').exists()
+    assert not (directory / 'agents').exists(), 'the definitions ship beside the engine'
+    skills = sorted(path.parent.name for path in directory.glob('skills/*/SKILL.md'))
+    assert skills == ['check-draft', 'check-fixes', 'peer-review-manuscript']
+    for name in skills:
+        said = (directory / 'skills' / name / 'SKILL.md').read_text(encoding='utf-8')
+        assert 'peerreview ' in said, f'{name} names no command to run'
 
 
 def test_the_citation_briefs_cover_every_surface_the_server_offers_them():
@@ -229,11 +147,12 @@ def test_the_citation_briefs_cover_every_surface_the_server_offers_them():
     as a clean reference list, four existence states so a title two indexes
     miss is not read as a fabrication, and an ``untrusted_text`` line on every
     citation read. None of that reaches a model that was never told it exists,
-    so the briefs are checked against the server's own constants.
+    so the briefs are checked against the server's own constants. They are read
+    from the package rather than the plugin: the definitions ship beside the
+    engine now, because the runner they are handed to need not be Claude Code.
     """
-    directory = starter.plugin_dir()
-    specialist = (directory / 'agents' / 'citations.md').read_text(encoding='utf-8')
-    worker = (directory / 'agents' / 'citation-worker.md').read_text(encoding='utf-8')
+    specialist = agent_pack.definition('citations').instructions
+    worker = agent_pack.definition('citation-worker').instructions
     # The spot-check read, by name, and what it is for.
     assert "kind='supported'" in specialist
     assert 'how many supported rows you checked' in specialist
@@ -247,18 +166,7 @@ def test_the_citation_briefs_cover_every_surface_the_server_offers_them():
         assert 'not a direction you follow' in brief
 
 
-def test_no_claude_on_path_is_a_blocked_run_not_a_traceback(tmp_path, monkeypatch):
-    monkeypatch.setenv('PATH', str(tmp_path / 'empty'))
-    out = tmp_path / 'run'
-    summary = starter.review(str(FIXTURE), str(out), arm='single')
-    assert (summary['status'], summary['stage']) == ('blocked', 'startup')
-    assert starter.exit_code(summary) == 2, 'nothing was spent: that is its own exit code'
-    startup = json.loads((out / 'review' / 'startup.json').read_text(encoding='utf-8'))
-    assert startup['problems']
-    assert startup['tools_expected']
-    runtime = json.loads((out / 'review' / 'runtime.json').read_text(encoding='utf-8'))
-    assert runtime['status'] == 'blocked'
-    assert 'probe failed' in runtime['blocked_reason']
+# -- what is refused, and what is blocked -----------------------------------
 
 
 def test_an_unknown_arm_and_a_missing_manuscript_are_both_refused(tmp_path):
@@ -287,258 +195,176 @@ def test_review_main_returns_two_for_an_unusable_argument(tmp_path, capsys):
     assert not (tmp_path / 'run').exists()
 
 
-def test_the_stub_run_is_launched_the_way_the_spec_requires(tmp_path, monkeypatch):
-    log = install_stub(tmp_path, monkeypatch, progress={
-        'status': 'complete', 'findings_delivered': 4, 'quarantined_findings_count': 0,
-        'stages': {'missing': []}})
-    out = tmp_path / 'run'
-
-    summary = starter.review(str(FIXTURE), str(out), reviewers=3, arm='full-two-track')
-    assert starter.exit_code(summary) == 0
-    assert summary['status'] == 'complete'
-    assert summary['tokens_total'] == 124000
-    assert summary['models'] == ['claude-haiku-5-5', 'claude-sonnet-5-5']
-    assert summary['findings_delivered'] == 4
-
-    calls = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
-    assert len(calls) == 2, 'the probe runs first, then the review'
-    for call in calls:
-        assert '--bare' not in call
-        assert call[call.index('--permission-mode') + 1] == 'dontAsk'
-        assert call[call.index('--allowed-tools') + 1] == starter.allow_list()
-        assert call[call.index('--output-format') + 1] == 'stream-json'
-        assert call[call.index('--plugin-dir') + 1] == str(starter.plugin_dir())
-        assert 'codex' not in ' '.join(call)
-    assert calls[0][calls[0].index('-p') + 1].startswith('Reply with')
-    assert 'peer-review-manuscript' in calls[1][calls[1].index('-p') + 1]
-
-    runtime = json.loads((out / 'review' / 'runtime.json').read_text(encoding='utf-8'))
-    assert runtime['status'] == 'complete'
-    assert runtime['blocked_reason'] is None
-    assert runtime['claude_code_version'] == '2.1.999 (Claude Code stub)', \
-        'provenance records the harness that actually ran, asked of the binary'
-    assert runtime['tokens_total'] == 124000
-    assert {row['label']: row['model'] for row in runtime['agents']} == {
-        'core-1': 'claude-sonnet-5-5', 'write review': 'claude-haiku-5-5'}
-    assert runtime['result']['num_turns'] == 7
-    usage = (out / 'review' / 'usage' / 'core-1' / 'usage.jsonl').read_text(encoding='utf-8')
-    assert json.loads(usage.splitlines()[0])['observed_tokens'] == 120000
-    assert (out / 'review' / 'usage' / 'core-1' / 'core-1-1.started.json').is_file()
-    assert (out / 'review' / 'usage' / 'write-review').is_dir()
-
-
-def test_a_complete_run_is_not_claimed_when_the_server_wrote_no_progress(tmp_path, monkeypatch):
-    install_stub(tmp_path, monkeypatch)
+def test_no_claude_on_path_is_a_blocked_run_not_a_traceback(tmp_path, monkeypatch):
+    """Nothing to run the agents with, and the folder still says which paper."""
+    monkeypatch.setenv('PATH', str(tmp_path / 'empty'))
+    starter.VERSIONS.clear()
     out = tmp_path / 'run'
     summary = starter.review(str(FIXTURE), str(out), arm='single')
-    assert starter.exit_code(summary) == 1
-    runtime = json.loads((out / 'review' / 'runtime.json').read_text(encoding='utf-8'))
-    assert runtime['status'] == 'blocked'
-    assert runtime['blocked_reason'].startswith('the server wrote no progress file')
-    # And why the driver stopped waiting for one: the session is gone, so
-    # nothing can write that file now.
-    assert 'the session exited' in runtime['blocked_reason']
+    assert (summary['status'], summary['stage']) == ('blocked', 'startup')
+    assert starter.exit_code(summary) == 2, 'nothing was spent: that is its own exit code'
+    assert 'not installed or not on this PATH' in summary['blocked_reason']
+    assert summary['tokens_total'] == 0 and summary['agents_run'] == 0
 
-
-def test_a_workflow_that_closed_nothing_leaves_the_run_blocked_not_running(tmp_path, monkeypatch):
-    """A session can end with every stage still open. That is not a review.
-
-    The server only writes ``complete`` from ``write_review`` and ``blocked``
-    from ``mark_blocked``; a workflow that falls through does neither, and a run
-    left at ``running`` would read as still in flight forever.
-    """
-    install_stub(tmp_path, monkeypatch, progress={'status': 'running', 'stages': {'missing': []}})
-    out = tmp_path / 'run'
-    summary = starter.review(str(FIXTURE), str(out), arm='single')
-    assert summary['status'] == 'blocked'
-    assert 'without writing the review or marking the run blocked' in summary['blocked_reason']
-    assert 'running' in summary['blocked_reason']
-    # And what the session itself said as it ended — here, that it was complete,
-    # which the folder it was writing to flatly contradicts.
-    assert 'the session signed off: {"status": "complete"}' in summary['blocked_reason']
-    assert starter.exit_code(summary) == 1
-    on_disk = json.loads((out / 'review' / 'progress.json').read_text(encoding='utf-8'))
-    assert on_disk['status'] == 'blocked' and on_disk['error'] == summary['blocked_reason']
-
-
-def test_a_session_that_ends_its_turn_does_not_take_the_workflow_with_it(tmp_path, monkeypatch):
-    """The pilot's second run, reproduced: the race the driver used to lose.
-
-    The session launches the review as a background workflow, says in its last
-    turn that it is running, and stops. Its event stream closes with the
-    workflow alive, and the driver used to terminate the process there — which
-    killed the workflow, because the workflow runs inside that process. Nine
-    stages were reported and the editor was still going.
-
-    What must happen instead: the driver keeps waiting on the folder the server
-    writes, the editor package lands, and the run is complete.
-    """
-    install_stub(tmp_path, monkeypatch, script=RACE_STUB, progress={
-        'status': 'complete', 'findings_delivered': 63, 'quarantined_findings_count': 1,
-        'stages': {'required': ['editor'], 'reported': ['editor'], 'missing': [],
-                   'editor_accepted': True}})
-    out = tmp_path / 'run'
-
-    summary = starter.review(str(FIXTURE), str(out), arm='single', wall_timeout=120)
-
-    assert summary['status'] == 'complete', summary['blocked_reason']
-    assert summary['blocked_reason'] is None
-    assert starter.exit_code(summary) == 0
-    assert summary['stages']['missing'] == []
-    assert summary['stages']['editor_accepted'] is True, 'the editor package is the review'
-    assert summary['findings_delivered'] == 63 and summary['quarantined'] == 1
-    # Three events, no task notification, and the stream closed long before the
-    # review did. None of those is what the run waited for.
-    assert summary['stream_events'] == 3
-    assert summary['wall_seconds'] < 60, 'the run folder answered, not the wall clock'
-    runtime = json.loads((out / 'review' / 'runtime.json').read_text(encoding='utf-8'))
-    assert runtime['status'] == 'complete' and runtime['tokens_total'] == 120000
-
-
-def test_a_workflow_that_never_finishes_is_blocked_with_the_true_cause(tmp_path, monkeypatch):
-    """The other half of waiting: a review that is never coming.
-
-    The same session, with no review to write. Waiting on the folder must not
-    mean waiting forever, and the cause recorded must be the one that was hit —
-    the wall clock — not a guess about what the workflow was doing.
-    """
-    install_stub(tmp_path, monkeypatch, script=RACE_STUB)  # and so it writes nothing, ever
-    monkeypatch.setenv('PEERREVIEW_STUB_DELAY', '600')
-    out = tmp_path / 'run'
-
-    summary = starter.review(str(FIXTURE), str(out), arm='single', wall_timeout=3)
-
-    assert summary['status'] == 'blocked'
-    assert summary['blocked_reason'] == 'the session passed its wall-clock limit'
-    assert starter.exit_code(summary) == 1
-    assert 3 <= summary['wall_seconds'] < 60
+    startup = json.loads((out / 'review' / 'startup.json').read_text(encoding='utf-8'))
+    assert startup['problems'] == [claude_code.MISSING_CLAUDE]
+    assert startup['server'] is None, 'no tool server was opened for nobody to call'
+    assert set(startup['tools_expected']) == set(starter.tool_names())
     runtime = json.loads((out / 'review' / 'runtime.json').read_text(encoding='utf-8'))
     assert runtime['status'] == 'blocked'
     assert runtime['blocked_reason'] == summary['blocked_reason']
-    assert summary.get('findings_delivered') is None, 'there is no review to report'
+    assert runtime['runner'].startswith('claude-code')
+    assert [row['label'] for row in runtime['agents']] == ['recorder'], \
+        'the recorder slot is a row in this process; no agent ran'
+    assert runtime['agents'][0]['ending'] == starter.IN_PROCESS
+    assert runtime['agents'][0]['toolCalls'] == 0, 'it recorded nothing either'
+    # And the run is identified, because the caller asked for a review of a
+    # named paper and this folder is what says which one it was.
+    protocol = json.loads((out / 'review' / 'protocol.json').read_text(encoding='utf-8'))
+    assert protocol['arm'] == 'single'
 
 
-def test_the_watch_ends_a_run_only_when_nothing_is_writing_the_folder(tmp_path):
-    """The states the driver may give up in, and the one it may not.
+def test_the_blocked_reason_carries_each_agents_own_last_word(tmp_path):
+    """What a reader gets about a stage that answered nothing, cut to length."""
+    budget = orchestrator.Budget(per_agent=10_000, per_run=100_000)
+    assert starter.failures_line(budget) == ''
+    budget.record(*spent(label='core-1'))
+    assert starter.failures_line(budget) == '', 'an agent that answered is not a failure'
+    budget.record(*spent(label='core-2', ending=agent_runner.SILENT,
+                         detail='I could not reach the tools. ' + 'and so on. ' * 200))
+    budget.record(*spent(label='editor', agent='editor', ending=agent_runner.TIMED_OUT))
+    said = starter.failures_line(budget)
+    assert said.startswith('these agents did not answer: ')
+    assert 'core-1' not in said
+    assert 'core-2 (no answer: I could not reach the tools.' in said
+    assert 'editor (out of time)' in said, 'an agent with nothing to say says only how it ended'
+    assert len(said) < 2 * starter.LAST_WORD_CHARACTERS
 
-    A review that is still writing its folder keeps its session, however long
-    that session has been silent — an agent can read for minutes between tool
-    calls. A folder that has stopped changing is a review that has stopped, and
-    how long the driver waits before accepting that depends on what it knows:
-    a moment once the session's process is gone, because nothing can write the
-    folder then; twenty seconds once the session itself reported the workflow
-    task finished; the long window on a closed stream alone.
+
+# -- the accounting ---------------------------------------------------------
+
+
+def test_every_agent_is_handed_what_the_run_has_left():
+    """The per-run ceiling is this object's, and it is a stop, not a share."""
+    budget = orchestrator.Budget(per_agent=100_000, per_run=250_000)
+    assert budget.ceiling() == 100_000
+    budget.record(*spent(label='core-1', tokens=200_000))
+    assert budget.spent() == 200_000
+    assert budget.ceiling() == 50_000, 'what is left, not the per-agent ceiling'
+    budget.record(*spent(label='core-1#2', tokens=90_000))
+    assert budget.ceiling() == 0
+    assert budget.by_agent() == {'core-1': 290_000}, 'a retry folds into the slot it retried'
+    assert [row['attempt'] for row in budget.rows] == [1, 2]
+    assert budget.failures() == []
+    # Either ceiling alone still bounds an agent.
+    assert orchestrator.Budget(per_agent=5).ceiling() == 5
+    assert orchestrator.Budget(per_run=5).ceiling() == 5
+
+
+def test_a_run_out_of_time_tokens_or_credit_says_which_before_it_starts_another():
+    clock = ticking()
+    budget = orchestrator.Budget(per_agent=10, per_run=1000, wall=60, clock=clock)
+    assert budget.exhausted() == ''
+    clock.held[0] = 61
+    assert 'ran out of time' in budget.exhausted() and '60 second(s)' in budget.exhausted()
+
+    tokens = orchestrator.Budget(per_agent=10, per_run=1000)
+    tokens.record(*spent(tokens=1000))
+    assert 'reached its token ceiling of 1,000' in tokens.exhausted()
+
+    limited = orchestrator.Budget(per_agent=10, per_run=10_000)
+    task, outcome = spent()
+    outcome.record = {'rate_limits': ['the seven_day rate-limit window is at 99%']}
+    limited.record(task, outcome)
+    assert limited.limits == ['the seven_day rate-limit window is at 99%']
+    assert 'at 99%, so the stages left were not started' in limited.exhausted()
+
+
+def test_the_recorder_is_a_row_in_this_process_not_an_agent_that_ran():
+    """The slot still exists; no model runs it, and the row says so.
+
+    A row carrying the model the recorder was once planned with would read as
+    an agent that ran, and the usage report would price a session nobody
+    started.
     """
-    accounting = starter.Accounting(10, 10)
-    progress = tmp_path / 'progress.json'
-    watch = starter.Completion(tmp_path, accounting, tick=0.0)
-
-    def quiet_for(seconds):
-        watch.still_since = time.monotonic() - seconds
-
-    assert watch(closed=False, alive=True) is None, 'a talking session is never cut short'
-    assert watch(closed=True, alive=True) is None, 'nor is one that has only stopped talking'
-
-    progress.write_text(json.dumps({'status': 'running', 'updated': 'one'}), encoding='utf-8')
-    assert watch(True, True) is None, 'a folder that just changed is a review at work'
-    quiet_for(60)
-    assert watch(True, True) is None, 'sixty seconds of silence is not a dead review'
-    assert watch(True, False) == starter.NOTHING_LEFT_WRITING
-    assert 'the session exited' in watch.note and '60s' in watch.note
-
-    accounting.finished = True
-    quiet_for(5)
-    assert watch(True, True) is None, 'the server may still be writing the last word'
-    quiet_for(60)
-    assert watch(True, True) == starter.NOTHING_LEFT_WRITING
-    assert 'reported finishing' in watch.note
-
-    # A folder that is still being written keeps the run, whatever the session
-    # is doing and whatever it said.
-    progress.write_text(json.dumps({'status': 'running', 'updated': 'two'}), encoding='utf-8')
-    assert watch(True, False) is None
-
-    progress.write_text(json.dumps({'status': 'complete'}), encoding='utf-8')
-    assert watch(True, True) == starter.REVIEW_WRITTEN
-    progress.write_text(json.dumps({'status': 'blocked', 'error': 'said so'}), encoding='utf-8')
-    assert watch(False, True) == starter.RUN_MARKED_BLOCKED
-    # Both are reasons the loop ended, and neither is a cause of failure.
-    assert starter.REVIEW_WRITTEN in starter.SETTLED
-    assert starter.RUN_MARKED_BLOCKED in starter.SETTLED
+    budget = orchestrator.Budget(per_agent=10_000, per_run=100_000)
+    budget.record(*spent(label='core-1', tokens=4000))
+    budget.record(*spent(label='reader', agent='reader', tokens=6000))
+    rows = starter.agent_rows(budget, Panel(budget, calls=12))
+    assert [row['label'] for row in rows] == ['core-1', 'reader', 'recorder'], 'sorted, then us'
+    recorder = rows[-1]
+    assert recorder['model'] is None and recorder['tokens'] == 0
+    assert recorder['ending'] == starter.IN_PROCESS
+    assert recorder['state'] == 'done', 'the word every reader of this file already knows'
+    assert recorder['toolCalls'] == 12, 'every recorder tool was called in this process'
+    assert 'with no model' in recorder['detail']
+    reviewer = rows[0]
+    assert (reviewer['agentType'], reviewer['tokens']) == ('core-reviewer', 4000)
+    assert reviewer['state'] == 'done' and reviewer['ending'] == agent_runner.ANSWERED
+    assert starter.agent_rows(budget) == rows[:-1], 'no panel, no recorder row'
 
 
-def test_a_stage_waiting_out_its_retry_gaps_is_not_a_dead_session(tmp_path, monkeypatch):
-    """The driver's stillness watch and the resolve stage's wait, on one clock.
+def test_finish_writes_the_runs_own_accounting_and_one_receipt_per_attempt(tmp_path,
+                                                                          monkeypatch):
+    """``runtime.json`` and the usage files are written from the budget alone.
 
-    This is the pilot's race in its second form. The watch reads movement from
-    ``progress.json`` alone, and the resolve stage can legitimately be inside a
-    five-minute retry gap with nothing to write — twice over, for three
-    attempts. That is over ten minutes of an unchanged folder against a
-    :data:`starter.STREAM_QUIET` of ten, so a run doing exactly what it was
-    told would have been ended underneath itself as soon as the session closed
-    its stream.
-
-    So the stage beats while it waits, and the beat is the real one:
-    :class:`cl.Patience` with its own tick interval, driving the real watch over
-    two real gaps, polled every slice the way the driver polls.
+    A run whose provenance says ``null`` cannot be reproduced, so the version
+    is asked of the binary and the environment is only a fallback for a caller
+    that knows better.
     """
-    progress = tmp_path / 'progress.json'
-    beats = []
+    monkeypatch.setattr(starter, 'claude_version', lambda binary=None: '2.1.322')
+    budget = orchestrator.Budget(per_agent=10_000, per_run=100_000)
+    budget.record(*spent(label='core-1', tokens=4000))
+    budget.record(*spent(label='core-1#2', tokens=1500, ending=agent_runner.SILENT))
+    panel = Panel(budget, calls=9, notes=['the citations lane was not run'])
+    (tmp_path / 'progress.json').write_text(json.dumps({'status': 'reviewing'}),
+                                            encoding='utf-8')
 
-    class Ticking:
-        """One fake clock for both halves: the stage sleeps on it, the watch reads it."""
+    starter.finish(tmp_path, 'blocked', 'because', budget, 12.0, result={'status': 'blocked'},
+                   panel=panel, runner=agent_runner.ScriptedRunner())
 
-        def __init__(self):
-            self.now = 10_000.0
+    runtime = json.loads((tmp_path / 'runtime.json').read_text(encoding='utf-8'))
+    assert runtime['status'] == 'blocked' and runtime['blocked_reason'] == 'because'
+    assert runtime['wall_seconds'] == 12.0 and runtime['tokens_total'] == 5500
+    assert runtime['claude_code_version'] == '2.1.322'
+    assert runtime['runner'] == 'scripted'
+    assert runtime['per_agent_token_ceiling'] == 10_000
+    assert runtime['per_run_token_ceiling'] == 100_000
+    assert runtime['notes'] == ['the citations lane was not run']
+    assert runtime['result'] == {'status': 'blocked'}
+    assert [row['label'] for row in runtime['agents']] == ['core-1', 'core-1#2', 'recorder']
 
-        def monotonic(self):
-            return self.now
+    receipts = (tmp_path / 'usage' / 'core-1' / 'usage.jsonl').read_text(encoding='utf-8')
+    rows = [json.loads(line) for line in receipts.splitlines()]
+    assert [row['attempt'] for row in rows] == [1, 2]
+    assert [row['observed_tokens'] for row in rows] == [4000, 1500]
+    assert rows[1]['state'] == agent_runner.SILENT
+    assert (tmp_path / 'usage' / 'core-1' / 'core-1-1.started.json').is_file()
+    assert (tmp_path / 'usage' / 'core-1' / 'core-1-2.started.json').is_file()
+    recorder = json.loads((tmp_path / 'usage' / 'recorder' / 'usage.jsonl')
+                          .read_text(encoding='utf-8').splitlines()[0])
+    assert (recorder['model'], recorder['observed_tokens']) == (None, 0)
+    assert recorder['state'] == starter.IN_PROCESS
 
-        def sleep(self, seconds):
-            self.now += seconds
-            # The driver's own tick, in the middle of the stage's sleep: this is
-            # the interleaving the race is about.
-            polled.append(watch(closed=True, alive=True))
+    # A blocked run says so in the file the server was writing, too.
+    patched = json.loads((tmp_path / 'progress.json').read_text(encoding='utf-8'))
+    assert patched['status'] == 'blocked' and patched['error'] == 'because'
 
-    clock = Ticking()
-    polled = []
+    monkeypatch.setattr(starter, 'claude_version', lambda binary=None: None)
+    monkeypatch.setenv('PEERREVIEW_CLAUDE_VERSION', '2.1.999')
+    starter.finish(tmp_path, 'blocked', 'because', budget, 1.0)
+    again = json.loads((tmp_path / 'runtime.json').read_text(encoding='utf-8'))
+    assert again['claude_code_version'] == '2.1.999'
+    assert again['runner'] is None and again['notes'] == []
 
-    def heartbeat():
-        beats.append(clock.now)
-        progress.write_text(json.dumps({'status': 'running', 'updated': f'{clock.now:.3f}'}),
-                            encoding='utf-8')
 
-    monkeypatch.setattr(starter, 'time', clock)
-    watch = starter.Completion(tmp_path, tick=0.0)
-    heartbeat()  # the stage's first pass, which is movement
-    assert watch(closed=True, alive=True) is None
-
-    patience = cl.Patience(deadline=clock.monotonic() + 3600, clock=clock.monotonic,
-                           sleep=clock.sleep, tick=heartbeat)
-    for _ in range(2):
-        assert patience.wait(cl.RETRY_WAIT_SECONDS) is True
-        heartbeat()  # and the pass that follows it
-
-    # Two full gaps went by — the whole of the window the driver gives a closed
-    # stream, which is the number this race is made of — and it never once read
-    # the run as finished.
-    assert patience.waited == pytest.approx(2 * cl.RETRY_WAIT_SECONDS)
-    assert clock.now - 10_000.0 >= starter.STREAM_QUIET
-    assert polled and set(polled) == {None}, 'the driver ended a run that was waiting'
-    # The beats are the reason, and they are close enough together to be seen.
-    assert len(beats) > 2
-    assert max(b - a for a, b in zip(beats, beats[1:])) <= cl.RESOLVE_TICK_SECONDS
-    # A heartbeat, not a write per slice: the folder is polled by a driver and
-    # one rewrite a second would be noise the run has to pay for.
-    assert len(beats) < len(polled) / 10
-    assert len(beats) <= 2 * (cl.RETRY_WAIT_SECONDS / cl.RESOLVE_TICK_SECONDS) + 3
-
-    # The control: the same watch, the same closed stream, and a folder nobody
-    # is writing any more. That is the case it exists to end.
-    assert watch(closed=True, alive=True) is None, 'the last pass is still movement'
-    clock.now += starter.STREAM_QUIET + 1
-    assert watch(closed=True, alive=True) == starter.NOTHING_LEFT_WRITING
-    assert 'closed its event stream' in watch.note
+def test_a_finished_run_is_not_patched_to_blocked(tmp_path, monkeypatch):
+    monkeypatch.setattr(starter, 'claude_version', lambda binary=None: None)
+    budget = orchestrator.Budget(per_agent=10, per_run=10)
+    (tmp_path / 'progress.json').write_text(json.dumps({'status': 'complete'}), encoding='utf-8')
+    starter.finish(tmp_path, 'blocked', 'late rate limit', budget, 1.0)
+    assert json.loads(
+        (tmp_path / 'progress.json').read_text(encoding='utf-8'))['status'] == 'complete'
 
 
 def test_a_half_written_progress_file_is_not_an_answer_about_the_run(tmp_path):
@@ -557,234 +383,45 @@ def test_a_half_written_progress_file_is_not_an_answer_about_the_run(tmp_path):
     assert starter.recorded_progress(tmp_path) == {'status': 'complete'}
 
 
-def test_a_missing_claude_says_so_rather_than_blaming_the_plugin(tmp_path, monkeypatch):
-    monkeypatch.setenv('PATH', str(tmp_path / 'empty'))
-    problems, found = starter.probe(starter.plugin_dir(), tmp_path)
-    assert problems == [starter.MISSING_CLAUDE]
-    assert 'not installed or not on this PATH' in problems[0]
-    assert 'server tool(s) absent' not in ' '.join(problems), \
-        'absent tools describe a misconfigured plugin, not a missing harness'
-    assert found['raw'] is None
+def test_a_retry_in_the_same_folder_does_not_answer_with_the_last_attempt(tmp_path):
+    """Until the new run writes, the old run's files are the only ones there."""
+    (tmp_path / 'runtime.json').write_text(json.dumps(
+        {'status': 'blocked', 'blocked_reason': 'the editor answered nothing twice',
+         'arm': 'single', 'reviewers': 1}), encoding='utf-8')
+    (tmp_path / 'progress.json').write_text(json.dumps(
+        {'status': 'blocked', 'error': 'the editor answered nothing twice'}), encoding='utf-8')
+
+    marked = starter.supersede(tmp_path)
+
+    assert marked == {'runtime.json': 'blocked', 'progress.json': 'blocked'}
+    runtime = json.loads((tmp_path / 'runtime.json').read_text(encoding='utf-8'))
+    assert runtime['status'] == 'running' and runtime['blocked_reason'] is None
+    assert runtime['arm'] == 'single' and runtime['reviewers'] == 1
+    assert 'the attempt before it ended blocked: the editor answered nothing twice' in \
+        runtime['note']
+    assert runtime['superseded']['blocked_reason'] == 'the editor answered nothing twice'
+    progress = json.loads((tmp_path / 'progress.json').read_text(encoding='utf-8'))
+    assert progress['status'] == 'running' and progress['error'] is None
+
+    # A run already marked running is left alone, and so is a folder with
+    # nothing in it; an unreadable file is still marked.
+    assert starter.supersede(tmp_path) == {}
+    assert starter.supersede(tmp_path / 'nowhere') == {}
+    (tmp_path / 'runtime.json').write_text('{"status": "blo', encoding='utf-8')
+    assert starter.supersede(tmp_path) == {'runtime.json': None}
+    assert json.loads((tmp_path / 'runtime.json').read_text(
+        encoding='utf-8'))['superseded']['unreadable'] is True
 
 
-def test_neither_the_api_key_nor_the_auth_token_reaches_the_session(tmp_path, monkeypatch):
-    seen = {}
-
-    def fake_popen(command, **kwargs):
-        seen['env'] = kwargs['env']
-        seen['command'] = command
-        raise FileNotFoundError('stopping here')
-
-    monkeypatch.setenv('ANTHROPIC_API_KEY', 'must-not-be-used')
-    monkeypatch.setenv('ANTHROPIC_AUTH_TOKEN', 'must-not-be-used-either')
-    monkeypatch.setattr(starter, 'claude_binary', lambda: '/opt/claude/bin/claude')
-    monkeypatch.setattr(starter, 'claude_version', lambda binary=None: '2.1.400')
-    monkeypatch.setattr(starter.subprocess, 'Popen', fake_popen)
-    events, stop, code = starter.launch('hello', tmp_path, 0.0, lambda event: None, tmp_path)
-    assert (events, code) == (0, 127)
-    assert 'could not be started' in stop
-    assert 'ANTHROPIC_API_KEY' not in seen['env']
-    assert 'ANTHROPIC_AUTH_TOKEN' not in seen['env']
-    assert seen['command'][0] == '/opt/claude/bin/claude'
-    assert seen['env']['PEERREVIEW_PLUGIN_RUN'] == '1'
-    assert seen['env']['PEERREVIEW_CLAUDE_VERSION'] == '2.1.400'
-    assert seen['env']['PEERREVIEW_MCP_COMMAND'] == sys.executable, \
-        'the server has to run on the interpreter that started the review'
-
-
-def test_the_launch_reads_both_pipes_without_select(tmp_path, monkeypatch):
-    """stderr is drained for the whole run, and stdout is not polled.
-
-    ``select`` cannot wait on a pipe on Windows, and stderr read only at the end
-    fills its pipe and wedges the session that is writing to it.
-    """
-    source = Path(starter.__file__).read_text(encoding='utf-8')
-    assert 'import select' not in source and 'select.select' not in source
-    assert 'threading.Thread' in source
-
-    binaries = tmp_path / 'bin'
-    binaries.mkdir()
-    noisy = ('import sys\n'
-             'if sys.argv[1:] == ["--version"]:\n'
-             '    print("0.0.0-noisy"); sys.exit(0)\n'
-             'for index in range(4000):\n'
-             '    sys.stderr.write("plugin diagnostic line %d\\n" % index)\n'
-             'print(\'{"type": "result", "subtype": "success"}\', flush=True)\n')
-    if os.name == 'nt':
-        (binaries / 'noisy.py').write_text(noisy, encoding='utf-8')
-        (binaries / 'claude.cmd').write_text(
-            f'@"{sys.executable}" "{binaries / "noisy.py"}" %*\n', encoding='utf-8')
-    else:
-        stub = binaries / 'claude'
-        stub.write_text(f'#!{sys.executable}\n{noisy}', encoding='utf-8')
-        stub.chmod(stub.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-    monkeypatch.setenv('PATH', str(binaries))
-    starter.VERSIONS.clear()
-    seen, stop, code = starter.launch('hello', tmp_path, time.monotonic() + 60,
-                                      lambda event: None, tmp_path)
-    assert (seen, stop) == (1, None), 'the event arrived although stderr filled first'
-    assert code == 0
-
-
-# -- the accounting ---------------------------------------------------------
-
-
-def progress(rows):
-    return {'type': 'system', 'subtype': 'task_progress', 'workflow_progress': rows}
-
-
-def test_the_per_agent_token_ceiling_stops_the_run():
-    accounting = starter.Accounting(1000, 1_000_000)
-    assert accounting.on_event(progress([{'label': 'core-1', 'tokens': 900}])) is None
-    stop = accounting.on_event(progress([{'label': 'core-1', 'tokens': 1200}]))
-    assert 'per-agent token ceiling' in stop
-
-
-def test_the_per_run_token_ceiling_stops_the_run():
-    accounting = starter.Accounting(1_000_000, 1500)
-    stop = accounting.on_event(progress([{'label': 'core-1', 'tokens': 800},
-                                         {'label': 'core-2', 'tokens': 800}]))
-    assert 'run passed its token ceiling' in stop
-
-
-def test_a_retry_is_accounted_separately_from_its_first_attempt():
-    accounting = starter.Accounting(1_000_000, 1_000_000)
-    accounting.on_event(progress([{'label': 'core-1', 'tokens': 100, 'attempt': 1},
-                                  {'label': 'core-1', 'tokens': 200, 'attempt': 2}]))
-    assert sorted(accounting.agents) == ['core-1', 'core-1#2']
-    assert accounting.total_tokens() == 300
-
-
-def test_an_unnamed_placeholder_row_is_not_an_agent():
-    """The stream emits rows for agents it has not named yet; they carry no usage.
-
-    Inventing a label for one puts an agent in the run record that never ran,
-    and the report then lists five empty `agent-N` rows beside the real slots.
-    """
-    accounting = starter.Accounting(1_000_000, 1_000_000)
-    accounting.on_event(progress([{'state': 'pending'}, {'tokens': 0},
-                                  {'label': 'core-1', 'tokens': 90}]))
-    assert sorted(accounting.agents) == ['core-1']
-    assert accounting.total_tokens() == 90
-
-
-def test_progress_carried_under_the_task_key_is_still_read():
-    accounting = starter.Accounting(1_000_000, 1_000_000)
-    accounting.on_event({'type': 'system', 'subtype': 'task_progress',
-                         'task': {'workflow_progress': [{'label': 'stats', 'tokens': 42}]}})
-    assert accounting.total_tokens() == 42
-
-
-def test_the_first_result_is_not_the_answer():
-    """No ``result`` event ends the run, and the second one only ends the wait.
-
-    The first arrives while the review is still running. The one after the task
-    notification is the session's own account of the workflow, so it is
-    recorded as ``finished`` — which shortens how long the driver waits on the
-    run folder — and still returns nothing, because what ends a run is the
-    folder the server writes.
-    """
-    accounting = starter.Accounting(1_000_000, 1_000_000)
-    assert accounting.on_event({'type': 'result', 'result': 'still running'}) is None
-    assert accounting.finished is False
-    assert accounting.on_event({'type': 'system', 'subtype': 'task_notification'}) is None
-    assert accounting.on_event({'type': 'result', 'result': 'done'}) is None
-    assert accounting.finished is True
-    assert accounting.last_result()['result'] == 'done'
-
-
-def test_a_run_with_no_review_names_the_agent_that_ended_in_error():
-    """The stream usually knows which stage ended the run. Say which.
-
-    "The workflow ended without writing the review" is true of every run that
-    falls through, and on the pilot's second paper the stream had already
-    reported the editor in state ``error`` with its tokens — the one fact that
-    says where to look.
-    """
-    accounting = starter.Accounting(1_000_000, 1_000_000)
-    assert accounting.failures() is None
-    accounting.on_event({'type': 'system', 'subtype': 'task_progress', 'workflow_progress': [
-        {'label': 'core-1', 'tokens': 120000, 'state': 'completed'},
-        {'label': 'editor', 'tokens': 136755, 'state': 'error'}]})
-    assert accounting.failures() == 'editor ended in state error after 136,755 tokens'
-
-
-def test_a_run_with_nothing_written_carries_the_session_s_own_last_word():
-    """The one place the real cause existed, on the first real fix check.
-
-    That run judged all six problems and then could not write the check: the
-    recorder was told to call ``write_fix_check`` and answered *No such tool
-    available*. The stream reported no failed agent and the server's status was
-    still ``running``, so the folder said only that the workflow ended without
-    writing the fix check. The session's closing message held the cause.
-    """
-    assert starter.session_last_word(None) is None
-    assert starter.session_last_word({'result': ''}) is None
-    assert starter.session_last_word({'result': 'No such tool available:\n  write_fix_check'}) == (
-        'the session signed off: No such tool available: write_fix_check')
-    # A workflow that returns a value rather than prose still says something.
-    assert starter.session_last_word({'result': {'written': False}}) == (
-        'the session signed off: {"written": false}')
-    # Prose, not a status line: it is cut rather than printed whole.
-    long = starter.session_last_word({'result': 'word ' * 400})
-    assert len(long) < 700 and long.endswith('…')
-
-
-# The event a real stream sends, captured from a 0.8 run of this repo's own
-# runtime tests. A subscription with no overage credit reports `rejected`
-# overage on every call it serves perfectly well, so this one is healthy.
-HEALTHY_RATE_LIMIT = {
-    'type': 'rate_limit_event',
-    'rate_limit_info': {'status': 'allowed', 'overageStatus': 'rejected',
-                        'overageDisabledReason': 'member_zero_credit_limit',
-                        'isUsingOverage': False},
-}
-
-
-def test_the_rate_limit_event_a_real_stream_sends_does_not_block_the_run():
-    accounting = starter.Accounting(1_000_000, 1_000_000)
-    assert accounting.on_event(HEALTHY_RATE_LIMIT) is None, \
-        'a rejected overage status is the normal state of a plan without credit'
-    assert accounting.rate_limits == []
-
-
-def test_a_rate_limit_status_that_is_not_allowed_blocks_the_run():
-    accounting = starter.Accounting(1_000_000, 1_000_000)
-    event = {'type': 'rate_limit_event',
-             'rate_limit_info': dict(HEALTHY_RATE_LIMIT['rate_limit_info'],
-                                     status='rejected',
-                                     overageDisabledReason='member_zero_credit_limit')}
-    stop = accounting.on_event(event)
-    assert 'status rejected' in stop and 'member_zero_credit_limit' in stop
-    assert accounting.rate_limits
-
-
-def test_a_window_at_the_ceiling_blocks_the_run_and_one_below_it_does_not():
-    accounting = starter.Accounting(1_000_000, 1_000_000)
-    below = {'type': 'rate_limit_event', 'rate_limit_info': {
-        'status': 'allowed', 'windows': {'seven_day': {'utilization': 0.5}}}}
-    assert accounting.on_event(below) is None
-    at = {'type': 'rate_limit_event', 'rate_limit_info': {
-        'status': 'allowed', 'windows': {'five_hour': {'utilization': 0.2},
-                                         'seven_day': {'utilization': 0.994}}}}
-    assert 'rate-limit window is at 99%' in accounting.on_event(at)
-    assert len(accounting.rate_limits) == 1
-
-
-def test_an_ordinary_event_is_not_a_rate_limit():
-    assert starter.rate_limit_reason(
-        {'type': 'assistant', 'message': 'the paper exceeded expectations'}) is None
-    accounting = starter.Accounting(1_000_000, 1_000_000)
-    assert accounting.on_event(progress([{'label': 'core-1', 'tokens': 10}])) is None
+def test_the_reports_are_rendered_again_only_once_there_is_a_run_to_report(tmp_path):
+    """``write_review`` writes REVIEW.md before any accounting exists on disk."""
+    assert starter.rerender(tmp_path) is None, 'no protocol, no run, nothing to render'
+    (tmp_path / 'protocol.json').write_text('{"arm": "single"}', encoding='utf-8')
+    said = starter.rerender(tmp_path)
+    assert isinstance(said, dict) and said, 'a render that failed still answers'
 
 
 # -- the models -------------------------------------------------------------
-
-
-@pytest.fixture
-def no_allowlist(monkeypatch):
-    """No ``availableModels`` anywhere, which is the ordinary login."""
-    monkeypatch.setattr(starter.model_plan, 'allowlist', lambda **kwargs: None)
 
 
 def test_the_flags_the_user_typed_reach_the_run(monkeypatch):
@@ -802,31 +439,10 @@ def test_the_flags_the_user_typed_reach_the_run(monkeypatch):
     assert seen['reviewer_models'] == 'opus,haiku'
     assert seen['specialist_model'] == 'haiku'
     assert seen['editor_model'] == 'fable'
-    assert seen['recorder_model'] == 'sonnet', 'the recorder is a slot like any other'
+    assert seen['recorder_model'] == 'sonnet', 'the recorder is a slot in the plan'
 
     assert starter.review_main(['paper.pdf', 'out']) == 0
     assert seen['reviewer_models'] is None, 'unset is the default, not an empty list'
-
-
-def test_the_models_are_carried_into_the_session_that_runs_the_workflow(tmp_path, monkeypatch,
-                                                                       no_allowlist):
-    """The workflow passes no model arguments, so the environment has to say."""
-    seen = {}
-
-    def fake_popen(command, **kwargs):
-        seen['env'] = kwargs['env']
-        raise FileNotFoundError('stopping here')
-
-    monkeypatch.setattr(starter, 'claude_binary', lambda: '/opt/claude/bin/claude')
-    monkeypatch.setattr(starter, 'claude_version', lambda binary=None: '2.1.400')
-    monkeypatch.setattr(starter, 'probe', lambda directory, cwd: ([], {'raw': None}))
-    monkeypatch.setattr(starter.subprocess, 'Popen', fake_popen)
-    starter.review(str(FIXTURE), str(tmp_path / 'run'), arm='single',
-                   reviewer_models='haiku', editor_model='opus')
-    assert seen['env']['PEERREVIEW_REVIEWER_MODELS'] == 'claude-haiku-5-5'
-    assert seen['env']['PEERREVIEW_EDITOR_MODEL'] == 'claude-opus-5-5'
-    assert 'PEERREVIEW_SPECIALIST_MODEL' not in seen['env'], \
-        'nothing is passed on for a slot nobody chose'
 
 
 def test_a_model_this_login_cannot_run_stops_the_run_before_it_costs_anything(tmp_path,
@@ -836,12 +452,58 @@ def test_a_model_this_login_cannot_run_stops_the_run_before_it_costs_anything(tm
                        reviewer_models='claude-nonesuch-9')
     assert 'claude-nonesuch-9' in str(refused.value)
     assert '--reviewer-models' in str(refused.value)
-    assert not (tmp_path / 'run').exists(), 'no probe, no folder, no usage'
+    assert not (tmp_path / 'run').exists(), 'no run folder, no usage, nothing spent'
+
+
+def test_the_runner_owns_the_question_and_a_missing_runner_is_not_a_refusal():
+    """A model this login cannot run is a bad argument; no harness is not.
+
+    Nothing is wrong with what the caller asked for when Claude Code is not
+    installed, so that run is opened, identified and marked blocked at start-up
+    like any other run that could not begin.
+    """
+    class Asked(agent_runner.Runner):
+        def __init__(self, nothing_runs='', refused=()):
+            self.nothing_runs = nothing_runs
+            self.refused = refused
+            self.asked = []
+
+        def unavailable(self, models):
+            self.asked.append(dict(models))
+            if not models:
+                return [self.nothing_runs] if self.nothing_runs else []
+            return list(self.refused)
+
+    picky = Asked(refused=['claude-nonesuch-9 is not a model this package knows'])
+    with pytest.raises(ValueError) as refused:
+        starter.refuse_models(picky, {'core-1': 'claude-nonesuch-9'})
+    assert 'claude-nonesuch-9' in str(refused.value)
+    assert picky.asked == [{}, {'core-1': 'claude-nonesuch-9'}], \
+        'asked with no models first, because that question is not about the plan'
+    assert starter.runner_missing(picky) == ''
+
+    missing = Asked(nothing_runs=claude_code.MISSING_CLAUDE,
+                    refused=['claude-opus-5-5 cannot be run'])
+    assert starter.refuse_models(missing, {'core-1': 'claude-opus-5-5'}) is None
+    assert missing.asked == [{}], 'a runner that runs nothing is not asked about the plan'
+    assert starter.runner_missing(missing) == claude_code.MISSING_CLAUDE
+
+    healthy = Asked()
+    assert starter.refuse_models(healthy, {'core-1': 'claude-opus-5-5'}) is None
+    assert starter.runner_missing(healthy) == ''
+
+
+def test_the_runner_is_claude_code_unless_a_caller_brings_its_own():
+    assert isinstance(starter.runner_for(), claude_code.ClaudeCodeRunner)
+    scripted = agent_runner.ScriptedRunner()
+    assert starter.runner_for(scripted) is scripted
+    assert scripted.remote is False, 'its agents are in this process; no server on the wire'
 
 
 def test_the_models_asked_for_are_recorded_even_when_no_session_started(tmp_path, monkeypatch,
-                                                                        no_allowlist):
+                                                                       no_allowlist):
     monkeypatch.setenv('PATH', str(tmp_path / 'empty'))
+    starter.VERSIONS.clear()
     out = tmp_path / 'run'
     summary = starter.review(str(FIXTURE), str(out), reviewers=2)
     assert summary['models_requested']['core-2'] == 'claude-opus-5-5'
@@ -851,248 +513,39 @@ def test_the_models_asked_for_are_recorded_even_when_no_session_started(tmp_path
     assert 'claude-opus-5-5' in protocol['model']
     assert protocol['reviewer_models'] == list(starter.model_plan.DEFAULT_REVIEWER_MODELS), \
         'the ordered list, not only the per-slot mapping it was drawn from'
+    assert summary['models'] == [], 'nothing ran, so no model reported running'
 
 
-def test_a_subagent_variable_that_outranks_the_plan_stops_the_run(tmp_path, monkeypatch,
-                                                                  no_allowlist):
-    """Below 2.1.251 the variable beats the per-spawn override, silently.
-
-    Every slot would then run whatever it names while the run records the plan,
-    which is the one disagreement no later reading can repair. The variable is
-    the user's, so it is refused rather than unset, and a Claude Code that
-    ranks it correctly is left alone.
-    """
-    monkeypatch.setenv('CLAUDE_CODE_SUBAGENT_MODEL', 'haiku')
-    monkeypatch.setattr(starter, 'claude_version', lambda binary=None: '2.1.250')
-    with pytest.raises(ValueError) as refused:
-        starter.review(str(FIXTURE), str(tmp_path / 'run'), arm='single')
-    assert 'CLAUDE_CODE_SUBAGENT_MODEL' in str(refused.value)
-    assert os.environ['CLAUDE_CODE_SUBAGENT_MODEL'] == 'haiku', 'refused, never unset'
-    assert not (tmp_path / 'run').exists(), 'nothing written, nothing spent'
-
-    monkeypatch.setattr(starter, 'claude_version', lambda binary=None: None)
-    with pytest.raises(ValueError) as unreadable:
-        starter.review(str(FIXTURE), str(tmp_path / 'run'), arm='single')
-    assert 'could not be read' in str(unreadable.value), \
-        'a version nobody could read cannot say the plan will hold'
-
-    monkeypatch.setattr(starter, 'claude_version', lambda binary=None: '2.1.251')
-    monkeypatch.setattr(starter, 'claude_binary', lambda: None)
-    summary = starter.review(str(FIXTURE), str(tmp_path / 'run'), arm='single')
-    assert summary['status'] == 'blocked' and summary['stage'] == 'startup', \
-        'a fixed Claude Code gets as far as the probe'
+# -- what the run leaves in the environment ---------------------------------
 
 
-def test_the_stub_run_records_what_was_asked_for_beside_what_ran(tmp_path, monkeypatch,
-                                                                 no_allowlist):
-    install_stub(tmp_path, monkeypatch, progress={
-        'status': 'complete', 'findings_delivered': 1, 'stages': {'missing': []}})
-    out = tmp_path / 'run'
-    summary = starter.review(str(FIXTURE), str(out), reviewers=3, arm='reviewers-only')
-    assert summary['models_requested'] == {
-        'reader': 'claude-sonnet-5-5',
-        'core-1': 'claude-sonnet-5-5', 'core-2': 'claude-opus-5-5',
-        'core-3': 'claude-haiku-5-5', 'editor': 'claude-fable-5-2',
-        'recorder': 'claude-haiku-5-5'}
-    assert summary['models'] == ['claude-haiku-5-5', 'claude-sonnet-5-5'], \
-        'what the stub session reported, which is not what was asked for'
-
-
-def test_the_prompt_tells_the_session_the_models_are_already_set():
-    models = {'core-1': 'claude-sonnet-5-5', 'core-2': 'claude-opus-5-5'}
-    text = starter.prompt_for('/p.pdf', '/out', 2, 'reviewers-only', None, None, models)
-    assert 'claude-opus-5-5' in text and 'core-2' in text
-    assert 'no model arguments' in text
-    assert 'claude-opus' not in starter.prompt_for('/p.pdf', '/out', 2, 'reviewers-only',
-                                                   None, None)
-
-
-def test_asking_for_no_citation_workers_says_so_instead_of_saying_nothing(tmp_path, monkeypatch,
-                                                                         no_allowlist):
-    """``--citation-workers 0`` is a count, and a prompt that omits it is not.
-
-    The arm still has a citations lane, so the session planned the server's own
-    default of four workers — the run that was asked to judge nothing judged
-    everything, and the cost of the arm being compared was not the cost that
-    was configured.
-    """
-    seen = {}
-
-    def fake_launch(prompt, directory, timeout_at, on_event, cwd, chosen, watch=None,
-                    deadline=None):
-        seen['prompt'] = prompt
-        seen['deadline'] = deadline
-        return [], 'the workflow task finished', 0
-
+def test_the_deadline_and_the_version_are_put_where_the_tools_look(monkeypatch):
+    """Both are read by code that cannot see the run: in-process now, so set here."""
+    monkeypatch.delenv('PEERREVIEW_RUN_DEADLINE', raising=False)
+    monkeypatch.delenv('PEERREVIEW_CLAUDE_VERSION', raising=False)
     monkeypatch.setattr(starter, 'claude_version', lambda binary=None: '2.1.400')
-    monkeypatch.setattr(starter, 'probe', lambda directory, cwd: ([], {'raw': None}))
-    monkeypatch.setattr(starter, 'launch', fake_launch)
-    starter.review(str(FIXTURE), str(tmp_path / 'none'), reviewers=1, arm='full-two-track',
-                   citation_workers=0)
-    assert 'Run no citation workers' in seen['prompt']
-    assert 'leave the in-text uses unjudged' in seen['prompt']
-    assert 'worker(s)' not in seen['prompt']
-
-    starter.review(str(FIXTURE), str(tmp_path / 'two'), reviewers=1, arm='full-two-track',
-                   citation_workers=2)
-    assert 'Judge the citations with 2 worker(s)' in seen['prompt']
-
-    # An arm with no citations lane is the one case that says nothing, because
-    # there is no ledger in it to judge.
-    starter.review(str(FIXTURE), str(tmp_path / 'bare'), reviewers=1, arm='reviewers-only',
-                   citation_workers=0)
-    assert 'citation worker' not in seen['prompt'] and 'worker(s)' not in seen['prompt']
-
-
-def test_the_session_is_told_when_the_driver_will_end_the_run(tmp_path, monkeypatch,
-                                                              no_allowlist):
-    """The wall clock crosses the process boundary, because a waiting tool needs it.
-
-    A tool inside the session that is deciding whether to wait — the citation
-    resolve stage, whose retry gap is five minutes — cannot see the driver's
-    deadline, and the pilot's seven-minute run spent its last rows on a wait
-    that was never going to end inside it. It goes over as a POSIX timestamp:
-    the driver times itself on a monotonic clock, which means nothing on the
-    other side.
-    """
-    monkeypatch.setattr(starter, 'claude_version', lambda binary=None: '2.1.400')
-    environment = starter.child_environment('claude', {'PEERREVIEW_EDITOR_MODEL': 'opus'},
-                                            deadline=1_700_000_123.6)
-    assert environment['PEERREVIEW_RUN_DEADLINE'] == '1700000124'
-    assert environment['PEERREVIEW_EDITOR_MODEL'] == 'opus'
-    # A run with no deadline to promise says nothing, rather than saying zero,
-    # which a reader would have to parse as a deadline already past.
-    assert 'PEERREVIEW_RUN_DEADLINE' not in starter.child_environment('claude')
-
-    seen = {}
-
-    def fake_launch(prompt, directory, timeout_at, on_event, cwd, chosen, watch=None,
-                    deadline=None):
-        seen['deadline'] = deadline
-        return [], 'the workflow task finished', 0
-
-    monkeypatch.setattr(starter, 'probe', lambda directory, cwd: ([], {'raw': None}))
-    monkeypatch.setattr(starter, 'launch', fake_launch)
-    starter.review(str(FIXTURE), str(tmp_path / 'run'), reviewers=1, arm='reviewers-only',
-                   wall_timeout=600)
-    # The same wall clock the driver holds itself to, read off the clock the
-    # session can also read.
-    assert seen['deadline'] == pytest.approx(time.time() + 600, abs=30)
-
-
-def test_the_session_is_given_longer_than_the_driver_to_wait_for_the_review(monkeypatch):
-    """The engine states the harness's background wait from its own wall clock.
-
-    Under ``-p`` the review is the session's background task, and the harness
-    stops background tasks a fixed time after the session's last turn — ten
-    minutes by default, while the review is still working. The SPOT re-run lost
-    a healthy run at 10.3 minutes that way, with its reference stage mid-flight.
-
-    The margin is the point of the arithmetic: the wait is always longer than
-    the run's own wall clock, so the driver is the one thing that ends a run.
-    """
-    monkeypatch.delenv(starter.BG_WAIT, raising=False)
-    monkeypatch.setattr(starter, 'claude_version', lambda binary=None: None)
-    # No deadline yet: the wall clock a run is allowed by default, plus margin.
-    assert starter.child_environment('claude')[starter.BG_WAIT] == \
-        str((starter.WALL_TIMEOUT + starter.BG_WAIT_MARGIN) * 1000)
-    # With one, the wait follows the time this run has left.
-    held = starter.child_environment('claude', deadline=time.time() + 600)[starter.BG_WAIT]
-    assert int(held) == pytest.approx((600 + starter.BG_WAIT_MARGIN) * 1000, abs=30_000)
-    assert int(held) > 600_000, 'the default this is written against is ten minutes'
-    # A deadline already past still asks for a wait, because a zero would read
-    # as the harness's own default rather than as no patience at all.
-    assert int(starter.child_environment('claude', deadline=time.time() - 60)[starter.BG_WAIT]) \
-        == starter.BG_WAIT_MARGIN * 1000
-
-
-def test_a_background_wait_set_by_hand_is_kept_only_when_it_cannot_end_a_run_early(monkeypatch):
-    """Overriding is deliberate; the two values that cannot kill a review are kept.
-
-    A value inherited from the shell was set for some other session, and one
-    that is too small is the fault this is written against, so this run's own
-    wall clock wins. ``0`` means the harness waits indefinitely and a larger
-    number is more patient than the driver: neither can end a run early, so
-    raising the ceiling by hand still works.
-    """
-    monkeypatch.setattr(starter, 'claude_version', lambda binary=None: None)
-    deadline = time.time() + 600
-    wanted = int(starter.background_wait(deadline))
-
-    def inherited(value):
-        monkeypatch.setenv(starter.BG_WAIT, value)
-        return starter.child_environment('claude', deadline=deadline)[starter.BG_WAIT]
-
-    assert int(inherited('600000')) == pytest.approx(wanted, abs=30_000), 'too small, overridden'
-    assert inherited('0') == '0', 'waiting indefinitely is not impatience'
-    assert inherited(str(wanted * 4)) == str(wanted * 4), 'more patient than the driver, kept'
-    assert int(inherited('not a number')) == pytest.approx(wanted, abs=30_000), \
-        'a value the harness could not read either is replaced, not passed on'
-    assert int(inherited('-5000')) == pytest.approx(wanted, abs=30_000)
-
-
-def test_the_launched_session_carries_the_background_wait(tmp_path, monkeypatch):
-    """Not just computed: on the environment the process is actually started with."""
-    seen = {}
-
-    def fake_popen(command, **kwargs):
-        seen['env'] = kwargs['env']
-        raise FileNotFoundError('stopping here')
-
-    monkeypatch.delenv(starter.BG_WAIT, raising=False)
-    monkeypatch.setattr(starter, 'claude_binary', lambda: '/opt/claude/bin/claude')
-    monkeypatch.setattr(starter, 'claude_version', lambda binary=None: None)
-    monkeypatch.setattr(starter.subprocess, 'Popen', fake_popen)
-    starter.launch('hello', tmp_path, 0.0, lambda event: None, tmp_path,
-                   deadline=time.time() + 1800)
-    assert int(seen['env'][starter.BG_WAIT]) == \
-        pytest.approx((1800 + starter.BG_WAIT_MARGIN) * 1000, abs=30_000)
-
-
-def test_the_prompt_names_the_skill_the_arm_belongs_to():
-    full = starter.prompt_for('/p.pdf', '/out', 3, 'full-two-track', None, None)
-    assert 'peer-review-manuscript' in full and '3 core reviewer' in full
-    assert 'full-two-track' in full
-    draft = starter.prompt_for('/p.pdf', '/out', 1, 'draft-check', '2024-01-01', ['stats'])
-    assert 'check-draft' in draft and 'stats' in draft and '2024-01-01' in draft
-
-
-def test_the_version_recorded_with_the_run_is_asked_of_the_binary(tmp_path, monkeypatch):
-    """Nothing in the system sets ``PEERREVIEW_CLAUDE_VERSION``, so the starter asks.
-
-    The environment stays as a fallback for a caller that knows better, but a
-    run whose provenance says ``null`` cannot be reproduced, and that is what
-    reading an unset variable recorded every time.
-    """
-    monkeypatch.setattr(starter, 'claude_version', lambda binary=None: '2.1.322')
-    accounting = starter.Accounting(10, 10)
-    (tmp_path / 'progress.json').write_text(json.dumps({'status': 'reviewing'}), encoding='utf-8')
-    starter.finish(tmp_path, 'blocked', 'because', accounting, 1.0, None)
-    runtime = json.loads((tmp_path / 'runtime.json').read_text(encoding='utf-8'))
-    assert runtime['claude_code_version'] == '2.1.322'
-    assert runtime['status'] == 'blocked' and runtime['wall_seconds'] == 1.0
-    patched = json.loads((tmp_path / 'progress.json').read_text(encoding='utf-8'))
-    assert patched['status'] == 'blocked' and patched['error'] == 'because'
+    assert starter.settle_run(600) == '2.1.400'
+    left = float(os.environ['PEERREVIEW_RUN_DEADLINE']) - starter.time.time()
+    assert 590 < left <= 601, 'the deadline is this many seconds from the moment it was set'
+    assert os.environ['PEERREVIEW_CLAUDE_VERSION'] == '2.1.400'
 
     monkeypatch.setattr(starter, 'claude_version', lambda binary=None: None)
-    monkeypatch.setenv('PEERREVIEW_CLAUDE_VERSION', '2.1.999')
-    starter.finish(tmp_path, 'blocked', 'because', accounting, 1.0, None)
-    again = json.loads((tmp_path / 'runtime.json').read_text(encoding='utf-8'))
-    assert again['claude_code_version'] == '2.1.999'
+    monkeypatch.delenv('PEERREVIEW_CLAUDE_VERSION', raising=False)
+    assert starter.settle_run(10) is None
+    assert 'PEERREVIEW_CLAUDE_VERSION' not in os.environ, 'nothing is recorded as a version'
 
 
-def test_a_finished_run_is_not_patched_to_blocked(tmp_path, monkeypatch):
-    monkeypatch.setattr(starter, 'claude_version', lambda binary=None: None)
-    accounting = starter.Accounting(10, 10)
-    (tmp_path / 'progress.json').write_text(json.dumps({'status': 'complete'}), encoding='utf-8')
-    starter.finish(tmp_path, 'blocked', 'late rate limit', accounting, 1.0, None)
-    assert json.loads(
-        (tmp_path / 'progress.json').read_text(encoding='utf-8'))['status'] == 'complete'
+def test_the_exit_code_says_whether_anything_was_spent():
+    assert starter.exit_code({'status': 'complete', 'stage': 'session'}) == 0
+    assert starter.exit_code({'status': 'blocked', 'stage': 'startup'}) == 2
+    assert starter.exit_code({'status': 'blocked', 'stage': 'session'}) == 1
+    assert starter.exit_code({}) == 1
 
 
 def test_nothing_in_the_starter_needs_codex_or_a_key():
+    """The key and the subscription login are the runner's business now."""
     source = Path(starter.__file__).read_text(encoding='utf-8')
     assert 'codex' not in source.lower()
-    assert source.count('ANTHROPIC_API_KEY') == 1  # popped from the child environment
-    assert source.count('ANTHROPIC_AUTH_TOKEN') == 1
+    assert 'ANTHROPIC_API_KEY' not in source
+    assert 'ANTHROPIC_AUTH_TOKEN' not in source
     assert os.environ.get('PEERREVIEW_PLUGIN_RUN') is None

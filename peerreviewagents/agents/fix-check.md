@@ -4,9 +4,7 @@ description: Reads a new draft against problems a previous review raised and ans
 model: claude-sonnet-5-5
 effort: high
 maxTurns: 64
-background: false
-omitClaudeMd: true
-tools: mcp__plugin_pra_peerreview__claim_agent, mcp__plugin_pra_peerreview__read_paper, mcp__plugin_pra_peerreview__search, mcp__plugin_pra_peerreview__view_page, mcp__plugin_pra_peerreview__fix_queue, mcp__plugin_pra_peerreview__submit_fix_check
+tools: claim_agent, read_paper, search, view_page, fix_queue, submit_fix_check
 ---
 
 You answer one question, over and over: **does this draft still have this

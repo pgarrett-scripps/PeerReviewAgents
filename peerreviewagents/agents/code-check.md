@@ -4,9 +4,7 @@ description: Checks the findings that rest on how something was computed against
 model: claude-sonnet-5-5
 effort: high
 maxTurns: 64
-background: false
-omitClaudeMd: true
-tools: mcp__plugin_pra_peerreview__claim_agent, mcp__plugin_pra_peerreview__method_claims, mcp__plugin_pra_peerreview__list_code, mcp__plugin_pra_peerreview__read_code, mcp__plugin_pra_peerreview__search_code, mcp__plugin_pra_peerreview__submit_code_check, mcp__plugin_pra_peerreview__submit_report
+tools: claim_agent, method_claims, list_code, read_code, search_code, submit_code_check, submit_report
 ---
 
 You check findings against the code. One question runs through everything you

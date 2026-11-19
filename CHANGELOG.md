@@ -11,6 +11,33 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **A review is run by a Python orchestrator, not by a workflow script.**
+  `peerreviewagents/plugin/orchestrator.py` is what `workflows/review.js` and
+  `workflows/check-fixes.js` were — stage order, fan-out, one retry then
+  blocked, the token and wall-clock ceilings — and it runs inside the
+  `peerreview` command rather than inside a Claude Code session driving a
+  workflow. The command serves the tools itself, over loopback, for the length
+  of the run: one long-lived server the orchestrator owns, its address written
+  to `startup.json`, and nothing launched over stdio. The recorder is no longer
+  an agent at all — writing the review, the audits and the fix check is this
+  process's own work, so its usage row is `in process` with no model and no
+  tokens. Each agent is one call on a runner
+  (`runner.py`, with `claude_code.py` behind it): instructions, model, effort,
+  turn cap, the tools that agent may call, the server's address and a
+  final-answer schema in; the answer, the tokens, the model that actually ran
+  and how it ended out. The headless sessions it starts get an explicit
+  environment, only our tools with the built-ins off, and no user or project
+  settings or `CLAUDE.md` — a reviewer cannot be handed an instruction the run
+  did not write. The runner owns the model-availability check, and a model this
+  login cannot run is still refused before a folder is written. The public
+  surface is unchanged: `review`, `check_fixes`, `read_run`, `read_fix_check`,
+  `review_arms`, the `scripted_*` helpers, the run folder and the usage files
+  all read as they did.
+- **The agent definitions live in `peerreviewagents/agents/`**, one `.md` per
+  slot, with the instruction text unchanged and nothing in them naming Claude
+  Code: a definition is what an agent is, not how it is run. The whole panel is
+  testable with a scripted runner and no model call, each slot confined to its
+  own tool list, which is what the tests that used to pin `review.js` do now.
 - **An imported manuscript is a Markdown file, not a list of blocks.** The
   manuscript folder now holds `paper.md` — the whole paper in reading order,
   LF endings, one piece per line with a blank line between pieces, no ids in
@@ -789,6 +816,16 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Removed
 
+- **Nothing launches a server, and no workflow script runs a review.**
+  `workflows/review.js`, `workflows/check-fixes.js`, the plugin's `.mcp.json`,
+  the `peerreview-plugin-server` console script, the `PEERREVIEW_MCP_COMMAND`
+  variable the plugin used to launch the server with, the `recorder` agent file
+  and the start-up probe that spent a throwaway session proving the plugin had
+  loaded are all gone. The three skills (`peer-review-manuscript`,
+  `check-draft`, `check-fixes`) shell out to `peerreview review` and
+  `peerreview check-fixes`, so a session you drive yourself and a command you
+  run yourself are the same run. `read_run()['startup']` keeps its `probe` key,
+  `None` for every run this version writes, so a 0.9 folder still reads.
 - **A review no longer carries an earlier review.** `--prior-issues` on
   `peerreview review`, `prior_issues` on `ingest` and on the workflow, the
   `prior_rulings` argument of `submit_editor`, the brief the editor was given

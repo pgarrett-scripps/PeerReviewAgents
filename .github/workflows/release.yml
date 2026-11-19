@@ -108,57 +108,70 @@ jobs:
           /tmp/fresh/bin/python -I -c "
           import peerreviewagents, peerreviewagents.cli.main
           import peerreviewagents.plugin.server, peerreviewagents.plugin.starter
+          import peerreviewagents.plugin.orchestrator, peerreviewagents.plugin.service
+          import peerreviewagents.plugin.runner, peerreviewagents.plugin.claude_code
           print('import ok:', peerreviewagents.__name__)
           "
           /tmp/fresh/bin/peerreview --help >/dev/null
 
-      # The plugin *is* the review in 0.9, so a wheel that imports but ships no
-      # `pra` folder installs a package that cannot start one. `--help` never
-      # touches the plugin and passed on exactly that wheel, so this asks the
-      # starter where the plugin is and then looks.
+      # A review is the agent definitions plus the skills that start one, and
+      # both ship as globbed package data: a file the glob misses is absent
+      # with nothing said about it, and `--help` never touches either. So this
+      # asks the package where they are and then looks.
       #
-      # Every file is named. The wheel carries the plugin through globbed
-      # package data, so a file the glob misses is absent with nothing said
-      # about it, and the one thing a list of names cannot do is go stale
-      # against something that was added on purpose: the count this used to
+      # Every file is named rather than counted. A count is the one check that
+      # cannot tell a missing file from a new one: the count this used to
       # assert failed the 0.9.0 release over `citation-worker.md`, which was
       # the new agent working as intended.
-      - name: Prove the installed wheel can find its plugin
+      - name: Prove the installed wheel ships its agents and its skills
         run: |
           /tmp/fresh/bin/python -I -c "
-          import json, sysconfig
+          import sysconfig
+          from peerreviewagents import agents as pack
           from peerreviewagents.plugin import starter
-          plugin = starter.plugin_dir()
-          assert plugin.is_dir(), f'the installed wheel ships no plugin at {plugin}'
-          # The plugin has to be the installed one. Without this the step can
+          site = sysconfig.get_paths()['purelib']
+          # Both have to be the installed copies. Without this the step can
           # pass on the checkout sitting in the working directory and say
           # nothing about what was built.
-          site = sysconfig.get_paths()['purelib']
+          assert str(pack.HERE).startswith(site), f'{pack.HERE} is not under {site}'
+          wanted = (
+              'citation-worker', 'citations', 'code', 'code-check', 'core-reviewer',
+              'editor', 'field', 'figures-tables', 'fix-check', 'methods-reporting',
+              'numbers', 'reader', 'stats',
+          )
+          absent = [name for name in wanted if not pack.path(name).is_file()]
+          assert not absent, f'the installed wheel ships no definition for {absent}'
+          # Shipped is not the same as readable: a definition is a header the
+          # runner parses and the instruction text it hands the agent.
+          for name in wanted:
+              held = pack.definition(name)
+              assert held.instructions and held.tools, f'{name} is empty'
+          plugin = starter.plugin_dir()
           assert str(plugin).startswith(site), f'{plugin} is not under {site}'
           required = [
-              '.claude-plugin/plugin.json', '.mcp.json', 'README.md',
-              'workflows/review.js',
+              '.claude-plugin/plugin.json', 'README.md',
               'skills/peer-review-manuscript/SKILL.md',
               'skills/check-draft/SKILL.md',
+              'skills/check-fixes/SKILL.md',
           ]
-          required += ['agents/' + name + '.md' for name in (
-              'citation-worker', 'citations', 'core-reviewer', 'editor',
-              'field', 'figures-tables', 'methods-reporting', 'numbers',
-              'recorder', 'stats',
-          )]
           missing = [name for name in required if not (plugin / name).is_file()]
           assert not missing, f'the installed plugin is incomplete: {missing}'
-          config = json.loads((plugin / '.mcp.json').read_text(encoding='utf-8'))
-          command = config['mcpServers']['peerreview']['command']
-          assert 'CLAUDE_PROJECT_DIR' not in command, command
-          assert '.venv' not in command, command
-          print('plugin ok:', plugin, len(required), 'files,',
-                sum(name.startswith('agents/') for name in required), 'agents')
+          # The skills start a review by running the command this wheel put on
+          # PATH. A skill naming a checkout, an interpreter or the deleted
+          # stdio server would fail in exactly the place nobody is watching.
+          for name in required:
+              if not name.startswith('skills/'):
+                  continue
+              text = (plugin / name).read_text(encoding='utf-8')
+              assert 'peerreview ' in text, f'{name} never runs the command'
+              for stale in ('peerreview-plugin-server', '.mcp.json', 'workflows/'):
+                  assert stale not in text, f'{name} still mentions {stale}'
+          print('ok:', len(wanted), 'agents under', pack.HERE)
+          print('ok:', len(required), 'plugin files under', plugin)
           "
-          # The default launcher for a session nobody set PEERREVIEW_MCP_COMMAND
-          # for: without this console script an interactive plugin loads with
-          # its tools absent.
-          test -x /tmp/fresh/bin/peerreview-plugin-server
+          # Nothing else is on PATH: the tool server used to be a second
+          # console script and a run serves its own tools in process now.
+          test ! -e /tmp/fresh/bin/peerreview-plugin-server
 
       - uses: actions/upload-artifact@v4
         with:

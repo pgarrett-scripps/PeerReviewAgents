@@ -1,9 +1,9 @@
 # Study arms: the exact command for each one
 
-An arm is a **workflow** now: which agents run, in what order, and what they
-can see. It is not a policy, a preset, a mode or a model — 0.9 deleted all four.
-Effort and turn limits are pinned in the plugin's own agent files
-(`peerreviewagents/plugin/pra/agents/*.md`), identically for every arm, so what
+An arm is a **shape**: which agents run, in what order, and what they can see.
+It is not a policy, a preset, a mode or a model — 0.9 deleted all four.
+Effort and turn limits are pinned in the agent definitions
+(`peerreviewagents/agents/*.md`), identically for every arm, so what
 an arm changes is the shape of the review and nothing else. The model each slot
 runs on is a flag, and the same for every arm only if you keep it so — see
 [Models](#models) below.

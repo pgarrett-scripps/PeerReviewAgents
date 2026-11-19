@@ -49,8 +49,8 @@ Checking a new draft against a review
 Reading a run
     :func:`read_run` reads any run folder: complete, complete without
     findings, blocked, killed by the starter on a token ceiling, a wall-clock
-    limit, a rate limit or a session error, or stopped by a start-up probe that
-    never launched a session. It returns the status, the cause, the issues the
+    limit, a rate limit or a session error, or stopped at start-up before any
+    agent ran. It returns the status, the cause, the issues the
     editor raised with their member findings, the findings themselves
     de-duplicated to the latest row per ``finding_uid``, the escalations and
     their rulings, the manifest identity, whether code was reviewed beside the

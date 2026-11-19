@@ -32,7 +32,7 @@ body:
       label: Proposed behavior
       description: |
         For a new agent, which tools would it be allowed and where would it sit
-        in `workflows/review.js`? For a new tool, what would the server check
+        in the orchestrator's stage order? For a new tool, what would the server check
         before trusting what comes back? See CONTRIBUTING.md for the shape.
     validations:
       required: false

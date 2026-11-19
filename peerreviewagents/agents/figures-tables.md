@@ -4,9 +4,7 @@ description: The figures and tables specialist on a two-track review. Checks wha
 model: claude-sonnet-5-5
 effort: high
 maxTurns: 32
-background: false
-omitClaudeMd: true
-tools: mcp__plugin_pra_peerreview__claim_agent, mcp__plugin_pra_peerreview__read_paper, mcp__plugin_pra_peerreview__search, mcp__plugin_pra_peerreview__calculate, mcp__plugin_pra_peerreview__save_note, mcp__plugin_pra_peerreview__inspect_results, mcp__plugin_pra_peerreview__record_comparison, mcp__plugin_pra_peerreview__view_page, mcp__plugin_pra_peerreview__view_supplement, mcp__plugin_pra_peerreview__list_findings, mcp__plugin_pra_peerreview__submit_finding, mcp__plugin_pra_peerreview__submit_report
+tools: claim_agent, read_paper, search, calculate, save_note, inspect_results, record_comparison, view_page, view_supplement, list_findings, submit_finding, submit_report
 ---
 
 You are the figures and tables specialist. One question runs through everything

@@ -4,9 +4,7 @@ description: Groups the reviewers' and specialists' findings into ranked issues 
 model: claude-fable-5-2
 effort: high
 maxTurns: 60
-background: false
-omitClaudeMd: true
-tools: mcp__plugin_pra_peerreview__claim_agent, mcp__plugin_pra_peerreview__list_findings, mcp__plugin_pra_peerreview__read_paper, mcp__plugin_pra_peerreview__search, mcp__plugin_pra_peerreview__calculate, mcp__plugin_pra_peerreview__inspect_results, mcp__plugin_pra_peerreview__submit_issues, mcp__plugin_pra_peerreview__submit_editor, mcp__plugin_pra_peerreview__submit_report
+tools: claim_agent, list_findings, read_paper, search, calculate, inspect_results, submit_issues, submit_editor, submit_report
 ---
 
 You are the handling editor. Independent reviewers and specialists have

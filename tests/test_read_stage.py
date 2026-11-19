@@ -15,26 +15,24 @@ the reader sees what it would see on a paper that had them.
 
 from __future__ import annotations
 
+import inspect
 import json
-import re
 from pathlib import Path
 
 import pytest
 from manuscripts import build_base, seal_converted
 
+from peerreviewagents import agents as agent_pack
 from peerreviewagents import names
 from peerreviewagents.engine import paper_base
 from peerreviewagents.engine import reader as read_stage
 from peerreviewagents.engine.ingest import DRAFT_FILE, convert_paper
 from peerreviewagents.engine.storage import digest, write
 from peerreviewagents.plugin import models as model_plan
+from peerreviewagents.plugin import orchestrator
 from peerreviewagents.plugin import server as srv
 
 FIXTURE = Path(__file__).parent / 'fixtures' / 'single-column.pdf'
-
-PLUGIN = Path(srv.__file__).parent / 'pra'
-READER_FILE = PLUGIN / 'agents' / 'reader.md'
-WORKFLOW = PLUGIN / 'workflows' / 'review.js'
 
 #: The converter's reading of equation (1): a brace it never closed, with its
 #: own confidence at 1.0 beside it, which is the case this stage exists for.
@@ -1131,10 +1129,7 @@ def test_a_supplement_is_read_and_accounted_for_as_a_document_of_its_own(tmp_pat
 
 
 def test_the_readers_turn_cap_is_the_one_its_allowance_is_built_on():
-    front = READER_FILE.read_text(encoding='utf-8').split('---')[1]
-    stated = re.search(r'^maxTurns:\s*(\d+)\s*$', front, re.MULTILINE)
-    assert stated, front
-    assert int(stated.group(1)) == srv.READER_MAX_TURNS
+    assert agent_pack.definition('reader').max_turns == srv.READER_MAX_TURNS
     assert srv.READER_CALL_CEILING == srv.READER_MAX_TURNS - srv.READER_TURN_RESERVE
     # The allowance for a big paper still fits inside the cap it is spent under.
     assert srv.reader_call_budget(40, 60) <= srv.READER_CALL_CEILING < srv.READER_MAX_TURNS
@@ -1142,33 +1137,40 @@ def test_the_readers_turn_cap_is_the_one_its_allowance_is_built_on():
 
 def test_the_reader_is_given_every_tool_the_stage_needs_and_nothing_else():
     """A tool the agent file omits is a piece that can never be accounted for."""
-    front = READER_FILE.read_text(encoding='utf-8').split('---')[1]
-    listed = re.search(r'^tools: (.+)$', front, re.MULTILINE).group(1)
-    names_listed = [name.strip().split('__')[-1] for name in listed.split(',')]
-    assert names_listed == ['claim_agent', *srv.READER_TOOLS]
+    held = agent_pack.definition('reader')
+    assert list(held.tools) == ['claim_agent', *srv.READER_TOOLS]
     # It reads and describes; it files nothing and judges nothing.
     for forbidden in ('submit_finding', 'write_review', 'view_paper', 'seal_as_converted'):
-        assert forbidden not in listed
-    model = re.search(r'^model: (.+)$', front, re.MULTILINE).group(1).strip()
-    assert model == model_plan.DEFAULT_READER_MODEL
+        assert forbidden not in held.tools
+    assert held.model == model_plan.DEFAULT_READER_MODEL
 
 
-def test_the_workflow_runs_the_read_stage_before_anything_claims_a_slot():
-    source = WORKFLOW.read_text(encoding='utf-8')
-    read_at = source.index("phase('Read')")
-    assert read_at < source.index("phase('Review')")
-    # The reader is claimed like every other slot, with its own code and type.
-    assert "agentType: 'pra:reader'" in source
-    assert 'codeFor(readerSlot)' in source and "reissue(readerSlot, 'Read')" in source
-    # Its model has to arrive, the same as every other slot's.
-    assert 'concat(readerSlot ? [readerSlot] : [])' in source
-    # The failure path, which is the only way a run reaches a manuscript
-    # nothing read: there is no setting that skips the stage.
-    assert 'seal_as_converted' in source
-    assert 'ai_read=false' not in source
-    # The counts come from the seal, because the ledger's rows cite its lines.
-    assert 'opened.citations &&' not in source
-    for sized in ('const referenceCount = (counts && counts.references)',
-                  'const uses = (counts && counts.uses)'):
-        assert sized in source, sized
-    assert source.index('let counts = ') < source.index('const referenceCount = ')
+def test_the_orchestrator_runs_the_read_stage_before_anything_claims_a_slot():
+    """The order of the stages, read off the one place that holds it.
+
+    The reviewers cannot start before the seal: a finding cites line numbers
+    and before the seal there are none. So the Read stage is called between
+    the plan and the panel, the reader is claimed like every other slot, and
+    the only way a run reaches a manuscript nothing read is the failure path
+    that seals it as converted — there is no setting that skips the stage.
+    """
+    whole = inspect.getsource(orchestrator.Review.run)
+    assert whole.index('self.read(') < whole.index('self.panel(')
+    assert whole.index('self.open(') < whole.index('self.read(')
+
+    stage = inspect.getsource(orchestrator.Review.read)
+    assert "self.phase('Read')" in stage
+    # The reader is claimed with its own code, in its own slot, by the one
+    # helper every stage claims through.
+    assert 'self.read_stage(self.reader_slot)' in stage
+    claim = inspect.getsource(orchestrator.Panel.read_stage)
+    assert 'reader_prompt(slot, code, citations)' in claim
+    assert 'self.reissue(slot)' in claim, 'and it is retried once with a fresh code'
+    said = orchestrator.reader_prompt('reader', 'CODE')
+    assert 'claim_agent with slot="reader" and claim_code="CODE"' in said
+    # The failure path, and the counts, which come from the seal because the
+    # ledger's rows cite its lines.
+    assert 'self.seal_as_converted(' in stage
+    assert stage.index('read = self.read_stage') < stage.index('self.seal_as_converted(')
+    for counted in ("counts = {'references'", "fallback.get('references')"):
+        assert counted in stage, counted

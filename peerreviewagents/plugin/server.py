@@ -301,7 +301,7 @@ RUN_CALL_BUDGET = 900
 EDITOR_BASE_CALLS = 12
 
 #: The editor agent's turn cap, which must equal ``maxTurns`` in
-#: ``pra/agents/editor.md``. A tool allowance larger than the turns available to
+#: ``peerreviewagents/agents/editor.md``. A tool allowance larger than the turns available to
 #: spend it is not an allowance, it is a dead end: the editor runs out of turns
 #: mid-ledger and the run ends with nothing submitted, which is the failure this
 #: whole path exists to stop. ``test_editor_at_scale`` reads the agent file and
@@ -342,7 +342,8 @@ def editor_call_budget(findings):
     return min(EDITOR_CALL_CEILING, EDITOR_BASE_CALLS + 2 * batches + count // 4)
 
 
-#: The reader's turn cap, which must equal ``maxTurns`` in ``pra/agents/reader.md``.
+#: The reader's turn cap, which must equal ``maxTurns`` in
+#: ``peerreviewagents/agents/reader.md``.
 READER_MAX_TURNS = 220
 #: The turns the reader spends on something other than a page or a piece:
 #: claiming the slot, reading the draft (which is paginated), the seal, and
@@ -1327,7 +1328,7 @@ class Run:
         if previous is not None and role == 'editor':
             # The working set belongs to the slot, not to the claim. A re-claim
             # used to hand the retry an empty one while the issues.json the
-            # first attempt wrote stayed on disk, so the retry in `review.js`
+            # first attempt wrote stayed on disk, so the retry
             # re-submitted every issue from scratch against a file that already
             # claimed the review was accepted. The retry continues the work it
             # can see, and `submit_issues` reopens an accepted review rather
@@ -1975,6 +1976,14 @@ class Run:
                 if path.is_file() and '__pycache__' not in path.parts:
                     files['plugin/' + path.relative_to(self.plugin_root).as_posix()] = digest(
                         path.read_bytes())
+        # The agent definitions: the instruction text every slot was given,
+        # hashed here because it is part of what produced this review. They
+        # used to sit inside the plugin folder above and were covered by it;
+        # they are runner-neutral now and live beside the engine.
+        agents = Path(__file__).resolve().parent.parent / 'agents'
+        for path in sorted(agents.glob('*')):
+            if path.is_file() and '__pycache__' not in path.parts:
+                files['agents/' + path.name] = digest(path.read_bytes())
         engine = Path(__file__).resolve().parent.parent / 'engine'
         for path in sorted(engine.glob('*.py')):
             files['engine/' + path.name] = digest(path.read_bytes())
@@ -2009,8 +2018,8 @@ class Run:
                      'models': dict(self.models),
                      'reviewer_models': list(self.reviewer_models),
                      'citation_workers': list(self.citation_workers),
-                     'execution': 'Claude Code plugin workflow; agents in parallel, '
-                                  'server-owned ledger.'},
+                     'execution': 'Python orchestrator; one session per agent, agents in '
+                                  'parallel, server-owned ledger.'},
         }
 
     def write_protocol(self):
@@ -5352,36 +5361,23 @@ TOOLS = (ingest, claim_agent, reissue_claim_code, read_paper, search, calculate,
          claim_citation_batch, submit_citation_verdict, mark_blocked, run_status, write_review)
 
 
-def create_server(plugin_root=None):
+def create_server(plugin_root=None, tools=None):
+    """One MCP server over this module's state.
+
+    ``tools`` is what is registered on it, every tool in this module by
+    default. :class:`peerreviewagents.plugin.service.Service` passes ``()`` and
+    registers its own wrappers instead: FastMCP keeps the *first* registration
+    of a name, so a tool registered here as well would be the bare function and
+    the wrapper holding the run's lock would be silently dropped.
+
+    There is no ``main`` any more and nothing starts this over stdio. A run's
+    server is started in process by the launcher, on loopback HTTP, and lives
+    exactly as long as the run.
+    """
     from mcp.server.fastmcp import FastMCP
 
     STATE['plugin_root'] = plugin_root or os.environ.get('CLAUDE_PLUGIN_ROOT')
     server = FastMCP('peerreview')
-    for tool in TOOLS:
+    for tool in (TOOLS if tools is None else tools):
         server.tool()(tool)
     return server
-
-
-def main(argv=None):
-    import sys
-
-    argv = list(sys.argv[1:] if argv is None else argv)
-    # One `args` array in .mcp.json serves both launchers: the console script
-    # `peerreview-plugin-server`, which an installed wheel puts on PATH, and
-    # `<python> -m peerreviewagents.plugin.server`, which is what `peerreview
-    # review` points the session at so the run uses its own interpreter. The
-    # console script is handed the interpreter switch as an argument; drop it
-    # rather than make the plugin config pick one launcher.
-    if argv[:1] == ['-m'] and len(argv) > 1 and argv[1].startswith('peerreviewagents.'):
-        argv = argv[2:]
-    plugin_root = None
-    if '--plugin-root' in argv:
-        index = argv.index('--plugin-root')
-        plugin_root = argv[index + 1] if index + 1 < len(argv) else None
-    if plugin_root in ('', '${CLAUDE_PLUGIN_ROOT}'):
-        plugin_root = None
-    create_server(plugin_root).run()
-
-
-if __name__ == '__main__':
-    main()
