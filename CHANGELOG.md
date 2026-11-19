@@ -493,6 +493,31 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A step that is told to call a tool is a step that can call it.** The first
+  real fix check judged all six problems correctly and then could not write the
+  check: `check-fixes.js` tells the recorder to call `write_fix_check`,
+  `recorder.md` never granted that tool, and the one step that writes
+  `fix-check.json` and `FIXES.md` answered *No such tool available*. The
+  verdicts stayed in `review/fix-checks.jsonl` and the run ended blocked over
+  one missing name in a tools list. The recorder is granted it now, and so is
+  the pair's other half: the reclose prompt a review sends to a stage the
+  ledger never recorded tells that stage to read its own findings with
+  `list_findings`, which only the core reviewer, the editor and the recorder
+  could call — a reopened specialist was being asked for something it had no
+  way to do. The seven specialist definitions are granted it, and a reviewer
+  still sees only its own slot, so nothing about review independence changes.
+  A test now reads both sides of that seam: every agent call in both workflow
+  scripts, the prompt it hands that agent and the helpers that prompt is built
+  from, against that agent's own `tools` header — and the reverse, an agent
+  granted a tool the server does not serve. It fails on both of the above.
+
+- **A blocked run says why, in the session's own words.** A run that ends with
+  nothing written and nothing marked blocked used to report only that the
+  workflow ended without writing the review, which is true of every run that
+  falls through and tells nobody where to look. The reason now also carries
+  what the session said as it signed off, shortened — on the fix check above,
+  the refusal itself.
+
 - **No arm a review is offered is an arm it refuses.** `review_arms()` and the
   `--arm` choices listed `fix-check`, which `review` then refused by name: it
   is a run of the same workflow, but it answers problems a review already

@@ -130,6 +130,9 @@ STREAM_QUIET = 600.0
 WATCH_TICK = 1.0
 #: Agent states the progress stream uses for an agent the harness gave up on.
 FAILED_STATES = ('error', 'errored', 'failed')
+#: How much of the session's closing message a blocked reason carries. It is a
+#: model's prose, not a status line, so it is quoted and cut rather than kept.
+LAST_WORD_CHARACTERS = 600
 
 
 def tool_names():
@@ -627,6 +630,26 @@ class Accounting:
                          f"{row.get('tokens') or 0:,} tokens" for row in broken) or None
 
 
+def session_last_word(result):
+    """What the orchestrating session itself said as it ended, in one line.
+
+    A run that ends with nothing written and nothing marked blocked has a cause
+    the server never heard. The first real fix check ended with the recorder
+    answering *No such tool available* to ``write_fix_check``, and all the run
+    folder said was that the workflow ended without writing the fix check —
+    true, and no use to anyone. The session's closing message held the real
+    reason, so it is carried into the blocked reason, shortened.
+    """
+    spoken = (result or {}).get('result')
+    said = ' '.join((spoken if isinstance(spoken, str) else
+                     json.dumps(spoken, default=str) if spoken else '').split())
+    if not said:
+        return None
+    if len(said) > LAST_WORD_CHARACTERS:
+        said = said[:LAST_WORD_CHARACTERS].rstrip() + '…'
+    return 'the session signed off: ' + said
+
+
 def write_usage(review, accounting):
     """Usage the engine's own report reader can find, plus the full stream record."""
     for key, row in accounting.agents.items():
@@ -1037,7 +1060,7 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
                 (f'the workflow ended without writing the review or marking the run blocked,'
                  f' the server last recorded {status}' if status
                  else 'the server wrote no progress file'),
-                watch.note, accounting.failures()) if part)
+                watch.note, accounting.failures(), session_last_word(result)) if part)
             status = 'blocked'
     # A session that ended before the workflow called `ingest` left no protocol
     # and no manifest, so the folder would not name its own paper or arm.
@@ -1311,7 +1334,7 @@ def check_fixes(pdf, out, problems, per_agent_tokens=FIX_PER_AGENT_TOKENS,
                 (f'the workflow ended without writing the fix check or marking the run blocked,'
                  f' the server last recorded {status}' if status
                  else 'the server wrote no progress file'),
-                watch.note, accounting.failures()) if part)
+                watch.note, accounting.failures(), session_last_word(result)) if part)
             status = 'blocked'
     write_identity(review_dir, source, FIX_ARM, 0, models=wanted)
     finish(review_dir, status, blocked, accounting, wall, result)
