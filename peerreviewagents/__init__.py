@@ -138,8 +138,14 @@ Building a fixture to test against
     checker slot and hands back a :class:`ScriptedFixCheck` whose methods are
     ``fix_queue``, ``submit_fix_check`` and the tools that read the paper, so a
     fixture holding ``fix-check.json`` and ``FIXES.md`` is written by the lane.
-    :class:`CheckRefused` is its refusal and :class:`ToolRefused` is the base of
-    both.
+    :func:`scripted_review` is the third and the widest: it opens a review on a
+    PDF, claims every slot the arm plans and the recorder, and hands back a
+    :class:`ScriptedReview` whose methods are each slot's own tools —
+    ``submit_finding``, ``submit_report``, ``submit_issues``, ``submit_editor``
+    — so a fixture holding ``issues.json``, ``REVIEW.md`` and the findings
+    :func:`read_run` reads is written by the engine with no model in it.
+    :class:`CheckRefused` and :class:`ReviewRefused` are their refusals and
+    :class:`ToolRefused` is the base of all three.
 
 Names
     :data:`RUN_DIRECTORY` and :data:`MANUSCRIPT_DIRECTORY` are the two folders
@@ -213,11 +219,14 @@ if TYPE_CHECKING:  # Static tooling sees the real objects, not the fallback.
     from .scripted import (
         CheckRefused,
         ReaderRefused,
+        ReviewRefused,
         ScriptedFixCheck,
         ScriptedRead,
+        ScriptedReview,
         ToolRefused,
         scripted_fix_check,
         scripted_read,
+        scripted_review,
     )
 
 __all__ = [
@@ -248,6 +257,9 @@ __all__ = [
     "scripted_fix_check",
     "ScriptedFixCheck",
     "CheckRefused",
+    "scripted_review",
+    "ScriptedReview",
+    "ReviewRefused",
     "ToolRefused",
     "plugin_directory",
     "claude_code_version",
@@ -332,6 +344,11 @@ _LAZY = {
     "scripted_fix_check": (".scripted", "scripted_fix_check"),
     "ScriptedFixCheck": (".scripted", "ScriptedFixCheck"),
     "CheckRefused": (".scripted", "CheckRefused"),
+    # And a whole review in code, which is the folder an application renders
+    # most of: `issues.json`, `REVIEW.md` and the findings behind them.
+    "scripted_review": (".scripted", "scripted_review"),
+    "ScriptedReview": (".scripted", "ScriptedReview"),
+    "ReviewRefused": (".scripted", "ReviewRefused"),
     "ToolRefused": (".scripted", "ToolRefused"),
 }
 

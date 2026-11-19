@@ -58,6 +58,27 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A whole review can be driven from a script: `scripted_review`.** The third
+  of the scripted stages, and the folder an application renders most of. It
+  opens a real review on a PDF, seals the manuscript as the converter read it,
+  claims every slot the arm plans and the recorder, serves each of them the
+  whole manuscript, and hands back a handle whose methods are those slots' own
+  tools under their own names, `slot=` saying who calls: `submit_finding`,
+  `submit_report`, then the editor's `list_findings`, `submit_issues` and
+  `submit_editor`. `write()` is the recorder's `write_review` — `issues.json`,
+  `REVIEW.md` and the reports — and `read()` is `read_run` on the folder. No
+  model runs and nothing is launched: the script is each slot in turn.
+  A consumer testing against a review had the same two bad choices as before
+  `scripted_fix_check`: drive the private plugin round builders, or hand-write
+  the JSON of a finished review, which copies the engine's output shape by eye
+  and drifts from it silently. A tool only one slot holds goes to it by itself
+  and a tool several hold raises `LookupError` naming them rather than being
+  guessed at, `SUBMISSIONS` is what each role may submit beside the tools the
+  server grants it, and a refusal raises `ReviewRefused` — a sibling of
+  `CheckRefused` under `ToolRefused` — with the server's whole answer on
+  `.answer`. What it does not do is the editor's judgement: the grouping, the
+  ranking and the escalation rulings are the script's, and `submit_editor` and
+  `write()` refuse until they are there, exactly as they refuse a model.
 - **A fix check can be driven from a script: `scripted_fix_check`.** The
   counterpart of `scripted_read` for the other stage an application renders.
   It opens a real check on a PDF with a problems file — a path, or the rows
