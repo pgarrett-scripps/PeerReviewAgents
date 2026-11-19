@@ -1926,6 +1926,79 @@ reading = read_fix_check(folder)       # or check.read(), while it is open
   `close()`): leaving the block puts back whatever run was attached before. The
   folder stays as it is, with whatever `write()` wrote in it.
 
+### Building a written review for your tests: `scripted_review`
+
+**For tests and fixtures,** like the two above and for the same reason, and
+this is the folder an application renders most of: `issues.json`, `REVIEW.md`,
+the findings behind each issue, the editor's verdict — everything `read_run`
+reads. `scripted_review` opens a real review on a PDF, seals the manuscript,
+claims every slot the arm plans *and* the recorder, serves each of them the
+whole manuscript, and hands back a handle whose methods are those slots' own
+tools. The script is each slot in turn, and no model runs:
+
+```python
+from peerreviewagents import read_run, ReviewRefused, scripted_review
+
+with scripted_review('paper.pdf', folder) as review:
+    review.slots                       # ('core-1', 'editor', 'recorder')
+    stored = review.submit_finding(
+        slot='core-1', title='The abstract overstates the result',
+        line=14, quote=review.line(14), severity='major',
+        comment='The sentence asserts more than the measurement shows.')
+    review.submit_report('What I read and what I raised.', slot='core-1')
+
+    review.submit_issues([{                        # the editor's, by itself
+        'name': 'the-abstract-overstates-the-result', 'severity': 'major',
+        'category': 'claims-and-conclusions', 'rank': 1,
+        'statement': 'The abstract claims more than the measurement shows.',
+        'members': [stored['finding_uid']]}])
+    review.submit_editor(summary='One issue, in the abstract.',
+                         significance='Useful once the claim matches the data.')
+    review.submit_report('The pooled review is in the issues.', slot='editor')
+    review.write()                     # issues.json, REVIEW.md, the reports
+
+run = read_run(folder)                 # or review.read(), while it is open
+```
+
+- The arm is the plan: `arm='reviewers-only', reviewers=1` by default, which is
+  the smallest review that writes a whole folder — one core reviewer and the
+  editor, so a script has two slots to act as rather than nine. `arm`,
+  `reviewers`, `tracks`, `code` and `revision` are the server's own, and
+  `review.slots` is what the arm planned plus `recorder`.
+- The manuscript is sealed as the converter read it
+  (`peerreviewagents.scripted.SCRIPTED_SEAL` is the recorded reason): a finding
+  quotes the lines of the paper, and there are no lines until the manuscript is
+  sealed. For a fixture whose manuscript was *read*, build that one with
+  `scripted_read` first and keep the folder.
+- `slot=` says which slot calls. A tool only one slot holds needs no `slot` —
+  `submit_issues`, `submit_editor` and `list_findings` are the editor's alone,
+  and `write_review` the recorder's. A tool several slots hold —
+  `submit_finding`, `submit_report`, `read_paper` — raises `LookupError` naming
+  them if you do not say which, because a finding filed by the wrong reviewer
+  is a fixture that passes and says the wrong thing. `review.granted` is
+  `{slot: every tool it may call}` and `review.slot_for(tool)` is the routing.
+- Every tool the slot was granted is a method under its own name, and so is
+  every tool its role may submit —
+  `peerreviewagents.scripted.SUBMISSIONS` is that table, which the server's
+  grants leave out because a submission spends no allowance.
+- `line(n, document='')` is line *n* as `read_paper` served it, which is where
+  a script takes an exact quotation from; `served(slot=…)` is the whole of a
+  document in one string; `base()` is the sealed workspace.
+- What the handle does not do is the editor's judgement: grouping every finding
+  into an issue, ranking them 1…N with no gaps or ties, and ruling on each
+  escalated finding. `submit_editor` refuses until that is done, and `write()`
+  refuses until every stage the arm requires has reported — both as
+  `ReviewRefused`, with the server's whole answer on `.answer`, which is where
+  the `problems` list says what is missing.
+- `write()` writes the review as the recorder and returns the server's answer
+  (also kept on `review.written`); `read()` is `read_run` on the folder.
+  Written once: a second call raises.
+- A refusal raises `ReviewRefused`, a sibling of `CheckRefused` and
+  `ReaderRefused` under `ToolRefused`.
+- One run is open per process, so use it as a context manager (or call
+  `close()`): leaving the block puts back whatever run was attached before. The
+  folder stays as it is, written, for the test to read.
+
 ### Writing files the engine reads: `peerreviewagents.workspace`
 
 An app that keeps its own files beside a manuscript workspace — a revision, a
