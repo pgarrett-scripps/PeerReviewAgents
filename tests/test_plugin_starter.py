@@ -353,6 +353,9 @@ def test_a_workflow_that_closed_nothing_leaves_the_run_blocked_not_running(tmp_p
     assert summary['status'] == 'blocked'
     assert 'without writing the review or marking the run blocked' in summary['blocked_reason']
     assert 'running' in summary['blocked_reason']
+    # And what the session itself said as it ended — here, that it was complete,
+    # which the folder it was writing to flatly contradicts.
+    assert 'the session signed off: {"status": "complete"}' in summary['blocked_reason']
     assert starter.exit_code(summary) == 1
     on_disk = json.loads((out / 'review' / 'progress.json').read_text(encoding='utf-8'))
     assert on_disk['status'] == 'blocked' and on_disk['error'] == summary['blocked_reason']
@@ -704,6 +707,27 @@ def test_a_run_with_no_review_names_the_agent_that_ended_in_error():
         {'label': 'core-1', 'tokens': 120000, 'state': 'completed'},
         {'label': 'editor', 'tokens': 136755, 'state': 'error'}]})
     assert accounting.failures() == 'editor ended in state error after 136,755 tokens'
+
+
+def test_a_run_with_nothing_written_carries_the_session_s_own_last_word():
+    """The one place the real cause existed, on the first real fix check.
+
+    That run judged all six problems and then could not write the check: the
+    recorder was told to call ``write_fix_check`` and answered *No such tool
+    available*. The stream reported no failed agent and the server's status was
+    still ``running``, so the folder said only that the workflow ended without
+    writing the fix check. The session's closing message held the cause.
+    """
+    assert starter.session_last_word(None) is None
+    assert starter.session_last_word({'result': ''}) is None
+    assert starter.session_last_word({'result': 'No such tool available:\n  write_fix_check'}) == (
+        'the session signed off: No such tool available: write_fix_check')
+    # A workflow that returns a value rather than prose still says something.
+    assert starter.session_last_word({'result': {'written': False}}) == (
+        'the session signed off: {"written": false}')
+    # Prose, not a status line: it is cut rather than printed whole.
+    long = starter.session_last_word({'result': 'word ' * 400})
+    assert len(long) < 700 and long.endswith('…')
 
 
 # The event a real stream sends, captured from a 0.8 run of this repo's own
