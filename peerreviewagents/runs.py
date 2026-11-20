@@ -690,6 +690,12 @@ def _read_reading(progress, runtime, problems):
     folder later has no return value to learn it from, which is why it is here
     and not only in what ``review`` and ``check_fixes`` hand back.
 
+    ``sealed`` is ``False`` on the one run where the fallback failed too: the
+    reader did not seal and the converted seal was refused, so the run is
+    blocked, there is no manuscript and nothing was reviewed against anything.
+    ``reader_failed`` is true with ``reason`` saying why there, as on any other
+    reader that did not answer.
+
     ``runtime.json`` is read first: the starter writes the panel's own record,
     with the reader's model, its attempts and its tally of pages. A run killed
     before the starter could write that leaves ``progress.json``'s own block,
@@ -705,7 +711,7 @@ def _read_reading(progress, runtime, problems):
     if isinstance(stated, dict):
         return {'reader_failed': bool(stated.get('reader_failed')),
                 'reason': stated.get('reason') or None,
-                'sealed': True,
+                'sealed': stated.get('sealed', True) is not False,
                 'model': stated.get('model') or None,
                 'attempts': stated.get('attempts') if isinstance(stated.get('attempts'), int)
                 else None,
@@ -1503,6 +1509,11 @@ def read_fix_check(path):
         whether it is *whole*, because a check whose lane died is written and
         complete and still missing the verdicts that lane held. A consumer
         reporting a check as complete reports this beside it.
+    ``stopped``
+        Why the run stopped, once, or ``None`` for a check that was written.
+        A check blocked before its lanes started has the same cause under
+        every problem it holds: it is kept here, and each ``unchecked`` row's
+        ``reason`` says that the run stopped first and points at this.
     ``tokens``, ``agents``, ``usage``, ``runtime``
         What the check spent: the run's own total and ceilings, the per-slot
         rows :func:`read_run` reports, and the usage receipts behind them.
@@ -1602,6 +1613,7 @@ def read_fix_check(path):
         'incomplete': bool(record.get('incomplete')) if 'incomplete' in record
         else bool(unchecked),
         'incomplete_reason': record.get('incomplete_reason') or None,
+        'stopped': record.get('stopped') or None,
         'over_cap': _count(record.get('over_cap')),
         'counts': {verdict: sum(1 for row in checks if row.get('verdict') == verdict)
                    for verdict in FIX_VERDICTS},

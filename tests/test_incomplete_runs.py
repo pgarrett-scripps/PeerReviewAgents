@@ -17,6 +17,7 @@ import json
 from pathlib import Path
 
 import pytest
+from manuscripts import pdf_with_rotations
 
 import peerreviewagents
 from peerreviewagents import names, scripted
@@ -365,6 +366,11 @@ def test_a_folder_whose_reader_failed_says_so_without_the_return_value(tmp_path)
     assert read['sealed'] is True
     assert read['model']
     assert read['pages_viewed'] == 0
+    # Two readers were started and neither answered, which is what the stage
+    # costs when it fails: the count used to be `None` on exactly this run,
+    # because the fallback the server builds the record from has no number in
+    # it. It is the budget's own tally now.
+    assert read['attempts'] == 2
 
 
 def test_a_folder_whose_reader_worked_says_that_too(tmp_path):
@@ -375,6 +381,32 @@ def test_a_folder_whose_reader_worked_says_that_too(tmp_path):
     assert read['reader_failed'] is False
     assert read['reason'] is None
     assert read['pages_viewed'] >= 1
+    assert read['attempts'] == 1
+
+
+def test_the_read_block_counts_a_reader_that_failed_and_then_worked(tmp_path):
+    """``attempts`` is readers started, not whether the stage ended well.
+
+    The two arms above each have one number to report. This is the run that
+    tells them apart: the first reader said nothing, the second sealed the
+    manuscript, and the folder holds both facts — a Read stage that cost two
+    launches and a manuscript that is the reader's after all.
+    """
+    started = []
+
+    def once(slot):
+        """Silent the first time it is called, a working reader the second."""
+        started.append(slot.slot)
+        if len(started) == 1:
+            return scripted.NO_ANSWER
+        return scripted.DEFAULT_SCRIPTS['reader'](slot)
+
+    peerreviewagents.scripted_review(FIXTURE, tmp_path / 'run', {'reader': once})
+
+    read = read_run(tmp_path / 'run')['read']
+    assert read['reader_failed'] is False
+    assert read['sealed'] is True
+    assert read['attempts'] == 2
 
 
 def test_a_folder_that_arrived_sealed_has_no_read_block_at_all(tmp_path):
@@ -434,6 +466,77 @@ def test_a_check_with_no_document_still_has_a_row_for_every_problem(tmp_path):
     assert len(written['unchecked']) == 3
     assert {row['lane'] for row in written['unchecked']} == {'fix-1'}
     assert all('fix-1' in row['reason'] for row in written['unchecked'])
+
+
+# -- the run that could not read at all: blocked in the Read stage -----------
+#
+# The runs above all sealed something: the reader did it or the server sealed
+# what the converter read. A paper with a page the converter returned nothing
+# from has neither — the fallback would write a manuscript missing a page, so
+# it is refused — and the run blocks there. It is the only run whose Read stage
+# failed twice over, so it is where `reader_failed` with no seal is readable,
+# and it is built from a real PDF rather than by deleting a file afterwards.
+
+
+def lost_page(tmp_path):
+    """A two-page paper whose second page the pinned converter reads nothing from."""
+    return pdf_with_rotations(tmp_path / 'turned.pdf', [0, 90])
+
+
+def test_a_review_blocked_because_nothing_could_be_sealed_says_the_reader_failed(tmp_path):
+    """``reader_failed`` with ``sealed: False``, and the reason for both.
+
+    The run stops in its Read stage, so nothing downstream writes a record
+    over it: the folder used to fall back to the block in ``progress.json``,
+    which reads as ``reader_failed: False`` with no reason at all — a run whose
+    reader never answered, filed as a run whose reader was fine.
+    """
+    review = peerreviewagents.scripted_review(lost_page(tmp_path), tmp_path / 'run',
+                                              {'reader': silent})
+
+    assert review.status == 'blocked'
+    read = read_run(tmp_path / 'run')['read']
+    assert read['reader_failed'] is True
+    assert read['sealed'] is False
+    assert 'did not seal' in read['reason']
+    assert 'page(s) 2' in read['reason'] and 'rotated 90' in read['reason']
+    # Both readers were started and the fallback was refused after them, so the
+    # stage cost two launches and sealed nothing.
+    assert read['attempts'] == 2
+    assert read['pages'] == 2 and read['pages_viewed'] == 0
+    assert read['model']
+
+
+def test_a_blocked_fix_check_keeps_the_cause_once_and_points_its_rows_at_it(tmp_path):
+    """The whole cause on the check, a short reason on every row.
+
+    A check blocked before its lanes started has one cause under every problem
+    it holds, and that cause is a paragraph: which reader failed, which page
+    the converter lost, what to do about it. Printed again under each of twenty
+    problems it is still one fact, so it is kept once as ``stopped`` and each
+    row says that the run stopped and where to read why.
+    """
+    rows = [dict(row, evidence=[{'document': '', 'quote': 'upright'}])
+            for row in problems(3)]
+    check = peerreviewagents.scripted_fix_check(lost_page(tmp_path), tmp_path / 'run', rows,
+                                                {'reader': silent})
+
+    assert check.status == 'blocked'
+    found = read_fix_check(tmp_path / 'run')
+    assert found['read']['reader_failed'] is True
+    assert found['read']['sealed'] is False
+
+    # Once, in full, where a consumer reads why the run ended.
+    assert 'page(s) 2' in found['stopped']
+
+    # And three rows that point there, rather than three copies of it.
+    assert found['not_checked'] == 3 and len(found['unchecked']) == 3
+    for row in found['unchecked']:
+        assert row['lane'] == 'fix-1'
+        assert row['reason'] == ('fix-1 never claimed its batch, so nothing read the draft '
+                                 'against it; the run stopped first, and stopped says why')
+    assert 'page(s) 2' not in found['incomplete_reason']
+    assert found['incomplete_reason'].startswith('3 of 3 problem(s) have no verdict')
 
 
 def test_a_blocked_review_says_how_each_missing_seat_ended(tmp_path):

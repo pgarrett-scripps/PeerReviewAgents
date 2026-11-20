@@ -133,6 +133,20 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   arrived already sealed; `code_check` is a row with `silent` on it, and is
   `None` only for an arm that planned no code lane. Both are in what `review`
   and `check_fixes` return.
+- **A Read stage that could not seal anything says so, and counts what it
+  cost.** `read['attempts']` is how many readers the run started — it was
+  `None` on exactly the runs where the reader failed, because the record was
+  built from a fallback with no number in it — so a stage that failed once and
+  sealed on the second reader reads as two. And the one run where the fallback
+  fails too, a paper with a page the converter returned nothing from, no longer
+  reads as a run whose reader was fine: sealing as converted would write a
+  manuscript missing that page, so it is refused and the run blocks, and the
+  block it leaves behind says `reader_failed: True` with `sealed: False` and
+  the reason for both rather than falling back to the stop in
+  `progress.json`. A fix check stopped there keeps the whole cause once, as
+  `stopped` on the check, and each unchecked problem's `reason` names its lane
+  and points there — the same paragraph under twenty problems was still one
+  fact.
 - **A scripted seat can say what it spent, so the token ceilings work without
   a model.** `scripted_review` and `scripted_fix_check` take `tokens=`, the
   number every seat is metered at, and `slot.spend(n)` inside a script is that

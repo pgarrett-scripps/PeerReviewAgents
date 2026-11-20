@@ -21,6 +21,9 @@ so the import works from a subfolder too.
 
 from __future__ import annotations
 
+import zlib
+from pathlib import Path
+
 from peerreviewagents import read_manuscript, write_manuscript
 from peerreviewagents.engine.storage import write
 from peerreviewagents.plugin import server as srv
@@ -28,6 +31,66 @@ from peerreviewagents.plugin import server as srv
 #: Why a test's manuscript was sealed with nothing read. The reason reaches the
 #: manifest, so it says what it is rather than naming a test.
 NOTHING_READ = 'no model reads anything in this suite, so the draft is sealed as converted'
+
+#: The content streams :func:`pdf_with_rotations` writes its pages from: one
+#: upright page of prose and one page of a table, each four lines of text.
+PAGES = [
+    b'BT /F1 14 Tf 72 720 Td (An upright page) Tj ET\n'
+    b'BT /F1 11 Tf 72 700 Td (This page is the right way up and holds a sentence of prose.) Tj ET\n'
+    b'BT /F1 11 Tf 72 680 Td (It holds a second sentence so that the page is worth reading.) Tj ET\n'
+    b'BT /F1 11 Tf 72 660 Td (A third sentence makes it a paragraph rather than a caption.) Tj ET\n',
+    b'BT /F1 14 Tf 72 720 Td (A landscape table page) Tj ET\n'
+    b'BT /F1 11 Tf 72 700 Td (This page is turned ninety degrees and carries the big table.) Tj ET\n'
+    b'BT /F1 11 Tf 72 680 Td (Its rows are the measurements the whole result rests upon.) Tj ET\n'
+    b'BT /F1 11 Tf 72 660 Td (Losing it loses the evidence for every number in the text.) Tj ET\n',
+]
+
+
+def pdf_with_rotations(path, rotations):
+    """A PDF of one page per entry in *rotations*, each turned that far.
+
+    The pinned converter returns no block at all for a page whose ``/Rotate``
+    is not zero, so a PDF written with one is a PDF the conversion loses a page
+    of: the draft carries it as an outstanding page and the seal is refused
+    while nothing has been put on it. That is the one real way a run reaches
+    its Read stage's *second* failure — the reader did not seal and the
+    converted seal is refused too, because the manuscript would be missing a
+    page and nothing downstream could tell — so a test that needs a run
+    blocked there writes one of these rather than deleting a file afterwards.
+
+    It is written byte by byte rather than kept as a fixture because what makes
+    it work is one entry in the page dictionary: the same content stream, the
+    same fonts, ``/Rotate 0`` against ``/Rotate 90``.
+    """
+    path = Path(path)
+    streams = [zlib.compress(PAGES[index % len(PAGES)]) for index in range(len(rotations))]
+    first_page, first_stream = 3, 3 + len(rotations)
+    font = first_stream + len(rotations)
+    kids = ' '.join('%d 0 R' % (first_page + index) for index in range(len(rotations)))
+    objects = [b'<< /Type /Catalog /Pages 2 0 R >>',
+               ('<< /Type /Pages /Kids [%s] /Count %d >>' % (kids, len(rotations))).encode()]
+    for index, rotation in enumerate(rotations):
+        objects.append(
+            ('<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Rotate %d /Resources '
+             '<< /Font << /F1 %d 0 R >> >> /Contents %d 0 R >>'
+             % (rotation, font, first_stream + index)).encode())
+    for stream in streams:
+        objects.append(b'<< /Length %d /Filter /FlateDecode >>\nstream\n' % len(stream)
+                       + stream + b'\nendstream')
+    objects.append(b'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>')
+    out = bytearray(b'%PDF-1.4\n')
+    offsets = []
+    for number, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += b'%d 0 obj\n' % number + body + b'\nendobj\n'
+    start = len(out)
+    out += b'xref\n0 %d\n' % (len(objects) + 1) + b'0000000000 65535 f \n'
+    for offset in offsets:
+        out += b'%010d 00000 n \n' % offset
+    out += (b'trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n'
+            % (len(objects) + 1, start))
+    path.write_bytes(bytes(out))
+    return path
 
 
 def seal_converted(opened):
