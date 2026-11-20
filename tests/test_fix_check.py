@@ -17,6 +17,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import threading
 from pathlib import Path
 
 import pytest
@@ -751,16 +752,27 @@ def test_a_scripted_check_gives_each_checker_the_batch_the_server_dealt_it(tmp_p
     rows = problem_rows([(f'i{index:02d}', draft_lines[index])
                          for index in range(srv.FIX_BATCH + 2)])
     held = {}
+    # The lanes run at the same time, so the probe below has to happen while
+    # every problem is still unanswered: a problem the other lane has already
+    # answered is refused for *that* reason, which is a different rule. One
+    # lane probes, the other waits for it, and the boundary under test is the
+    # batch and not the thread order.
+    lock, probed = threading.Lock(), threading.Event()
 
     def checker(slot):
         mine = [one['id'] for one in slot.fix_queue()['problems']]
-        held[slot.slot] = mine
-        if len(held) == 1:  # The first lane to run: nothing is answered yet.
+        with lock:
+            held[slot.slot] = mine
+            probing = len(held) == 1  # The first lane in takes the probe.
+        if probing:
             not_mine = next(one['id'] for one in rows if one['id'] not in mine)
             with pytest.raises(CheckRefused) as wrong_slot:
                 slot.submit_fix_check(not_mine, 'not-fixed', searches=['the old wording'],
                                       note='Still there.')
             assert 'not in your batch' in wrong_slot.value.answer['request_rejected']
+            probed.set()
+        else:
+            assert probed.wait(timeout=30), 'the probing lane never finished'
         for problem in mine:
             answered = slot.submit_fix_check(problem, 'not-fixed',
                                              searches=['the old wording'],
@@ -769,7 +781,7 @@ def test_a_scripted_check_gives_each_checker_the_batch_the_server_dealt_it(tmp_p
 
     check = scripted_fix_check(FIXTURE, tmp_path / 'run', rows, {'fix-check': checker})
 
-    assert check.ran == ('reader', 'fix-1', 'fix-2')
+    assert check.ran[0] == 'reader' and set(check.ran[1:]) == {'fix-1', 'fix-2'}
     assert (len(held['fix-1']), len(held['fix-2'])) == (srv.FIX_BATCH, 2)
     assert set(held['fix-1']).isdisjoint(held['fix-2'])
     assert check.summary['counts']['not-fixed'] == srv.FIX_BATCH + 2
