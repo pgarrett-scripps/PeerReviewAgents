@@ -87,11 +87,18 @@ class Index:
     source text. Anything else is a 404, and a URL holding a fragment in
     ``fail`` raises :class:`OSError` — the transport failure the ledger has to
     read as "could not check" rather than as a paper that does not exist.
+
+    A fragment in ``limited`` is answered 429 instead: a host that *is* there
+    and is asking for the request again later. That is the difference the
+    ledger turns a retry gap on — a host nothing can connect to is not a retry
+    case, because waiting changes nothing about it — so a test that wants the
+    waiting half of the stage limits the index rather than failing it.
     """
 
-    def __init__(self, abstract=ABSTRACT, fail=(), year_shift=0, missing=()):
+    def __init__(self, abstract=ABSTRACT, fail=(), year_shift=0, missing=(), limited=()):
         self.abstract = abstract
         self.fail = list(fail)
+        self.limited = list(limited)
         self.year_shift = year_shift
         self.missing = list(missing)
         self.urls: list[str] = []
@@ -103,6 +110,9 @@ class Index:
         for fragment in self.fail:
             if fragment in url:
                 raise OSError('temporary failure in name resolution')
+        for fragment in self.limited:
+            if fragment in url:
+                raise urllib.error.HTTPError(url, 429, 'Too Many Requests', {}, None)
         if url.startswith(cl.CROSSREF_SEARCH):
             return io.BytesIO(json.dumps(self.search(url)).encode('utf-8'))
         if url.startswith(cl.EUROPEPMC_SEARCH):
@@ -436,7 +446,7 @@ def test_the_recorder_is_told_to_stop_while_the_owed_retries_are_waiting(tmp_pat
     rows are still owed, and the tool says to wait rather than spend a turn.
     """
     open_run(tmp_path)
-    srv.STATE['opener'] = Index(fail=('crossref.org', 'ebi.ac.uk'))
+    srv.STATE['opener'] = Index(limited=('crossref.org', 'ebi.ac.uk'))
     answer = resolving(CODES['recorder_key'], limit=0)
     assert answer['remaining'] == 3
     assert 0 < answer['retry_after'] <= answer['retry_wait']
@@ -472,13 +482,13 @@ def test_a_retry_gap_that_fits_inside_the_run_is_waited_out_and_the_rows_are_che
     that had the time and spent it ending.
     """
     open_run(tmp_path)
-    index = Index(fail=('crossref.org', 'ebi.ac.uk'))
+    index = Index(limited=('crossref.org', 'ebi.ac.uk'))
     srv.STATE['opener'] = index
     clock = FakeClock()
 
     def wait_the_rate_limit_out(seconds):
         clock.sleep(seconds)
-        index.fail = []  # which is the state the retry exists for
+        index.limited = []  # which is the state the retry exists for
 
     run = srv.current()
     patience = cl.Patience(deadline=clock.time() + 3600, clock=clock.time,
@@ -509,7 +519,7 @@ def test_a_retry_gap_longer_than_the_run_has_left_is_not_waited_out_and_says_so(
     which rows were left and why.
     """
     open_run(tmp_path)
-    srv.STATE['opener'] = Index(fail=('crossref.org', 'ebi.ac.uk'))
+    srv.STATE['opener'] = Index(limited=('crossref.org', 'ebi.ac.uk'))
     clock = FakeClock()
     run = srv.current()
     patience = cl.Patience(deadline=clock.time() + 120, clock=clock.time, sleep=clock.sleep)
@@ -550,7 +560,7 @@ def test_the_recorder_is_handed_the_runs_clock_and_not_a_guess(tmp_path, monkeyp
 
     with subtests.test('a run with less left than the gap does not wait'):
         open_run(tmp_path)
-        srv.STATE['opener'] = Index(fail=('crossref.org', 'ebi.ac.uk'))
+        srv.STATE['opener'] = Index(limited=('crossref.org', 'ebi.ac.uk'))
         monkeypatch.setenv('PEERREVIEW_RUN_DEADLINE', str(int(time.time()) + 90))
         started = time.monotonic()
         answer = resolving(CODES['recorder_key'], limit=0)
@@ -576,7 +586,7 @@ def test_the_rest_of_the_session_keeps_working_while_the_resolve_stage_waits(tmp
     ``progress.json``, and the wait's own end.
     """
     open_run(tmp_path)
-    srv.STATE['opener'] = Index(fail=('crossref.org', 'ebi.ac.uk'))
+    srv.STATE['opener'] = Index(limited=('crossref.org', 'ebi.ac.uk'))
     run = srv.current()
     spec = token_for('spec-citations')
     clock = FakeClock()
@@ -662,7 +672,7 @@ def test_two_resolve_calls_at_once_do_not_both_fetch_the_same_rows(tmp_path, mon
     nothing at all instead, and the recorder is told to wait for the first.
     """
     open_run(tmp_path)
-    srv.STATE['opener'] = Index(fail=('crossref.org', 'ebi.ac.uk'))
+    srv.STATE['opener'] = Index(limited=('crossref.org', 'ebi.ac.uk'))
     run = srv.current()
     clock = FakeClock()
     nap = time.sleep
@@ -915,7 +925,7 @@ def test_one_call_waits_only_so_long_and_tells_the_recorder_to_call_again(tmp_pa
     left are rows the next call takes up rather than rows nobody will.
     """
     open_run(tmp_path)
-    srv.STATE['opener'] = Index(fail=('crossref.org', 'ebi.ac.uk'))
+    srv.STATE['opener'] = Index(limited=('crossref.org', 'ebi.ac.uk'))
     clock = FakeClock()
     # Room for one gap and not two, against a day of run: the budget is what
     # bites, and the stage waited once before it did.
@@ -1468,7 +1478,7 @@ def test_the_review_is_not_written_from_under_a_resolve_pass(tmp_path, monkeypat
     and ``mark_blocked`` still ends a run whose pass will not come back.
     """
     open_run(tmp_path)
-    srv.STATE['opener'] = Index(fail=('crossref.org', 'ebi.ac.uk'))
+    srv.STATE['opener'] = Index(limited=('crossref.org', 'ebi.ac.uk'))
     run = srv.current()
     close_every_stage(run)
     clock = FakeClock()

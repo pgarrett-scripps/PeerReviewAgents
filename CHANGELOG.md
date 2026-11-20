@@ -85,6 +85,15 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The citations lane can be run with no network from a scripted call.**
+  `offline=True` on `scripted_review` hands that run — and only that run — an
+  opener that fails every request the way a machine with no route out fails, so
+  a consumer covering the one stage that leaves the machine neither reaches the
+  live indexes nor blocks sockets in its own test suite. The lane ends in
+  seconds, with the references *not checked*: `citations/stages.json` carries
+  `hosts_reached: false` and the reason, and `read_run`'s citation `problems`
+  says it. The reviewers' own source fetches are offline in the same run, so
+  nothing in it goes out.
 - **A run blocked at start-up because the runner is missing is one line of a
   scripted call.** `missing='claude is not installed'` on `scripted_review`,
   `scripted_fix_check` or `scripted_read` — behind it a `missing=` option on
@@ -639,6 +648,31 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   subscription login. A stronger boundary than this means a container.
 
 ### Fixed
+
+- **Two findings from one seat shared a ledger id.** The id a submission was
+  stored under — `{slot}-{attempt}-{number}` — had `number` hardcoded to `1`,
+  so every finding a reviewer filed came back as `core-1-1-1` on every arm, in
+  `findings.jsonl` and from `read_run`. Nothing inside the review was fooled,
+  because the editor's issues and the fix checks join on `finding_uid` and on
+  issue ids; a consumer keying on `id` was, and so was the draft export's own
+  per-finding map. Numbers are now handed out per seat in submission order and
+  kept per `finding_uid`, so two findings are two ids, a resubmission of the
+  same finding keeps the id it had — the join `superseded_by` already makes —
+  and a row the guard refused takes its number with it into
+  `quarantined.jsonl`.
+- **The citations lane held a run open for ten minutes to say it had no
+  network.** Each lookup went out with the transport's own default timeout, and
+  rows that could not be checked were then slept over the five-minute retry gap
+  — three times — inside one `resolve_citations` call, which is what a user
+  offline or behind a firewall met. Every lookup now carries its own
+  `LOOKUP_TIMEOUT_SECONDS` (8 seconds, settable per `Lookups`), and a pass
+  where *every* request failed to reach a host at all does not wait a gap out:
+  there is nobody to ask on the other side of it. The lane ends in seconds with
+  the references *not checked* and the reason on the record —
+  `citations/stages.json` gains `hosts_reached: false` and an
+  `unchecked_reason` naming the unreachable hosts, `read_run`'s citation
+  `problems` says it, and the tool's own next-step line tells the caller not to
+  call again rather than offering a retry that cannot help.
 
 - **A run with its per-run ceiling spent handed the next seat no ceiling at
   all.** Zero on a task means *no* ceiling, and the panel's own arithmetic

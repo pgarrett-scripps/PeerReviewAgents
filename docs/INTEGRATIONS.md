@@ -1145,6 +1145,13 @@ Four rules it enforces so you do not have to:
   `category` — are absent from those rebuilt rows, and
   `findings_source` is still `issues`: the review is intact, the ledger behind
   it is not.
+
+  A ledger row's own `id` — `{slot}-{attempt}-{number}`, as in `core-1-1-2` —
+  is a label for that row, handed out per seat in submission order and kept per
+  `finding_uid`, so two findings never share one and a restatement of a finding
+  keeps the id it had. `finding_uid` is still what you join on: it is what the
+  issues' members carry and what the latest-row-per-finding rule is applied
+  over.
 - **A folder that is not a run is an error, not an empty answer.** It raises
   `peerreviewagents.NotARunFolder` (a `ValueError`, also reachable as
   `peerreviewagents.runs.NotARunFolder`) naming the files it
@@ -1489,7 +1496,16 @@ from, so a row keeps its identity. The offsets are into the file, markup and
 all, while `sentence` is the same words as the page prints them: the two differ
 by the reader's citation links, which is why both are kept. The stage record beside
 it, `citations/stages.json`, is what `complete` and `lookups` are read from:
-`{"fill": {"done": true}, "resolve": {"done": true, "lookups": 2}}`.
+`{"fill": {"done": true}, "resolve": {"done": true, "lookups": 2}}`. A
+`resolve` record that is not done also carries why: `remaining`, the
+`unchecked_reason` sentence, and `hosts_reached` — `false` where *every* lookup
+this run made failed to reach a host at all, which is the machine offline or a
+firewall dropping the lookups. That is the one case where the rows owed an
+attempt are not worth another call: there is no network to make it on, the
+references are *not checked* rather than checked and absent, and
+`read_run`'s citation `problems` says so. It is also the one case where the
+lane does not wait the retry gap out, so a run offline answers in seconds
+instead of holding a review open for ten minutes to report it.
 `tests/test_ledger_consumer_surface.py` builds its fixtures exactly this way
 and is the worked example to copy.
 
@@ -2206,6 +2222,19 @@ run = read_run(folder)                 # or review.read(), which is the same
   starter's stop case from a script: the run blocks, and the folder says the
   stage is missing because the run ran out rather than because the seat is a
   bad one.
+- **The citations lane with no network is `offline=True`.** The lane is the one
+  stage of a review that leaves the machine, and covering it used to mean
+  either letting the lookups go to the live indexes or blocking sockets in your
+  own suite. `scripted_review('paper.pdf', folder, offline=True)` hands that
+  run — and only that run, put back afterwards — an opener that fails every
+  request the way a machine with no route out fails, reviewers' `fetch_source`
+  included, so nothing in it goes out. The lane then ends in seconds with the
+  references *not checked*: `citations/stages.json` carries
+  `hosts_reached: false` with the reason, and `read_run`'s citation `problems`
+  says it. That is the folder a user offline or behind a firewall gets, which
+  is the fixture to render against. Each lookup also carries its own timeout —
+  `citation_ledger.LOOKUP_TIMEOUT_SECONDS`, 8 seconds — so a host that accepts
+  a connection and never answers costs that much and no more.
 - **A run blocked at start-up is `missing=`,** one line saying there is nothing
   to run the agents with, the way `claude` that is not installed is nothing:
   `scripted_review('paper.pdf', folder, missing='claude is not installed')` goes

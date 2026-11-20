@@ -124,6 +124,22 @@ COMPARED = ('title', 'first_author', 'year', 'venue')
 #: timeout pass; it is not retried for ever, because a host that is down stays
 #: down and the lookup allowance is the whole ledger's.
 RESOLVE_ATTEMPTS = 3
+#: How long one lookup may take before it is given up on. Short on purpose:
+#: resolving a reference takes up to half a dozen requests and a reference list
+#: takes hundreds, so a host that accepts a connection and never answers costs
+#: this many seconds per request, times the list. The shared transport default
+#: is 20 seconds, which is a sensible wait for a reviewer's single lookup and
+#: is minutes of a run here — the pilot's own lane spent 21 seconds a reference
+#: on one index that was firewalled, with the review waiting on it.
+#:
+#: It bounds the connection and the reading of the answer, which is what a
+#: firewall that drops packets hangs on. It does **not** bound the name lookup:
+#: :mod:`socket` takes no timeout for ``getaddrinfo``, so a resolver that is
+#: itself unreachable is bounded by the system resolver's own retries (a few
+#: seconds, twice, under glibc's defaults) and not by this. That is why the
+#: stage also stops retrying once it is clear nothing can be reached at all —
+#: see :data:`NO_NETWORK_REASON`.
+LOOKUP_TIMEOUT_SECONDS = 8
 #: How long a reference that could not be checked waits before it is looked up
 #: again. Five minutes, not seconds: the two answers this retry exists for are
 #: a 429 and a host that is briefly down, and both are minutes-long states. A
@@ -159,6 +175,16 @@ RESOLVE_TICK_SECONDS = 30
 #: a progress notification does not extend the per-call ceiling — so the call
 #: stops waiting well inside that and reports what is left instead.
 RESOLVE_WAIT_BUDGET_SECONDS = 900
+#: Why the rows are unchecked when nothing could be reached. A retry gap is
+#: worth waiting out when the host might answer differently in five minutes — a
+#: rate limit passes, a host that is briefly down comes back. A machine with no
+#: route to any index is not that case: the next attempt has nobody to ask, and
+#: the gap is spent out of the review's wall clock for an answer that cannot
+#: change. So :func:`resolve` stops at once and says this instead, which is the
+#: honest shape of it — not checked, no network — rather than a lane that holds
+#: a run open for ten minutes and then reports the same thing.
+NO_NETWORK_REASON = ('no lookup host could be reached — every request failed to connect, so the '
+                     'retry gaps were not waited out')
 #: The shortest passage a worker may quote as the source's own words. Shorter
 #: than one clause is not evidence that a source says anything: ``ABSTRACT``,
 #: ``the`` and a single number all appear in almost any source text, and all
@@ -1719,13 +1745,18 @@ class Lookups:
     Nothing here sends anything about the user.
     """
 
-    def __init__(self, directory, opener=None, limit=600):
+    def __init__(self, directory, opener=None, limit=600, timeout=LOOKUP_TIMEOUT_SECONDS):
         if type(limit) is not int or not 0 <= limit <= 5_000:
             raise ValueError('The citation lookup allowance must be between zero and 5000')
+        timeout = float(timeout)
+        if not 0 < timeout <= 120:
+            raise ValueError('The citation lookup timeout must be between zero and 120 seconds')
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.limit = limit
         self.opener = opener
+        #: Seconds one request may take. See :data:`LOOKUP_TIMEOUT_SECONDS`.
+        self.timeout = timeout
         self.receipts_path = self.directory / 'requests.json'
 
     def receipts(self):
@@ -1741,6 +1772,24 @@ class Lookups:
 
     def count(self):
         return len(self.receipts()['requests'])
+
+    def unreachable(self):
+        """True when every request this run has made failed to reach a host.
+
+        ``unavailable`` is the transport's word for a request that never got an
+        answer from anybody: the name did not resolve, the connection was
+        refused or dropped, or it timed out. A machine that is offline or
+        behind a firewall that drops the lookups answers that way every time,
+        and a run that has made a dozen requests and reached nothing has said
+        all it is going to say about the network.
+
+        Anything else is a host that answered — a 429, a 404, a 500 — which is
+        a reason to try again later, so this stays ``False`` as soon as one
+        request got through. ``False`` too for a run that has made no requests
+        at all: nothing has been tried, so nothing is known.
+        """
+        made = self.receipts()['requests']
+        return bool(made) and all(one.get('status') == 'unavailable' for one in made)
 
     def _record(self, url, status):
         stored = self.receipts()
@@ -1775,7 +1824,8 @@ class Lookups:
                 return self._decode(record | {'cache_hit': True}, raw, json_body)
         if self.count() >= self.limit:
             return {'status': 'budget_exhausted', 'source_url': url}
-        answer = retrieve(url, opener=self.opener, headers=HEADERS, error_body=error_body)
+        answer = retrieve(url, opener=self.opener, headers=HEADERS, timeout=self.timeout,
+                          error_body=error_body)
         self._record(url, answer['status'])
         if answer['status'] != 'ok':
             failed = {key: value for key, value in answer.items() if key != 'raw'} | {
@@ -3427,6 +3477,14 @@ def resolve(ledger, lookups, limit=0, retry=True, wait=RETRY_WAIT_SECONDS, patie
     takes at most ``limit`` rows; the gap is only ever waited out when no owed
     row is due now, so a call that waits is a call that had nothing else it
     could have been doing.
+
+    **No network is not a retry case.** Where every request has failed to
+    reach a host — offline, or behind a firewall that drops the lookups — this
+    returns at once rather than sleeping out gaps that cannot change the
+    answer: ``hosts_reached`` is ``False``, ``unchecked_reason`` is
+    :data:`NO_NETWORK_REASON`, and both are in the stage record, so the folder
+    says *not checked, no network* instead of the lane holding a run open for
+    ten minutes to say the same thing. See :meth:`Lookups.unreachable`.
     """
     patience = patience or Patience()
     before, resolved_now = lookups.count(), 0
@@ -3480,15 +3538,29 @@ def resolve(ledger, lookups, limit=0, retry=True, wait=RETRY_WAIT_SECONDS, patie
         # `limit` that cut the queue short is that case.
         if not (retry and remaining and retry_after):
             break
+        # A gap is worth waiting out when the host might answer differently on
+        # the other side of it. Where every request this run has made failed to
+        # reach a host at all — the machine is offline, or a firewall drops the
+        # lookups — the attempt after the gap has nobody to ask, and the five
+        # minutes come out of the review's wall clock for an answer that cannot
+        # change. The pilot's offline lane held a run open for over ten minutes
+        # and then reported exactly what it could have reported at once.
+        if lookups.unreachable():
+            break
         if not patience.wait(retry_after):
             break
-    unchecked_reason = patience.why(retry_after) if remaining else None
+    # Asked after the loop, so that a pass which left rows owed for any reason
+    # reports the network it met rather than the branch it took.
+    offline = bool(remaining) and lookups.unreachable()
+    unchecked_reason = ((NO_NETWORK_REASON if offline else patience.why(retry_after))
+                        if remaining else None)
     totals = counts(ledger)
     ledger.record_stage('resolve', done=not remaining, resolved=totals['resolved'],
                         references=totals['references'], remaining=remaining,
                         retry_after=retry_after, retry_wait=wait,
                         waited=round(patience.waited, 1),
                         unchecked_reason=unchecked_reason,
+                        hosts_reached=not offline,
                         lookups=lookups.count())
     # Read again, now that the stage is recorded: the lookup count in `counts`
     # comes from that record, so the first reading would hand this call's
@@ -3497,6 +3569,10 @@ def resolve(ledger, lookups, limit=0, retry=True, wait=RETRY_WAIT_SECONDS, patie
     return {'resolved_now': resolved_now, 'remaining': remaining,
             'retry_after': retry_after, 'retry_wait': wait,
             'waited': round(patience.waited, 1), 'unchecked_reason': unchecked_reason,
+            # Whether anything answered. ``False`` is the one case where the
+            # rows owed an attempt are not worth another call at all: there is
+            # no network to make it on. See :data:`NO_NETWORK_REASON`.
+            'hosts_reached': not offline,
             # A call that stopped because *it* had waited long enough is the one
             # case where calling again picks the wait back up instead of doing
             # nothing, and the caller is told which case it is.

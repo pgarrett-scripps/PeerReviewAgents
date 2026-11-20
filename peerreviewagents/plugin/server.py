@@ -893,6 +893,9 @@ class Run:
         self.slot_calls = {}
         self.findings = []
         self.quarantined = []
+        # ``(review_id, finding_uid) -> number``: the number each of a seat's
+        # findings takes in its ledger id. See :meth:`finding_number`.
+        self.finding_numbers = {}
         # The code check's answers, one row per finding it looked at: the
         # verdict, the passage of the snapshot behind it or the searches that
         # found none, and the checker's note. Kept whatever the verdict says,
@@ -1389,6 +1392,12 @@ class Run:
                 'tool_limit': max(0, budget - used),
                 'literature_cutoff': self.cutoff,
                 'external_request_limit': EXTERNAL_BUDGET[allowance],
+                # The same opener the ledger's lookups go through, so that a
+                # run told it has no network has none anywhere: a reviewer's
+                # `fetch_source` opened a real socket while the citation lane
+                # was answering offline, which is two different machines in one
+                # run as far as a test is concerned.
+                'opener': STATE.get('opener'),
             })
         self.agents[slot] = agent
         self.tokens[token] = agent
@@ -1426,6 +1435,33 @@ class Run:
                         ' '.join(str(raw.get('quote', '')).split()).casefold(),
                         '|'.join(handles)])
         return digest(key)[:16]
+
+    def finding_number(self, review_id, uid):
+        """The number this finding takes in its ledger ``id``, counted per seat.
+
+        The ``id`` is ``<slot>-<attempt>-<number>``, and the number used to be
+        the literal ``1`` on every submission: a reviewer who filed two
+        findings filed two rows with the same ``id``, and an application that
+        keyed on it — the field is served in ``findings.jsonl``, in
+        ``read_run()['findings']`` and in ``list_findings`` — had one finding
+        standing in for two. Nothing inside the review was fooled, because the
+        editor and the issues join on ``finding_uid``; a reader outside it was.
+
+        One number per ``finding_uid``, so a reviewer who resubmits the same
+        finding — a corrected comment on the same quote — keeps the ``id`` its
+        first row had rather than appearing to raise something new, and two
+        different findings from one seat are never the same row. Numbers are
+        handed out in submission order; a row the guard refused takes one and
+        keeps it in ``quarantined.jsonl``, so the next *different* finding
+        takes the next number, while a corrected resubmission of the refused
+        one shares its uid and so its number — which is the same join
+        ``superseded_by`` makes over those two rows.
+        """
+        key = (review_id, uid)
+        if key not in self.finding_numbers:
+            taken = sum(1 for seat, _ in self.finding_numbers if seat == review_id)
+            self.finding_numbers[key] = taken + 1
+        return self.finding_numbers[key]
 
     def cited_lines(self, stored, corroborating):
         """Every line a finding points at: its anchor, its evidence, its corroboration.
@@ -1539,7 +1575,10 @@ class Run:
         the paper does not say, and the counts of what a run could publish are
         read off these rows.
         """
-        row = line_finding(raw, f'{agent.slot}-{agent.attempt}', 1, found.get('placement'))
+        review_id = f'{agent.slot}-{agent.attempt}'
+        uid = self.finding_uid(agent, raw)
+        row = line_finding(raw, review_id, self.finding_number(review_id, uid),
+                           found.get('placement'))
         if 'placement' not in found:
             row['placement_reason'] = found.get('refused') or row.get('placement_reason')
         kept, quarantined = quarantine_findings([row])
@@ -1555,7 +1594,7 @@ class Run:
         stored['slot'] = agent.slot
         stored['role'] = agent.role
         stored['escalate'] = bool(escalate) and agent.role == 'specialist'
-        stored['finding_uid'] = self.finding_uid(agent, raw)
+        stored['finding_uid'] = uid
         stored['basis'], stored['basis_reason'] = self.basis(agent, stored, receipt_id,
                                                              corroborating, code_evidence)
         if corroborating:
@@ -5009,7 +5048,18 @@ async def resolve_citations(recorder_key: str, limit: int = 15) -> dict:
                          + '. The stage is open and the run is still running, so the references '
                            'this pass did not reach are owed another call, not written off.')
     remaining, wait = progress['remaining'], progress.get('retry_after') or 0
-    if remaining and wait and progress.get('budget_spent'):
+    if remaining and not progress.get('hosts_reached', True):
+        # No network, and the rows know it: every request this run made failed
+        # to reach a host. Another call would spend the same seconds on the
+        # same silence, so the lane stops here and the summary says the rows
+        # are unchecked because nothing could be reached — not that the
+        # indexes were asked about them.
+        nxt = (str(remaining) + ' reference(s) are unchecked because no lookup host could be '
+               'reached from this machine: ' + (progress.get('unchecked_reason') or '')
+               + '. Do not call again: there is no network for it. Report those rows as not '
+                 'checked, and say in the summary that the lookups could not be reached, so '
+                 'nothing here is evidence about those works.')
+    elif remaining and wait and progress.get('budget_spent'):
         nxt = (str(remaining) + ' reference(s) are owed another lookup and are still waiting out '
                'the retry wait: ' + (progress.get('unchecked_reason')
                                      or 'the earliest is due in ' + str(wait) + ' seconds')
