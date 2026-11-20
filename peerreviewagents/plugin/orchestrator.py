@@ -45,7 +45,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from .runner import Task
+from .runner import ANSWERED, SILENT, Task
 
 # -- what an agent's final answer has to look like ---------------------------
 #
@@ -382,6 +382,21 @@ class Budget:
         with self.lock:
             return [dict(row) for row in self.rows if row['state'] != 'answered']
 
+    def last_ending(self, slot):
+        """How *slot* ended the last time it was started, or ``''``.
+
+        One of :data:`peerreviewagents.plugin.runner.ENDINGS` — ``answered``,
+        ``no answer``, ``over the token ceiling``, ``out of time``, ``failed`` —
+        and it is how a blocked run says *why* a stage is missing rather than
+        only that it is. ``''`` for a slot that was never started: the ceiling
+        was already spent, or the run stopped before its turn.
+        """
+        with self.lock:
+            for row in reversed(self.rows):
+                if row['slot'] == slot:
+                    return str(row.get('state') or '')
+        return ''
+
 
 # -- the prompts -------------------------------------------------------------
 #
@@ -651,6 +666,15 @@ class Panel:
         #: The model the plan says each slot runs, as written down.
         self.assigned = {}
         self.opened = {}
+        #: What the Read stage did, as :meth:`_read_record` builds it, kept
+        #: here so a run that blocked after the read still has it: the starter
+        #: writes it into ``runtime.json`` and a folder opened later reads it
+        #: there rather than inferring it from the manuscript's manifest.
+        self.read_record = None
+        #: ``{slot: why nothing more was started}`` — a stage whose retry the
+        #: budget stopped. The run's blocked reason says it, because "returned
+        #: nothing" and "was never attempted again" are different facts.
+        self.stopped = {}
 
     # -- saying what is happening -----------------------------------------
 
@@ -839,11 +863,43 @@ class Panel:
                 stop = self.budget.exhausted()
                 if stop:
                     self.say(f'{slot}: {what}, and {stop}')
+                    # Remembered, because the blocked reason this run ends with
+                    # is written from the slots that returned nothing, and
+                    # "nothing was started again" is the fact a reader needs.
+                    self.stopped[slot] = stop
                     return None
                 self.say(f'{slot}: {what}; retrying once')
             else:
                 self.say(f'{slot}: {what}; the run is blocked')
         return None
+
+    #: How an ending reads in a blocked run's reason. The two that need saying
+    #: differently are here; every other ending — over the token ceiling, out
+    #: of time, failed — is already the plain fact and is printed as it stands.
+    ENDING_WORDS = {ANSWERED: 'answered without closing its stage',
+                    SILENT: 'returned nothing'}
+
+    def why_missing(self, slots):
+        """Why these stages are not in the run, each named with its ending.
+
+        "Returned nothing twice" is the shape of the retry, not the reason. A
+        seat that went over its token ceiling, one that ran out of time, one
+        that failed and one that truly said nothing are four different runs to
+        come back to, and a folder opened later holds this sentence and nothing
+        else about it. So each slot is named with how it ended the last time it
+        was started, and where the budget stopped the retry, that stop is said
+        too — once, because it is one fact about the run and not about a slot.
+        """
+        rows = []
+        for slot in slots:
+            ending = self.budget.last_ending(slot)
+            said = self.ENDING_WORDS.get(ending, ending or 'was never started')
+            rows.append(f'{slot} ({said}'
+                        + (', and nothing was started again' if slot in self.stopped else '')
+                        + ')')
+        stops = [self.stopped[slot] for slot in slots if slot in self.stopped]
+        return (f'These stages are not in the {self.kind}: ' + ', '.join(rows)
+                + (f' — {stops[0]}' if stops else ''))
 
     def together(self, thunks):
         """Run several lanes at once, in order, a failed lane as ``None``.
@@ -985,26 +1041,34 @@ class Panel:
         absence that reads as the other case. The run is not blocked for it,
         on a review or on a fix check: the stage has a fallback and the
         fallback worked, which is why there is a run to report at all.
+
+        The record is kept on the panel as well as returned, because a run
+        that blocks after the Read stage has no result to carry it and the
+        folder is the only thing a consumer opens later: see
+        :attr:`read_record`, which the starter writes into ``runtime.json``.
         """
         if not read:
+            self.read_record = None
             return None
         if read.get('sealed_as_converted'):
-            return {'model': self.model_of(self.reader_slot),
-                    'reader_failed': True,
-                    'sealed': 'as converted',
-                    'reason': read.get('reason') or '',
-                    'attempts': read.get('attempts'),
-                    'pages_viewed': 0,
-                    'pages': read.get('pages') or 0,
-                    'actions': 0,
-                    'tool_calls': 0}
-        return {'model': self.model_of(self.reader_slot),
-                'reader_failed': False,
-                'attempts': read.get('attempts'),
-                'pages_viewed': read.get('pages_viewed') or 0,
-                'pages': read.get('pages') or 0,
-                'actions': read.get('actions') or 0,
-                'tool_calls': read.get('tool_calls') or 0}
+            self.read_record = {'model': self.model_of(self.reader_slot),
+                                'reader_failed': True,
+                                'sealed': 'as converted',
+                                'reason': read.get('reason') or '',
+                                'attempts': read.get('attempts'),
+                                'pages_viewed': 0,
+                                'pages': read.get('pages') or 0,
+                                'actions': 0,
+                                'tool_calls': 0}
+            return self.read_record
+        self.read_record = {'model': self.model_of(self.reader_slot),
+                            'reader_failed': False,
+                            'attempts': read.get('attempts'),
+                            'pages_viewed': read.get('pages_viewed') or 0,
+                            'pages': read.get('pages') or 0,
+                            'actions': read.get('actions') or 0,
+                            'tool_calls': read.get('tool_calls') or 0}
+        return self.read_record
 
     def seal_as_converted(self, reason):
         """The Read stage's failure path, in the server's own hands.
@@ -1056,10 +1120,14 @@ class Review(Panel):
         """One whole review, from the plan to the written document."""
         opened = self.open(request)
         read, counts, lines = self.read(opened)
+        # Written down here rather than where the result is built: a run that
+        # blocks in the panel below never reaches that dict, and what the Read
+        # stage did is still a fact about the folder.
+        self._read_record(read)
         citations = self.citation_lane_for(counts)
         reported, failed = self.panel(citations)
         if failed:
-            self.block('These stages returned nothing twice: ' + ', '.join(failed))
+            self.block(self.why_missing(failed))
         self.reclose(reported)
         stored = sum(int(row.get('findings_stored') or 0) for row in reported)
         self.say(f'{len(reported)} stages closed, {stored} findings stored')
@@ -1076,7 +1144,7 @@ class Review(Panel):
             'status': recorded.get('status'),
             'refusal': recorded.get('refusal') or None,
             'models': dict(self.assigned),
-            'read': self._read_record(read),
+            'read': self.read_record,
             'line_count': lines or None,
             'stages': [{'slot': row['slot'], 'attempts': row.get('attempts'),
                         'reclosed': row.get('reclose_attempts') or None,
@@ -1404,7 +1472,7 @@ class Review(Panel):
         self.phase('Revision')
         revised = self.stage('revision-1', revision_prompt, STAGE)
         if not revised:
-            self.block('The revision stage returned nothing twice')
+            self.block(self.why_missing(['revision-1']))
         return revised
 
     # -- Code check --------------------------------------------------------
@@ -1556,6 +1624,9 @@ class FixCheck(Panel):
     def run(self, request):
         opened = self.open(request)
         read, lines = self.read(opened)
+        # As in :meth:`Review.run`: the folder keeps this even where the check
+        # below never writes a document.
+        self._read_record(read)
         lanes = self.check()
         recorded = self.record()
         return {
@@ -1566,7 +1637,7 @@ class FixCheck(Panel):
             'status': recorded.get('status'),
             'refusal': recorded.get('refusal') or None,
             'models': dict(self.assigned),
-            'read': self._read_record(read),
+            'read': self.read_record,
             'line_count': lines or None,
             'problems': self.problems,
             'over_cap': self.over_cap,

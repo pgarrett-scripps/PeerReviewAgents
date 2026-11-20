@@ -1990,10 +1990,13 @@ base = read.base()          # the sealed workspace: `text`, `rows`, `manifest`
   path to `scripted_read` and to the `scripted_review` that follows it; a
   missing file is refused before anything is planned.
 - A reader that fails does not block the run: the manuscript is sealed as
-  converted, the reviewers read the converter's own equations, and the result's
-  `read` says `reader_failed: True` with the reason. `read` is `None` only for
-  a folder that arrived sealed. The same is true of a fix check — it is the
-  same stage.
+  converted, the reviewers read the converter's own equations, and `read` says
+  `reader_failed: True` with the reason — in what the call returns, in
+  `runtime.json`, and through `read_run`, so a consumer that opens the folder
+  later reads the same fact rather than inferring it from the manuscript's
+  state and a row in the agent table. `read` is `None` only for a folder that
+  arrived sealed. The same is true of a fix check — it is the same stage, and
+  `read_fix_check` carries the same block.
 
 ### Building a written fix check for your tests: `scripted_fix_check`
 
@@ -2061,7 +2064,10 @@ reading = check.read()                 # or read_fix_check(folder), which is the
   `check_fixes` returns.
 - **A lane that answers nothing, or dies, costs its own batch and nothing
   else.** Its problems are written down as not checked, each with the lane
-  named as the cause on `unchecked[…]['lane']` and `['reason']`, and the check
+  named as the cause on `unchecked[…]['lane']` and `['reason']` — and those
+  rows are in `progress.json` as well as in the written check, so a folder
+  whose check was never written still answers *which* problems have no verdict
+  and why, rather than a count with nothing under it. The check
   says `incomplete: True` with `incomplete_reason` in one sentence. The status
   is still `complete` (or `complete-without-findings` where no lane answered
   at all), because the check *was* written and there is no third kind of
@@ -2168,12 +2174,26 @@ run = read_run(folder)                 # or review.read(), which is the same
   `slot.task.token_ceiling` is what this seat was handed, for a script that
   means to spend just under it. That is how a consumer builds a run stopped
   over a ceiling without a model.
+- **A blocked run says how each missing seat ended, not just that it is
+  missing.** `blocked_reason` — in the summary, in `runtime.json` and as
+  `cause` from `read_run` — names every stage that is not in the review with
+  its own last ending against it: `core-1 (over the token ceiling)`,
+  `(returned nothing)`, `(out of time)`, `(failed)`, `(was never started)`. A
+  seat the panel did not start again because the *run* was out of budget says
+  `and nothing was started again`, and the stop itself is on the end of the
+  sentence — `this run reached its token ceiling of 5,000: …`. So a
+  `per_run_tokens` small enough to be spent by the first seat builds the
+  starter's stop case from a script: the run blocks, and the folder says the
+  stage is missing because the run ran out rather than because the seat is a
+  bad one.
 - **A silent code check is in the result, not missing from it.** The code lane
   only ever takes findings *out*, so a `code-check` seat that answers nothing
   leaves the review with every finding as its reviewer filed it rather than
-  blocking the run — and `summary['code_check']` is then a row saying
-  `silent: True` with the reason. `None` there means the arm planned no code
-  lane at all.
+  blocking the run — and `code_check` is then a row saying `silent: True` with
+  the reason, in the summary and from `read_run` both, because `checked: 0` is
+  the same number for a lane that reported and settled nothing and for a lane
+  that never reported at all. `None` there means the arm planned no code lane
+  at all.
 - The recorder writes the review in this process, as it does in a model run, so
   the folder a scripted run leaves has the shape a real one leaves: `issues.json`,
   `REVIEW.md`, the reports, and `runtime.json` with one row per agent carrying

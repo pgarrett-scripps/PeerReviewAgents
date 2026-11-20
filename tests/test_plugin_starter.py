@@ -62,10 +62,14 @@ def spent(label='core-1', agent='core-reviewer', tokens=1000, ending=agent_runne
 class Panel:
     """What :func:`starter.finish` reads off a panel that has stopped."""
 
-    def __init__(self, budget, calls=7, notes=()):
+    def __init__(self, budget, calls=7, notes=(), read_record=None):
         self.budget = budget
         self.calls = calls
         self.notes = list(notes)
+        # What the Read stage did. `runtime.json` carries it so a consumer that
+        # opens the folder later reads it from there rather than from the
+        # return value of the call that made the run.
+        self.read_record = read_record
 
 
 @pytest.fixture
@@ -319,7 +323,8 @@ def test_finish_writes_the_runs_own_accounting_and_one_receipt_per_attempt(tmp_p
     budget = orchestrator.Budget(per_agent=10_000, per_run=100_000)
     budget.record(*spent(label='core-1', tokens=4000))
     budget.record(*spent(label='core-1#2', tokens=1500, ending=agent_runner.SILENT))
-    panel = Panel(budget, calls=9, notes=['the citations lane was not run'])
+    panel = Panel(budget, calls=9, notes=['the citations lane was not run'],
+                  read_record={'read': False, 'reason': 'the reader said nothing'})
     (tmp_path / 'progress.json').write_text(json.dumps({'status': 'reviewing'}),
                                             encoding='utf-8')
 
@@ -335,6 +340,7 @@ def test_finish_writes_the_runs_own_accounting_and_one_receipt_per_attempt(tmp_p
     assert runtime['per_run_token_ceiling'] == 100_000
     assert runtime['notes'] == ['the citations lane was not run']
     assert runtime['result'] == {'status': 'blocked'}
+    assert runtime['read'] == {'read': False, 'reason': 'the reader said nothing'}
     assert [row['label'] for row in runtime['agents']] == ['core-1', 'core-1#2', 'recorder']
 
     receipts = (tmp_path / 'usage' / 'core-1' / 'usage.jsonl').read_text(encoding='utf-8')

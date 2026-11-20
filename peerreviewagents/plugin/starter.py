@@ -334,6 +334,13 @@ def finish(review, status, reason, budget, wall, result=None, panel=None, runner
         'per_run_token_ceiling': budget.per_run,
         'claude_code_version': claude_version() or os.environ.get('PEERREVIEW_CLAUDE_VERSION'),
         'runner': runner.describe() if runner is not None else None,
+        # What the Read stage did, from the panel rather than from `result`: a
+        # run that blocked after the read has no result at all, and whether the
+        # reader failed — the draft sealed as the converter read it, over the
+        # converter's own equations — is a fact about every finding in the
+        # folder. `None` where the run had no Read stage: the folder arrived
+        # with a sealed manuscript. See `Panel.read_record`.
+        'read': panel.read_record if panel is not None else None,
         # What the orchestrator itself returned: the route, the stages it
         # closed, the counts the server recorded. The old `result` was the
         # driving session's own last event, which no longer exists.

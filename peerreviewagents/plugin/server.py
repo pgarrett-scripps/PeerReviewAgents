@@ -1097,6 +1097,26 @@ class Run:
         return {'sealed': True, 'line_count': self.base.line_count(),
                 'ai_read': (self.base.manifest or {}).get('ai_read')}
 
+    def read_progress(self):
+        """What the Read stage did, for ``progress.json``.
+
+        The server's own answer to the question the orchestrator's result
+        answers from the reader's side: whether this run had a Read stage at
+        all, whether the manuscript is sealed, and — the fact a consumer
+        otherwise has to infer from the manifest — whether the reader *failed*
+        and the draft was sealed as the converter read it, with the reason it
+        was sealed that way. A run killed before the starter writes its
+        accounting leaves only this, so it carries the failure too.
+        """
+        read = (self.base.manifest or {}).get('ai_read') if self.base is not None else None
+        failed = isinstance(read, dict) and read.get('read') is False
+        return {'planned': bool(self.read_stage),
+                'sealed': self.base is not None,
+                'reader_failed': bool(failed),
+                'reason': (read.get('reason') or '') if failed else '',
+                'outstanding': (None if self.base is not None
+                                else engine_reader.outstanding(self.draft))}
+
     def resolve_slot(self, slot):
         """Role, track and what a slot may see. Unknown slots are refused, not invented.
 
@@ -1658,6 +1678,14 @@ class Run:
         return {
             'cap': MAX_CODE_CHECKS,
             'checked': len(self.code_checks),
+            # Whether the lane filed no report at all — it answered nothing, or
+            # died before it could close. The orchestrator's result says this
+            # about its own run; it is written down here so a folder opened
+            # later says it too, because "the lane never reported" and "the
+            # lane reported and settled nothing" read the same in the counts
+            # and are not the same run.
+            'silent': not any(slot in self.agents and self.agents[slot].report
+                              for slot in self.code_check_slots),
             # The method claims the lane was handed and left unanswered. A
             # silent code check is not an absent one: the findings it would
             # have read against the code stand exactly as their reviewers
@@ -1683,7 +1711,7 @@ class Run:
         record = self.code_check_record()
         return None if record is None else {
             key: record[key] for key in
-            ('cap', 'checked', 'not_checked', 'incomplete', 'incomplete_reason',
+            ('cap', 'silent', 'checked', 'not_checked', 'incomplete', 'incomplete_reason',
              'over_cap', 'counts')}
 
     # -- fix check ----------------------------------------------------------
@@ -1811,7 +1839,12 @@ class Run:
                         'dealt to a checker')
         agent = self.agents.get(lane)
         if agent is None:
-            return lane, f'{lane} never claimed its batch, so nothing read the draft against it'
+            # The run can be blocked here — the reader could not seal the new
+            # draft, so no lane was ever started — and then why the run stopped
+            # is why this problem has no verdict. It is said on the row,
+            # because a consumer reading the rows is not holding the status.
+            return lane, (f'{lane} never claimed its batch, so nothing read the draft against it'
+                          + (f'; the run stopped first: {self.error}' if self.error else ''))
         if not agent.report:
             return lane, (f'{lane} claimed its batch and stopped without reporting, so the new '
                           'draft was never read against it')
@@ -1860,12 +1893,20 @@ class Run:
         }
 
     def fix_check_counts(self):
-        """The fix check by the numbers alone, without the quotes: for ``progress.json``."""
+        """The fix check by the numbers, and every problem with no verdict: for
+        ``progress.json``.
+
+        The quotations stay out — they are the draft's own text and the written
+        check is where they belong — but the ``unchecked`` rows come along,
+        because a check that blocked before it could write anything leaves this
+        file as the only place a problem's reason survives. A count of three
+        with no row for any of the three is a reading nobody can act on.
+        """
         record = self.fix_check_record()
         return None if record is None else {
             key: record[key] for key in
             ('cap', 'problems', 'checked', 'not_checked', 'incomplete', 'incomplete_reason',
-             'over_cap', 'counts')}
+             'over_cap', 'counts', 'unchecked')}
 
     def quarantine_rows(self):
         """Every refused submission, each stamped with the finding that replaced it.
@@ -2060,10 +2101,10 @@ class Run:
             'review_guard_status': self.guard_status(),
             # The Read stage, which closes no stage in the ledger: either the
             # manuscript is sealed or it is a draft with work left on it, and a
-            # run killed mid-stage says which here.
-            'read': {'sealed': self.base is not None,
-                     'outstanding': (None if self.base is not None
-                                     else engine_reader.outstanding(self.draft))},
+            # run killed mid-stage says which here. See `read_progress`: it
+            # also says whether this run planned a Read stage at all and
+            # whether the reader failed, so neither has to be inferred.
+            'read': self.read_progress(),
             'citations': self.citation_counts(),
             # Whether this review had the code, and what it has read of it so
             # far. A run that was given none says so, so "the code was not
