@@ -98,12 +98,20 @@ def init_event(task, server='connected', tools=None):
 
 
 MESSAGES = itertools.count(1)
+TOOL_BLOCKS = itertools.count(1)
 
 
-def assistant(text='', tokens=0, calls=0, model='claude-sonnet-5-5', held=None):
+def assistant(text='', tokens=0, calls=0, model='claude-sonnet-5-5', held=None, tool_ids=None):
     """One assistant event. ``held`` is its message id, which a real stream can
-    send more than once — one event per content block, the same usage on each."""
-    content = [{'type': 'tool_use', 'name': 'submit_finding'} for _ in range(calls)]
+    send more than once — one event per content block, the same usage on each.
+
+    Every ``tool_use`` block carries its own id, as a real stream's does.
+    ``tool_ids`` names them, which is how one block repeated across events is
+    told from one event per call: the same id twice is the same call.
+    """
+    names = list(tool_ids) if tool_ids is not None else [
+        f'toolu_{next(TOOL_BLOCKS):012d}' for _ in range(calls)]
+    content = [{'type': 'tool_use', 'id': which, 'name': 'submit_finding'} for which in names]
     if text:
         content.append({'type': 'text', 'text': text})
     return {'type': 'assistant', 'message': {
@@ -298,8 +306,8 @@ def test_one_assistant_message_sent_twice_is_one_turn_not_two(tmp_path, monkeypa
     task = task_for(token_ceiling=100_000)
     install(tmp_path, monkeypatch, events=[
         init_event(task),
-        assistant(tokens=40_000, calls=1, held='msg_same'),
-        assistant(tokens=40_000, calls=1, held='msg_same'),
+        assistant(tokens=40_000, held='msg_same', tool_ids=['toolu_one']),
+        assistant(tokens=40_000, held='msg_same', tool_ids=['toolu_one']),
         assistant(text='done', tokens=20_000, held='msg_next'),
         result_event({'ok': True})])
     outcome = ClaudeCodeRunner().run(task)
@@ -313,11 +321,29 @@ def test_a_message_whose_blocks_arrive_one_at_a_time_counts_every_call(tmp_path,
     task = task_for()
     install(tmp_path, monkeypatch, events=[
         init_event(task),
-        assistant(tokens=9_000, calls=1, held='msg_growing'),
-        assistant(tokens=9_000, calls=3, held='msg_growing'),
+        assistant(tokens=9_000, held='msg_growing', tool_ids=['toolu_a']),
+        assistant(tokens=9_000, held='msg_growing',
+                  tool_ids=['toolu_a', 'toolu_b', 'toolu_c']),
         result_event({'ok': True})])
     outcome = ClaudeCodeRunner().run(task)
     assert outcome.tokens == 9_000 and outcome.tool_calls == 3
+
+
+def test_one_turn_that_calls_fifteen_tools_one_event_each_counts_fifteen(tmp_path, monkeypatch):
+    """The shape a real reader's stream has: one event per call, one turn.
+
+    Every event carries the same message id and the same usage, and exactly one
+    ``tool_use`` — a different one each time. Counting a turn's blocks and
+    keeping the largest count read that whole turn as a single call, so a run
+    that spent sixty-five calls' worth of allowance recorded nine.
+    """
+    task = task_for()
+    install(tmp_path, monkeypatch, events=[init_event(task)] + [
+        assistant(tokens=9_000, held='msg_one_turn', tool_ids=[f'toolu_{index:02d}'])
+        for index in range(15)] + [result_event({'ok': True})])
+    outcome = ClaudeCodeRunner().run(task)
+    assert outcome.tokens == 9_000, 'one turn, charged once'
+    assert outcome.tool_calls == 15, 'and every call it made is counted'
 
 
 def test_a_session_past_its_deadline_is_stopped_where_it_stands(tmp_path, monkeypatch):

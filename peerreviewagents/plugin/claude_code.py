@@ -447,25 +447,34 @@ class ClaudeCodeRunner(Runner):
         Summing every event counted a turn's whole input again per block,
         which is what the token ceiling is measured against: a long turn could
         be stopped as over budget on tokens it never spent. So a message id's
-        usage is credited once (the largest figure it reports, in case a later
-        event knows more), and its tool calls are credited by how far the
-        count has grown, which is right whether the blocks repeat or arrive
-        one at a time.
+        usage is credited once, the largest figure it reports, in case a later
+        event knows more.
+
+        The calls in such a turn are *not* the same block repeated: a real
+        reader's stream sent one event per call, each carrying a different
+        ``tool_use`` with its own ``id``, so counting a turn's blocks and
+        keeping the largest count credited one call for a turn that made
+        fifteen. Each block is therefore credited by its own identity, which
+        is right whether the blocks repeat or arrive one at a time.
         """
         held = str(message.get('id') or '')
         if not held:
             state['anonymous'] += 1
             held = f'anonymous-{state["anonymous"]}'
-        seen = state['messages'].setdefault(held, {'tokens': 0, 'calls': 0})
+        seen = state['messages'].setdefault(held, {'tokens': 0, 'tools': set()})
         tokens = tokens_of(message.get('usage'))
         if tokens > seen['tokens']:
             state['tokens'] += tokens - seen['tokens']
             seen['tokens'] = tokens
-        calls = sum(1 for block in message.get('content') or ()
-                    if isinstance(block, dict) and block.get('type') == 'tool_use')
-        if calls > seen['calls']:
-            state['calls'] += calls - seen['calls']
-            seen['calls'] = calls
+        for block in message.get('content') or ():
+            if not isinstance(block, dict) or block.get('type') != 'tool_use':
+                continue
+            # A block of our own making has an id; one without is told apart
+            # by what it says, so a block that truly repeats is still one call.
+            which = str(block.get('id') or json.dumps(block, sort_keys=True, default=str))
+            if which not in seen['tools']:
+                seen['tools'].add(which)
+                state['calls'] += 1
 
     def _wrong_at_start(self, task, state):
         """Why this session is not the one we asked for, from its own init.

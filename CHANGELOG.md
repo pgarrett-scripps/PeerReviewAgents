@@ -520,6 +520,14 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A turn that called fifteen tools is fifteen calls, not one.** A real
+  reader's stream sends one event per call — the same assistant message id and
+  the same usage on each, a different `tool_use` block in each — so counting a
+  turn's blocks and keeping the largest count credited that whole turn as a
+  single call. The reader of a 29-page paper made 46 calls and the run recorded
+  nine. Each block is now credited by its own id, which is right whether the
+  blocks repeat (one call) or arrive one at a time (one call each), and the
+  per-message token credit is unchanged.
 - **A refusal the reviewer answered is not a finding the run lost.** A quote
   that occurs twice is refused with the lines it occurs on; a reviewer that
   then cites one of those lines gets the same finding stored and grouped into
