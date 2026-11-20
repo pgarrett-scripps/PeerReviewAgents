@@ -101,8 +101,10 @@ by the engine rather than by hand.
 
 from __future__ import annotations
 
+import errno
 import json
 import re
+import urllib.error
 from pathlib import Path
 
 from . import issues as issue_model
@@ -879,7 +881,7 @@ def scripted_fix_check(paper, folder, problems, scripts=None, *, title='', suppl
 
 
 def scripted_review(paper, folder, scripts=None, *, title='', supplements=None,
-                    reviewers=1, arm='reviewers-only', missing='', **plan):
+                    reviewers=1, arm='reviewers-only', missing='', offline=False, **plan):
     """Run a review on *paper* in *folder* with a script in every seat.
 
     *scripts* is ``{key: script}``, where a script is one callable taking its
@@ -937,15 +939,42 @@ def scripted_review(paper, folder, scripts=None, *, title='', supplements=None,
     ``absent``. Returned rather than raised, because the folder is what the
     call was for.
 
+    ``offline=True`` runs it with no network at all: every lookup the run would
+    make — the citation ledger's reference lookups, a reviewer's
+    ``fetch_source`` — fails the way it fails on a machine with no route out,
+    and no socket is opened. An arm that runs the citations lane
+    (``full-two-track``) then reaches the end of that lane in seconds rather
+    than waiting out the retry gaps between attempts, and the folder says the
+    references are unchecked because nothing could be reached:
+    ``citations/stages.json`` carries ``hosts_reached: false`` and the reason
+    under ``unchecked_reason``, and the ledger's problem lines say it in words.
+    This is the supported way for a consumer's suite to cover the lane: a test
+    that left the lookups real either reached the live indexes or, behind a
+    firewall, spent minutes of its own on a lane that was never going to
+    answer.
+
     Returns a :class:`ScriptedReview`.
     """
     return _run(paper, folder, ScriptedReview, ReviewRefused, scripts,
                 title=title, supplements=supplements, reviewers=reviewers, arm=arm,
-                missing=missing, **plan)
+                missing=missing, offline=offline, **plan)
+
+
+def _no_network(request, timeout=None):
+    """Every request failing the way it fails with no route out of the machine.
+
+    The opener an ``offline=True`` run is given, for the citation ledger's
+    lookups and for a reviewer's source fetches alike. ``URLError`` over
+    ``ENETUNREACH`` is what :mod:`urllib` raises there, and the transport turns
+    it into the ``unavailable`` status either way — so a test that asks for an
+    offline run exercises the same path a user behind a firewall meets, and
+    opens no socket while doing it.
+    """
+    raise urllib.error.URLError(OSError(errno.ENETUNREACH, 'Network is unreachable'))
 
 
 def _run(paper, folder, held, refusal, scripts, *, pieces=(), title='', supplements=None,
-         problems=None, tokens=1000, missing='', **plan):
+         problems=None, tokens=1000, missing='', offline=False, **plan):
     """One scripted run, start to finish, through the orchestrator.
 
     The whole of what the three helpers share: the draft pre-written where a
@@ -957,6 +986,10 @@ def _run(paper, folder, held, refusal, scripts, *, pieces=(), title='', suppleme
     failure that is an outcome rather than a caller's mistake: the run is
     returned instead of raised, because the folder it wrote is what the caller
     came for. Every other start-up refusal still raises.
+
+    *offline* hands the server :func:`_no_network` as the opener every lookup
+    goes through, for the length of this run and no longer: the previous opener
+    is put back afterwards, the way the attached run is.
     """
     paper, folder = Path(paper), Path(folder)
     _prepare(paper, folder, pieces, title, supplements)
@@ -968,7 +1001,10 @@ def _run(paper, folder, held, refusal, scripts, *, pieces=(), title='', suppleme
     # suite drives several of these in one process, and a server that is still
     # holding the last one refuses the next ingest rather than running it.
     attached = srv.STATE.get('run')
+    opener = srv.STATE.get('opener')
     srv.STATE['run'] = None
+    if offline:
+        srv.STATE['opener'] = _no_network
     try:
         if problems is None:
             summary = starter.review(str(paper), str(folder), runner=runner, **plan)
@@ -982,6 +1018,7 @@ def _run(paper, folder, held, refusal, scripts, *, pieces=(), title='', suppleme
         raise refusal('ingest', {'request_rejected': str(refused)}) from refused
     finally:
         srv.STATE['run'] = attached
+        srv.STATE['opener'] = opener
     if seat.raised:
         slot, problem = seat.raised[0]
         raise problem

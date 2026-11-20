@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import io
 import json
+import time
 import urllib.error
 import urllib.parse
 
@@ -63,10 +64,14 @@ class Net:
         self.answers = list(answers)
         self.fail = list(fail)
         self.urls: list[str] = []
+        #: The timeout each request was given, so a test can hold the ledger to
+        #: a bound of its own rather than to the transport's default.
+        self.timeouts: list = []
 
     def __call__(self, request, timeout=None):
         url = request.full_url
         self.urls.append(url)
+        self.timeouts.append(timeout)
         assert 'mailto' not in url.lower(), 'a lookup must not carry an address'
         for fragment in self.fail:
             if fragment in url:
@@ -596,6 +601,100 @@ def test_a_rate_limited_or_broken_lookup_is_retried_but_not_for_ever(tmp_path):
     assert row['resolution']['attempts'] == cl.RESOLVE_ATTEMPTS
     assert cl.resolve(third, cl.Lookups(tmp_path / 'third' / 'citations' / 'lookups',
                                         opener=Net()), wait=0)['resolved_now'] == 0
+
+
+def test_every_lookup_carries_a_timeout_of_its_own(tmp_path):
+    """A host that accepts the connection and says nothing costs seconds, not minutes.
+
+    The transport's own default is twenty seconds, and the ledger used to take
+    it: a firewalled index — a request that is accepted and then never answered
+    — cost twenty seconds *per reference*, so a thirty-reference list spent ten
+    minutes of the run finding out that one of its two indexes was unreachable.
+    The bound is this module's, it is short, and a caller may make it shorter.
+    """
+    net = Net([('/works/10.1234', crossref_work('10.1234/replay', TITLE, '2019')),
+               ('DOI%3A', europepmc([]))])
+    ledger = filled(tmp_path)
+    cl.resolve(ledger, lookups(tmp_path, net))
+    assert net.timeouts and set(net.timeouts) == {cl.LOOKUP_TIMEOUT_SECONDS}
+    assert 0 < cl.LOOKUP_TIMEOUT_SECONDS <= 15
+
+    second = Net([('/works/10.1234', crossref_work('10.1234/replay', TITLE, '2019')),
+                  ('DOI%3A', europepmc([]))])
+    cl.resolve(filled(tmp_path / 'again'),
+               cl.Lookups(tmp_path / 'again' / 'review' / 'citations' / 'lookups',
+                          opener=second, timeout=3))
+    assert set(second.timeouts) == {3.0}
+
+    for refused in (0, -1, 121, 'soon'):
+        with pytest.raises((ValueError, TypeError)):
+            cl.Lookups(tmp_path / 'bounds', opener=net, timeout=refused)
+
+
+def test_no_host_that_can_be_reached_is_not_a_retry_case(tmp_path):
+    """Offline, the stage ends in seconds and says the lookups were unreachable.
+
+    Every request failing to connect is not a rate limit: waiting five minutes
+    changes nothing about a machine with no route out, and the retry gaps used
+    to be waited out all the same — over three hundred seconds of a run, three
+    times, before the rows were reported unchecked. A user offline or behind a
+    firewall meets this on an ordinary run, so the lane ends on the first pass
+    with the reason in the ledger, where the folder and the problem lines carry
+    it.
+    """
+    slept = []
+    # The present, because the rows this decides the due times of carry real
+    # ``checked_at`` stamps: a clock starting at zero makes every gap long past.
+    now = [time.time()]
+
+    def sleep(seconds):
+        slept.append(seconds)
+        now[0] += seconds
+
+    ledger = filled(tmp_path)
+    offline = Net(fail=('doi.org', 'crossref.org', 'ebi.ac.uk'))
+    patience = cl.Patience(deadline=now[0] + 5400, clock=lambda: now[0], sleep=sleep)
+    answer = cl.resolve(ledger, lookups(tmp_path, offline), patience=patience)
+
+    assert slept == [] and answer['waited'] == 0.0
+    assert answer['remaining'] == 1
+    assert answer['counts']['could_not_check'] == 1 and answer['counts']['resolved'] == 0
+    assert answer['hosts_reached'] is False
+    assert answer['unchecked_reason'] == cl.NO_NETWORK_REASON
+    assert offline.urls, 'the hosts were asked before the stage gave up on them'
+
+    stage = answer['counts']['stages']['resolve']
+    assert stage['hosts_reached'] is False
+    assert stage['unchecked_reason'] == cl.NO_NETWORK_REASON
+    assert any('no lookup host could be reached' in line
+               for line in cl.problems(cl.counts(ledger)))
+    row = {row['row_id']: row for row in ledger.rows()}['ref:r1']
+    assert row['resolution']['exists'] == 'could not check'
+
+
+def test_a_host_that_answers_at_all_is_still_waited_out(tmp_path):
+    """429 is a host asking for the request again later, and it gets waited out.
+
+    The counterpart to the test above, and the line between them: a status code
+    came back, so there is a route to the index and a retry can work. Ending
+    this one early would turn every rate limit into an unchecked reference.
+    """
+    waits = []
+    now = [time.time()]
+
+    def sleep(seconds):
+        waits.append(seconds)
+        now[0] += seconds
+
+    ledger = filled(tmp_path)
+    limited = Net([('/works/', 429), ('/works?', 503), ('/search?', 503),
+                   ('doi.org/api/handles', 429)])
+    patience = cl.Patience(deadline=now[0] + 5400, clock=lambda: now[0], sleep=sleep,
+                           slice_seconds=cl.RETRY_WAIT_SECONDS)
+    answer = cl.resolve(ledger, lookups(tmp_path, limited), patience=patience)
+    assert waits, 'a host that answered is a host worth asking again'
+    assert answer['hosts_reached'] is True
+    assert answer['unchecked_reason'] != cl.NO_NETWORK_REASON
 
 
 def test_one_reference_that_raises_does_not_end_the_stage(tmp_path):

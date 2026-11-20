@@ -19,6 +19,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -511,6 +512,44 @@ def test_a_script_that_answers_nothing_blocks_the_run_it_was_in(tmp_path):
     assert review.status == 'blocked'
     assert 'core-1' in review.blocked_reason
     assert review.summary['stages']['attempts']['core-1'] == 2  # the one retry, then blocked
+
+
+def test_a_scripted_review_can_run_the_citations_lane_with_no_network(tmp_path):
+    """``offline=True``: the lane ends in seconds, says why, and opens no socket.
+
+    The citations lane is the one stage that leaves the machine, and a consumer
+    covering it had two choices before this: let the lookups go to the live
+    indexes, or block sockets in the test suite. Behind a firewall the first
+    one cost minutes per run — the lane waited out a retry gap for hosts that
+    could not be reached — which is the same thing a user offline met.
+
+    What the folder says is the point: the references are *not checked*, with
+    the reason on the stage record, and nothing in the table claims to be
+    evidence about those works.
+    """
+    folder = tmp_path / 'run'
+    started = time.monotonic()
+
+    review = peerreviewagents.scripted_review(FIXTURE, folder, arm='full-two-track',
+                                              offline=True)
+
+    assert review.status == 'complete'
+    # No retry gap was waited out: a gap is five minutes, and three of them is
+    # what this lane used to spend before reporting the rows unchecked.
+    assert time.monotonic() - started < 60
+    stages = json.loads((review.review / 'citations' / 'stages.json').read_text(encoding='utf-8'))
+    resolve = stages['resolve']
+    assert resolve['hosts_reached'] is False
+    assert resolve['waited'] == 0
+    assert resolve['remaining'] == resolve['references'] > 0
+    assert 'no lookup host could be reached' in resolve['unchecked_reason']
+    assert resolve['lookups'] > 0, 'the hosts were asked before the lane gave up'
+
+    citations = read_run(folder)['citations']
+    assert citations['counts']['resolved'] == 0
+    assert any('no lookup host could be reached' in line for line in citations['problems'])
+    # And the opener is the run's, not the process's: nothing is left behind.
+    assert srv.STATE['opener'] is None
 
 
 def test_the_scripted_review_is_public_and_puts_back_the_run_it_found(tmp_path):

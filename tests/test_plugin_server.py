@@ -1334,6 +1334,95 @@ def test_a_run_whose_issues_are_all_suggestions_still_completed(tmp_path):
     assert written['issue_counts']['issue_members'] == 3
 
 
+def test_two_findings_from_one_seat_are_two_ledger_ids(tmp_path):
+    """One reviewer, two findings, two ``id`` values — and the files agree.
+
+    The number in ``<slot>-<attempt>-<number>`` used to be the literal 1, so
+    both of these rows came out as ``core-1-1-1`` while their ``finding_uid``
+    values differed. The review itself joined on the uid and was never fooled;
+    everything outside it that keys on ``id`` — ``findings.jsonl``,
+    ``read_run()['findings']``, ``list_findings`` — was handed one id standing
+    for two different findings.
+    """
+    open_run(tmp_path, arm='single')
+    run = srv.current()
+    token = token_for('core-1')
+    first_line, first_quote = quote_from(run)
+    second_line, second_quote = quote_from(run, index=1)
+    one = srv.submit_finding(token, title='The first claim outruns its passage',
+                             line=first_line, quote=first_quote, comment='...',
+                             severity='major')
+    two = srv.submit_finding(token, title='The second claim outruns its passage',
+                             line=second_line, quote=second_quote, comment='...',
+                             severity='minor')
+    assert one['finding_uid'] != two['finding_uid']
+    assert (one['id'], two['id']) == ('core-1-1-1', 'core-1-1-2')
+
+    rows = [json.loads(line) for line in
+            (run.review / 'findings.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert [row['id'] for row in rows] == ['core-1-1-1', 'core-1-1-2']
+    close(token, model='claude-sonnet-5-5')
+    assert srv.write_review(token_for('recorder'))['status'] == 'complete'
+    served = read_run(run.root)['findings']
+    assert len({row['id'] for row in served}) == len(served) == 2
+
+
+def test_the_same_finding_submitted_again_keeps_the_id_it_had(tmp_path):
+    """A restated finding is one row's history, not a second finding.
+
+    The uid is the quote and the lines, so a reviewer who rewrites a comment on
+    the same passage submits the same finding again. Numbering per uid rather
+    than per submission keeps the ``id`` it was first given: a consumer that
+    stored the first row sees it updated instead of seeing a new finding appear
+    beside it.
+    """
+    open_run(tmp_path, arm='single')
+    run = srv.current()
+    token = token_for('core-1')
+    line, quote = quote_from(run)
+    first = srv.submit_finding(token, title='Stated more strongly than the passage carries',
+                               line=line, quote=quote, comment='A first attempt at saying it.',
+                               severity='major')
+    again = srv.submit_finding(token, title='Stated more strongly than the passage carries',
+                               line=line, quote=quote,
+                               comment='The same finding, said better.', severity='major')
+    assert again['finding_uid'] == first['finding_uid']
+    assert again['id'] == first['id'] == 'core-1-1-1'
+    assert [row['id'] for row in run.pooled()] == ['core-1-1-1']
+
+
+def test_a_quarantined_rows_number_stays_with_the_quarantined_row(tmp_path):
+    """A refused row keeps its number, and a different finding gets the next one.
+
+    The guard threw out a quote the paper does not contain, and that row is on
+    record in ``quarantined.jsonl`` with an ``id`` of its own. The reviewer's
+    next finding is a different finding — another quote, another uid — so it
+    takes the next number rather than the refused row's: a consumer reading
+    both files sees two rows, which is what happened.
+
+    A reviewer who instead *corrects* the refused submission — the same quote,
+    the same lines — resubmits the same uid and keeps that number, because the
+    refusal and the stored row are one finding's history. That is the join
+    ``superseded_by`` makes, and it is tested over the quarantine ledger in
+    :func:`test_a_refusal_the_reviewer_answered_is_not_a_finding_the_run_lost`.
+    """
+    open_run(tmp_path, arm='single')
+    run = srv.current()
+    token = token_for('core-1')
+    refused = srv.submit_finding(token, title='Invented',
+                                 quote='a sentence this paper does not contain anywhere',
+                                 comment='...', severity='major')
+    assert 'request_rejected' in refused, refused
+    held = [json.loads(one) for one in
+            (run.review / 'quarantined.jsonl').read_text(encoding='utf-8').splitlines()]
+    assert [row['id'] for row in held] == ['core-1-1-1']
+
+    line, quote = quote_from(run)
+    stored = srv.submit_finding(token, title='Corpus is narrower than the methods describe',
+                                line=line, quote=quote, comment='...', severity='major')
+    assert stored['id'] == 'core-1-1-2'
+
+
 def test_the_guard_status_in_the_run_files_is_read_and_not_assumed(tmp_path):
     open_run(tmp_path, arm='single')
     run = srv.current()

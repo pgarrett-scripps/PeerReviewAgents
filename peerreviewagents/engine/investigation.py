@@ -30,7 +30,8 @@ class Investigation:
         self.calls=0
         from .external_evidence import SourceClient
         self.sources = SourceClient(config.get('source_state') or str(self.out/'sources'), config['cache'],
-                                    config.get('external_request_limit', 6), self.cutoff)
+                                    config.get('external_request_limit', 6), self.cutoff,
+                                    opener=config.get('opener'))
         from .targeted_sources import TargetedSources
         self.targeted = TargetedSources(self.sources)
 
