@@ -225,6 +225,13 @@ class ScriptedRunner(Runner):
     raising to stand in for one that dies. Scripts are looked up by the task's
     label first and the agent's name second, so a test can script the panel by
     role and then say something different about one slot.
+
+    ``tokens`` is what a scripted seat spends: one number for every seat, or a
+    callable taking the task and answering for that one. A seat that spends
+    more than the ceiling the panel handed it ends ``over the token ceiling``
+    with its answer dropped, which is what a real session's child does when it
+    is cut off mid-stream — so a consumer can build a run stopped over a
+    ceiling without a model.
     """
 
     remote = False
@@ -234,6 +241,11 @@ class ScriptedRunner(Runner):
         self.service = service
         self.tokens = tokens
         self.ran = []
+
+    def tokens_for(self, task):
+        """What this seat spends: the flat number, or what the callable says."""
+        wanted = self.tokens(task) if callable(self.tokens) else self.tokens
+        return max(0, int(wanted or 0))
 
     def opened(self, service):
         self.service = service
@@ -264,14 +276,25 @@ class ScriptedRunner(Runner):
                            seconds=time.monotonic() - started,
                            detail=f'{type(problem).__name__}: {problem}')
         seconds = time.monotonic() - started
+        total = self.tokens_for(task)
+        if task.token_ceiling and total > task.token_ceiling:
+            # What a real session gets: the child is cut off the moment it goes
+            # over, so whatever it was about to answer is lost with it. The
+            # tool calls the script already made stand, exactly as the killed
+            # child's do.
+            return Outcome(ending=OVER_BUDGET, tokens=total, usage=self.spent(total),
+                           model=task.model, tool_calls=len(tools.calls), seconds=seconds,
+                           detail=f'the seat spent {total} tokens against a ceiling of '
+                                  f'{task.token_ceiling}',
+                           record={'scripted': True, 'tools': list(tools.calls)})
         if answer is None:
             return Outcome(ending=SILENT, model=task.model, tool_calls=len(tools.calls),
                            seconds=seconds, detail='the script answered nothing')
-        return Outcome(ending=ANSWERED, answer=dict(answer), tokens=self.tokens,
-                       usage=self.spent(), model=task.model, tool_calls=len(tools.calls),
+        return Outcome(ending=ANSWERED, answer=dict(answer), tokens=total,
+                       usage=self.spent(total), model=task.model, tool_calls=len(tools.calls),
                        seconds=seconds, record={'scripted': True, 'tools': list(tools.calls)})
 
-    def spent(self):
+    def spent(self, total=None):
         """A scripted agent's tokens, in the shape a real session reports them.
 
         One made-up number broken into parts that add to it, so everything
@@ -280,13 +303,16 @@ class ScriptedRunner(Runner):
         run rather than only by a real session. The peak is the whole spend
         because a scripted agent is one call.
         """
-        output = self.tokens // 10
-        cache_read = self.tokens // 2
-        cache_write = self.tokens // 5
-        return {TOKEN_FIELDS[0]: self.tokens,
-                'tokens_input_uncached': self.tokens - output - cache_read - cache_write,
+        if total is None:
+            total = 0 if callable(self.tokens) else self.tokens
+        total = max(0, int(total or 0))
+        output = total // 10
+        cache_read = total // 2
+        cache_write = total // 5
+        return {TOKEN_FIELDS[0]: total,
+                'tokens_input_uncached': total - output - cache_read - cache_write,
                 'tokens_cache_write': cache_write, 'tokens_cache_read': cache_read,
-                'tokens_output': output, TOKEN_PEAK: self.tokens}
+                'tokens_output': output, TOKEN_PEAK: total}
 
     def describe(self):
         return 'scripted'

@@ -237,6 +237,9 @@ class ScriptedSlot:
         self.refusal = refusal
         #: One row per call: ``tool``, ``arguments``, ``keywords``, ``answer``.
         self.calls = []
+        #: What this seat says it spent, from :meth:`spend`, or ``None`` for a
+        #: seat that said nothing and takes the run's flat number.
+        self.tokens = None
         self._tools = tools
 
     def __repr__(self):
@@ -344,10 +347,38 @@ class ScriptedSlot:
         """Seal the manuscript, with the reader's note. ``seal_manuscript``, named."""
         return self.call('seal_manuscript', note=note)
 
+    # --- what this seat spent ----------------------------------------------
+
+    def spend(self, tokens):
+        """Say what this seat spent, in tokens, in place of the run's flat number.
+
+        A scripted seat has no session to meter, so it declares its own spend.
+        The panel handed this seat a ceiling out of the plan's
+        ``per_run_tokens`` and ``per_agent_tokens``, and a seat that declares
+        more than its ceiling ends over the ceiling with its answer dropped,
+        exactly as a real session's child does when it is cut off — which is
+        how a consumer builds a run stopped over a ceiling without a model::
+
+            def greedy(slot):
+                slot.spend(2_000_000)
+                return scripted.NO_ANSWER   # never reached by the panel
+
+        The ceiling itself is on the task, as ``slot.task.token_ceiling``, so a
+        script can also spend just under it.
+        """
+        self.tokens = max(0, int(tokens or 0))
+        return self.tokens
+
     # --- the sealed manuscript ---------------------------------------------
 
     def whole_paper(self, document=''):
-        """Read every part of one document, as every reading brief says to first."""
+        """Read every part of one document, as every reading brief says to first.
+
+        Every core, specialist and editor seat calls this before it submits:
+        the server refuses a submission from a seat that has not been served
+        every part of the manuscript, by the same rule a model meets, and the
+        refusal names ``read_paper`` — which is this, part by part.
+        """
         parts = paper_view.served(self.base(), document or paper_base.MAIN_DOCUMENT)
         return '\n'.join(str(self.call('read_paper', document=document, part=part))
                          for part in range(1, parts + 1))
@@ -355,6 +386,18 @@ class ScriptedSlot:
     # Kept under the name the handle used to carry, because a consumer's script
     # reads the paper and then quotes it, and `served` is what that was called.
     served = whole_paper
+
+    def read_paper(self, document='', part=None):
+        """The tool under its own name: one part, or every part with no ``part``.
+
+        A seat that has not been served the whole manuscript is refused when it
+        submits, and the refusal tells it to call ``read_paper`` — so that name
+        works here, and with no ``part`` it is :meth:`whole_paper`, which is
+        what the refusal is asking for.
+        """
+        if part is None:
+            return self.whole_paper(document)
+        return self.call('read_paper', document=document, part=part)
 
     def line(self, number, document=''):
         """One line of this manuscript, by number, as ``read_paper`` serves it.
@@ -580,10 +623,12 @@ class _Seat:
     run but a poor account of a script with a bug in it.
     """
 
-    def __init__(self, scripts=None, refusal=ToolRefused, defaults=None):
+    def __init__(self, scripts=None, refusal=ToolRefused, defaults=None, tokens=1000):
         self.scripts = dict(scripts or {})
         self.refusal = refusal
         self.defaults = DEFAULT_SCRIPTS if defaults is None else dict(defaults)
+        #: What a seat spends when its script does not say: the run's flat number.
+        self.tokens = int(tokens or 0)
         #: ``{slot: ScriptedSlot}`` — every agent this run ran, in order.
         self.slots = {}
         #: Every exception a script raised, as ``(slot, exception)``.
@@ -595,6 +640,18 @@ class _Seat:
             if key in self.scripts:
                 return self.scripts[key]
         return self.defaults.get(role)
+
+    def tokens_for(self, task):
+        """What the seat that just ran spent: its own :meth:`ScriptedSlot.spend`.
+
+        The runner asks this after the script returns, so a script that
+        declared a spend is metered at that number and one that said nothing
+        is metered at the run's flat number — which is what every scripted run
+        did before a script could say.
+        """
+        slot = self.slots.get(str(task.label).split('#')[0])
+        declared = getattr(slot, 'tokens', None)
+        return self.tokens if declared is None else declared
 
     def code_of(self, task):
         """The claim code out of the brief, the one place an agent is given it."""
@@ -791,6 +848,16 @@ def scripted_fix_check(paper, folder, problems, scripts=None, *, title='', suppl
     its own queue — ``slot.fix_queue()`` is the problems that lane is to
     answer, and only those.
 
+    A lane that answers nothing, or dies, does not block the check: its
+    problems are written down as not checked with that lane named as the
+    cause, and the written check says ``incomplete`` with the reason. Nor does
+    a reader that fails — the draft is sealed as converted and the check runs
+    over the converter's own text, with ``read`` in the result saying the
+    reader failed. The same is true of a review: both are the one stage with a
+    fallback behind it.
+
+    ``tokens=`` and the ceilings work as in :func:`scripted_review`.
+
     Returns a :class:`ScriptedFixCheck`.
     """
     folder = Path(folder)
@@ -830,6 +897,18 @@ def scripted_review(paper, folder, scripts=None, *, title='', supplements=None,
     that crashed would, and is raised again from this call when the run is
     over.
 
+    Every core, specialist and editor seat calls ``slot.whole_paper()`` before
+    it submits anything: the server refuses a submission from a seat it has
+    not served the whole manuscript to, by the same rule a model meets. The
+    defaults do it first thing, and a script that skips it is refused.
+
+    What a seat spends is ``tokens=`` — one number for the run, overridden per
+    seat by ``slot.spend(n)`` inside a script. The ceilings in *plan*
+    (``per_run_tokens``, ``per_agent_tokens``) are enforced against it: a seat
+    that spends more than the ceiling the panel handed it ends over the
+    ceiling with its answer dropped, which the orchestrator retries once and
+    then blocks over, as it does for a real session cut off mid-stream.
+
     *arm* and *reviewers* are the plan, and anything else in *plan* is
     :func:`peerreviewagents.review`'s — ``tracks``, ``code``,
     ``citation_workers``, the token ceilings. The default is the smallest
@@ -858,8 +937,8 @@ def _run(paper, folder, held, refusal, scripts, *, pieces=(), title='', suppleme
     """
     paper, folder = Path(paper), Path(folder)
     _prepare(paper, folder, pieces, title, supplements)
-    seat = _Seat(scripts, refusal)
-    runner = agent_runner.ScriptedRunner({'*': seat}, tokens=tokens)
+    seat = _Seat(scripts, refusal, tokens=tokens)
+    runner = agent_runner.ScriptedRunner({'*': seat}, tokens=seat.tokens_for)
     # One process serves one run: an ingest is refused while another run is
     # attached, and the run this opens is detached again after. A consumer's
     # suite drives several of these in one process, and a server that is still

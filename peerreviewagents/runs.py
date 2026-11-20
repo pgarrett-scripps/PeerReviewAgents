@@ -721,6 +721,15 @@ def _code_check_reading(review, document, progress, problems):
         # written by something that did not say, which no version writes.
         'cap': cap if isinstance(cap, int) and not isinstance(cap, bool) else None,
         'checked': len(rows),
+        # The method claims the lane was handed and left unanswered, and
+        # whether that makes this check a partial one. A silent code lane is
+        # not an absent one: the findings it would have read against the code
+        # stand exactly as their reviewers filed them. A record written before
+        # these keys existed says nothing about them, and ``0``/``False`` is
+        # what it is read as.
+        'not_checked': _count(record.get('not_checked')),
+        'incomplete': bool(record.get('incomplete')),
+        'incomplete_reason': record.get('incomplete_reason') or None,
         # How many findings qualified past the cap. They are not cleared and
         # not thrown out: they are exactly as their reviewers filed them, and
         # the number is here so that nobody reads them as either.
@@ -1105,7 +1114,11 @@ def read_run(path):
         ``confirmed``, ``contradicted`` or ``not-shown``:
         :data:`peerreviewagents.names.CODE_CHECK_VERDICTS` is the three words.
         ``cap`` is the most findings the check is handed, ``checked`` how many
-        it answered, ``over_cap`` how many qualified past the cap and were left
+        it answered, ``not_checked`` how many it was handed and never answered
+        with ``incomplete`` and ``incomplete_reason`` saying so in words — a
+        silent or failed lane leaves its claims as their reviewers filed them,
+        which is neither cleared nor thrown out — ``over_cap`` how many
+        qualified past the cap and were left
         exactly as their reviewers filed them, ``counts`` the tally per verdict,
         and ``checks`` one row per answer — the finding it is about, the
         ``code_evidence`` that decides it (verified against the snapshot before
@@ -1395,8 +1408,15 @@ def read_fix_check(path):
         The check in numbers. ``counts`` is one key per verdict.
         ``not_checked`` is every problem with no verdict — the ones past the
         cap and the ones a checker never reached — and ``unchecked`` names
-        them. A problem that was not checked is neither fixed nor unfixed, and
-        the count is here so that nobody reads it as either.
+        them, each with the ``lane`` it was dealt to and the ``reason`` there
+        is no verdict on it. A problem that was not checked is neither fixed
+        nor unfixed, and the count is here so that nobody reads it as either.
+    ``incomplete``, ``incomplete_reason``
+        Whether the check answered everything it was given, and in one
+        sentence why not. The status says the check was *written*; this says
+        whether it is *whole*, because a check whose lane died is written and
+        complete and still missing the verdicts that lane held. A consumer
+        reporting a check as complete reports this beside it.
     ``tokens``, ``agents``, ``usage``, ``runtime``
         What the check spent: the run's own total and ceilings, the per-slot
         rows :func:`read_run` reports, and the usage receipts behind them.
@@ -1458,7 +1478,7 @@ def read_fix_check(path):
     unchecked = ([dict(one) for one in (document.get('unchecked') or [])
                   if isinstance(one, dict)]
                  or [{'id': one.get('id'), 'statement': one.get('statement'),
-                      'severity': one.get('severity')}
+                      'severity': one.get('severity'), 'lane': None, 'reason': ''}
                      for one in given if str(one.get('id')) not in answered])
     cap = record.get('cap')
     total = record.get('problems')
@@ -1484,6 +1504,12 @@ def read_fix_check(path):
         'checked': len(checks),
         'not_checked': len(unchecked) if (given or document) else _count(record.get('not_checked')),
         'unchecked': unchecked,
+        # Whether the written check answered everything it was given. A check
+        # written before this key existed says it the only way it can: by
+        # having a problem with no verdict in it.
+        'incomplete': bool(record.get('incomplete')) if 'incomplete' in record
+        else bool(unchecked),
+        'incomplete_reason': record.get('incomplete_reason') or None,
         'over_cap': _count(record.get('over_cap')),
         'counts': {verdict: sum(1 for row in checks if row.get('verdict') == verdict)
                    for verdict in FIX_VERDICTS},

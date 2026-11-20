@@ -1982,6 +1982,18 @@ base = read.base()          # the sealed workspace: `text`, `rows`, `manifest`
   whose manuscript is already sealed plans no Read stage, so
   `scripted_read(…)` and then `scripted_review(…, folder)` on the same folder
   is a read manuscript reviewed.
+- **The PDF is still required on a sealed folder, and still has to be the one
+  the folder was sealed from.** No stage reads it — the sealed workspace is
+  read instead — but the run refuses a folder whose `source_sha256` is not
+  this file's hash, and that refusal is the only thing standing between a
+  review and a manuscript sealed from a *different* paper. So pass the same
+  path to `scripted_read` and to the `scripted_review` that follows it; a
+  missing file is refused before anything is planned.
+- A reader that fails does not block the run: the manuscript is sealed as
+  converted, the reviewers read the converter's own equations, and the result's
+  `read` says `reader_failed: True` with the reason. `read` is `None` only for
+  a folder that arrived sealed. The same is true of a fix check — it is the
+  same stage.
 
 ### Building a written fix check for your tests: `scripted_fix_check`
 
@@ -2047,6 +2059,15 @@ reading = check.read()                 # or read_fix_check(folder), which is the
 - The recorder writes the check, in this process, as it does in a model run:
   `check.read()` is `read_fix_check` on the folder, and `check.summary` is what
   `check_fixes` returns.
+- **A lane that answers nothing, or dies, costs its own batch and nothing
+  else.** Its problems are written down as not checked, each with the lane
+  named as the cause on `unchecked[…]['lane']` and `['reason']`, and the check
+  says `incomplete: True` with `incomplete_reason` in one sentence. The status
+  is still `complete` (or `complete-without-findings` where no lane answered
+  at all), because the check *was* written and there is no third kind of
+  finished run — so a consumer that reports the status reports `incomplete`
+  beside it, in the summary, in `fix-check.json`, through `read_fix_check` and
+  at the top of `FIXES.md`.
 - A refusal raises `CheckRefused`, with the tool on `.tool` and the server's
   whole answer on `.answer`. `ToolRefused` is the base class of that and of
   `ReaderRefused`, for a test that catches either.
@@ -2127,6 +2148,32 @@ run = read_run(folder)                 # or review.read(), which is the same
   and answered nothing, which is the one outcome returning cannot express: the
   orchestrator retries the seat and then blocks the run, as it does for a
   silent model.
+- **Every core, specialist and editor seat calls `slot.whole_paper()` before it
+  submits anything.** The server refuses a submission from a seat it has not
+  served every part of the manuscript, by the same rule a model meets — the
+  refusal names `read_paper`, which is what `whole_paper()` calls part by part,
+  and `slot.read_paper()` with no `part` is the same thing under the tool's own
+  name. The default scripts do it first thing; a script that skips it is
+  refused, which is the point of the rule and not a gap in the helper.
+- **What a seat spends is `tokens=`,** one number for every seat in the run
+  (1000 by default), and `slot.spend(n)` inside a script is that seat's own.
+  The ceilings in the plan — `per_run_tokens`, `per_agent_tokens`, as
+  `review()` takes them — are enforced against it: a seat that spends more than
+  the ceiling the panel handed it ends `over the token ceiling` with its answer
+  dropped, exactly as a real session's child does when it is cut off
+  mid-stream. What the run does then is what it does for any lost answer: a
+  seat that had not yet closed its slot is retried once and then blocks the
+  run, and a seat that had already filed its report and closed is not asked
+  again — the run is written from the ledger, with the ending on the record.
+  `slot.task.token_ceiling` is what this seat was handed, for a script that
+  means to spend just under it. That is how a consumer builds a run stopped
+  over a ceiling without a model.
+- **A silent code check is in the result, not missing from it.** The code lane
+  only ever takes findings *out*, so a `code-check` seat that answers nothing
+  leaves the review with every finding as its reviewer filed it rather than
+  blocking the run — and `summary['code_check']` is then a row saying
+  `silent: True` with the reason. `None` there means the arm planned no code
+  lane at all.
 - The recorder writes the review in this process, as it does in a model run, so
   the folder a scripted run leaves has the shape a real one leaves: `issues.json`,
   `REVIEW.md`, the reports, and `runtime.json` with one row per agent carrying

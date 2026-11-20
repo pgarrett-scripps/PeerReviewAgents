@@ -582,8 +582,16 @@ def test_the_queue_is_capped_and_says_what_it_left_alone(tmp_path, code_folder):
                              model=run.models.get(srv.CHECK_TRACK)).get('closed')
 
     progress = run.code_check_counts()
-    assert progress == {'cap': srv.MAX_CODE_CHECKS, 'checked': 1, 'over_cap': 3,
+    # Eleven of the twelve queued claims went unanswered, which is not the same
+    # as three left past the cap: the cap was never handed them, and these the
+    # lane was handed and did not read.
+    assert progress == {'cap': srv.MAX_CODE_CHECKS, 'checked': 1, 'not_checked': 11,
+                        'incomplete': True,
+                        'incomplete_reason': progress['incomplete_reason'],
+                        'over_cap': 3,
                         'counts': {'confirmed': 1, 'contradicted': 0, 'not-shown': 0}}
+    assert '11 method claim(s) were not read against the code' in progress['incomplete_reason']
+    assert 'code-check answered 1 of 12' in progress['incomplete_reason']
 
     editor = claim('editor')
     issue = {'name': 'The methods state none of this', 'severity': 'moderate',
