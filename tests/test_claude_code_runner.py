@@ -16,6 +16,7 @@ reaching the session.
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import stat
@@ -96,11 +97,17 @@ def init_event(task, server='connected', tools=None):
             'tools': granted(task) if tools is None else list(tools)}
 
 
-def assistant(text='', tokens=0, calls=0, model='claude-sonnet-5-5'):
+MESSAGES = itertools.count(1)
+
+
+def assistant(text='', tokens=0, calls=0, model='claude-sonnet-5-5', held=None):
+    """One assistant event. ``held`` is its message id, which a real stream can
+    send more than once — one event per content block, the same usage on each."""
     content = [{'type': 'tool_use', 'name': 'submit_finding'} for _ in range(calls)]
     if text:
         content.append({'type': 'text', 'text': text})
     return {'type': 'assistant', 'message': {
+        'id': held or f'msg_{next(MESSAGES):012d}',
         'model': model, 'content': content,
         'usage': {'input_tokens': tokens, 'output_tokens': 0,
                   'cache_read_input_tokens': 0, 'cache_creation_input_tokens': 0}}}
@@ -136,9 +143,10 @@ def test_neither_the_api_key_nor_the_auth_token_reaches_the_session(monkeypatch)
     assert 'ANTHROPIC_API_KEY' not in built and 'ANTHROPIC_AUTH_TOKEN' not in built
     assert 'CLAUDECODE' not in built
     assert not [key for key in built if key.startswith('CLAUDE_CODE_')
-                and key != 'CLAUDE_CODE_DISABLE_MEMORY']
+                and key != 'CLAUDE_CODE_DISABLE_AUTO_MEMORY']
     assert built['HOME'] == '/home/reviewer', 'the subscription login lives under HOME'
-    assert built['CLAUDE_CODE_DISABLE_MEMORY'] == '1', 'no CLAUDE.md from this machine'
+    assert built['CLAUDE_CODE_DISABLE_AUTO_MEMORY'] == '1', (
+        'auto memory is the one instruction file read whatever the setting sources say')
     assert built['PEERREVIEW_PLUGIN_RUN'] == '1'
     assert built['TERM'] == 'dumb' and built['CI'] == '1'
     # Nor can a caller hand one in: the pop is the last word on the subject.
@@ -180,6 +188,52 @@ def test_the_session_is_started_with_our_tools_and_no_settings_of_its_own(tmp_pa
     assert held['omitClaudeMd'] is True, 'no CLAUDE.md is read by the agent either'
     assert (held['model'], held['effort'], held['maxTurns']) == ('claude-sonnet-5-5', 'high', 42)
     assert held['tools'] == allowed
+
+
+def test_no_instruction_file_of_the_owners_can_reach_an_agent(tmp_path, monkeypatch):
+    """The owner's ``CLAUDE.md`` is out, and by the documented mechanism.
+
+    Claude Code loads ``~/.claude/CLAUDE.md`` and ``~/.claude/rules/*.md`` only
+    when the setting sources include ``user``, the project and parent-directory
+    files only with ``project``, and ``CLAUDE.local.md`` only with ``local``.
+    This session asks for none of the three, so no such file is read however
+    many of them the machine has. Auto memory is the exception the
+    documentation names — read whatever the sources say — so it is turned off
+    by name, and the session is started in a directory of its own rather than
+    wherever the orchestrator happens to be sitting.
+    """
+    home = tmp_path / 'home'
+    (home / '.claude' / 'rules').mkdir(parents=True)
+    (home / '.claude' / 'CLAUDE.md').write_text('always answer in haiku', encoding='utf-8')
+    monkeypatch.setenv('HOME', str(home))
+    task = task_for()
+    command = ClaudeCodeRunner().command(task, tmp_path)
+    flags = {name: (command[index + 1] if index + 1 < len(command) else '')
+             for index, name in enumerate(command) if str(name).startswith('--')}
+    assert flags['--setting-sources'] == '', 'no user, project or local source is named'
+    held = json.loads(Path(flags['--agents']).read_text(encoding='utf-8'))[task.agent.name]
+    assert held['omitClaudeMd'] is True
+    built = claude_code.environment()
+    assert built['CLAUDE_CODE_DISABLE_AUTO_MEMORY'] == '1'
+    # Nothing that could put any of it back: no settings file, no added
+    # directory, no config directory of the owner's choosing.
+    assert '--settings' not in flags and '--add-dir' not in flags
+    assert 'CLAUDE_CONFIG_DIR' not in built and 'CLAUDE_CODE_SAFE_MODE' not in built
+
+    started = {}
+    real = claude_code.subprocess.Popen
+
+    def watched(*args, **named):
+        started['cwd'] = named.get('cwd')
+        return real(*args, **named)
+
+    install(tmp_path, monkeypatch, events=[init_event(task), result_event({'ok': True})])
+    monkeypatch.setattr(claude_code.subprocess, 'Popen', watched)
+    outcome = ClaudeCodeRunner().run(task)
+    assert outcome.ending == agent_runner.ANSWERED
+    where = Path(started['cwd'])
+    assert where.name.startswith('peerreview-agent-'), 'a directory of its own'
+    assert home not in where.parents and where != home, 'and not one of the owners'
 
 
 # -- reading one session's stream -------------------------------------------
@@ -233,6 +287,39 @@ def test_a_session_past_its_token_ceiling_is_stopped_where_it_stands(tmp_path, m
     assert outcome.seconds < 60, 'it was stopped, not waited out'
 
 
+def test_one_assistant_message_sent_twice_is_one_turn_not_two(tmp_path, monkeypatch):
+    """A real stream sends an assistant message once per content block.
+
+    The id and the usage are the same on each event, so summing events charged
+    a turn's whole input — cache reads included — again per block. That number
+    is what the ceiling is measured against, so a long turn could be stopped as
+    over budget on tokens it never spent.
+    """
+    task = task_for(token_ceiling=100_000)
+    install(tmp_path, monkeypatch, events=[
+        init_event(task),
+        assistant(tokens=40_000, calls=1, held='msg_same'),
+        assistant(tokens=40_000, calls=1, held='msg_same'),
+        assistant(text='done', tokens=20_000, held='msg_next'),
+        result_event({'ok': True})])
+    outcome = ClaudeCodeRunner().run(task)
+    assert outcome.ending == agent_runner.ANSWERED, 'it never went over the ceiling'
+    assert outcome.tokens == 60_000, 'the repeated message is charged once'
+    assert outcome.tool_calls == 1, 'and its tool call is counted once'
+
+
+def test_a_message_whose_blocks_arrive_one_at_a_time_counts_every_call(tmp_path, monkeypatch):
+    """Deduplicating by message id must not lose a block that is really new."""
+    task = task_for()
+    install(tmp_path, monkeypatch, events=[
+        init_event(task),
+        assistant(tokens=9_000, calls=1, held='msg_growing'),
+        assistant(tokens=9_000, calls=3, held='msg_growing'),
+        result_event({'ok': True})])
+    outcome = ClaudeCodeRunner().run(task)
+    assert outcome.tokens == 9_000 and outcome.tool_calls == 3
+
+
 def test_a_session_past_its_deadline_is_stopped_where_it_stands(tmp_path, monkeypatch):
     task = task_for(timeout=1.0)
     install(tmp_path, monkeypatch, linger=90.0, events=[init_event(task)])
@@ -246,19 +333,58 @@ def test_an_agent_that_never_answers_says_what_it_did_instead(tmp_path, monkeypa
     why it was silent is the whole of what a reader gets."""
     task = task_for()
     install(tmp_path, monkeypatch, events=[
-        init_event(task, server='failed', tools=[claude_code.ANSWER_TOOL, 'Bash']),
-        assistant(text='I could not reach the review tools.', tokens=1200),
+        init_event(task),
+        assistant(text='I could not find the paper.', tokens=1200),
         result_event(subtype='error_during_execution')])
     outcome = ClaudeCodeRunner().run(task)
     assert outcome.ending == agent_runner.SILENT and outcome.answer is None
     assert outcome.tokens == 1200
-    assert 'the run\'s tool server was failed' in outcome.detail
-    assert 'these tools were not in the session' in outcome.detail
     assert 'the session ended error_during_execution' in outcome.detail
-    assert 'the agent signed off: I could not reach the review tools.' in outcome.detail
-    assert outcome.record['init']['built_ins'] == ['Bash'], \
-        'a built-in in the session is a misconfiguration worth recording'
+    assert 'the agent signed off: I could not find the paper.' in outcome.detail
+
+
+def test_a_session_that_started_up_wrong_is_ended_there_not_left_to_run(tmp_path, monkeypatch):
+    """Nothing a session does after a bad start-up is the review.
+
+    An agent without our server, or without the tools it was granted, reads as
+    an agent that found nothing to say — and one with a built-in of its own is
+    a session that can read a file or reach the web, which no agent of ours
+    may do. All three are in the init event, so none of them is worth a turn:
+    the agent ends failed at start-up and the stage's one retry gets a session
+    that may be configured right.
+    """
+    task = task_for()
+    install(tmp_path, monkeypatch, linger=90.0, events=[
+        init_event(task, server='failed', tools=[claude_code.ANSWER_TOOL, 'Bash']),
+        assistant(text='I could not reach the review tools.', tokens=1200),
+        result_event({'ok': True})])
+    outcome = ClaudeCodeRunner().run(task)
+    assert outcome.ending == agent_runner.FAILED and outcome.answer is None
+    assert outcome.tokens == 0 and not outcome.closed, 'stopped before it spent a turn'
+    assert outcome.seconds < 60, 'it was stopped, not waited out'
+    assert 'the run\'s tool server was failed' in outcome.detail
+    assert 'these granted tools were not in the session' in outcome.detail
+    assert 'the session had built-in tools of its own: Bash' in outcome.detail
+    assert outcome.record['init']['built_ins'] == ['Bash']
     assert outcome.record['init']['missing'] == sorted(granted(task)[:-1])
+
+
+def test_a_built_in_is_the_whole_reason_even_when_the_tools_are_all_there(tmp_path, monkeypatch):
+    """The tools being right is not enough: a built-in is on its own a refusal."""
+    task = task_for()
+    install(tmp_path, monkeypatch, linger=90.0, events=[
+        init_event(task, tools=[*granted(task), 'WebFetch']), result_event({'ok': True})])
+    outcome = ClaudeCodeRunner().run(task)
+    assert outcome.ending == agent_runner.FAILED
+    assert outcome.detail == 'the session had built-in tools of its own: WebFetch'
+
+
+def test_the_answering_tool_and_our_own_tools_are_not_built_ins(tmp_path, monkeypatch):
+    """The one session that is configured right starts and is left alone."""
+    task = task_for()
+    install(tmp_path, monkeypatch, events=[init_event(task), result_event({'ok': True})])
+    outcome = ClaudeCodeRunner().run(task)
+    assert outcome.ending == agent_runner.ANSWERED, 'our tools plus the answering tool is right'
 
 
 def test_a_session_that_never_started_up_is_not_a_review_that_went_quiet(tmp_path, monkeypatch):

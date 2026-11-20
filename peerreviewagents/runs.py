@@ -28,7 +28,7 @@ import re
 from pathlib import Path
 
 from . import issues as issue_model
-from .engine import citation_ledger
+from .engine import annotations, citation_ledger
 from .engine.usage import agent_rows, observed_usage
 from .names import (
     BLOCKED,
@@ -1222,7 +1222,15 @@ def read_run(path):
         findings = dedupe([dict(member) for row in issue_rows
                            for member in issue_model.members_of(row)])
     rulings = issue_model.objects_in(document.get('escalation_rulings'))
-    quarantined = _rows(review / 'quarantined.jsonl', problems)
+    # Stamped against the findings this run delivered, so a refusal the
+    # reviewer answered — the quote fixed, the finding submitted again and
+    # stored — is not read as a finding the run lost. The join is made here
+    # rather than read out of the file, because the file is written one row at
+    # a time as each submission is refused, and because a run folder from
+    # before this reads the same way as one written now.
+    quarantined = annotations.superseded_quarantine(
+        _rows(review / 'quarantined.jsonl', problems), findings)
+    held = [row for row in quarantined if not row.get('superseded_by')]
     guard = document.get('review_guard_status') or progress.get('review_guard_status')
     issue_counts = issue_model.counts(issue_rows)
 
@@ -1256,7 +1264,7 @@ def read_run(path):
     # The synthesis is only a reason when there is something it synthesised: a
     # run of an editor-less arm that nobody raised anything in is a review of a
     # manuscript with no issues, which is a reading and not an ungrouped pile.
-    reasons = publishable_reasons(status, source, guard, problems, len(quarantined), swapped,
+    reasons = publishable_reasons(status, source, guard, problems, len(held), swapped,
                                   issues_source=(document.get('issues_source') if issue_rows
                                                  else None),
                                   issues_source_reason=document.get('issues_source_reason'))
@@ -1291,7 +1299,8 @@ def read_run(path):
                    'issue_members': issue_counts['issue_members'],
                    'by_severity': issue_counts['by_severity'],
                    'by_category': issue_counts['by_category'],
-                   'quarantined': len(quarantined),
+                   'quarantined': len(held),
+                   'quarantined_superseded': len(quarantined) - len(held),
                    'findings_delivered': progress.get('findings_delivered'),
                    'findings_submitted': progress.get('findings_submitted')},
         'quarantined': quarantined,

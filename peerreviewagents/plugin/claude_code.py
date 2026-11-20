@@ -24,11 +24,24 @@ and the step-A spike paid for finding that out:
 What it takes to keep the owner's machine out of the review is the environment
 and the settings:
 
-* ``--setting-sources ''`` so no user, project or local settings file is read,
-  and ``omitClaudeMd`` plus ``CLAUDE_CODE_DISABLE_MEMORY`` so no ``CLAUDE.md``
-  is either. A reviewer that read the owner's instructions is not reviewing the
-  manuscript on its own terms, and the first fix check found an agent doing
-  exactly that.
+* ``--setting-sources ''``, which is what keeps the owner's instructions out.
+  Claude Code's documented load table makes every ``CLAUDE.md`` conditional on
+  a setting source: ``~/.claude/CLAUDE.md`` and ``~/.claude/rules/*.md`` load
+  only when the sources include ``user``, the project and parent-directory
+  files only with ``project``, ``CLAUDE.local.md`` only with ``local``. An
+  empty list names none of them, so none of them is read. A reviewer that read
+  the owner's instructions is not reviewing the manuscript on its own terms,
+  and the first fix check found an agent doing exactly that.
+* ``CLAUDE_CODE_DISABLE_AUTO_MEMORY``, because auto memory is the one
+  instruction file the documentation says is read *whatever* the setting
+  sources are: ``~/.claude/projects/<project>/memory/`` goes into the system
+  prompt at start-up. The throwaway working directory already makes that a
+  folder no owner has ever written to, and the variable is the documented way
+  to switch it off rather than rely on that.
+* ``omitClaudeMd`` in the agent definition, which the documentation scopes to
+  an agent *spawned as a subagent*; ours run as the main session of their own
+  process, so it is belt to the ``--setting-sources`` braces and not the thing
+  doing the work.
 * a **built** environment rather than an inherited one (see
   :func:`environment`). The engine used to pass its own ``CLAUDECODE`` and
   ``CLAUDE_CODE_*`` through to the child, which made a session believe it was
@@ -77,8 +90,10 @@ INHERITED = ('HOME', 'PATH', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ', 'TMPDIR', 'SHEL
              'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy')
 #: Variables every session gets, whatever the parent's environment says.
 IMPOSED = {
-    # No CLAUDE.md from this machine, this repo or the owner's home.
-    'CLAUDE_CODE_DISABLE_MEMORY': '1',
+    # Auto memory is read whatever the setting sources say, so it is turned
+    # off by name. Every other CLAUDE.md is already gated on a source, and
+    # this session asks for none.
+    'CLAUDE_CODE_DISABLE_AUTO_MEMORY': '1',
     # The server reads this to know it is serving a review rather than being
     # poked at by hand.
     'PEERREVIEW_PLUGIN_RUN': '1',
@@ -299,6 +314,9 @@ class ClaudeCodeRunner(Runner):
                 'model': task.model,
                 'effort': task.effort,
                 'maxTurns': task.max_turns,
+                # Scoped by Claude Code to an agent spawned as a subagent;
+                # ours is the main session, and ``--setting-sources ''`` is
+                # what keeps the owner's CLAUDE.md out of it.
                 'omitClaudeMd': True,
                 'tools': allowed,
             }
@@ -359,7 +377,8 @@ class ClaudeCodeRunner(Runner):
         threading.Thread(target=pump, args=(child.stdout, lines), daemon=True).start()
         threading.Thread(target=drain, args=(child.stderr, tail), daemon=True).start()
         state = {'tokens': 0, 'calls': 0, 'models': set(), 'result': None, 'init': None,
-                 'stop': '', 'last': '', 'limits': []}
+                 'stop': '', 'last': '', 'limits': [], 'messages': {}, 'anonymous': 0,
+                 'startup': ''}
         open_stream = True
         while open_stream:
             try:
@@ -371,7 +390,7 @@ class ClaudeCodeRunner(Runner):
             elif line.strip():
                 event = events_of(line)
                 if event is not None:
-                    self._read(event, state)
+                    self._read(task, event, state)
                     if self.keep_events:
                         events.append(event)
             if not state['stop'] and ceiling and state['tokens'] > ceiling:
@@ -389,34 +408,84 @@ class ClaudeCodeRunner(Runner):
                 self._end(child)
         return self._outcome(task, state, started, tail, events, directory)
 
-    def _read(self, event, state):
+    def _read(self, task, event, state):
         limit = rate_limit_reason(event)
         if limit and limit not in state['limits']:
             state['limits'].append(limit)
         kind = event.get('type')
         if kind == 'system' and event.get('subtype') == 'init':
             state['init'] = event
+            wrong = self._wrong_at_start(task, state)
+            if wrong:
+                # Nothing this session does from here is the review: an agent
+                # without its tools reads as an agent that found nothing to
+                # say, and the retry is cheaper than a whole silent run.
+                state['startup'] = wrong
+                state['stop'] = FAILED
             return
         if kind == 'assistant':
             message = event.get('message') or {}
             if message.get('model'):
                 state['models'].add(str(message['model']))
-            # Every request's whole input is paid for again, cache reads
-            # included, so the sum over messages is what the session spends
-            # and what the result event reports at the end.
-            state['tokens'] += tokens_of(message.get('usage'))
+            self._count(message, state)
             for block in message.get('content') or ():
-                if isinstance(block, dict):
-                    if block.get('type') == 'tool_use':
-                        state['calls'] += 1
-                    elif block.get('type') == 'text' and str(block.get('text') or '').strip():
-                        state['last'] = str(block['text']).strip()
+                if (isinstance(block, dict) and block.get('type') == 'text'
+                        and str(block.get('text') or '').strip()):
+                    state['last'] = str(block['text']).strip()
             return
         if kind == 'result':
             state['result'] = event
             total = tokens_of(event.get('usage'))
             if total > state['tokens']:
                 state['tokens'] = total
+
+    def _count(self, message, state):
+        """What one assistant message spent and called, counted once.
+
+        The stream can send the same assistant message more than once — one
+        event per content block, the same ``id``, the same ``usage`` on each.
+        Summing every event counted a turn's whole input again per block,
+        which is what the token ceiling is measured against: a long turn could
+        be stopped as over budget on tokens it never spent. So a message id's
+        usage is credited once (the largest figure it reports, in case a later
+        event knows more), and its tool calls are credited by how far the
+        count has grown, which is right whether the blocks repeat or arrive
+        one at a time.
+        """
+        held = str(message.get('id') or '')
+        if not held:
+            state['anonymous'] += 1
+            held = f'anonymous-{state["anonymous"]}'
+        seen = state['messages'].setdefault(held, {'tokens': 0, 'calls': 0})
+        tokens = tokens_of(message.get('usage'))
+        if tokens > seen['tokens']:
+            state['tokens'] += tokens - seen['tokens']
+            seen['tokens'] = tokens
+        calls = sum(1 for block in message.get('content') or ()
+                    if isinstance(block, dict) and block.get('type') == 'tool_use')
+        if calls > seen['calls']:
+            state['calls'] += calls - seen['calls']
+            seen['calls'] = calls
+
+    def _wrong_at_start(self, task, state):
+        """Why this session is not the one we asked for, from its own init.
+
+        Three ways a session can start up wrong, all of them silent: our tool
+        server is not connected, a tool this agent was granted is not there,
+        or a built-in is — anything that reads a file, runs a command or
+        reaches the web on its own, which no agent of ours is allowed.
+        """
+        seen = self._connected(task, state)
+        said = []
+        if seen['server'] != 'connected':
+            said.append(f'the run\'s tool server was {seen["server"] or "not there"}')
+        if seen['missing']:
+            said.append(f'these granted tools were not in the session: '
+                        f'{", ".join(seen["missing"])}')
+        if seen['built_ins']:
+            said.append(f'the session had built-in tools of its own: '
+                        f'{", ".join(seen["built_ins"])}')
+        return '; '.join(said)
 
     def _end(self, child):
         try:
@@ -479,11 +548,9 @@ class ClaudeCodeRunner(Runner):
         if init is None:
             said.append('the session never reported starting up')
         else:
-            seen = self._connected(task, state)
-            if seen['server'] != 'connected':
-                said.append(f'the run\'s tool server was {seen["server"] or "not there"}')
-            if seen['missing']:
-                said.append(f'these tools were not in the session: {", ".join(seen["missing"])}')
+            wrong = state.get('startup') or self._wrong_at_start(task, state)
+            if wrong:
+                said.append(wrong)
         result = state['result'] or {}
         if result.get('subtype') and result.get('subtype') != 'success':
             said.append(f'the session ended {result["subtype"]}')

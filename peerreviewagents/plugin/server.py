@@ -42,7 +42,7 @@ from .. import issues as issue_model
 from .. import problems as problem_list
 from ..engine import citation_ledger, code_source, fix_report, paper_base, paper_view, quotes
 from ..engine import reader as engine_reader
-from ..engine.annotations import line_finding, quarantine_findings
+from ..engine.annotations import line_finding, quarantine_findings, superseded_quarantine
 from ..engine.domain_registry import context as domain_context
 from ..engine.domain_registry import route as domain_route
 from ..engine.ingest import DRAFT_FILE, convert_paper, seal_draft
@@ -717,7 +717,7 @@ class Run:
 
     def __init__(self, pdf, root, reviewers, arm, literature_cutoff, plugin_root, title=None,
                  tracks=None, reviewer_models=None, specialist_model=None, editor_model=None,
-                 recorder_model=None, citation_workers=None, citation_worker_model=None,
+                 citation_workers=None, citation_worker_model=None,
                  supplements=None, reader_model=None, code=None, problems=None):
         if arm not in ARMS:
             raise ValueError('Unknown arm: ' + arm + '. Arms: ' + ', '.join(sorted(ARMS)))
@@ -776,7 +776,6 @@ class Run:
             'specialist': model_plan.choice(specialist_model,
                                             model_plan.DEFAULT_SPECIALIST_MODEL),
             'editor': model_plan.choice(editor_model, model_plan.DEFAULT_EDITOR_MODEL),
-            'recorder': model_plan.choice(recorder_model, model_plan.DEFAULT_RECORDER_MODEL),
             'citation_worker': model_plan.choice(
                 citation_worker_model, model_plan.DEFAULT_CITATION_WORKER_MODEL),
             'reader': model_plan.choice(reader_model, model_plan.DEFAULT_READER_MODEL),
@@ -824,11 +823,16 @@ class Run:
         # this manuscript is the manifest's own ``ai_read`` account. The one
         # run without the stage is the one that was handed a manuscript already
         # sealed, which is what ``read_stage`` above settles.
+        # The recorder is not in here. It is a slot in the plan and it holds
+        # the run key, but its work is the command's own process: no session is
+        # started for it, so it has no model to assign and `refuse` has nothing
+        # to clear for it. A model written down here would read, in the
+        # protocol and in every row downstream, as a model that ran.
         self.models = model_plan.refuse(model_plan.assign(
             (*self.reader_slots, *self.required_slots(), *self.citation_workers,
-             *self.checker_slots, 'recorder'),
+             *self.checker_slots),
             reviewers=self.reviewer_models, specialist=specialist_model,
-            editor=editor_model, recorder=recorder_model,
+            editor=editor_model,
             citation_worker=citation_worker_model, reader=reader_model))
         # The check runs the code lane's own model, copied rather than assigned:
         # it is the same reading of the same repository, and `role_of` reads a
@@ -1786,9 +1790,29 @@ class Run:
             key: record[key] for key in
             ('cap', 'problems', 'checked', 'not_checked', 'over_cap', 'counts')}
 
+    def quarantine_rows(self):
+        """Every refused submission, each stamped with the finding that replaced it.
+
+        See :func:`peerreviewagents.engine.annotations.superseded_quarantine`:
+        a reviewer that fixed the quote the guard refused and submitted the
+        finding again has not lost a finding, and the row the fix replaced says
+        so rather than being counted against the run.
+        """
+        return superseded_quarantine(self.quarantined, self.pooled())
+
+    def quarantine_held(self):
+        """The refusals that are findings this run really lost."""
+        return [row for row in self.quarantine_rows() if not row.get('superseded_by')]
+
     def guard_status(self, slot=None):
-        """``quarantined`` when the guard threw out one of *this* reviewer's findings."""
-        rows = [q for q in self.quarantined if slot is None or q.get('slot') == slot]
+        """``quarantined`` when the guard threw out one of *this* reviewer's findings.
+
+        One it threw out and the reviewer then submitted again, with the quote
+        the refusal asked for, is not one of them: that finding is in the
+        review, and a status saying otherwise disagreed with the issue holding
+        the same quote.
+        """
+        rows = [q for q in self.quarantine_held() if slot is None or q.get('slot') == slot]
         return 'quarantined' if rows else 'clean'
 
     def editor_trace(self):
@@ -1941,7 +1965,12 @@ class Run:
             'stages': self.ledger(),
             'findings_delivered': len(self.pooled()),
             'findings_submitted': len(self.findings),
-            'quarantined_findings_count': len(self.quarantined),
+            # What the guard cost this run, and what it did not: a refusal the
+            # reviewer answered with the quote it asked for is in
+            # `quarantined_superseded_count` and not in the first number,
+            # because the finding it refused is in the review.
+            'quarantined_findings_count': len(self.quarantine_held()),
+            'quarantined_superseded_count': len(self.quarantined) - len(self.quarantine_held()),
             'issues': self.issue_counts(),
             'review_guard_status': self.guard_status(),
             # The Read stage, which closes no stage in the ledger: either the
@@ -2116,7 +2145,7 @@ def _model_disagreement(run, settled):
 def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
            literature_cutoff: str = '', title: str = '', tracks: list = None,
            reviewer_models: list = None, specialist_model: str = '',
-           editor_model: str = '', recorder_model: str = '',
+           editor_model: str = '',
            citation_workers: int = CITATION_WORKERS,
            citation_worker_model: str = '',
            supplements: str = '', reader_model: str = '', code: str = '',
@@ -2129,9 +2158,10 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
     ``reviewer_models`` is the ordered list the core reviewers take their model
     from — reviewer *i* runs ``list[(i - 1) % len(list)]``, so the default
     ``claude-sonnet-5-5, claude-opus-5-5, claude-haiku-5-5`` makes three
-    reviewers three different models. ``specialist_model``, ``editor_model``
-    and ``recorder_model`` are one model each, so every slot is settable the
-    same way. Anything omitted here falls back to what the launcher asked for
+    reviewers three different models. ``specialist_model`` and ``editor_model``
+    are one model each, so every slot that runs a model is settable the same
+    way. The recorder is not among them: it runs no session, so it has no
+    model to set. Anything omitted here falls back to what the launcher asked for
     in the environment, then to the defaults in ``models.py`` — one merge,
     ``models.settle``, the same one the launcher plans from. The answer's
     ``models`` says which model each slot is to run, and ``spawn`` is the
@@ -2180,7 +2210,7 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
         # with PEERREVIEW_* variables set and a workflow that passes no model
         # arguments reach the same answer instead of two.
         settled = model_plan.settle(reviewer_models, specialist_model, editor_model,
-                                    recorder_model, citation_worker_model, reader_model)
+                                    citation_worker_model, reader_model)
     except ValueError as exc:
         return rejection(str(exc))
     try:
@@ -2246,7 +2276,6 @@ def ingest(pdf: str, out: str, reviewers: int = 3, arm: str = DEFAULT_ARM,
                   reviewer_models=settled.get('reviewers'),
                   specialist_model=settled.get('specialist'),
                   editor_model=settled.get('editor'),
-                  recorder_model=settled.get('recorder'),
                   citation_workers=citation_workers,
                   citation_worker_model=settled.get('citation_worker'),
                   supplements=supplements or None,
@@ -3354,10 +3383,17 @@ def submit_report(agent_token: str, summary=None, limitations=None,
     # meaning rather than a field's: it says this stage reviewed the manuscript
     # and raised nothing. It was typed in the signature, so the schema layer
     # refused `"abc"` before the function ran and no log anywhere said a
-    # closure had been attempted.
-    if not isinstance(none_found, bool):
+    # closure had been attempted. Untyped, nothing coerces it either, so a
+    # session that writes the JSON boolean as a string — `"true"` — arrives
+    # here with text. That is this one argument's own spelling of true and
+    # false, not a wrong type, so it is read rather than refused: refusing it
+    # costs the stage its closure over a quoting difference.
+    said = _as_bool(none_found)
+    if said is None:
         wrong.append('none_found is true or false, and yours arrived as a '
                      + type(none_found).__name__)
+    else:
+        none_found = said
     if wrong:
         return refuse('; '.join(wrong) + '. Your stage is not closed.', problems=wrong)
     # A stage cannot be closed into a run that is already written. The editor's
@@ -3980,6 +4016,27 @@ def _record_editor_call(run, agent, tool, accepted, refusal=None, **extra):
                 'accepted': bool(accepted),
                 'refusal': refusal,
                 **extra})
+
+
+def _as_bool(value):
+    """``value`` as true or false, or ``None`` if it says neither.
+
+    A boolean is itself. The strings ``true`` and ``false``, in any case and
+    with surrounding space, are the JSON booleans written as text, which is how
+    some sessions pass them to an argument no schema types for them. Everything
+    else — a number, a list, ``"yes"``, an empty string — says neither and is
+    the caller's to fix, because guessing which way it leans is how a stage
+    that found something gets recorded as having found nothing.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        said = value.strip().lower()
+        if said == 'true':
+            return True
+        if said == 'false':
+            return False
+    return None
 
 
 def _wrong_types(fields, lists=()):
@@ -5011,7 +5068,7 @@ def run_status(recorder_key: str = '') -> dict:
     status = {'status': run.status, 'error': run.error, 'arm': run.arm,
               'reviewers': run.reviewers, 'stages_required': len(ledger['required']),
               'stages_reported': len(ledger['reported']),
-              'findings': len(run.pooled()), 'quarantined': len(run.quarantined),
+              'findings': len(run.pooled()), 'quarantined': len(run.quarantine_held()),
               'issues': counts, 'escalated': escalated,
               'review': str(run.review / 'REVIEW.md') if run.status in COMPLETE_STATUSES
               else None,
@@ -5246,8 +5303,11 @@ def _issues_document(run):
         'review_guard_status': run.guard_status(),
         'findings_delivered': len(delivered),
         'findings_submitted': len(run.findings),
-        'quarantined_findings_count': len(run.quarantined),
-        'quarantined_findings': run.quarantined,
+        'quarantined_findings_count': len(run.quarantine_held()),
+        'quarantined_superseded_count': len(run.quarantined) - len(run.quarantine_held()),
+        # Every row, the superseded ones included and stamped with the finding
+        # that replaced them: the refusal is the record of the first try.
+        'quarantined_findings': run.quarantine_rows(),
         'stages': run.ledger(),
     }
 

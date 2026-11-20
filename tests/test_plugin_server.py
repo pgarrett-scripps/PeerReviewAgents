@@ -548,6 +548,35 @@ def test_none_found_cannot_contradict_the_ledger(tmp_path):
     assert 'request_rejected' in srv.submit_report(token, 'All clear.', none_found=True)
 
 
+def test_none_found_is_read_when_it_arrives_as_the_word_rather_than_the_boolean(tmp_path):
+    """``none_found="true"`` is a stage that found nothing, not a wrong type.
+
+    The argument is untyped on purpose, so that a refusal over it is logged
+    where every other closure is — but untyped also means nothing coerces it,
+    and a session that writes the JSON boolean as a string lost its stage's
+    closure over the quotes. Two of these runs appear in the ledger as a stage
+    that never reported, which is a blocked review.
+    """
+    open_run(tmp_path, reviewers=3)
+    said = srv.submit_report(token_for('core-1'), 'Nothing to raise.', none_found=' TRUE ',
+                             model='claude-sonnet-5-5')
+    assert said.get('closed'), said
+    assert said['none_found'] is True, 'the word, read as the boolean it spells'
+    assert srv.current().agents['core-1'].report['none_found'] is True
+
+    other = srv.submit_report(token_for('core-2'), 'One for the editor.', none_found='false',
+                              model='claude-sonnet-5-5')
+    assert other.get('closed') and other['none_found'] is False
+
+    # Only those two words. Anything else is the caller's to fix: reading
+    # "yes", a number or an empty string either way would record a stage that
+    # found something as having found nothing, or the reverse.
+    third = token_for('core-3')
+    for value in ('yes', '', 'none', 0, 1, [True]):
+        refused = srv.submit_report(third, 'Nothing to raise.', none_found=value)
+        assert 'none_found is true or false' in refused['request_rejected'], value
+
+
 # -- isolation --------------------------------------------------------------
 
 
@@ -1320,6 +1349,54 @@ def test_the_guard_status_in_the_run_files_is_read_and_not_assumed(tmp_path):
     progress = json.loads((run.review / 'progress.json').read_text(encoding='utf-8'))
     assert progress['review_guard_status'] == 'quarantined'
     assert progress['quarantined_findings_count'] == 1
+
+
+def test_a_refusal_the_reviewer_answered_is_not_a_finding_the_run_lost(tmp_path):
+    """The guard refused a quote, the reviewer fixed it, and the run said both.
+
+    A reviewer whose quote the guard cannot place is told what to do about it,
+    and a reviewer that does it submits the same finding again with the line
+    and that one is stored. The run then reported a quarantined finding *and*
+    an issue over the same quote, which is one finding counted as two things:
+    a reader weighing what the guard cost this review was told it cost a
+    finding the review is holding. The refusal is still on record — it is the
+    first try — and it now says which submission replaced it.
+    """
+    open_run(tmp_path, arm='single')
+    run = srv.current()
+    token = token_for('core-1')
+    line, quote = quote_from(run)
+    title = 'Corpus is narrower than the methods describe'
+    refused = srv.submit_finding(token, title=title, line=line + 1, quote=quote,
+                                 comment='...', severity='major')
+    assert 'request_rejected' in refused, refused
+    assert run.guard_status() == 'quarantined', 'nothing has replaced it yet'
+
+    stored = srv.submit_finding(token, title=title, line=line, quote=quote, comment='...',
+                               severity='major')
+    assert 'finding_uid' in stored, stored
+    assert run.guard_status() == 'clean'
+    assert run.quarantine_held() == []
+    assert [row.get('superseded_by') for row in run.quarantine_rows()] == [stored['finding_uid']]
+
+    close(token, model='claude-sonnet-5-5')
+    assert srv.write_review(token_for('recorder'))['status'] == 'complete'
+    progress = json.loads((run.review / 'progress.json').read_text(encoding='utf-8'))
+    assert progress['review_guard_status'] == 'clean'
+    assert (progress['quarantined_findings_count'],
+            progress['quarantined_superseded_count']) == (0, 1)
+    document = json.loads((run.review / 'issues.json').read_text(encoding='utf-8'))
+    assert document['quarantined_findings_count'] == 0
+    assert document['quarantined_findings'][0]['superseded_by'] == stored['finding_uid']
+
+    # And the public reader makes the same join off the files, so a run folder
+    # written before this read the same way: the row is in `quarantined` with
+    # the uid that replaced it, and the count of what was held is zero.
+    reading = read_run(run.root)
+    assert reading['counts']['quarantined'] == 0
+    assert reading['counts']['quarantined_superseded'] == 1
+    assert reading['quarantined'][0]['superseded_by'] == stored['finding_uid']
+    assert not [why for why in reading['not_publishable_reasons'] if 'guard' in why]
 
 
 def test_nothing_is_stored_after_the_stage_closed_or_the_editor_ruled(tmp_path):

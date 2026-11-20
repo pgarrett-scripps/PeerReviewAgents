@@ -520,6 +520,50 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A refusal the reviewer answered is not a finding the run lost.** A quote
+  that occurs twice is refused with the lines it occurs on; a reviewer that
+  then cites one of those lines gets the same finding stored and grouped into
+  an issue. The folder used to report both as independent facts, so a review
+  that lost nothing still read `review_guard_status: quarantined` with
+  `quarantined_findings_count: 1`. Every quarantined row is now stamped with
+  the `finding_uid` that replaced it — same slot, same words, same title — in
+  `superseded_by`, and the guard status, `quarantined_findings_count` and
+  `read_run`'s `counts['quarantined']` count only the rows nothing replaced,
+  with the rest in `quarantined_superseded_count`. The stamp is made when a run
+  is read, so `quarantined.jsonl` stays append-only and a folder written before
+  this release reads the same way as one written now; a `guard_status` recorded
+  in an older folder is left as it was written, and the counts are what a
+  reader should use.
+- **A stage closes on `none_found` whether the word arrives quoted or not.** A
+  session that submitted `none_found: "true"` was refused for the type of an
+  argument the tool deliberately leaves unannotated, so the refusal reached the
+  ledger and the stage did not close. The word `true` or `false`, in any case
+  and with any surrounding space, now reads as the boolean it is; anything else
+  — `yes`, `0`, `[]`, nothing at all — is still refused, and in the tool body
+  where the refusal is logged.
+- **One assistant message is counted once, however many events carry it.** A
+  real stream sends one event per content block, each with the same message id
+  and the same cumulative usage, so a session that wrote text and called a tool
+  in one message had its tokens counted twice. Usage is now read per message
+  id, and the ceiling an agent is stopped at is the one the orchestrator set.
+- **A session that starts up wrong ends there instead of reviewing nothing.**
+  The init event is read before the agent is believed: our tool server not
+  connected, a granted tool missing from the session, or any built-in other
+  than `StructuredOutput` present ends that agent as `FAILED` with what was
+  wrong. A silent misconfiguration used to look like a reviewer that found
+  nothing to say.
+- **Auto memory is turned off by the name Claude Code actually reads.** The
+  environment set `CLAUDE_CODE_DISABLE_MEMORY`, which no release of Claude Code
+  reads, in the belief that it was what kept the owner's instructions out. What
+  keeps them out is `--setting-sources ''`: `~/.claude/CLAUDE.md` and
+  `~/.claude/rules/*.md` load only when the sources name `user`, the project
+  and parent-directory files only with `project`, `CLAUDE.local.md` only with
+  `local`, and this session names none of them. Auto memory is the one
+  instruction file read whatever the sources say, so it is now switched off by
+  `CLAUDE_CODE_DISABLE_AUTO_MEMORY`, and the agent definition's `omitClaudeMd`
+  is documented as belt to those braces rather than the thing doing the work —
+  Claude Code scopes it to an agent spawned as a subagent, and ours is the main
+  session of its own process.
 - **A step that is told to call a tool is a step that can call it.** The first
   real fix check judged all six problems correctly and then could not write the
   check: `check-fixes.js` tells the recorder to call `write_fix_check`,
@@ -816,6 +860,12 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Removed
 
+- **The recorder has no model, so nothing asks for one.** Writing the review,
+  the audits and the fix check is the orchestrator's own work in process, so
+  `models_requested` has no recorder slot and `--recorder-model` is gone from
+  `peerreview review` and `peerreview check-fixes` — passing it is an error,
+  not a flag quietly ignored. There is no shim: a caller that named the
+  recorder's model names a reader's or a reviewer's instead.
 - **Nothing launches a server, and no workflow script runs a review.**
   `workflows/review.js`, `workflows/check-fixes.js`, the plugin's `.mcp.json`,
   the `peerreview-plugin-server` console script, the `PEERREVIEW_MCP_COMMAND`

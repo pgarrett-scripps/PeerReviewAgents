@@ -198,7 +198,8 @@ def test_read_run_reads_a_complete_run(tmp_path):
         'findings': 2, 'issues': 2, 'required': 1, 'suggestions': 1, 'issue_members': 2,
         'by_severity': {'major': 1, 'moderate': 0, 'minor': 1},
         'by_category': {'results-and-numbers': 1, 'statistics-and-inference': 1},
-        'quarantined': 0, 'findings_delivered': 2, 'findings_submitted': 3}
+        'quarantined': 0, 'quarantined_superseded': 0,
+        'findings_delivered': 2, 'findings_submitted': 3}
     assert run['identity']['source_sha256'] == 'cafe' * 16
     assert run['identity']['arm'] == 'full-two-track'
     assert run['runtime']['tokens_total'] == 636299

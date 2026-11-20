@@ -435,14 +435,20 @@ def test_the_flags_the_user_typed_reach_the_run(monkeypatch):
     assert starter.review_main(['paper.pdf', 'out', '--reviewer-models', 'opus,haiku',
                                 '--specialist-model', 'haiku',
                                 '--editor-model', 'fable',
-                                '--recorder-model', 'sonnet']) == 0
+                                '--reader-model', 'sonnet']) == 0
     assert seen['reviewer_models'] == 'opus,haiku'
     assert seen['specialist_model'] == 'haiku'
     assert seen['editor_model'] == 'fable'
-    assert seen['recorder_model'] == 'sonnet', 'the recorder is a slot in the plan'
+    assert seen['reader_model'] == 'sonnet'
 
     assert starter.review_main(['paper.pdf', 'out']) == 0
     assert seen['reviewer_models'] is None, 'unset is the default, not an empty list'
+
+    # There is no recorder model to type, and no flag that quietly accepts one
+    # and does nothing: a run started with it would record a model for a slot
+    # that starts no session.
+    with pytest.raises(SystemExit):
+        starter.review_main(['paper.pdf', 'out', '--recorder-model', 'sonnet'])
 
 
 def test_a_model_this_login_cannot_run_stops_the_run_before_it_costs_anything(tmp_path,
@@ -525,7 +531,12 @@ def test_the_models_asked_for_are_recorded_even_when_no_session_started(tmp_path
     out = tmp_path / 'run'
     summary = starter.review(str(FIXTURE), str(out), reviewers=2)
     assert summary['models_requested']['core-2'] == 'claude-opus-5-5'
+    # The recorder is a slot in the plan and holds the run key, but no session
+    # is started for it: a model asked for here is a model nothing would run,
+    # and a login that cannot run it would be refused the whole review over it.
+    assert 'recorder' not in summary['models_requested'], 'the slot that runs no model'
     protocol = json.loads((out / 'review' / 'protocol.json').read_text(encoding='utf-8'))
+    assert 'recorder' not in protocol['models'], 'nor in what the run recorded'
     assert protocol['models']['core-2'] == 'claude-opus-5-5'
     assert protocol['models']['editor'] == 'claude-fable-5-2'
     assert 'claude-opus-5-5' in protocol['model']

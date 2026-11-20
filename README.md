@@ -119,7 +119,6 @@ the review's options:
 | `--reviewer-models` | `sonnet,opus,haiku` | Ordered; reviewer *i* takes the *i*-th, wrapping round |
 | `--specialist-model` | `claude-sonnet-5-5` | Every specialist |
 | `--editor-model` | `claude-fable-5-2` | The editor in chief |
-| `--recorder-model` | `claude-haiku-5-5` | Recorded in the plan only: the recorder's work is done in process and no session is started for it |
 | `--arm` | `full-two-track` | Which agents run and in what order; see [`docs/study-arms.md`](docs/study-arms.md) |
 | `--track` | all six | Repeatable; limits the specialist tracks (used by `draft-check`) |
 | `--citation-workers` | `4` | Workers judging in-text citations against the resolved sources, 0 to 12; only where the `citations` track runs |
@@ -138,12 +137,14 @@ Sonnet, Opus and Haiku, and a fourth starts the list again; `revision-1` runs
 on `core-1`'s model because it is `core-1` revising its own findings. A model
 your login cannot run is refused at start-up, naming the slot, the model and
 the flag — never quietly swapped for another. Nothing about models is gated on
-billing or usage.
+billing or usage. The recorder has no model flag: that slot is in the plan, but
+its work happens in the `peerreview` process, so there is no session to choose
+a model for and nothing to refuse a login over.
 
 Set `PEERREVIEW_CLAUDE_VERSION` to have the run record which Claude Code
 version produced it when `claude --version` cannot be asked;
 `PEERREVIEW_REVIEWER_MODELS`, `PEERREVIEW_SPECIALIST_MODEL`,
-`PEERREVIEW_EDITOR_MODEL`, `PEERREVIEW_RECORDER_MODEL` and
+`PEERREVIEW_EDITOR_MODEL`, `PEERREVIEW_READER_MODEL` and
 `PEERREVIEW_CITATION_WORKER_MODEL` are those model flags for a caller that
 reaches `ingest` directly instead. Nothing else in the run depends on them.
 

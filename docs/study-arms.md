@@ -50,7 +50,7 @@ peerreview review manuscript.pdf arms/mixed --reviewers 3
 ```
 
 `--reviewer-models`, `--specialist-model`, `--editor-model`,
-`--recorder-model` and `--citation-worker-model` take one of the four models
+`--reader-model` and `--citation-worker-model` take one of the four models
 this version knows —
 `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-haiku-5-5`,
 `claude-fable-5-2` — by alias or by id, each run records what it was given in

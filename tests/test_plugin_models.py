@@ -71,10 +71,21 @@ def test_one_reviewer_is_sonnet_and_three_are_three_different_models(reviewers, 
         assert len(set(assignment.values())) == 3, 'three reviewers are three readers'
 
 
-def test_the_specialists_the_editor_and_the_recorder_have_their_own_defaults():
-    assignment = model_plan.assign(('spec-stats', 'spec-citations', 'editor', 'recorder'))
-    assert assignment == {'spec-stats': SONNET, 'spec-citations': SONNET,
-                          'editor': FABLE, 'recorder': HAIKU}
+def test_the_specialists_and_the_editor_have_their_own_defaults():
+    assignment = model_plan.assign(('spec-stats', 'spec-citations', 'editor'))
+    assert assignment == {'spec-stats': SONNET, 'spec-citations': SONNET, 'editor': FABLE}
+
+
+def test_the_recorder_is_given_no_model_even_when_it_is_named():
+    """The slot that runs no session is left out of the mapping, not defaulted.
+
+    A model written down for the recorder is a model nothing runs: it would be
+    refused for a login that cannot run it and recorded, in the protocol and in
+    every row downstream, as a model that read the paper.
+    """
+    assert model_plan.assign(('recorder',)) == {}
+    assert model_plan.assign(('editor', 'recorder')) == {'editor': FABLE}
+    assert model_plan.role_of('recorder') == '', 'not a core reviewer by fall-through'
 
 
 def test_a_revision_runs_the_model_it_is_revising():
@@ -126,8 +137,8 @@ def test_the_arguments_and_the_environment_are_merged_in_one_place():
     assert model_plan.settle(environ=environ) == {'reviewers': [HAIKU], 'editor': OPUS}
     # A flag is this run's own choice; a variable is what the environment was
     # left in. Only the slots somebody chose are in the answer at all.
-    chosen = model_plan.settle(reviewers='sonnet,opus', recorder='fable', environ=environ)
-    assert chosen == {'reviewers': [SONNET, OPUS], 'editor': OPUS, 'recorder': FABLE}
+    chosen = model_plan.settle(reviewers='sonnet,opus', specialist='fable', environ=environ)
+    assert chosen == {'reviewers': [SONNET, OPUS], 'editor': OPUS, 'specialist': FABLE}
     assert model_plan.settle(environ={}) == {}, 'nobody chose anything'
 
 
@@ -151,14 +162,14 @@ def test_a_model_this_login_cannot_run_is_refused_by_slot_flag_and_name():
 
 
 def test_each_slot_names_the_flag_that_changes_it():
-    assignment = model_plan.assign(('core-1', 'spec-stats', 'editor', 'recorder'),
+    assignment = model_plan.assign(('core-1', 'spec-stats', 'editor', 'reader'),
                                    reviewers='nope-1', specialist='nope-2',
-                                   editor='nope-3', recorder='nope-4')
+                                   editor='nope-3', reader='nope-4')
     lines = model_plan.problems(assignment, allowed=None)
     assert len(lines) == 4
     joined = '\n'.join(lines)
     for flag in ('--reviewer-models', '--specialist-model', '--editor-model',
-                 '--recorder-model'):
+                 '--reader-model'):
         assert flag in joined
 
 
@@ -289,7 +300,8 @@ def test_ingest_settles_the_models_and_hands_back_the_spawn_override(tmp_path):
         # The citation workers are planned with everything else and run Haiku:
         # a batch of use rows against a stored passage is the cheap model's job.
         **{f'cite-{index}': HAIKU for index in range(1, srv.CITATION_WORKERS + 1)},
-        'editor': FABLE, 'recorder': HAIKU}
+        # No recorder: the one slot that starts no session has no model.
+        'editor': FABLE}
     spawns = {row['slot']: row['spawn'] for row in answer['models']}
     assert spawns['core-2'] == 'opus' and spawns['editor'] == 'fable'
 
@@ -301,7 +313,7 @@ def test_the_flags_reach_every_slot_through_ingest(tmp_path):
     assert [assignment['core-1'], assignment['core-2']] == [HAIKU, OPUS]
     assert assignment['spec-stats'] == OPUS
     assert assignment['editor'] == SONNET
-    assert assignment['recorder'] == HAIKU, 'the recorder was not asked about'
+    assert 'recorder' not in assignment, 'the slot that starts no session has no model'
 
 
 def test_the_launcher_passes_the_choice_in_the_environment(tmp_path, monkeypatch):
@@ -420,9 +432,9 @@ def test_a_second_caller_asking_for_other_models_is_not_attached_to_this_run(tmp
     assert '--reviewer-models' in refused['request_rejected']
     assert 'attached' not in refused
 
-    recorder = srv.ingest(str(FIXTURE), str(tmp_path / 'run'), reviewers=2,
-                          recorder_model='opus')
-    assert 'recorder' in recorder['request_rejected'], 'every slot, not only the reviewers'
+    reader = srv.ingest(str(FIXTURE), str(tmp_path / 'run'), reviewers=2,
+                        reader_model='opus')
+    assert 'reader' in reader['request_rejected'], 'every slot, not only the reviewers'
 
     same = srv.ingest(str(FIXTURE), str(tmp_path / 'run'), reviewers=2,
                       reviewer_models=[SONNET, OPUS, HAIKU], editor_model='fable')

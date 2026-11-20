@@ -498,7 +498,7 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
            per_agent_tokens=PER_AGENT_TOKENS, per_run_tokens=PER_RUN_TOKENS,
            wall_timeout=WALL_TIMEOUT, directory=None, cwd=None,
            reviewer_models=None, specialist_model=None, editor_model=None,
-           recorder_model=None, citation_workers=CITATION_WORKERS, citation_worker_model=None,
+           citation_workers=CITATION_WORKERS, citation_worker_model=None,
            reader_model=None, code=None, runner=None, watch=None):
     """Run one review and return its summary.
 
@@ -513,8 +513,9 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
 
     ``reviewer_models`` is the ordered list the core reviewers are drawn from,
     reviewer *i* running ``list[(i - 1) % len(list)]``; the default makes three
-    reviewers three different models. ``specialist_model``, ``editor_model``
-    and ``recorder_model`` are one model each. ``citation_workers`` is how many
+    reviewers three different models. ``specialist_model`` and ``editor_model``
+    are one model each. There is no recorder model: that slot's work is done in
+    this process. ``citation_workers`` is how many
     workers judge the in-text citations against the sources the server
     resolved, and ``citation_worker_model`` is the model they run — Haiku by
     default, because a worker reads one sentence and one stored passage. They
@@ -597,7 +598,7 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     # Which model each slot will run, settled and checked here: a model this
     # login cannot run is refused before anything is spent, because Claude
     # Code's own answer to one is to quietly run a different model.
-    settled = model_plan.settle(reviewer_models, specialist_model, editor_model, recorder_model,
+    settled = model_plan.settle(reviewer_models, specialist_model, editor_model,
                                 citation_worker_model, reader_model)
     reviewer_list = list(model_plan.parse_list(settled.get('reviewers'))
                          or model_plan.DEFAULT_REVIEWER_MODELS)
@@ -615,11 +616,13 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     # seal) has no draft to repair and the server plans no reader slot for it.
     reader_slots = (() if (root / MANUSCRIPT_DIRECTORY / 'manifest.json').is_file()
                     else ('reader',))
-    # `recorder` is in the plan because the server still plans the slot — it is
-    # the run key's own slot — even though this process holds it and runs no
-    # model for it. See :func:`recorder_row`.
+    # The recorder is not in here. The server plans the slot — it is the run
+    # key's own slot — but this process holds it and starts no session for it,
+    # so it has no model to ask for and naming one would have `refuse_models`
+    # below turn away a login over a model nothing was going to run. See
+    # :func:`recorder_row`.
     wanted = model_plan.assign(
-        (*reader_slots, *plan_slots(arm, reviewers, tracks, bool(code)), *workers, 'recorder'),
+        (*reader_slots, *plan_slots(arm, reviewers, tracks, bool(code)), *workers),
         **settled)
     runner = runner_for(runner)
     refuse_models(runner, wanted)
@@ -638,7 +641,6 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
         'reviewer_models': list(reviewer_list),
         'specialist_model': settled.get('specialist') or '',
         'editor_model': settled.get('editor') or '',
-        'recorder_model': settled.get('recorder') or '',
         'citation_workers': len(workers) if citation_lane else CITATION_WORKERS,
         'citation_worker_model': settled.get('citation_worker') or '',
         'reader_model': settled.get('reader') or '',
@@ -737,10 +739,6 @@ def build_parser(prog='peerreview review'):
     parser.add_argument('--editor-model', default=None, metavar='MODEL',
                         help='the model the editor runs (default: '
                              + model_plan.DEFAULT_EDITOR_MODEL + ')')
-    parser.add_argument('--recorder-model', default=None, metavar='MODEL',
-                        help='the model the recorder slot is planned with. Nothing runs it: '
-                             'the recorder is the run itself now (default: '
-                             + model_plan.DEFAULT_RECORDER_MODEL + ')')
     parser.add_argument('--citation-workers', type=int, default=CITATION_WORKERS,
                         metavar='N', choices=range(0, MAX_CITATION_WORKERS + 1),
                         help='workers judging the in-text citations against the resolved '
@@ -799,7 +797,6 @@ def review_main(argv=None, prog='peerreview review'):
                          reviewer_models=args.reviewer_models,
                          specialist_model=args.specialist_model,
                          editor_model=args.editor_model,
-                         recorder_model=args.recorder_model,
                          citation_workers=args.citation_workers,
                          citation_worker_model=args.citation_worker_model,
                          reader_model=args.reader_model,
@@ -813,7 +810,7 @@ def review_main(argv=None, prog='peerreview review'):
 
 def check_fixes(pdf, out, problems, per_agent_tokens=FIX_PER_AGENT_TOKENS,
                 per_run_tokens=FIX_PER_RUN_TOKENS, wall_timeout=FIX_WALL_TIMEOUT,
-                directory=None, cwd=None, specialist_model=None, recorder_model=None,
+                directory=None, cwd=None, specialist_model=None,
                 reader_model=None, runner=None, watch=None):
     """Read one new draft against the problems a review raised, and return the summary.
 
@@ -865,11 +862,11 @@ def check_fixes(pdf, out, problems, per_agent_tokens=FIX_PER_AGENT_TOKENS,
     directory = Path(directory) if directory else plugin_dir()
     if not (directory / '.claude-plugin' / 'plugin.json').is_file():
         raise ValueError(f'No plugin at {directory}')
-    settled = model_plan.settle(None, specialist_model, None, recorder_model, None, reader_model)
+    settled = model_plan.settle(None, specialist_model, None, None, reader_model)
     reader_slots = (() if (root / MANUSCRIPT_DIRECTORY / 'manifest.json').is_file()
                     else ('reader',))
     slots = checker_slots(FIX_ARM, len(rows))
-    wanted = model_plan.assign((*reader_slots, *slots, 'recorder'), **settled)
+    wanted = model_plan.assign((*reader_slots, *slots), **settled)
     runner = runner_for(runner)
     refuse_models(runner, wanted)
     review_dir.mkdir(parents=True, exist_ok=True)
@@ -883,7 +880,6 @@ def check_fixes(pdf, out, problems, per_agent_tokens=FIX_PER_AGENT_TOKENS,
         'out': str(root),
         'problems': str(Path(problems).resolve()),
         'specialist_model': settled.get('specialist') or '',
-        'recorder_model': settled.get('recorder') or '',
         'reader_model': settled.get('reader') or '',
     }
     started = time.monotonic()
@@ -948,10 +944,6 @@ def check_fixes_parser(prog='peerreview check-fixes'):
     parser.add_argument('--specialist-model', default=None, metavar='MODEL',
                         help='the model every checker runs (default: '
                              + model_plan.DEFAULT_SPECIALIST_MODEL + ')')
-    parser.add_argument('--recorder-model', default=None, metavar='MODEL',
-                        help='the model the recorder slot is planned with. Nothing runs it: '
-                             'the recorder is the run itself now (default: '
-                             + model_plan.DEFAULT_RECORDER_MODEL + ')')
     parser.add_argument('--reader-model', default=None, metavar='MODEL',
                         help='the model that reads the new draft against its page images before '
                              'anything is checked (default: '
@@ -984,7 +976,6 @@ def check_fixes_main(argv=None, prog='peerreview check-fixes'):
                               per_run_tokens=args.per_run_tokens,
                               wall_timeout=args.timeout, directory=args.plugin_dir,
                               specialist_model=args.specialist_model,
-                              recorder_model=args.recorder_model,
                               reader_model=args.reader_model)
     except (ValueError, OSError) as exc:
         print(str(exc), file=sys.stderr)
