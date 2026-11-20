@@ -827,8 +827,15 @@ class Panel:
         return self.assigned.get(slot) or self.spawns.get(slot) or None
 
     def unplanned(self, slots):
-        """Which of these slots arrived without a model."""
-        return [slot for slot in slots if slot and slot not in self.spawns]
+        """Which of these slots arrived without a model.
+
+        The recorder is never one of them. It is a slot in the plan and it is
+        in the slot list ingest answers with, but its work is this process's
+        own: no session is started for it, so the plan names no model for it
+        and there is nothing an agent file could pin instead.
+        """
+        return [slot for slot in slots
+                if slot and slot != 'recorder' and slot not in self.spawns]
 
     # -- the Read stage, which both kinds of run have ----------------------
 
@@ -1453,7 +1460,7 @@ class FixCheck(Panel):
                        'could not be claimed by anything')
         reader = opened.get('reader') or {}
         self.reader_slot = reader.get('slot') or ''
-        unplanned = self.unplanned([*self.checkers, self.reader_slot, 'recorder'])
+        unplanned = self.unplanned([*self.checkers, self.reader_slot])
         if unplanned:
             self.block('ingest returned no model for ' + ', '.join(unplanned) + ', so '
                        + ('that slot' if len(unplanned) == 1 else 'those slots')

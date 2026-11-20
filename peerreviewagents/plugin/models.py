@@ -12,8 +12,10 @@ place that decides which:
   list again. ``revision-1`` is ``core-1`` revising its own findings, so it
   takes ``core-1``'s model and never a different one.
 * **Specialists** are one model, ``claude-sonnet-5-5``.
-* **The editor** is ``claude-fable-5-2``, and **the recorder**
-  ``claude-haiku-5-5``.
+* **The editor** is ``claude-fable-5-2``.
+* **The recorder** has no model and is not in here at all: it is a slot in the
+  plan, but its work happens in the command's own process, so there is nothing
+  to choose and nothing to refuse for it.
 * **Citation workers** (``cite-1``, ``cite-2``, …) are ``claude-haiku-5-5``.
   They answer one bounded question per in-text citation — does the stored
   source passage support this sentence — and submit no findings, so the work
@@ -79,7 +81,10 @@ DEFAULT_SPECIALIST_MODEL = 'claude-sonnet-5-5'
 #: paying for the better reader is cheapest.
 DEFAULT_READER_MODEL = 'claude-sonnet-5-5'
 DEFAULT_EDITOR_MODEL = 'claude-fable-5-2'
-DEFAULT_RECORDER_MODEL = 'claude-haiku-5-5'
+#: There is no recorder model. The recorder's work — ``ingest``, the reports,
+#: the ledger it writes at the end — is done in the command's own process, with
+#: no session and no model behind it, so the slot has no model to choose and
+#: nothing to refuse: a model named for it would read as an agent that ran.
 #: The citation workers that judge one in-text citation against its source.
 #: Haiku because the job is small, bounded and repeated once per in-text use:
 #: read a sentence and a stored passage, answer whether one supports the other,
@@ -94,7 +99,6 @@ FLAG = {
     'core': '--reviewer-models',
     'specialist': '--specialist-model',
     'editor': '--editor-model',
-    'recorder': '--recorder-model',
     'citation-worker': '--citation-worker-model',
     'reader': '--reader-model',
 }
@@ -103,7 +107,6 @@ ENVIRONMENT = {
     'core': 'PEERREVIEW_REVIEWER_MODELS',
     'specialist': 'PEERREVIEW_SPECIALIST_MODEL',
     'editor': 'PEERREVIEW_EDITOR_MODEL',
-    'recorder': 'PEERREVIEW_RECORDER_MODEL',
     'citation-worker': 'PEERREVIEW_CITATION_WORKER_MODEL',
     'reader': 'PEERREVIEW_READER_MODEL',
 }
@@ -189,15 +192,14 @@ def from_environment(environ=None):
     if reviewers:
         chosen['reviewers'] = list(reviewers)
     for key, role in (('specialist', 'specialist'), ('editor', 'editor'),
-                      ('recorder', 'recorder'), ('citation_worker', 'citation-worker'),
-                      ('reader', 'reader')):
+                      ('citation_worker', 'citation-worker'), ('reader', 'reader')):
         value = str(environ.get(ENVIRONMENT[role]) or '').strip()
         if value:
             chosen[key] = normalize(value)
     return chosen
 
 
-def settle(reviewers=None, specialist=None, editor=None, recorder=None, citation_worker=None,
+def settle(reviewers=None, specialist=None, editor=None, citation_worker=None,
            reader=None, environ=None):
     """What a run asked for: the arguments it was given, over the environment.
 
@@ -216,7 +218,7 @@ def settle(reviewers=None, specialist=None, editor=None, recorder=None, citation
     listed = parse_list(reviewers)
     if listed:
         chosen['reviewers'] = list(listed)
-    for value, key in ((specialist, 'specialist'), (editor, 'editor'), (recorder, 'recorder'),
+    for value, key in ((specialist, 'specialist'), (editor, 'editor'),
                        (citation_worker, 'citation_worker'), (reader, 'reader')):
         text = str(value or '').strip()
         if text:
@@ -224,7 +226,7 @@ def settle(reviewers=None, specialist=None, editor=None, recorder=None, citation
     return chosen
 
 
-def to_environment(reviewers=None, specialist=None, editor=None, recorder=None,
+def to_environment(reviewers=None, specialist=None, editor=None,
                    citation_worker=None, reader=None):
     """The variables that carry a choice into a launched session, or ``{}``.
 
@@ -236,7 +238,7 @@ def to_environment(reviewers=None, specialist=None, editor=None, recorder=None,
     listed = parse_list(reviewers)
     if listed:
         chosen[ENVIRONMENT['core']] = ','.join(listed)
-    for value, role in ((specialist, 'specialist'), (editor, 'editor'), (recorder, 'recorder'),
+    for value, role in ((specialist, 'specialist'), (editor, 'editor'),
                         (citation_worker, 'citation-worker'), (reader, 'reader')):
         text = str(value or '').strip()
         if text:
@@ -249,7 +251,11 @@ def role_of(slot):
     if slot == 'editor':
         return 'editor'
     if slot == 'recorder':
-        return 'recorder'
+        # No role, because no model: the recorder is the command's own process.
+        # Named here all the same, because the fall-through below reads an
+        # unknown slot as a core reviewer's, and a reviewer model on the
+        # recorder would be a model nothing ran.
+        return ''
     if slot == 'reader':
         return 'reader'
     if str(slot).startswith('spec-'):
@@ -275,19 +281,22 @@ def _index(slot):
         return 1
 
 
-def assign(slots, reviewers=None, specialist=None, editor=None, recorder=None,
+def assign(slots, reviewers=None, specialist=None, editor=None,
            citation_worker=None, reader=None):
-    """The model for every slot in ``slots``, as an ordered ``{slot: model}``.
+    """The model for every slot in ``slots`` that runs one, as ``{slot: model}``.
 
     ``reviewers`` is the ordered list; the rest are one model each. Anything
     left out takes this module's default. The mapping is the run's record of
     what was asked for, so it is computed once, at ingest, and written down.
+
+    A slot with no model — the recorder, which is the command's own process —
+    is left out of the mapping rather than given one, so nothing downstream
+    reads a model where no session ran.
     """
     chosen = tuple(parse_list(reviewers)) or tuple(
         normalize(model) for model in DEFAULT_REVIEWER_MODELS)
     specialist = choice(specialist, DEFAULT_SPECIALIST_MODEL)
     editor = choice(editor, DEFAULT_EDITOR_MODEL)
-    recorder = choice(recorder, DEFAULT_RECORDER_MODEL)
     citation_worker = choice(citation_worker, DEFAULT_CITATION_WORKER_MODEL)
     reader = choice(reader, DEFAULT_READER_MODEL)
     out = {}
@@ -303,8 +312,6 @@ def assign(slots, reviewers=None, specialist=None, editor=None, recorder=None,
             out[slot] = citation_worker
         elif role == 'reader':
             out[slot] = reader
-        else:
-            out[slot] = recorder
     return out
 
 

@@ -2,7 +2,7 @@
 import re
 from pathlib import Path
 
-from . import paper_base, quotes
+from . import paper_base, paper_text, quotes
 from .storage import digest, read, relative_name, write
 
 #: How many evidence lines one finding may list. The same cap the server
@@ -180,6 +180,54 @@ def quarantine_findings(findings):
         else:
             kept.append(finding)
     return kept, quarantined
+
+
+def superseded_quarantine(quarantined, findings):
+    """``quarantined`` with every row a later submission replaced stamped as such.
+
+    A reviewer whose quote the guard refused is told what to do about it — give
+    the line, or quote more of the sentence so that it occurs once — and a
+    reviewer that does it submits the same finding again and that one lands.
+    Both rows are then in the run folder: the refusal, which is the record of
+    the first try, and the finding. Read without this join the run contradicted
+    itself — the guard had thrown a finding out over a quote the review held an
+    issue over — which is one finding reported as two things, and a reader
+    counting what the run lost counted a finding it did not lose.
+
+    ``superseded_by`` is the ``finding_uid`` of the submission that replaced the
+    refused one. A row that carries it is not a finding this run lost;
+    :func:`quarantine_held` is the rest, which are.
+
+    The match is the slot, the words of the quote and the title, because that is
+    what a refusal and its resubmission share: the line, the document, the
+    offsets and the placement are exactly what the reviewer changed between
+    them. The words are compared in their normal form, so a resubmission that
+    re-typed a dash still matches the row it replaces.
+    """
+    landed = {}
+    for finding in findings:
+        landed.setdefault(_claim(finding), finding.get('finding_uid'))
+    stamped = []
+    for row in quarantined:
+        uid = landed.get(_claim(row))
+        stamped.append({**row, 'superseded_by': uid} if uid else dict(row))
+    return stamped
+
+
+def quarantine_held(quarantined, findings=None):
+    """The quarantined rows that are findings this run really lost.
+
+    With *findings*, the rows are stamped first; without, they are read as they
+    come — a row already carrying ``superseded_by`` is held back by nobody.
+    """
+    rows = quarantined if findings is None else superseded_quarantine(quarantined, findings)
+    return [row for row in rows if not row.get('superseded_by')]
+
+
+def _claim(row):
+    """What a refused submission and the resubmission that replaces it share."""
+    return (str(row.get('slot') or ''), paper_text.normalised(row.get('quote') or ''),
+            ' '.join(str(row.get('title') or '').split()).casefold())
 
 
 def _offsets(base, finding):

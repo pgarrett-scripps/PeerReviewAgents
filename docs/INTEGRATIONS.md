@@ -96,7 +96,7 @@ The orchestrator passes `reviewer_models`, `specialist_model` and
 to the runner and `model` is the version the run records; `citation_workers`
 and `citation_worker_model` go the same way. `PEERREVIEW_REVIEWER_MODELS`,
 `PEERREVIEW_SPECIALIST_MODEL`, `PEERREVIEW_EDITOR_MODEL`,
-`PEERREVIEW_RECORDER_MODEL` and `PEERREVIEW_CITATION_WORKER_MODEL` do the same
+`PEERREVIEW_READER_MODEL` and `PEERREVIEW_CITATION_WORKER_MODEL` do the same
 for a caller reaching `ingest` directly, and an explicit `ingest` argument wins
 over the environment.
 
@@ -365,8 +365,8 @@ beside its own run, and a summary dict printed rather than a report. Its ceiling
 own, because a check is a much smaller run than a review: 150,000 tokens per
 agent, 900,000 for the run and a 45-minute wall clock, against a review's
 millions. `--per-agent-tokens`, `--per-run-tokens` and `--timeout` move them,
-and `--specialist-model`, `--recorder-model` and `--reader-model` choose the
-models exactly as `review` does.
+and `--specialist-model` and `--reader-model` choose the models exactly as
+`review` does.
 
 ### The problems file
 
@@ -934,7 +934,8 @@ of the same paper is storing separate reviews, not rounds of one.
 from a reader, so the ledger *is* the finding set rather than a longer list the
 review draws from. `counts` carries both tallies — `findings`, `issues`,
 `required`, `suggestions`, `issue_members`, `by_severity`, `by_category` and
-`quarantined`, plus `findings_delivered` and `findings_submitted`.
+`quarantined`, plus `quarantined_superseded`, `findings_delivered` and
+`findings_submitted`.
 `issue_members` is the number of distinct findings the issues hold between
 them, and it is called that everywhere it appears: in `issues.json`, in the
 `issues` tally `progress.json` carries while the run is still going, and here.
@@ -976,7 +977,8 @@ go through, so a consumer can use the same one.
 | `audits` | every specialist audit in the run, as bare file names |
 | `findings_by_track` | the findings that reached the editor, counted per track |
 | `findings_delivered`, `findings_submitted` | what reached the editor, and what was filed |
-| `quarantined_findings`, `quarantined_findings_count` | the rows the guard held back, and how many |
+| `quarantined_findings`, `quarantined_findings_count` | every row the guard refused, and how many of them are findings the run lost |
+| `quarantined_superseded_count` | the rest: refusals the reviewer answered, each row stamped `superseded_by` with the `finding_uid` that replaced it |
 | `review_guard_status` | `clean` or `quarantined` |
 | `code_check` | what the code check did, or `None` on a run that was given no code (below) |
 | `reviewer_count`, `reviewer_provenance` | how many core reviewers, and how they were drawn |
@@ -1565,6 +1567,20 @@ guard that did that has done its job, and what is left is a whole review minus
 one unanchored quote. `guard_status` is `clean` or `quarantined` — there is no
 error state — and `quarantined` holds the rows themselves, so an application
 that wants to weigh what was held can.
+
+**A refusal the reviewer answered is not a finding the run lost.** The guard
+tells a reviewer what to do about an unplaceable quote — give the line, or quote
+more of the sentence — and a reviewer that does it submits the same finding
+again and that one is stored. Both rows are in the run: the refusal in
+`quarantined.jsonl`, and the finding in the review. `quarantined` stamps such a
+row with `superseded_by`, the `finding_uid` that replaced it;
+`counts['quarantined']` counts only the rows nothing replaced, and
+`counts['quarantined_superseded']` the rest. The join is on the slot, the words
+of the quote and the title, and it is made when the run is read, so a run folder
+written before this release reads the same way as one written now. `guard_status` is
+still whatever the run recorded, so a folder from before that says `quarantined`
+over nothing but superseded rows — read the counts, not the verdict, for what
+was lost.
 
 **A review with no findings in it is still a review.**
 `complete-without-findings` with `counts['quarantined']` at zero means the
