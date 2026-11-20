@@ -125,27 +125,25 @@ Manuscripts and workspaces
     map row says on the way out.
 
 Building a fixture to test against
-    :func:`scripted_read` is the Read stage driven in code, with no model and
-    nothing launched: it opens a run on a PDF, claims the reader's slot and
-    hands back a :class:`ScriptedRead` whose methods are the reader's own
-    tools, so a consumer's test fixture for what that stage writes — a re-read
-    part's ``part`` and ``of``, an absorbed piece's reading, the reader's note
-    in the manifest — is written by the engine instead of by hand.
-    :class:`ReaderRefused` is what a refused call raises. It is for tests; a
-    review's Read stage is a model stage and :func:`review` is what runs one.
-    :func:`scripted_fix_check` is the same for the other stage an application
-    renders: it opens a fix check on a PDF with a problems file, claims every
-    checker slot and hands back a :class:`ScriptedFixCheck` whose methods are
-    ``fix_queue``, ``submit_fix_check`` and the tools that read the paper, so a
-    fixture holding ``fix-check.json`` and ``FIXES.md`` is written by the lane.
-    :func:`scripted_review` is the third and the widest: it opens a review on a
-    PDF, claims every slot the arm plans and the recorder, and hands back a
-    :class:`ScriptedReview` whose methods are each slot's own tools —
-    ``submit_finding``, ``submit_report``, ``submit_issues``, ``submit_editor``
-    — so a fixture holding ``issues.json``, ``REVIEW.md`` and the findings
-    :func:`read_run` reads is written by the engine with no model in it.
-    :class:`CheckRefused` and :class:`ReviewRefused` are their refusals and
-    :class:`ToolRefused` is the base of all three.
+    :func:`scripted_read`, :func:`scripted_fix_check` and
+    :func:`scripted_review` are real runs with Python where the models go:
+    the same stage order, the same tool server, the same recorder and the same
+    run folder, with nothing launched and no model reading anything. Each one
+    takes the scripts for the slots a fixture cares about — one callable per
+    slot, taking a :class:`ScriptedSlot` whose methods are that agent's own
+    tools — and runs this package's defaults for the rest, so a one-line call
+    writes a whole folder.
+    :func:`scripted_read` is for a fixture of what the Read stage writes: a
+    re-read part's ``part`` and ``of``, an absorbed piece's reading, the
+    reader's note in the manifest, with ``pieces=`` putting the converter's own
+    failures into the draft. :func:`scripted_fix_check` writes
+    ``fix-check.json`` and ``FIXES.md``, and :func:`scripted_review` the
+    ``issues.json``, ``REVIEW.md`` and findings :func:`read_run` reads.
+    :data:`NO_ANSWER` is how a script stands in for an agent that worked and
+    then answered nothing; :class:`ReaderRefused`, :class:`CheckRefused` and
+    :class:`ReviewRefused` are what a refused tool raises in each, and
+    :class:`ToolRefused` is the base of all three. They are for tests: a real
+    review is a model run, and :func:`review` is what launches one.
 
 Names
     :data:`RUN_DIRECTORY` and :data:`MANUSCRIPT_DIRECTORY` are the two folders
@@ -261,6 +259,8 @@ __all__ = [
     "ScriptedReview",
     "ReviewRefused",
     "ToolRefused",
+    "ScriptedSlot",
+    "NO_ANSWER",
     "plugin_directory",
     "claude_code_version",
     "review_parser",
@@ -334,8 +334,9 @@ _LAZY = {
     "verify_workspace": (".engine.annotations", "verify_workspace"),
     "export_draft": (".engine.annotations", "export_draft"),
     # The Read stage in code, for a consumer's tests: a fixture holding what
-    # that stage writes, written by the stage. Lazy like the rest, so a
-    # consumer that only reads runs never imports the server for it.
+    # that stage writes, written by the stage itself — one real run with a
+    # script in the reader's seat. Lazy like the rest, so a consumer that only
+    # reads runs never imports the server for it.
     "scripted_read": (".scripted", "scripted_read"),
     "ScriptedRead": (".scripted", "ScriptedRead"),
     "ReaderRefused": (".scripted", "ReaderRefused"),
@@ -350,6 +351,9 @@ _LAZY = {
     "ScriptedReview": (".scripted", "ScriptedReview"),
     "ReviewRefused": (".scripted", "ReviewRefused"),
     "ToolRefused": (".scripted", "ToolRefused"),
+    # What a script is handed, and the one answer it cannot give by returning.
+    "ScriptedSlot": (".scripted", "ScriptedSlot"),
+    "NO_ANSWER": (".scripted", "NO_ANSWER"),
 }
 
 

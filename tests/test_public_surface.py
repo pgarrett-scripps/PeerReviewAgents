@@ -29,6 +29,7 @@ from peerreviewagents import issues as issue_model
 from peerreviewagents import names, runs, scripted
 from peerreviewagents.cli.main import report_main
 from peerreviewagents.engine import citation_ledger
+from peerreviewagents.plugin import runner as agent_runner
 from peerreviewagents.plugin import server as srv
 from peerreviewagents.plugin import starter
 from peerreviewagents.runs import NotARunFolder, read_run
@@ -407,55 +408,16 @@ def test_read_run_survives_a_truncated_file(tmp_path):
 # the check that the shape above is still the shape.
 
 
-def anchorable(review, count):
-    """*count* line numbers of this manuscript long enough to anchor a finding to."""
-    found = [number for number in range(1, 400) if len(review.line(number)) > 80]
-    assert len(found) >= count, 'The fixture has ' + str(len(found)) + ' long lines.'
-    return found[:count]
-
-
-def one_finding_each(review, slots):
-    """One anchored finding per slot, each slot closed. The ``finding_uid``s, in order."""
-    uids = []
-    for slot, line in zip(slots, anchorable(review, len(slots))):
-        stored = review.submit_finding(
-            slot=slot, title='What ' + slot + ' read on line ' + str(line),
-            line=line, quote=review.line(line),
-            comment='The passage on line ' + str(line) + ' asserts more than the work '
-                    'behind it shows, and nothing later in the paper makes it good.',
-            severity='major')
-        uids.append(stored['finding_uid'])
-        review.submit_report('I read the whole paper and raised one problem.', slot=slot)
-    return uids
-
-
-def close_the_editor(review, uids):
-    """The editor's own work: every finding in one issue, ranked, with a verdict."""
-    review.submit_issues([{'name': 'the-paper-overstates-what-it-measured',
-                           'severity': 'major', 'category': 'claims-and-conclusions',
-                           'rank': 1,
-                           'statement': 'The paper states more than its measurements show.',
-                           'members': list(uids)}])
-    review.submit_editor(summary='One issue, raised by every reviewer.',
-                         significance='Useful once the claims match the data.',
-                         strength_of_evidence='The measurements are sound; the claims are not.',
-                         verdict_reasoning='One major issue, answerable in a revision.',
-                         limitations=['One reviewer and no access to the raw data.'])
-    review.submit_report('The pooled review is in the issues.', slot='editor')
-
-
 def test_a_scripted_review_writes_the_folder_a_consumer_renders(tmp_path):
-    """The whole lane, no model: findings, issues, the editor's report, the files."""
+    """The whole run, no model: the stages in order, the folder they leave behind."""
     folder = tmp_path / 'run'
 
-    with peerreviewagents.scripted_review(FIXTURE, folder) as review:
-        assert review.slots == ('core-1', 'editor', 'recorder')
-        uids = one_finding_each(review, ['core-1'])
-        close_the_editor(review, uids)
-        written = review.write()
-        assert written['status'] == 'complete'
-        assert written['issue_counts']['issues'] == 1
-        assert review.read()['status'] == 'complete'
+    review = peerreviewagents.scripted_review(FIXTURE, folder)
+
+    assert review.ran == ('reader', 'core-1', 'editor')
+    assert (review.status, review.blocked_reason) == ('complete', None)
+    uids = [row['finding_uid'] for row in review.slot('core-1').answers('submit_finding')]
+    assert review.read()['status'] == 'complete'
 
     run = read_run(folder)
     assert (run['status'], run['complete']) == ('complete', True)
@@ -467,55 +429,82 @@ def test_a_scripted_review_writes_the_folder_a_consumer_renders(tmp_path):
     assert run['identity']['arm'] == 'reviewers-only'
 
 
+def test_a_scripted_run_leaves_the_runtime_rows_a_real_run_leaves(tmp_path):
+    """The point of running through the orchestrator: a folder of the same shape.
+
+    A scripted run is accounted for like any other — one runtime row per agent
+    with an ending and the token fields, the recorder in this process, the
+    runner named — which is what a consumer's fixture of a *finished* run has
+    to hold if the reader it tests is the one that reads a real one.
+    """
+    review = peerreviewagents.scripted_review(FIXTURE, tmp_path / 'run')
+
+    runtime = json.loads((review.review / 'runtime.json').read_text(encoding='utf-8'))
+    rows = {row['label']: row for row in runtime['agents']}
+    assert set(rows) == {'reader', 'core-1', 'editor', 'recorder'}
+    ran = [rows[label] for label in ('reader', 'core-1', 'editor')]
+    assert [row['ending'] for row in ran] == ['answered'] * 3
+    assert all(row['tokens_cumulative'] and row['tokens_peak_context'] for row in ran)
+    assert all(row['toolCalls'] and row['state'] == 'done' for row in ran)
+    assert rows['core-1']['agentType'] == 'core-reviewer'
+    assert (rows['recorder']['ending'], rows['recorder']['model']) == (starter.IN_PROCESS, None)
+    assert runtime['tokens_total'] == sum(row['tokens'] for row in ran)
+    assert review.summary['runner'] == 'scripted'
+
+
 def test_a_scripted_review_holds_every_slot_the_arm_planned(tmp_path):
     """The specialists too, and a track that found nothing closes as such."""
-    with peerreviewagents.scripted_review(FIXTURE, tmp_path / 'run', arm='full-two-track',
-                                          reviewers=2, tracks=['stats']) as review:
-        assert review.slots == srv.plan_slots('full-two-track', 2, ['stats']) + ('recorder',)
-        uids = one_finding_each(review, ['core-1', 'core-2'])
-        review.submit_report('Nothing in the statistics I could anchor to a line.',
-                             slot='spec-stats', none_found=True)
-        close_the_editor(review, uids)
-        written = review.write()
+    review = peerreviewagents.scripted_review(FIXTURE, tmp_path / 'run', arm='full-two-track',
+                                              reviewers=2, tracks=['stats'])
 
-    assert written['findings_by_track'] == {'core': 2}
-    assert written['issue_counts']['issue_members'] == 2
+    assert review.ran == ('reader', *srv.plan_slots('full-two-track', 2, ['stats']))
+    assert review.slot('spec-stats').last('submit_report')['closed']
+    assert review.summary['stages']['none_found'] == ['spec-stats']
+    assert review.summary['issues']['issue_members'] == 2
     assert read_run(tmp_path / 'run')['counts']['findings'] == 2
 
 
-def test_a_scripted_review_sends_each_tool_to_the_slot_that_holds_it(tmp_path):
-    """A tool one slot holds needs no slot; a tool several hold is not guessed at."""
-    with peerreviewagents.scripted_review(FIXTURE, tmp_path / 'run') as review:
-        assert review.granted['recorder'] == ('write_review',)
-        assert review.slot_for('submit_issues') == 'editor'
-        assert review.slot_for('write_review') == 'recorder'
-        assert review.slot_for('submit_finding') == 'core-1'
-        with pytest.raises(LookupError, match='submit_report'):
-            review.submit_report('Whose report is this?')
-        with pytest.raises(LookupError, match='core-9'):
-            review.submit_report('Nobody holds that slot.', slot='core-9')
-        # The editor is granted no submit_finding, so the refusal is the
-        # server's own rather than a guess made here.
-        with pytest.raises(peerreviewagents.ReviewRefused, match='submit_finding'):
-            review.submit_finding(slot='editor', title='The editor files a finding',
-                                  line=7, quote=review.line(7), severity='major',
-                                  comment='A slot that may not do this is refused in words.')
+def test_a_scripted_slot_is_confined_to_the_tools_its_agent_is_granted(tmp_path):
+    """The grant boundary is the agent definition's, and a script meets it as one."""
+    def editor(slot):
+        assert 'submit_issues' in slot.granted
+        # The editor's definition grants it no submit_finding, as a model's
+        # prompt would not name one; the boundary is held before the call.
+        with pytest.raises(agent_runner.NotGranted, match='submit_finding'):
+            slot.submit_finding(title='The editor files a finding', line=7,
+                                quote=slot.line(7), severity='major',
+                                comment='A slot that may not do this does not reach the server.')
+        with pytest.raises(AttributeError, match='rewrite_the_paper'):
+            slot.rewrite_the_paper()
+        scripted.DEFAULT_SCRIPTS['editor'](slot)
+
+    review = peerreviewagents.scripted_review(FIXTURE, tmp_path / 'run', {'editor': editor})
+
+    assert review.status == 'complete'
+    assert review.slot('editor').last('submit_editor')['accepted']
 
 
 def test_a_scripted_review_raises_the_refusal_a_model_would_have_read(tmp_path):
-    """The guards still guard: an ungrouped finding, and a write before the reports."""
-    with peerreviewagents.scripted_review(FIXTURE, tmp_path / 'run') as review:
-        uids = one_finding_each(review, ['core-1'])
-        with pytest.raises(peerreviewagents.ReviewRefused) as ungrouped:
-            review.submit_editor(summary='Closed with nothing grouped.')
-        assert uids[0] in str(ungrouped.value.answer['findings_without_issue_uids'])
-        with pytest.raises(peerreviewagents.ReviewRefused, match='write_review') as early:
-            review.write()
-        assert 'editor' in str(early.value)
-        close_the_editor(review, uids)
-        review.write()
-        with pytest.raises(peerreviewagents.ReviewRefused):
-            review.write()
+    """A refused tool raises where the call was made, and again out of the run."""
+    def editor(slot):
+        slot.submit_editor(summary='Closed with nothing grouped.')
+
+    with pytest.raises(peerreviewagents.ReviewRefused) as refused:
+        peerreviewagents.scripted_review(FIXTURE, tmp_path / 'run', {'editor': editor})
+
+    assert refused.value.tool == 'submit_editor'
+    assert refused.value.answer['findings_without_issue_uids']
+    assert read_run(tmp_path / 'run')['status'] == 'blocked'
+
+
+def test_a_script_that_answers_nothing_blocks_the_run_it_was_in(tmp_path):
+    """The one outcome a script cannot have by returning: an agent that said nothing."""
+    review = peerreviewagents.scripted_review(FIXTURE, tmp_path / 'run',
+                                              {'core-1': lambda slot: scripted.NO_ANSWER})
+
+    assert review.status == 'blocked'
+    assert 'core-1' in review.blocked_reason
+    assert review.summary['stages']['attempts']['core-1'] == 2  # the one retry, then blocked
 
 
 def test_the_scripted_review_is_public_and_puts_back_the_run_it_found(tmp_path):
@@ -526,9 +515,7 @@ def test_the_scripted_review_is_public_and_puts_back_the_run_it_found(tmp_path):
 
     held = object()
     srv.STATE['run'] = held
-    review = peerreviewagents.scripted_review(FIXTURE, tmp_path / 'run')
-    assert srv.STATE['run'] is not held
-    review.close()
+    peerreviewagents.scripted_review(FIXTURE, tmp_path / 'run')
 
     assert srv.STATE['run'] is held
     srv.STATE['run'] = None

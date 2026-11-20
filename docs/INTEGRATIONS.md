@@ -1918,10 +1918,11 @@ What the stage leaves on a sealed manuscript — a re-read part's `part` and
 `of`, the `absorbed` reading of folded debris, the reader's `note` in the
 manifest — used to exist only in the output of a real run, so a consumer's
 fixtures for it were hand-written JSON copying the shape by eye, which drifts
-from the engine the moment the engine moves. `scripted_read` opens a real run
-on a PDF, claims the reader's slot and hands back a handle whose methods are
-the reader's own tools under their own names, through the same server the stage
-drives:
+from the engine the moment the engine moves. `scripted_read` is a real run with
+Python where the model goes: the same orchestrator, the same tool server, the
+same stage order and the same run folder, with nothing launched. You hand it a
+script for the reader's seat — a callable taking the slot, whose methods are
+that agent's own tools under their own names — and it runs the stage:
 
 ```python
 from peerreviewagents import ReaderRefused, scripted_read
@@ -1934,36 +1935,53 @@ CONVERTER_LEFT = [
     {'kind': 'paragraph', 'text': '0 10 20 30 40 mm', 'section': '3 Results'},
 ]
 
-with scripted_read('paper.pdf', folder, CONVERTER_LEFT) as read:
-    read.view_page(1)
-    read.replace_equation(read.find('E = m c^{2'), 1, 'E = m c^{2}', number='(1)')
-    read.describe_figure(read.find('Figure 1:'), 1, 'A photograph of the bench …',
-                         absorb=[read.find('0 10 20 30 40 mm')])
-    read.seal(note="The figure's axis numbers were a paragraph and are folded in.")
+def reader(slot):
+    slot.view_page(1)
+    slot.replace_equation(slot.find('E = m c^{2'), 1, 'E = m c^{2}', number='(1)')
+    slot.describe_figure(slot.find('Figure 1:'), 1, 'A photograph of the bench …',
+                         absorb=[slot.find('0 10 20 30 40 mm')])
+    slot.seal(note="The figure's axis numbers were a paragraph and are folded in.")
 
+read = scripted_read('paper.pdf', folder, reader, pieces=CONVERTER_LEFT)
+
+read.status                 # 'complete'; `blocked_reason` says why where it is not
+read.sealed                 # the reader's own answer to `seal_manuscript`
 base = read.base()          # the sealed workspace: `text`, `rows`, `manifest`
 ```
 
-- `pieces` — the third argument — are extra converter pieces spliced into the
-  draft, each in the shape the converter writes and merged over
-  `peerreviewagents.PIECE`, so `{'kind': 'equation', 'latex': 'E = m c^{2'}` is
-  a piece. This is how a fixture holds the failures the stage exists for
-  without a PDF that has them. One naming a `document` other than `paper.md`
-  goes to that document, which is how a fixture gets a supplement.
-- `find(text)` is how a script names a piece: by a few characters of what the
-  converter read there. It raises `LookupError` unless exactly one piece
-  matches, because a fixture quietly working on a different piece than it
-  means to is worse than one that stops.
-- A refusal raises `ReaderRefused`, with the tool on `.tool` and the server's
-  whole answer on `.answer`. The tools *answer* a refusal to a model, which
-  reads it and tries something else; a script has no turn to take again.
-- `view_page` returns that page's JSON payload alone. The image beside it is
-  for a model.
-- `base()` is `read_manuscript` on the sealed workspace, so a test does not
-  have to know where in the run folder the workspace is.
-- One run is open per process, so use it as a context manager (or call
-  `close()`): leaving the block puts back whatever run was attached before.
-  The folder stays as it is, sealed, for the test to read.
+- The script is the third argument and is optional: left out, this package's
+  own reader script runs — view every page, account for every outstanding
+  piece, seal — which is the one-line call for a fixture that only needs a read
+  manuscript. `scripts=` takes the same thing for a run with more than one
+  slot, keyed by slot name, agent name or role.
+- `pieces=` are extra converter pieces spliced into the draft, each in the
+  shape the converter writes and merged over `peerreviewagents.PIECE`, so
+  `{'kind': 'equation', 'latex': 'E = m c^{2'}` is a piece. This is how a
+  fixture holds the failures the stage exists for without a PDF that has them.
+  One naming a `document` other than `paper.md` goes to that document, which is
+  how a fixture gets a supplement. `title=` and `supplements=` are the other
+  two the conversion takes.
+- `slot.find(text)` is how a script names a piece: by a few characters of what
+  the converter read there. It raises `LookupError` unless exactly one piece
+  matches, because a fixture quietly working on a different piece than it means
+  to is worse than one that stops.
+- A refusal raises `ReaderRefused` where the call was made, with the tool on
+  `.tool` and the server's whole answer on `.answer`. The tools *answer* a
+  refusal to a model, which reads it and tries something else; a script has no
+  turn to take again, so a refusal it does not catch itself ends the run and is
+  raised again out of the call.
+- A tool the agent is not granted raises `NotGranted` and one the server does
+  not have raises `AttributeError` — the grant boundary is the agent
+  definition's, the same one a model meets. `slot.granted` lists them.
+- `slot.view_page(n)` returns that page's JSON payload alone. The image beside
+  it is for a model.
+- `read.base()` is `read_manuscript` on the sealed workspace, so a test does
+  not have to know where in the run folder the workspace is.
+- The run is over when the call returns: the folder is written, the run is
+  detached, and whatever run was attached before is attached again. A folder
+  whose manuscript is already sealed plans no Read stage, so
+  `scripted_read(…)` and then `scripted_review(…, folder)` on the same folder
+  is a read manuscript reviewed.
 
 ### Building a written fix check for your tests: `scripted_fix_check`
 
@@ -1972,9 +1990,9 @@ application that shows a fix check renders `fix-check.json` and `FIXES.md` — a
 verdict, what it rests on, the quotation of the new draft behind it, the
 problems nobody checked — and until this function the only folder holding those
 came out of a model run, so a consumer's fixture was hand-written JSON copying
-the shape by eye. `scripted_fix_check` opens a real check on a PDF with a
-problems file, seals the manuscript, claims every checker slot and hands back a
-handle whose methods are the checker's own tools:
+the shape by eye. `scripted_fix_check` is the same lane with a script in each
+checker's seat — a real check on a PDF with a problems file, read by a real
+reader, written by the recorder:
 
 ```python
 from peerreviewagents import CheckRefused, read_fix_check, scripted_fix_check
@@ -1988,14 +2006,19 @@ PROBLEMS = [
      'evidence': [{'document': '', 'quote': 'measured on a single instrument'}]},
 ]
 
-with scripted_fix_check('paper-v2.pdf', folder, PROBLEMS) as check:
-    check.submit_fix_check('i01', 'fixed', quote=check.line(14),
-                           note='The abstract now reports 24%.')
-    check.submit_fix_check('i02', 'cannot-tell',
-                           reason='A repeated experiment is not in this draft.')
-    check.write()                      # fix-check.json and FIXES.md
+def checker(slot):
+    for problem in slot.fix_queue()['problems']:      # this lane's own batch
+        if problem['id'] == 'i01':
+            slot.submit_fix_check('i01', 'fixed', quote=slot.line(14), line=14,
+                                  note='The abstract now reports 24%.')
+        else:
+            slot.submit_fix_check(problem['id'], 'cannot-tell',
+                                  reason='A repeated experiment is not in this draft.')
 
-reading = read_fix_check(folder)       # or check.read(), while it is open
+check = scripted_fix_check('paper-v2.pdf', folder, PROBLEMS, {'fix-check': checker})
+
+check.summary['counts']                # one key per verdict
+reading = check.read()                 # or read_fix_check(folder), which is the same
 ```
 
 - `problems` — the third argument — is the `--problems` file: a path to one, or
@@ -2003,103 +2026,116 @@ reading = read_fix_check(folder)       # or check.read(), while it is open
   written to `<folder>/problems.json` for you. Either way the ingest validates
   it, so a row the check cannot look for raises `CheckRefused` naming every
   reason instead of being checked against nothing.
-- The manuscript is sealed as the converter read it
-  (`peerreviewagents.scripted.SCRIPTED_SEAL` is the recorded reason): a verdict
-  quotes the lines of the new draft, and there are no lines until the
-  manuscript is sealed. For a fixture whose manuscript was *read*, build that
-  one with `scripted_read`.
-- `submit_fix_check` routes each verdict to the checker whose batch holds that
-  problem, so a script does not have to know how the server split them —
-  `check.slots` names the slots, `check.batches` is `{problem id: slot}`,
-  `check.slot_of(id)` is one, and `slot=` overrides the routing, which is how a
-  test sends a verdict to the wrong checker on purpose.
-- `fix_queue(slot='')` is the queue tool, and every tool the slot was granted —
-  `read_paper`, `search`, `view_page`, the offline tools — is a method under
-  its own name. `check.tools` lists them.
-- `line(n, document='')` is line *n* of the new draft as `read_paper` served
-  it, which is where a script takes an exact quotation from; `served()` is the
-  whole of a document in one string.
-- `write()` writes the check as the recorder and returns the server's answer
-  (also kept on `check.written`); `read()` is `read_fix_check` on the folder.
+- The scripts are the fourth argument, keyed by slot name (`fix-1`), agent name
+  or role (`fix-check`, which is every lane). Left out, this package's own
+  checker script answers every problem in its queue `cannot-tell`, which is a
+  written check in one call.
+- The manuscript is read and sealed by the Read stage, with the same reader
+  script as `scripted_read` unless you pass your own: a verdict quotes the
+  lines of the new draft, and there are no lines until the manuscript is
+  sealed.
+- The server splits the problems between the checkers, and the split is the
+  boundary: `slot.fix_queue()` is that lane's own batch, and a verdict on a
+  problem dealt to another lane is refused. A script meets the refusal in its
+  own seat rather than routing the call itself.
+- Every tool the slot was granted — `fix_queue`, `submit_fix_check`,
+  `read_paper`, `search`, `view_page` — is a method under its own name, and
+  `slot.granted` lists them.
+- `slot.line(n, document='')` is line *n* of the new draft as `read_paper`
+  served it, which is where a script takes an exact quotation from;
+  `slot.served()` is the whole of a document in one string.
+- The recorder writes the check, in this process, as it does in a model run:
+  `check.read()` is `read_fix_check` on the folder, and `check.summary` is what
+  `check_fixes` returns.
 - A refusal raises `CheckRefused`, with the tool on `.tool` and the server's
   whole answer on `.answer`. `ToolRefused` is the base class of that and of
   `ReaderRefused`, for a test that catches either.
-- One run is open per process, so use it as a context manager (or call
-  `close()`): leaving the block puts back whatever run was attached before. The
-  folder stays as it is, with whatever `write()` wrote in it.
 
 ### Building a written review for your tests: `scripted_review`
 
 **For tests and fixtures,** like the two above and for the same reason, and
 this is the folder an application renders most of: `issues.json`, `REVIEW.md`,
 the findings behind each issue, the editor's verdict — everything `read_run`
-reads. `scripted_review` opens a real review on a PDF, seals the manuscript,
-claims every slot the arm plans *and* the recorder, serves each of them the
-whole manuscript, and hands back a handle whose methods are those slots' own
-tools. The script is each slot in turn, and no model runs:
+reads. `scripted_review` is a real review on a PDF with a script in each seat:
+every stage the arm plans runs in its own order, through the same tool server
+and the same recorder, and no model runs:
 
 ```python
 from peerreviewagents import read_run, ReviewRefused, scripted_review
 
-with scripted_review('paper.pdf', folder) as review:
-    review.slots                       # ('core-1', 'editor', 'recorder')
-    stored = review.submit_finding(
-        slot='core-1', title='The abstract overstates the result',
-        line=14, quote=review.line(14), severity='major',
-        comment='The sentence asserts more than the measurement shows.')
-    review.submit_report('What I read and what I raised.', slot='core-1')
+def reviewer(slot):
+    slot.whole_paper()
+    line, quote = slot.anchor()        # a passage of this paper, quoted once
+    slot.submit_finding(title='The abstract overstates the result',
+                        line=line, quote=quote, severity='major',
+                        comment='The sentence asserts more than the measurement shows.')
+    slot.submit_report('What I read and what I raised.')
 
-    review.submit_issues([{                        # the editor's, by itself
+def editor(slot):
+    found = slot.list_findings()['findings']
+    slot.submit_issues([{
         'name': 'the-abstract-overstates-the-result', 'severity': 'major',
         'category': 'claims-and-conclusions', 'rank': 1,
         'statement': 'The abstract claims more than the measurement shows.',
-        'members': [stored['finding_uid']]}])
-    review.submit_editor(summary='One issue, in the abstract.',
-                         significance='Useful once the claim matches the data.')
-    review.submit_report('The pooled review is in the issues.', slot='editor')
-    review.write()                     # issues.json, REVIEW.md, the reports
+        'members': [one['finding_uid'] for one in found]}])
+    slot.submit_editor(summary='One issue, in the abstract.',
+                       significance='Useful once the claim matches the data.')
+    slot.submit_report('The pooled review is in the issues.')
 
-run = read_run(folder)                 # or review.read(), while it is open
+review = scripted_review('paper.pdf', folder,
+                         {'core': reviewer, 'editor': editor})
+
+review.ran                             # ('reader', 'core-1', 'editor')
+review.slot('core-1').answers('submit_finding')      # what that script was answered
+run = read_run(folder)                 # or review.read(), which is the same
 ```
 
 - The arm is the plan: `arm='reviewers-only', reviewers=1` by default, which is
   the smallest review that writes a whole folder — one core reviewer and the
-  editor, so a script has two slots to act as rather than nine. `arm`,
+  editor, so a script has two seats to fill rather than nine. `arm`,
   `reviewers`, `tracks`, `code` and `revision` are the server's own, and
-  `review.slots` is what the arm planned plus `recorder`.
-- The manuscript is sealed as the converter read it
-  (`peerreviewagents.scripted.SCRIPTED_SEAL` is the recorded reason): a finding
-  quotes the lines of the paper, and there are no lines until the manuscript is
-  sealed. For a fixture whose manuscript was *read*, build that one with
-  `scripted_read` first and keep the folder.
-- `slot=` says which slot calls. A tool only one slot holds needs no `slot` —
-  `submit_issues`, `submit_editor` and `list_findings` are the editor's alone,
-  and `write_review` the recorder's. A tool several slots hold —
-  `submit_finding`, `submit_report`, `read_paper` — raises `LookupError` naming
-  them if you do not say which, because a finding filed by the wrong reviewer
-  is a fixture that passes and says the wrong thing. `review.granted` is
-  `{slot: every tool it may call}` and `review.slot_for(tool)` is the routing.
-- Every tool the slot was granted is a method under its own name, and so is
-  every tool its role may submit —
-  `peerreviewagents.scripted.SUBMISSIONS` is that table, which the server's
-  grants leave out because a submission spends no allowance.
-- `line(n, document='')` is line *n* as `read_paper` served it, which is where
-  a script takes an exact quotation from; `served(slot=…)` is the whole of a
-  document in one string; `base()` is the sealed workspace.
-- What the handle does not do is the editor's judgement: grouping every finding
-  into an issue, ranking them 1…N with no gaps or ties, and ruling on each
-  escalated finding. `submit_editor` refuses until that is done, and `write()`
-  refuses until every stage the arm requires has reported — both as
-  `ReviewRefused`, with the server's whole answer on `.answer`, which is where
-  the `problems` list says what is missing.
-- `write()` writes the review as the recorder and returns the server's answer
-  (also kept on `review.written`); `read()` is `read_run` on the folder.
-  Written once: a second call raises.
+  `review.ran` is what ran, in order.
+- The scripts are the third argument, keyed by slot name (`core-1`), agent name
+  (`core-reviewer`), role (`core`, `editor`, `specialist`, `citation-worker`,
+  `code-check`) or `'*'` for every seat the keys above do not name. Every seat
+  you leave out runs this package's own script for that role, so
+  `scripted_review('paper.pdf', folder)` is a whole written review in one call,
+  and `{'editor': mine}` is that review with your editor in it.
+- The manuscript is read and sealed by the Read stage, by a reader script like
+  any other seat: a finding quotes the lines of the paper, and there are no
+  lines until the manuscript is sealed. For a fixture whose Read stage did
+  something particular, write that seat's script — or build the folder with
+  `scripted_read` first and keep it.
+- A script is handed its own seat and nothing else: `slot.slot`,
+  `slot.role` and `slot.model` say who it is, every tool that agent was granted
+  is a method under its own name, a tool it was not granted raises `NotGranted`
+  and one the server does not have raises `AttributeError`. There is no routing
+  to get wrong, because a seat cannot call for another.
+- `slot.whole_paper()` serves the whole manuscript, `slot.line(n)` is line *n*
+  as `read_paper` served it, `slot.anchor(i)` is an `(line, quote)` pair of a
+  passage that occurs once — which is what an anchored finding needs — and
+  `slot.pieces()`, `slot.outstanding()` and `slot.find(text)` are the reader's.
+  `slot.answers(tool)`, `slot.last(tool)` and `slot.count(tool)` are what the
+  server answered this script, which is what a test asserts on afterwards
+  through `review.slot(name)`.
+- What the scripts must still do is the editor's judgement: grouping every
+  finding into an issue, ranking them 1…N with no gaps or ties, and ruling on
+  each escalated finding. `submit_editor` refuses until that is done — as
+  `ReviewRefused`, with the server's whole answer on `.answer`, where the
+  `problems` list says what is missing.
+- A script that returns `peerreviewagents.NO_ANSWER` is an agent that worked
+  and answered nothing, which is the one outcome returning cannot express: the
+  orchestrator retries the seat and then blocks the run, as it does for a
+  silent model.
+- The recorder writes the review in this process, as it does in a model run, so
+  the folder a scripted run leaves has the shape a real one leaves: `issues.json`,
+  `REVIEW.md`, the reports, and `runtime.json` with one row per agent carrying
+  its ending, its tool calls and its token fields. `review.summary` is what
+  `review` returns and `review.read()` is `read_run` on the folder.
 - A refusal raises `ReviewRefused`, a sibling of `CheckRefused` and
-  `ReaderRefused` under `ToolRefused`.
-- One run is open per process, so use it as a context manager (or call
-  `close()`): leaving the block puts back whatever run was attached before. The
-  folder stays as it is, written, for the test to read.
+  `ReaderRefused` under `ToolRefused`. Caught inside the script, the stage goes
+  on; uncaught, it ends the run and is raised again out of the call, after the
+  folder is written.
 
 ### Writing files the engine reads: `peerreviewagents.workspace`
 
