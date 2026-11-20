@@ -312,7 +312,13 @@ class Budget:
         if not self.per_run:
             return self.per_agent
         left = max(0, self.per_run - self.spent())
-        return min(self.per_agent, left) if self.per_agent else left
+        wanted = min(self.per_agent, left) if self.per_agent else left
+        # Zero on the task means *no* ceiling, so a run with nothing left would
+        # hand out an unlimited one — the opposite of what the per-run ceiling
+        # is for. An agent starting into an exhausted run is handed the
+        # smallest ceiling there is instead: whatever it spends is over it,
+        # which is the truth about the run it is starting into.
+        return wanted or 1
 
     def by_agent(self):
         """Tokens per slot, retries folded into the slot they retried."""
@@ -969,6 +975,37 @@ class Panel:
                 f'page(s) viewed, {read.get("actions") or 0} piece(s) repaired or confirmed '
                 f'in {read.get("tool_calls") or 0} call(s)')
 
+    def _read_record(self, read):
+        """What the Read stage did, for the run's result.
+
+        ``None`` means there was no Read stage: the folder arrived with a
+        sealed manuscript. A reader that *failed* is a different fact — the
+        manuscript was sealed as converted and the run went on over the
+        converter's own equations — and it says so here rather than through an
+        absence that reads as the other case. The run is not blocked for it,
+        on a review or on a fix check: the stage has a fallback and the
+        fallback worked, which is why there is a run to report at all.
+        """
+        if not read:
+            return None
+        if read.get('sealed_as_converted'):
+            return {'model': self.model_of(self.reader_slot),
+                    'reader_failed': True,
+                    'sealed': 'as converted',
+                    'reason': read.get('reason') or '',
+                    'attempts': read.get('attempts'),
+                    'pages_viewed': 0,
+                    'pages': read.get('pages') or 0,
+                    'actions': 0,
+                    'tool_calls': 0}
+        return {'model': self.model_of(self.reader_slot),
+                'reader_failed': False,
+                'attempts': read.get('attempts'),
+                'pages_viewed': read.get('pages_viewed') or 0,
+                'pages': read.get('pages') or 0,
+                'actions': read.get('actions') or 0,
+                'tool_calls': read.get('tool_calls') or 0}
+
     def seal_as_converted(self, reason):
         """The Read stage's failure path, in the server's own hands.
 
@@ -1039,14 +1076,7 @@ class Review(Panel):
             'status': recorded.get('status'),
             'refusal': recorded.get('refusal') or None,
             'models': dict(self.assigned),
-            'read': read and {
-                'model': self.model_of(self.reader_slot),
-                'attempts': read.get('attempts'),
-                'pages_viewed': read.get('pages_viewed') or 0,
-                'pages': read.get('pages') or 0,
-                'actions': read.get('actions') or 0,
-                'tool_calls': read.get('tool_calls') or 0,
-            },
+            'read': self._read_record(read),
             'line_count': lines or None,
             'stages': [{'slot': row['slot'], 'attempts': row.get('attempts'),
                         'reclosed': row.get('reclose_attempts') or None,
@@ -1158,12 +1188,15 @@ class Review(Panel):
             self.block('the reader did not seal the manuscript and it could not be sealed as '
                        'converted'
                        + (f': {fallback["refusal"]}' if fallback.get('refusal') else ''))
-        self.say("the manuscript was sealed as converted after the reader failed: the reviewers "
-                 "read the converter's equations and no figure has a description")
+        failed = ("the manuscript was sealed as converted after the reader failed: the reviewers "
+                  "read the converter's equations and no figure has a description")
+        self.say(failed)
         if fallback.get('references') is not None or fallback.get('uses') is not None:
             counts = {'references': fallback.get('references') or 0,
                       'uses': fallback.get('uses') or 0}
-        return None, counts, fallback.get('line_count') or lines
+        return ({'sealed_as_converted': True, 'reason': failed,
+                 'pages': draft.get('pages') or 0},
+                counts, fallback.get('line_count') or lines)
 
     # -- the citation ledger ----------------------------------------------
 
@@ -1394,12 +1427,17 @@ class Review(Panel):
             # Not a blocked run. The check only ever takes findings out, so a
             # run whose check never answered is this review with its findings
             # as the reviewers filed them — which is every review before this
-            # stage existed. It is logged rather than hidden, because "the code
-            # was checked" is not true of this run and nothing in the folder
-            # will say it was.
+            # stage existed. It is not silently absent either: `None` here
+            # would be the arm that has no code lane at all, and the one thing
+            # this result must not do is read as a review that was never given
+            # any code. The row says the lane ran and answered nothing.
             self.say(f'{self.check_slot}: returned nothing twice, so no finding was checked '
                      'against the code and every one of them stands as its reviewer filed it')
-            return None
+            return {'slot': self.check_slot, 'silent': True, 'claims': 0, 'confirmed': 0,
+                    'contradicted': 0, 'not_shown': 0, 'over_cap': 0,
+                    'reason': 'the code check returned nothing twice, so no finding was read '
+                              'against the code and every one of them stands as its reviewer '
+                              'filed it'}
         reported.append(checked)
         self.say(f'{self.check_slot}: {checked.get("claims") or 0} method claim(s) checked — '
                  f'{checked.get("confirmed") or 0} confirmed by the code, '
@@ -1407,7 +1445,8 @@ class Review(Panel):
                  f'{checked.get("not_shown") or 0} not settled by it'
                  + (f'; {checked["over_cap"]} past the cap, left as filed'
                     if checked.get('over_cap') else ''))
-        return {'claims': checked.get('claims') or 0,
+        return {'slot': self.check_slot, 'silent': False,
+                'claims': checked.get('claims') or 0,
                 'confirmed': checked.get('confirmed') or 0,
                 'contradicted': checked.get('contradicted') or 0,
                 'not_shown': checked.get('not_shown') or 0,
@@ -1527,14 +1566,7 @@ class FixCheck(Panel):
             'status': recorded.get('status'),
             'refusal': recorded.get('refusal') or None,
             'models': dict(self.assigned),
-            'read': read and {
-                'model': self.model_of(self.reader_slot),
-                'attempts': read.get('attempts'),
-                'pages_viewed': read.get('pages_viewed') or 0,
-                'pages': read.get('pages') or 0,
-                'actions': read.get('actions') or 0,
-                'tool_calls': read.get('tool_calls') or 0,
-            },
+            'read': self._read_record(read),
             'line_count': lines or None,
             'problems': self.problems,
             'over_cap': self.over_cap,
@@ -1544,6 +1576,8 @@ class FixCheck(Panel):
             'lanes': lanes,
             'checked': recorded.get('checked'),
             'not_checked': recorded.get('not_checked'),
+            'incomplete': recorded.get('incomplete'),
+            'incomplete_reason': recorded.get('incomplete_reason'),
             'fixed': recorded.get('fixed'),
             'not_fixed': recorded.get('not_fixed'),
             'cannot_tell': recorded.get('cannot_tell'),
@@ -1609,9 +1643,12 @@ class FixCheck(Panel):
             self.block('the reader did not seal the new draft and it could not be sealed as '
                        'converted'
                        + (f': {fallback["refusal"]}' if fallback.get('refusal') else ''))
-        self.say('the new draft was sealed as converted after the reader failed: the checkers '
-                 "read the converter's equations and no figure has a description")
-        return None, fallback.get('line_count') or lines
+        failed = ('the new draft was sealed as converted after the reader failed: the checkers '
+                  "read the converter's equations and no figure has a description")
+        self.say(failed)
+        return ({'sealed_as_converted': True, 'reason': failed,
+                 'pages': draft.get('pages') or 0},
+                fallback.get('line_count') or lines)
 
     def check(self):
         """One lane per batch, in parallel, each isolated.
@@ -1675,6 +1712,12 @@ def _fixes(answer):
     counts = answer.get('counts') or {}
     return {'checked': answer.get('checked'),
             'not_checked': answer.get('not_checked'),
+            # Whether the check answered everything it was given, and why not.
+            # The status says the check was written; this says whether it is
+            # whole, so a consumer never reports a half-answered check as a
+            # plain complete one.
+            'incomplete': answer.get('incomplete'),
+            'incomplete_reason': answer.get('incomplete_reason'),
             'fixed': counts.get('fixed'),
             'not_fixed': counts.get('not-fixed'),
             'cannot_tell': counts.get('cannot-tell'),

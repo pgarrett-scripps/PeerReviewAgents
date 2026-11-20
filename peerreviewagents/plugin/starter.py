@@ -740,6 +740,15 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
         # opened. A caller that asked for a code review reads this rather than
         # trusting that asking was enough.
         summary['code'] = done.get('code')
+    # What the two stages with a fallback behind them did, from the panel's own
+    # result: `read` is `None` only where the folder arrived sealed and says so
+    # where the reader failed and the manuscript was sealed as converted;
+    # `code_check` is `None` only where the run planned no code lane and says
+    # `silent` where the lane ran and answered nothing. Neither blocks a run,
+    # which is exactly why a caller has to be able to see them.
+    if isinstance(result, dict):
+        summary['read'] = result.get('read')
+        summary['code_check'] = result.get('code_check')
     return summary
 
 
@@ -965,9 +974,18 @@ def check_fixes(pdf, out, problems, per_agent_tokens=FIX_PER_AGENT_TOKENS,
         record = done.get('fix_check') if isinstance(done.get('fix_check'), dict) else {}
         summary['checked'] = record.get('checked')
         summary['not_checked'] = record.get('not_checked')
+        # A written check is a finished run; this is whether it is a whole one.
+        # A lane that answered nothing leaves its problems not checked and the
+        # status still says complete, so a caller reporting the status reports
+        # this with it.
+        summary['incomplete'] = record.get('incomplete')
+        summary['incomplete_reason'] = record.get('incomplete_reason')
         summary['counts'] = record.get('counts')
         summary['over_cap'] = record.get('over_cap')
         summary['stages'] = done.get('stages')
+    if isinstance(result, dict):
+        # `None` where the folder arrived sealed; a reader that failed says so.
+        summary['read'] = result.get('read')
     return summary
 
 

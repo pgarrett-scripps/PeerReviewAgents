@@ -85,6 +85,41 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A check that is not whole says so, and says why against each problem.**
+  A fix-check lane that answers nothing, or dies holding its batch, costs its
+  own batch and nothing else — that is deliberate, a check with ten verdicts
+  in it being worth more than no check — but it used to be invisible: the
+  problems were listed as not checked with no cause, and the run read plain
+  `complete`. Each unchecked problem now carries the lane that was dealt it
+  (`lane`) and the cause (`reason`: past the cap, the lane never claimed its
+  batch, it claimed the batch and stopped without reporting, or it reported
+  without a verdict on that problem), and the check itself carries
+  `incomplete` with `incomplete_reason` in one sentence — through
+  `fix-check.json`, `read_fix_check`, what `check_fixes` returns, and the top
+  of `FIXES.md`, which also prints the cause in its own column. The run
+  statuses are unchanged on purpose: every consumer that asks whether a run
+  finished reads the four it already knows, so a fifth would quietly turn
+  every written-but-partial check into an unrecognised one. The status says
+  the check was *written*; `incomplete` says whether it is whole. A code check
+  reports the same two fields for the claims nobody reached.
+- **A result says whether the reader failed and whether the code check was
+  silent.** Both stages have a fallback behind them rather than a block — the
+  manuscript is sealed as converted, and a silent code check leaves every
+  finding as its reviewer filed it — and both used to leave the result looking
+  like a run where nothing had gone wrong. `read` is now a row with
+  `reader_failed` and the reason on it, and is `None` only for a folder that
+  arrived already sealed; `code_check` is a row with `silent` on it, and is
+  `None` only for an arm that planned no code lane. Both are in what `review`
+  and `check_fixes` return.
+- **A scripted seat can say what it spent, so the token ceilings work without
+  a model.** `scripted_review` and `scripted_fix_check` take `tokens=`, the
+  number every seat is metered at, and `slot.spend(n)` inside a script is that
+  seat's own; `slot.task.token_ceiling` is what the panel handed this seat. A
+  seat over its ceiling ends `over the token ceiling` with its answer dropped,
+  as a real session's child does when it is cut off mid-stream, so the stage
+  retries it once and then blocks the run. `per_run_tokens` and
+  `per_agent_tokens` have been plan keys all along and did nothing in a
+  scripted run; a consumer can now build a run stopped over a ceiling.
 - **A whole run can be driven from scripts, through the orchestrator:
   `scripted_read`, `scripted_fix_check`, `scripted_review`.** Each is a real
   run with Python where the model goes — the same orchestrator, the same tool
@@ -555,6 +590,12 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A run with its per-run ceiling spent handed the next seat no ceiling at
+  all.** Zero on a task means *no* ceiling, and the panel's own arithmetic
+  handed out zero once the run's allowance was gone — the exact opposite of
+  what a per-run ceiling is for, and the one case where it mattered. An
+  exhausted run now hands out the smallest ceiling there is, so the next seat
+  is over it before it starts and the run stops.
 - **Being stopped is not the same as having nothing to say.** An agent that
   submitted its answer and was then stopped — over the token ceiling, out of
   time — is `answered`, with the stop named in its `detail`, and the answer it

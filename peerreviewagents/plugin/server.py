@@ -1652,12 +1652,24 @@ class Run:
         """
         if not self.code_check_slots:
             return None
-        _, past_cap = self.method_queue()
+        queue, past_cap = self.method_queue()
         checked = {verdict: [row for row in self.code_checks if row['verdict'] == verdict]
                    for verdict in CODE_CHECK_VERDICTS}
         return {
             'cap': MAX_CODE_CHECKS,
             'checked': len(self.code_checks),
+            # The method claims the lane was handed and left unanswered. A
+            # silent code check is not an absent one: the findings it would
+            # have read against the code stand exactly as their reviewers
+            # filed them, and this is the number that says so.
+            'not_checked': len(queue),
+            'incomplete': bool(queue),
+            'incomplete_reason': (
+                f'{len(queue)} method claim(s) were not read against the code: '
+                + ', '.join(sorted(self.code_check_slots))
+                + ' answered ' + str(len(self.code_checks)) + ' of '
+                + str(len(queue) + len(self.code_checks))
+                + ', so the rest stand as their reviewers filed them') if queue else None,
             # What the cap left alone. These findings are exactly as their
             # reviewer filed them: unchecked is not cleared, and the number is
             # printed so nobody reads it as either.
@@ -1669,8 +1681,10 @@ class Run:
     def code_check_counts(self):
         """The code check by the numbers alone, without the quotes: for ``progress.json``."""
         record = self.code_check_record()
-        return None if record is None else {key: record[key] for key in
-                                            ('cap', 'checked', 'over_cap', 'counts')}
+        return None if record is None else {
+            key: record[key] for key in
+            ('cap', 'checked', 'not_checked', 'incomplete', 'incomplete_reason',
+             'over_cap', 'counts')}
 
     # -- fix check ----------------------------------------------------------
 
@@ -1771,6 +1785,38 @@ class Run:
         self.append(self.review / 'fix-checks.jsonl', row)
         return row
 
+    def fix_lane(self, problem_id):
+        """The checker slot one problem was dealt to, or ``''`` past the cap.
+
+        The deal is positional and :meth:`fix_batch` reads it the same way, so
+        which lane holds a problem is a fact about the list rather than about
+        anything a lane did or did not do with it.
+        """
+        for index, one in enumerate(self.fix_problems()):
+            if str(one['id']) == str(problem_id):
+                return f'fix-{index // FIX_BATCH + 1}'
+        return ''
+
+    def unchecked_cause(self, problem):
+        """Why one problem has no verdict: ``(lane, cause)``.
+
+        Not checked is an answer and an answer with no cause is half of one. A
+        problem past the cap was never dealt to anybody; a problem whose lane
+        died is a lane that died, and the author reading FIXES.md should not
+        have to tell those apart from the count alone.
+        """
+        lane = self.fix_lane(problem['id'])
+        if not lane:
+            return '', (f"past this check's limit of {MAX_FIX_CHECKS} problems: it was never "
+                        'dealt to a checker')
+        agent = self.agents.get(lane)
+        if agent is None:
+            return lane, f'{lane} never claimed its batch, so nothing read the draft against it'
+        if not agent.report:
+            return lane, (f'{lane} claimed its batch and stopped without reporting, so the new '
+                          'draft was never read against it')
+        return lane, f'{lane} reported without a verdict on it'
+
     def fix_check_record(self):
         """What the fix check did, for ``fix-check.json`` and for FIXES.md.
 
@@ -1781,6 +1827,10 @@ class Run:
             return None
         answered = {str(row['problem_id']) for row in self.fix_checks}
         unchecked = [one for one in self.problems if str(one['id']) not in answered]
+        causes = [self.unchecked_cause(one) for one in unchecked]
+        tally: dict = {}
+        for _, cause in causes:
+            tally[cause] = tally.get(cause, 0) + 1
         return {
             'cap': MAX_FIX_CHECKS,
             'problems': len(self.problems),
@@ -1789,13 +1839,24 @@ class Run:
             # ones a checker never reached. Unchecked is not fixed and not
             # unfixed, and the count is printed so nobody reads it as either.
             'not_checked': len(unchecked),
+            # Whether this check answered everything it was given. A written
+            # check is a finished run whatever the lanes did, and the status
+            # says that much; this says whether the document is whole. A
+            # consumer that reports a check as complete reports this beside it,
+            # because "checked" and "written" are not the same claim.
+            'incomplete': bool(unchecked),
+            'incomplete_reason': (
+                f'{len(unchecked)} of {len(self.problems)} problem(s) have no verdict — '
+                + '; '.join(f'{cause} ({count})' if count > 1 else cause
+                            for cause, count in tally.items())) if unchecked else None,
             'over_cap': self.fix_over_cap(),
             'counts': {verdict: len([row for row in self.fix_checks
                                      if row['verdict'] == verdict])
                        for verdict in FIX_VERDICTS},
             'checks': list(self.fix_checks),
             'unchecked': [{'id': one['id'], 'statement': one['statement'],
-                           'severity': one['severity']} for one in unchecked],
+                           'severity': one['severity'], 'lane': lane or None, 'reason': cause}
+                          for one, (lane, cause) in zip(unchecked, causes)],
         }
 
     def fix_check_counts(self):
@@ -1803,7 +1864,8 @@ class Run:
         record = self.fix_check_record()
         return None if record is None else {
             key: record[key] for key in
-            ('cap', 'problems', 'checked', 'not_checked', 'over_cap', 'counts')}
+            ('cap', 'problems', 'checked', 'not_checked', 'incomplete', 'incomplete_reason',
+             'over_cap', 'counts')}
 
     def quarantine_rows(self):
         """Every refused submission, each stamped with the finding that replaced it.
@@ -3137,7 +3199,9 @@ def _unread_refusal(run, agent, stored):
         + ('' if total == 1 else 's') + ' and you have not read part '
         + ', '.join(str(part) for part in unread)
         + '. Call read_paper for each — it costs nothing from your tool allowance — read '
-          'every line, and submit again.', unread_parts=unread)
+          'every line, and submit again. The rule is the same for every reviewer, every '
+          'specialist and the editor: the whole manuscript is read before anything is '
+          'submitted.', unread_parts=unread)
 
 
 def _line_argument(name, value, limit):
@@ -3939,9 +4003,15 @@ def write_fix_check(recorder_key: str) -> dict:
     """Recorder only: write the fix check — ``fix-check.json`` and ``FIXES.md``.
 
     Written from whatever the checkers answered, and never blocked by what they
-    did not: a problem with no verdict is written down as not checked, which is
-    the honest answer and is not the same as a run that failed. A checker that
-    died holding its batch costs that batch and nothing else.
+    did not: a problem with no verdict is written down as not checked, with the
+    cause against it — past the cap, or the lane that died holding it — which
+    is the honest answer and is not the same as a run that failed. A checker
+    that died holding its batch costs that batch and nothing else.
+
+    A check that could not answer everything it was given says so in
+    ``incomplete`` and ``incomplete_reason``, here and in the written document.
+    The status says the check was *written*; those two say whether it is
+    *whole*, and a consumer that reports one reports the other beside it.
 
     Written once, like a review. The paths come back with the refusal of a
     second call, so a recorder whose first answer was lost reports the check
@@ -3966,14 +4036,18 @@ def write_fix_check(recorder_key: str) -> dict:
             status=run.status, run=str(run.root),
             fix_check=str(run.review / FIX_CHECK_FILE),
             fixes=str(run.review / 'FIXES.md'),
-            counts=written.get('counts'), not_checked=written.get('not_checked'))
+            counts=written.get('counts'), not_checked=written.get('not_checked'),
+            incomplete=written.get('incomplete'),
+            incomplete_reason=written.get('incomplete_reason'))
     document = _fix_check_document(run)
     write(run.review / FIX_CHECK_FILE, document)
     # A check that answered nothing is finished, not blocked: the problems it
-    # was given are all written down as not checked, and that document is the
-    # run's answer. The status is the one the reader of a run folder already
-    # knows — there is no third kind of finished run — and `read_fix_check`
-    # reports the counts either way.
+    # was given are all written down as not checked with the cause against
+    # each, and that document is the run's answer. The status is the one the
+    # reader of a run folder already knows — there is no third kind of finished
+    # run, and inventing one would make every consumer's "is this run over"
+    # wrong — so what is missing from the document is carried by `incomplete`
+    # beside it, and `read_fix_check` reports both either way.
     run.status = COMPLETE if run.fix_checks else 'complete-without-findings'
     run.error = None
     run.write_progress()
@@ -3984,7 +4058,9 @@ def write_fix_check(recorder_key: str) -> dict:
     return {'status': run.status, 'run': str(run.root),
             'fix_check': str(run.review / FIX_CHECK_FILE), 'fixes': report,
             'counts': document['counts'], 'checked': document['checked'],
-            'not_checked': document['not_checked'], 'problems': document['problems']}
+            'not_checked': document['not_checked'], 'problems': document['problems'],
+            'incomplete': document['incomplete'],
+            'incomplete_reason': document['incomplete_reason']}
 
 
 def _fix_check_document(run):
@@ -4000,6 +4076,8 @@ def _fix_check_document(run):
         'problems': record['problems'],
         'checked': record['checked'],
         'not_checked': record['not_checked'],
+        'incomplete': record['incomplete'],
+        'incomplete_reason': record['incomplete_reason'],
         'over_cap': record['over_cap'],
         'counts': record['counts'],
         'checks': record['checks'],

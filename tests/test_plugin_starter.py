@@ -252,7 +252,10 @@ def test_every_agent_is_handed_what_the_run_has_left():
     assert budget.spent() == 200_000
     assert budget.ceiling() == 50_000, 'what is left, not the per-agent ceiling'
     budget.record(*spent(label='core-1#2', tokens=90_000))
-    assert budget.ceiling() == 0
+    # Zero on a task means *no* ceiling, so an exhausted run hands out the
+    # smallest ceiling there is rather than an unlimited one: whatever the next
+    # agent spends is over it, which is the truth about the run it starts into.
+    assert budget.ceiling() == 1
     assert budget.by_agent() == {'core-1': 290_000}, 'a retry folds into the slot it retried'
     assert [row['attempt'] for row in budget.rows] == [1, 2]
     assert budget.failures() == []

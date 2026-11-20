@@ -102,7 +102,7 @@ def _check_blocks(check):
 
 
 def _unchecked_blocks(document):
-    """The problems with no verdict, by name, with the reason there is none."""
+    """The problems with no verdict, by name, each with the cause of there being none."""
     rows = list(document.get('unchecked') or ())
     if not rows:
         return []
@@ -113,11 +113,17 @@ def _unchecked_blocks(document):
         reason += (str(over_cap) + ' of them were past this check\'s limit of ' + str(cap)
                    + ' problems and were never dealt to a checker; ')
     reason += ('the rest were dealt to a checker that did not answer them. They are neither '
-               'fixed nor unfixed: nobody read the draft against them.')
+               'fixed nor unfixed: nobody read the draft against them, so this check is not a '
+               'whole one — and the author owes nothing on a problem the check never read.')
     return [('heading2', 'Not checked'), ('paragraph', reason),
-            ('table', ('Problem', 'Severity', 'What was raised'),
+            # The cause against each problem, not only in the paragraph above:
+            # a problem past the cap and a problem whose lane died are two
+            # different facts about this check, and the author reading one row
+            # should not have to work out which it is.
+            ('table', ('Problem', 'Severity', 'What was raised', 'Why there is no verdict'),
              [(one.get('id'), one.get('severity') or '',
-               ' '.join(str(one.get('statement') or '').split())) for one in rows])]
+               ' '.join(str(one.get('statement') or '').split()),
+               ' '.join(str(one.get('reason') or '').split())) for one in rows])]
 
 
 def report_blocks(document):
@@ -131,6 +137,14 @@ def report_blocks(document):
                             for verdict in FIX_VERDICTS],
                           ('Not checked', document.get('not_checked')),
                           ('Written', document.get('written'))])]
+    # Said once at the top, before any verdict: this check was written and it
+    # is not whole. A reader who stops after the counts has still been told.
+    if document.get('incomplete'):
+        blocks.append(('paragraph', 'This check is incomplete: '
+                       + str(document.get('incomplete_reason')
+                             or 'some problems were given no verdict')
+                       + '. The problems with no verdict are listed under "Not checked" below, '
+                         'each with the cause.'))
     rows = _rows(document)
     if rows:
         blocks.append(('table', ('Problem', 'Severity', 'Verdict', 'Where in the new draft'),
