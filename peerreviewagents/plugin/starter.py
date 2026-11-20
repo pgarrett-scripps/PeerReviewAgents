@@ -35,7 +35,6 @@ import argparse
 import datetime
 import json
 import os
-import shutil
 import sys
 import time
 from pathlib import Path
@@ -114,12 +113,13 @@ def plugin_dir():
 
 
 def claude_binary():
-    """Claude Code, resolved the way a shell resolves it.
+    """Claude Code, resolved the way a shell resolves it, or ``None``.
 
-    ``shutil.which`` honours PATHEXT, so it finds the ``claude.cmd`` shim a
-    Windows install puts on PATH, where naming the bare word would not.
+    One resolution for the whole package: the runner starts the path this
+    returns, so a provenance line and a session can never disagree about which
+    binary was meant.
     """
-    return shutil.which(claude_code.BINARY)
+    return claude_code.executable()
 
 
 def claude_version(binary=None):

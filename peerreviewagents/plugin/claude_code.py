@@ -102,13 +102,25 @@ TICK = 0.5
 VERSIONS = {}
 
 
+def executable(binary=BINARY):
+    """Claude Code's path, resolved the way a shell resolves it, or ``None``.
+
+    The resolved path is what gets run, not the bare word. ``shutil.which``
+    honours PATHEXT, so on Windows it finds the ``claude.cmd`` an install puts
+    on PATH; naming the bare word there would find nothing, because the process
+    that starts a child does not consult PATHEXT itself.
+    """
+    return shutil.which(binary)
+
+
 def version(binary=BINARY):
     """``claude --version``'s first line, or ``None``. Asked once per process."""
     if binary not in VERSIONS:
         VERSIONS[binary] = None
-        if shutil.which(binary):
+        found = executable(binary)
+        if found:
             try:
-                done = subprocess.run([binary, '--version'], capture_output=True, text=True,
+                done = subprocess.run([found, '--version'], capture_output=True, text=True,
                                       timeout=60, encoding='utf-8', errors='replace')
                 first = ((done.stdout or '') + (done.stderr or '')).strip().splitlines()
                 VERSIONS[binary] = first[0][:120] if first else None
@@ -262,7 +274,7 @@ class ClaudeCodeRunner(Runner):
         written, because Claude Code substituting a model of its own choosing
         would leave the run recording an arm it did not run.
         """
-        if not shutil.which(self.binary):
+        if not executable(self.binary):
             return [MISSING_CLAUDE]
         assignment = models if isinstance(models, dict) else {'model': models}
         return model_plan.problems(assignment, model_plan.allowlist())
@@ -297,7 +309,7 @@ class ClaudeCodeRunner(Runner):
         agents = Path(directory) / 'agents.json'
         agents.write_text(json.dumps(definition), encoding='utf-8')
         return [
-            self.binary, '-p', task.prompt,
+            executable(self.binary) or self.binary, '-p', task.prompt,
             '--agents', str(agents),
             '--agent', task.agent.name,
             '--mcp-config', json.dumps({'mcpServers': {'peerreview': {
@@ -324,7 +336,7 @@ class ClaudeCodeRunner(Runner):
         if not task.address:
             return Outcome(ending=FAILED, model=task.model,
                            detail='no tool server address was given to this agent')
-        if not shutil.which(self.binary):
+        if not executable(self.binary):
             return Outcome(ending=FAILED, model=task.model, detail=MISSING_CLAUDE)
         # The working directory is empty and thrown away: there is nothing in
         # it to read even if the agent found a way to look, and no project

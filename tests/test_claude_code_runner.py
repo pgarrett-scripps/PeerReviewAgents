@@ -160,7 +160,8 @@ def test_the_session_is_started_with_our_tools_and_no_settings_of_its_own(tmp_pa
     command = runner.command(task, tmp_path)
     flags = {name: (command[index + 1] if index + 1 < len(command) else '')
              for index, name in enumerate(command) if str(name).startswith('--')}
-    assert command[0] == 'claude' and command[1] == '-p' and command[2] == task.prompt
+    assert Path(command[0]).stem == 'claude', 'the resolved path, not the bare word'
+    assert command[1] == '-p' and command[2] == task.prompt
     assert flags['--setting-sources'] == '', 'no user, project or local settings file'
     assert flags['--tools'] == '', 'no built-ins: nothing reads a file or reaches the web'
     assert '--strict-mcp-config' in command and '--disable-slash-commands' in command
@@ -324,6 +325,28 @@ def test_a_model_no_login_can_run_is_named_before_anything_is_started(tmp_path, 
     assert runner.unavailable({'core-1': 'claude-sonnet-5-5'}) == []
     refused = runner.unavailable({'core-1': 'claude-nonesuch-9'})
     assert refused and 'claude-nonesuch-9' in refused[0]
+
+
+def test_what_is_started_is_the_path_the_shell_would_resolve(tmp_path, monkeypatch):
+    """A bare word is not a program on every platform.
+
+    Windows puts ``claude.cmd`` on PATH and the shell finds it through PATHEXT;
+    the call that starts a child does not consult PATHEXT itself, so a bare
+    ``claude`` there is not found at all. The runner starts what
+    :func:`claude_code.executable` resolved, and the version is asked of the
+    same path, so the two cannot disagree about which binary was meant.
+    """
+    binaries = install(tmp_path, monkeypatch, events=[])
+    found = claude_code.executable()
+    assert found and Path(found).exists() and Path(found).parent == binaries
+    command = ClaudeCodeRunner().command(task_for(), tmp_path)
+    assert command[0] == found, 'the session is started with the resolved path'
+    assert claude_code.version() == '2.1.400', 'and the version is asked of it'
+
+    monkeypatch.setenv('PATH', str(tmp_path / 'empty'))
+    assert claude_code.executable() is None
+    assert ClaudeCodeRunner().command(task_for(), tmp_path)[0] == claude_code.BINARY, \
+        'nothing to resolve leaves the bare word, which the run refuses before it starts'
 
 
 def test_the_version_is_asked_of_the_binary_once_and_named_in_the_provenance(tmp_path,
