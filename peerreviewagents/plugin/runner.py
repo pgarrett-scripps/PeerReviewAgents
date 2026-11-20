@@ -232,15 +232,34 @@ class ScriptedRunner(Runner):
     with its answer dropped, which is what a real session's child does when it
     is cut off mid-stream — so a consumer can build a run stopped over a
     ceiling without a model.
+
+    ``missing`` is one line saying this runner cannot run anything at all, the
+    way Claude Code that is not installed cannot: it is what
+    :meth:`unavailable` answers, so the run is opened, identified and marked
+    blocked at start-up by the starter's own path for that, rather than by a
+    consumer writing the folder by hand. A runner holding one starts no agent
+    — the orchestrator never gets that far — and the line is the detail on the
+    refusal if anything asks it to.
     """
 
     remote = False
 
-    def __init__(self, scripts=None, service=None, tokens=1000):
+    def __init__(self, scripts=None, service=None, tokens=1000, missing=''):
         self.scripts = dict(scripts or {})
         self.service = service
         self.tokens = tokens
+        #: Why nothing can be run here, or ``''`` for a runner that works.
+        self.missing = str(missing or '')
         self.ran = []
+
+    def unavailable(self, models):
+        """``[missing]`` for a runner that cannot run anything, else ``[]``.
+
+        The question is about the runner rather than about the models, which is
+        why *models* is not consulted: a harness that is not there refuses
+        every model there is.
+        """
+        return [self.missing] if self.missing else []
 
     def tokens_for(self, task):
         """What this seat spends: the flat number, or what the callable says."""
@@ -258,6 +277,12 @@ class ScriptedRunner(Runner):
         return self.scripts.get('*')
 
     def run(self, task):
+        if self.missing:
+            # The run should never reach here — a runner that cannot run
+            # anything blocks the run at start-up — but a caller that drives
+            # the panel itself gets the answer a missing harness gives rather
+            # than a scripted agent that worked anyway.
+            return Outcome(ending=FAILED, model=task.model, detail=self.missing)
         if self.service is None:
             raise RuntimeError('a scripted runner needs the run\'s service to call tools')
         script = self.script_for(task)

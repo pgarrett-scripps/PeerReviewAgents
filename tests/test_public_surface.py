@@ -527,6 +527,119 @@ def test_the_scripted_review_is_public_and_puts_back_the_run_it_found(tmp_path):
     srv.STATE['run'] = None
 
 
+# -- a run blocked at start-up, from a script --------------------------------
+#
+# `startup_blocked_run` above is the hand-built version of this folder, and
+# what an app renders when the machine it ran on had no Claude Code on it.
+# `missing=` is the same folder written by the starter's own runner-missing
+# path, so a consumer's fixture of a blocked-at-start-up run is the folder a
+# real run leaves rather than one file written from memory.
+
+
+def test_a_scripted_review_is_blocked_at_start_up_by_a_runner_that_is_missing(tmp_path):
+    """Nothing ran, the folder says why, and it still names the paper it was for."""
+    folder = tmp_path / 'run'
+
+    review = peerreviewagents.scripted_review(FIXTURE, folder,
+                                              missing='claude is not installed')
+
+    assert (review.status, review.blocked_reason) == ('blocked', 'claude is not installed')
+    assert review.summary['stage'] == 'startup'
+    assert review.ran == ()
+    assert review.summary['tokens_total'] == 0
+
+    startup = json.loads((review.review / 'startup.json').read_text(encoding='utf-8'))
+    assert startup['problems'] == ['claude is not installed']
+    assert (startup['runner'], startup['server']) == ('scripted', None)
+    assert startup['tools_expected'] == list(starter.tool_names())
+    assert startup['at']
+
+    runtime = json.loads((review.review / 'runtime.json').read_text(encoding='utf-8'))
+    assert (runtime['status'], runtime['blocked_reason']) == ('blocked',
+                                                             'claude is not installed')
+    # The recorder is this process and is accounted for; no seat was started.
+    assert [row['label'] for row in runtime['agents']] == ['recorder']
+    assert runtime['tokens_total'] == 0
+
+
+def test_a_review_blocked_by_a_missing_runner_reads_as_one_a_consumer_knows(tmp_path):
+    """The reading of the folder, which is what an app shows: blocked, at start-up."""
+    folder = tmp_path / 'run'
+
+    peerreviewagents.scripted_review(FIXTURE, folder, arm='single', missing='claude is missing')
+
+    run = read_run(folder)
+    assert (run['status'], run['blocked'], run['complete']) == ('blocked', True, False)
+    assert (run['stage'], run['cause']) == ('startup', 'claude is missing')
+    assert run['publishable'] is False
+    # Identified, because the caller asked for a review of a named paper.
+    assert run['identity']['arm'] == 'single'
+    assert run['identity']['pdf'] == str(FIXTURE)
+    assert run['identity']['source_sha256']
+    # Nothing was imported and no stage ran, so there is no manuscript and no read.
+    assert run['manuscript']['state'] == 'absent'
+    assert (run['read'], run['issues'], run['findings']) == (None, [], [])
+
+
+def test_a_scripted_fix_check_is_blocked_at_start_up_by_the_same_runner(tmp_path):
+    """The other command's folder, read by the other reader."""
+    folder = tmp_path / 'check'
+
+    check = peerreviewagents.scripted_fix_check(FIXTURE, folder, [
+        {'id': 'i01', 'statement': 'A problem the first review raised.', 'severity': 'major',
+         'evidence': [{'document': '', 'quote': 'Converter'}]}],
+        missing='claude is not installed')
+
+    assert (check.status, check.summary['stage']) == ('blocked', 'startup')
+    startup = json.loads((check.review / 'startup.json').read_text(encoding='utf-8'))
+    assert startup['problems'] == ['claude is not installed']
+
+    read = runs.read_fix_check(folder)
+    assert (read['status'], read['blocked']) == ('blocked', True)
+    assert read['cause'] == 'claude is not installed'
+    assert read['arm'] == 'fix-check'
+    # No lane claimed anything, so there is nothing checked and nothing to say
+    # about the checks: the check is not incomplete, it never started.
+    assert (read['checks'], read['checked'], read['read']) == ([], 0, None)
+    assert read['incomplete'] is False
+
+
+def test_a_start_up_refusal_that_is_not_the_missing_runner_still_raises(tmp_path):
+    """A caller's own mistake is not a run folder: it is raised where the call was.
+
+    The missing runner is returned because the folder is what the call was for.
+    A manuscript the server will not import is the other kind of start-up
+    failure, and nothing but the caller can fix it.
+    """
+    not_a_pdf = tmp_path / 'paper.pdf'
+    not_a_pdf.write_bytes(b'this is not a PDF at all\n')
+
+    with pytest.raises(peerreviewagents.ReviewRefused) as refused:
+        peerreviewagents.scripted_review(not_a_pdf, tmp_path / 'run')
+
+    assert refused.value.tool == 'ingest'
+    assert refused.value.answer['request_rejected']
+
+    # The same paper with a missing runner is blocked by the runner: a machine
+    # with nothing to run the agents with never opens the manuscript at all.
+    blocked = peerreviewagents.scripted_review(not_a_pdf, tmp_path / 'again',
+                                               missing='claude is not installed')
+
+    assert blocked.blocked_reason == 'claude is not installed'
+
+
+def test_a_scripted_runner_that_is_missing_refuses_every_model_it_is_asked(tmp_path):
+    """The one line the starter reads, and the answer a seat gets if it is reached."""
+    runner = agent_runner.ScriptedRunner({'*': lambda slot: None},
+                                         missing='claude is not installed')
+
+    assert runner.unavailable({}) == ['claude is not installed']
+    assert runner.unavailable({'core-1': 'claude-opus-5'}) == ['claude is not installed']
+    assert starter.runner_missing(runner) == 'claude is not installed'
+    assert agent_runner.ScriptedRunner().unavailable({'core-1': 'claude-opus-5'}) == []
+    assert starter.runner_missing(agent_runner.ScriptedRunner()) == ''
+
+
 # -- the public names -------------------------------------------------------
 
 
