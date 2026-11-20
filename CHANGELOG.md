@@ -85,6 +85,20 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A run blocked at start-up because the runner is missing is one line of a
+  scripted call.** `missing='claude is not installed'` on `scripted_review`,
+  `scripted_fix_check` or `scripted_read` — behind it a `missing=` option on
+  `ScriptedRunner`, which is what `unavailable()` answers — builds the folder a
+  machine with no Claude Code on it leaves, through the starter's own
+  runner-missing path rather than by hand: `startup.json` with that line under
+  `problems`, the runner named and `server: null`; `runtime.json` blocked with
+  nothing spent and only the recorder's row; the paper identified; and
+  `read_run` giving `stage: startup`, the line as `cause`, a `manuscript` whose
+  state is `absent` and `read: None`. The run is returned rather than raised,
+  because the folder is what the call was for — the only start-up refusal that
+  is, a manuscript the server will not import being the caller's own mistake
+  and still a `ReviewRefused`. The folder a consumer renders for "the machine
+  this ran on has no harness installed" was the last one written by hand.
 - **Everything a run knows is readable from its folder.** A consumer opens a
   run folder days after the call that made it, so a fact that lived only in
   the return value was a fact that consumer had to infer. Five of them are on

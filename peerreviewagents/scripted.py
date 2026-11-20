@@ -784,7 +784,7 @@ class ScriptedReview(ScriptedRun):
 
 
 def scripted_read(paper, folder, reader=None, *, pieces=(), title='', supplements=None,
-                  scripts=None, reviewers=1, arm='single', **plan):
+                  scripts=None, reviewers=1, arm='single', missing='', **plan):
     """Run a review on *paper* in *folder* whose Read stage is a script.
 
     *reader* is the reader's script: one callable taking its
@@ -812,6 +812,10 @@ def scripted_read(paper, folder, reader=None, *, pieces=(), title='', supplement
     is, one core reviewer in the single arm, because what this is for is the
     manuscript.
 
+    ``missing=`` is a runner that cannot run anything, as
+    :func:`scripted_review` documents it — a folder with no read in it at all,
+    because a run blocked at start-up never reaches this stage.
+
     Returns a :class:`ScriptedRead`.
     """
     named = dict(scripts or {})
@@ -822,11 +826,11 @@ def scripted_read(paper, folder, reader=None, *, pieces=(), title='', supplement
         named['reader'] = reader
     return _run(paper, folder, ScriptedRead, ReaderRefused, named,
                 pieces=pieces, title=title, supplements=supplements,
-                reviewers=reviewers, arm=arm, **plan)
+                reviewers=reviewers, arm=arm, missing=missing, **plan)
 
 
 def scripted_fix_check(paper, folder, problems, scripts=None, *, title='', supplements=None,
-                       **plan):
+                       missing='', **plan):
     """Run a fix check on *paper* against *problems* in *folder*, from a script.
 
     *problems* is the ``--problems`` file: a path to one, or the document
@@ -856,7 +860,8 @@ def scripted_fix_check(paper, folder, problems, scripts=None, *, title='', suppl
     reader failed. The same is true of a review: both are the one stage with a
     fallback behind it.
 
-    ``tokens=`` and the ceilings work as in :func:`scripted_review`.
+    ``tokens=``, the ceilings and ``missing=`` work as in
+    :func:`scripted_review`.
 
     Returns a :class:`ScriptedFixCheck`.
     """
@@ -869,11 +874,12 @@ def scripted_fix_check(paper, folder, problems, scripts=None, *, title='', suppl
         path.write_text(json.dumps(problem_list.normalize(problems), indent=2) + '\n',
                         encoding='utf-8')
     return _run(paper, folder, ScriptedFixCheck, CheckRefused, scripts,
-                title=title, supplements=supplements, problems=str(path), **plan)
+                title=title, supplements=supplements, problems=str(path),
+                missing=missing, **plan)
 
 
 def scripted_review(paper, folder, scripts=None, *, title='', supplements=None,
-                    reviewers=1, arm='reviewers-only', **plan):
+                    reviewers=1, arm='reviewers-only', missing='', **plan):
     """Run a review on *paper* in *folder* with a script in every seat.
 
     *scripts* is ``{key: script}``, where a script is one callable taking its
@@ -920,25 +926,43 @@ def scripted_review(paper, folder, scripts=None, *, title='', supplements=None,
     left behind — plans no Read stage, which is how a fixture reviews a
     manuscript a reader read.
 
+    ``missing=`` is a run blocked at start-up because there is nothing to run
+    the agents with, which is the folder a machine with no harness installed
+    leaves: the line given is what ``claude is not installed`` would be, and
+    the run is opened, identified and marked blocked through the starter's own
+    path for it. Nothing is ingested and no seat is reached, so the folder
+    holds ``startup.json`` with the line under ``problems``, a
+    ``runtime.json`` with no agents in it, and a status of ``blocked`` at the
+    ``startup`` stage — the only run folder whose ``manuscript`` state is
+    ``absent``. Returned rather than raised, because the folder is what the
+    call was for.
+
     Returns a :class:`ScriptedReview`.
     """
     return _run(paper, folder, ScriptedReview, ReviewRefused, scripts,
-                title=title, supplements=supplements, reviewers=reviewers, arm=arm, **plan)
+                title=title, supplements=supplements, reviewers=reviewers, arm=arm,
+                missing=missing, **plan)
 
 
 def _run(paper, folder, held, refusal, scripts, *, pieces=(), title='', supplements=None,
-         problems=None, tokens=1000, **plan):
+         problems=None, tokens=1000, missing='', **plan):
     """One scripted run, start to finish, through the orchestrator.
 
     The whole of what the three helpers share: the draft pre-written where a
     fixture asked for pieces or a title of its own, the seat registered as the
     runner's one script, the run driven by the starter exactly as a model run
     is, and the refusals a script met raised again once the folder is written.
+
+    *missing* is a runner that cannot run anything, which is the one start-up
+    failure that is an outcome rather than a caller's mistake: the run is
+    returned instead of raised, because the folder it wrote is what the caller
+    came for. Every other start-up refusal still raises.
     """
     paper, folder = Path(paper), Path(folder)
     _prepare(paper, folder, pieces, title, supplements)
     seat = _Seat(scripts, refusal, tokens=tokens)
-    runner = agent_runner.ScriptedRunner({'*': seat}, tokens=seat.tokens_for)
+    runner = agent_runner.ScriptedRunner({'*': seat}, tokens=seat.tokens_for,
+                                         missing=missing)
     # One process serves one run: an ingest is refused while another run is
     # attached, and the run this opens is detached again after. A consumer's
     # suite drives several of these in one process, and a server that is still
@@ -961,8 +985,9 @@ def _run(paper, folder, held, refusal, scripts, *, pieces=(), title='', suppleme
     if seat.raised:
         slot, problem = seat.raised[0]
         raise problem
-    if summary.get('stage') == 'startup' and summary.get('blocked_reason'):
-        raise refusal('ingest', {'request_rejected': str(summary['blocked_reason'])})
+    stopped = str(summary.get('blocked_reason') or '')
+    if summary.get('stage') == 'startup' and stopped and stopped != str(missing):
+        raise refusal('ingest', {'request_rejected': stopped})
     return held(paper, folder, summary, seat)
 
 

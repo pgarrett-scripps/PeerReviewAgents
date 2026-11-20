@@ -2004,6 +2004,9 @@ base = read.base()          # the sealed workspace: `text`, `rows`, `manifest`
   manuscript missing that page, so it is refused, the run is blocked, and the
   block still says `reader_failed: True` with `sealed: False` and the reason
   for both.
+- **`missing=` is a run that never reached this stage**, as `scripted_review`
+  documents it: a folder with no manuscript in it and `read: None`, because
+  there was nothing to run the reader with.
 
 ### Building a written fix check for your tests: `scripted_fix_check`
 
@@ -2086,6 +2089,11 @@ reading = check.read()                 # or read_fix_check(folder), which is the
   finished run — so a consumer that reports the status reports `incomplete`
   beside it, in the summary, in `fix-check.json`, through `read_fix_check` and
   at the top of `FIXES.md`.
+- **`missing=` is a check blocked at start-up**, as it is for
+  `scripted_review`: no lane claimed anything, so `read_fix_check` gives
+  `status: blocked` with the line as `cause`, no `checks`, `checked: 0` and
+  `read: None` — and `incomplete: False`, because the check did not run short,
+  it never started.
 - A refusal raises `CheckRefused`, with the tool on `.tool` and the server's
   whole answer on `.answer`. `ToolRefused` is the base class of that and of
   `ReaderRefused`, for a test that catches either.
@@ -2198,6 +2206,22 @@ run = read_run(folder)                 # or review.read(), which is the same
   starter's stop case from a script: the run blocks, and the folder says the
   stage is missing because the run ran out rather than because the seat is a
   bad one.
+- **A run blocked at start-up is `missing=`,** one line saying there is nothing
+  to run the agents with, the way `claude` that is not installed is nothing:
+  `scripted_review('paper.pdf', folder, missing='claude is not installed')` goes
+  through the starter's own runner-missing path, so the folder it leaves is the
+  one a machine without Claude Code leaves — `startup.json` with that line under
+  `problems`, `server: null` and the runner named; `runtime.json` with the
+  status `blocked`, that line as `blocked_reason`, nothing spent and only the
+  recorder's own row; the paper identified in `manifest.json`, because the
+  caller asked for a review of a named paper. Nothing is ingested and no seat
+  is reached, so `read_run` gives `status: blocked`, `stage: startup`, the line
+  as `cause`, a `manuscript` whose state is `absent` and `read: None`. It is
+  returned rather than raised — the folder is what the call was for — and it is
+  the only start-up refusal that is: one the server makes, such as a manuscript
+  it will not import, is a caller's own mistake and still raises
+  `ReviewRefused`. `scripted_fix_check` and `scripted_read` take the same
+  argument and leave the same folder, read by their own readers.
 - **A silent code check is in the result, not missing from it.** The code lane
   only ever takes findings *out*, so a `code-check` seat that answers nothing
   leaves the review with every finding as its reviewer filed it rather than
@@ -2306,6 +2330,10 @@ python -c "import peerreviewagents.plugin.server"
 
 A missing MCP SDK is the usual cause on an old environment. It is a dependency,
 so `pip install -e .` installs it; re-run that after upgrading.
+
+To build that folder for your own tests rather than wait to meet one, pass
+`missing=` to any of the scripted helpers — see
+[`scripted_review`](#building-a-written-review-for-your-tests-scripted_review).
 
 ### An agent reported the tools missing
 
