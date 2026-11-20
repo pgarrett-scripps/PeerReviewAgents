@@ -19,12 +19,13 @@ from pathlib import Path
 import pytest
 from manuscripts import seal_converted
 
+from peerreviewagents import agents as agent_pack
+from peerreviewagents.plugin import orchestrator, starter
 from peerreviewagents.plugin import server as srv
-from peerreviewagents.plugin import starter
 
 FIXTURE = Path(__file__).parent / 'fixtures' / 'single-column.pdf'
 PLUGIN = Path(srv.__file__).resolve().parent / 'pra'
-AGENTS = PLUGIN / 'agents'
+AGENTS = agent_pack.HERE
 CODES = {}
 
 
@@ -149,48 +150,34 @@ def test_the_numbers_lane_may_confirm_a_printed_digit_but_not_read_a_plot(tmp_pa
     assert 'may not call view_supplement' in refusal
 
 
-def test_the_workflow_briefs_the_tracks_the_server_plans():
-    source = (PLUGIN / 'workflows' / 'review.js').read_text(encoding='utf-8')
-    block = re.search(r'const SPECIALIST_BRIEF = \{(.*?)\n\}', source, re.S)
-    assert block, 'the workflow has no per-track brief to spawn a specialist with'
-    keys = re.findall(r"^\s*'([a-z-]+)':", block.group(1), re.M)
-    assert set(keys) == set(srv.SPECIALIST_TRACKS), \
-        'a planned track with no brief line is spawned with an empty lane'
-    assert 'consistency' not in source
+def test_the_orchestrator_briefs_the_tracks_the_server_plans():
+    """A planned track with no brief line is spawned with an empty lane."""
+    assert set(orchestrator.SPECIALIST_BRIEF) == set(srv.SPECIALIST_TRACKS)
+    for track, brief_line in orchestrator.SPECIALIST_BRIEF.items():
+        assert brief_line.strip(), f'{track} is planned with nothing to audit'
+        assert 'consistency' not in brief_line
 
 
-def test_every_tool_the_workflow_asks_an_agent_for_is_in_that_agent_s_tool_list():
-    """A prompt naming a tool the agent file does not list is a dead branch.
+def test_every_specialist_track_is_a_prompt_the_catalogue_covers():
+    """The lanes are checked against their grants, and this is what keeps them in.
 
-    The workflow's one retry asked the recorder to call ``reissue_claim_code``
-    and ``recorder.md`` did not list it, so a stage that had to be retried
-    could never have been: the recorder had no such tool, the reissue would
-    return nothing, and `stage()` would report that the slot could not be
-    claimed. Nothing in SPOT 0.9.0 reached that branch — every stage claimed to
-    have closed — so the dead path cost nothing visible until the ledger was
-    checked against those claims, which is what sends a stage back.
+    A prompt naming a tool the agent file does not list is a dead branch: the
+    one retry asked the recorder to call ``reissue_claim_code`` and
+    ``recorder.md`` did not list it, so a stage that had to be retried never
+    could have been. ``tests/test_prompt_tool_grants.py`` reads every prompt
+    the orchestrator can send against the grants of the agent it goes to —
+    including each specialist's — and this asserts that a lane cannot drop out
+    of that reading by being planned and never prompted.
     """
-    source = (PLUGIN / 'workflows' / 'review.js').read_text(encoding='utf-8')
-    # The tools whose names are not also ordinary English: a prompt that says
-    # "search the paper" is not a prompt that calls `search`.
-    vocabulary = {tool.__name__ for tool in srv.TOOLS
-                  if '_' in tool.__name__ or tool.__name__ == 'ingest'}
-    # Each `agent(...)` call names its agent type after its prompt, so the text
-    # between one `agent(` and the next `agentType:` is that agent's brief.
-    briefs = re.findall(r"agent\((.*?)agentType: '(pra:[a-z-]+)'", source, re.S)
-    assert briefs, 'no agent call in the workflow names the agent it spawns'
-    checked = 0
-    for prompt, spawned in briefs:
-        agent_file = AGENTS / (spawned[len('pra:'):] + '.md')
-        assert agent_file.is_file(), f'{spawned} has no agent file'
-        allowed = set(re.findall(r'mcp__plugin_pra_peerreview__([a-z_]+)',
-                                 agent_file.read_text(encoding='utf-8')))
-        for tool in sorted(vocabulary):
-            if re.search(r'\b' + tool + r'\b', prompt):
-                assert tool in allowed, \
-                    f'the workflow asks {spawned} to call {tool} and its agent file forbids it'
-                checked += 1
-    assert checked >= 6, 'this test is matching nothing, so it is checking nothing'
+    prompted = {agent for agent, _ in orchestrator.prompt_catalogue()}
+    for track in srv.SPECIALIST_TRACKS:
+        agent = 'citations' if track == 'citations' else track
+        assert agent in prompted, f'{track} is a planned lane no prompt is written for'
+    # The specialist's own brief reaches the agent inside its prompt.
+    for agent, said in orchestrator.prompt_catalogue():
+        if agent in srv.SPECIALIST_TRACKS and 'audit' in said:
+            assert orchestrator.SPECIALIST_BRIEF[agent].split('.')[0] in said, \
+                f'{agent} is prompted without the brief for its own lane'
 
 
 def test_the_draft_check_default_names_tracks_that_exist():
@@ -210,8 +197,10 @@ def test_no_surface_still_calls_the_numbers_lane_consistency():
     """
     root = Path(srv.__file__).resolve().parent.parent.parent
     scanned = [path for path in (PLUGIN.rglob('*.md'))]
+    scanned += sorted(AGENTS.glob('*.md'))
     scanned += [root / 'peerreviewagents' / 'plugin' / 'server.py',
                 root / 'peerreviewagents' / 'plugin' / 'starter.py',
+                root / 'peerreviewagents' / 'plugin' / 'orchestrator.py',
                 root / 'docs' / 'study-arms.md',
                 root / 'docs' / 'paper-scaffold.md']
     for path in scanned:

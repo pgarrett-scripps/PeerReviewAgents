@@ -1,29 +1,29 @@
-"""Start one plugin review in a headless Claude Code session and account for it.
+"""Run one review in this process, agent by agent, and account for it.
 
-The server owns the review; this starter owns the launch and the accounting.
-It does five things a workflow script cannot:
+The server owns the review; this module owns the run. It validates what it was
+asked for, opens the run's one tool server, hands the panel to an orchestrator,
+and writes down what happened:
 
-* **Probes first.** A run is only started once a throwaway session's start-up
-  event shows the plugin loaded and ``peerreview`` connected with its tools
-  under the names the agents are allowed to call. A silent misconfiguration
-  would otherwise look like a review with no findings.
-* **Never uses bare mode.** ``--bare`` skips plugin sync and reads credentials
-  only from an API key, so it is both useless here and the wrong login.
-* **Waits for the review, not for the session's turn.** Under ``-p`` the
-  Workflow tool is a background task: the first ``result`` event arrives while
-  the review is still running, and a session that reports the workflow running
-  and ends its turn closes its event stream with the review alive. The session
-  is therefore only ended when the run folder says the review was written or
-  the run was marked blocked, or when nothing is writing that folder any more
-  — see :class:`Completion`. Terminating on the session's own last word killed
-  live reviews, which is what this is written against.
-* **Enforces budgets and records provenance from the stream.**
-  ``system/task_progress`` carries each agent's tokens, tool calls, state and
-  model, so a per-agent or per-run token ceiling is enforced here, and the model
-  each agent actually ran as is recorded rather than taken from its own word.
-* **Renders the reports last.** The recorder writes ``REVIEW.md`` from inside
-  the session, before any of that accounting exists on disk. The starter writes
-  the reports again afterwards, so the header can state real totals.
+* **Nothing is relayed.** The stage order, the fan-out, the retries and every
+  recorder tool are :mod:`peerreviewagents.plugin.orchestrator`'s, called here
+  in this process. There is no driving session, no workflow script and no agent
+  reading a dict back to us — so there is also no race between a session's
+  turn ending and the review still running, which is what the headless driver
+  this replaces was mostly written against.
+* **One agent is one task.** Each slot is run through a
+  :class:`peerreviewagents.plugin.runner.Runner`: Claude Code by default, a
+  scripted runner in the tests. Nothing here knows how an agent is run, which
+  is why the whole panel can be exercised without a model.
+* **The budget is real.** :class:`orchestrator.Budget` holds the per-agent and
+  per-run ceilings and the wall clock, hands each agent what the run has left,
+  and is the one record the usage files and ``runtime.json`` are written from.
+* **A model this login cannot run is refused first.** The runner is asked
+  before anything is written, because Claude Code's own answer to a model it
+  cannot serve is to quietly run a different one, which would leave the run
+  recording an arm it did not run.
+* **The reports are rendered last.** ``write_review`` writes ``REVIEW.md``
+  before any of this accounting exists on disk, so the reports are written once
+  more over the top, with the real totals.
 
 A rate limit, a breached budget or a missing stage leaves the run ``blocked``,
 which is an outcome and not an error to paper over.
@@ -32,23 +32,21 @@ which is an outcome and not an error to paper over.
 from __future__ import annotations
 
 import argparse
-import collections
 import datetime
 import json
 import os
-import queue
-import shutil
-import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 
 from .. import problems as problem_list
 from ..engine import code_source
 from ..engine.storage import digest, read, write
-from ..names import BLOCKED, COMPLETE_STATUSES, FINDING_SCHEMA_VERSION
+from ..names import COMPLETE_STATUSES, FINDING_SCHEMA_VERSION
+from . import claude_code, orchestrator
 from . import models as model_plan
+from . import runner as agent_runner
+from .claude_code import ClaudeCodeRunner
 from .server import (
     ARMS,
     CITATION_WORKERS,
@@ -60,17 +58,15 @@ from .server import (
     REVIEWABLE_ARMS,
     RUN_DIRECTORY,
     SPECIALIST_TRACKS,
-    TOOLS,
     WORKFLOW_VERSION,
     checker_slots,
     citation_slots,
     plan_slots,
 )
+from .service import TOOL_PREFIX, TOOLS, Service
 
 SERVER = 'peerreview'
 PLUGIN = 'pra'
-TOOL_PREFIX = f'mcp__plugin_{PLUGIN}_{SERVER}__'
-HARNESS_TOOLS = ('Workflow', 'Skill', 'TodoWrite')
 PER_AGENT_TOKENS = 500_000
 PER_RUN_TOKENS = 6_000_000
 WALL_TIMEOUT = 5400
@@ -83,212 +79,63 @@ WALL_TIMEOUT = 5400
 FIX_PER_AGENT_TOKENS = 150_000
 FIX_PER_RUN_TOKENS = 900_000
 FIX_WALL_TIMEOUT = 2700
-PROBE_TIMEOUT = 180
-#: The harness variable that says how long a headless ``-p`` session waits for
-#: its own background tasks once its last turn is over. The review is that
-#: background task, so this is the engine's to set — see
-#: :func:`background_wait`.
-BG_WAIT = 'CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS'
-#: How much longer than this run's own wall clock the harness is told to wait,
-#: in seconds. The driver ends a run at its deadline and records the reason;
-#: the harness ending one first would be an outcome with no author.
-BG_WAIT_MARGIN = 120
-RATE_LIMIT_CEILING = 0.99
-MISSING_CLAUDE = ('claude is not installed or not on this PATH, so no session can be started: '
-                  'install Claude Code and check that `claude --version` runs in this shell')
 #: What `check-draft` runs when no track is named. The three a draft of your
 #: own is usually wrong about, and the default the prompt and the recorded plan
 #: must agree on.
 DRAFT_CHECK_TRACKS = ('stats', 'numbers', 'methods-reporting')
-VERSIONS = {}
-#: Reasons the read loop ended that are not themselves a failure: the work the
-#: session launched reached an end of its own, and the run folder is what says
-#: which end it was. Anything else `stop` can hold is the cause of a blocked
-#: run.
-#: The session's own word that the task is over. Nothing here stops on it any
-#: more — that is the race — but it is still accepted as a settled reason, so a
-#: caller driving :func:`launch` with its own watch reads the same way.
-WORKFLOW_FINISHED = 'the workflow task finished'
-REVIEW_WRITTEN = 'the server recorded the review as written'
-RUN_MARKED_BLOCKED = 'the server marked the run blocked'
-NOTHING_LEFT_WRITING = 'nothing is writing the run folder any more'
-SETTLED = (WORKFLOW_FINISHED, REVIEW_WRITTEN, RUN_MARKED_BLOCKED, NOTHING_LEFT_WRITING)
-#: How long the run folder has to stand still before the driver accepts that no
-#: review is coming, in the three states it can be in. The server rewrites
-#: ``progress.json`` at the end of every tool call, so a folder that is
-#: changing is a review that is working, and these are the windows of silence
-#: that mean it is not. The session's own process being gone is proof: nothing
-#: can write the folder again, so a moment is enough. A session that reported
-#: its workflow task finished has nothing left to do either. A session that
-#: merely stopped talking gets the long window, because an agent can read for
-#: minutes between tool calls, and waiting out the wall clock costs time while
-#: killing a live review costs the whole run.
-EXITED_QUIET = 1.5
-FINISHED_QUIET = 20.0
-STREAM_QUIET = 600.0
-#: How often the driver looks at the run folder while it is waiting.
-WATCH_TICK = 1.0
-#: Agent states the progress stream uses for an agent the harness gave up on.
-FAILED_STATES = ('error', 'errored', 'failed')
-#: How much of the session's closing message a blocked reason carries. It is a
+#: How much of an agent's own last word a blocked reason carries. It is a
 #: model's prose, not a status line, so it is quoted and cut rather than kept.
 LAST_WORD_CHARACTERS = 600
+#: What the recorder slot is now: this process. The slot still exists — the
+#: server mints a claim code for it and the run key reissues the others — but
+#: nothing runs a model for it, and its row in the record says so rather than
+#: reporting a model that never ran.
+IN_PROCESS = 'in process'
+#: Shared with :mod:`peerreviewagents.plugin.claude_code`, so clearing it here
+#: clears the answer the runner caches too.
+VERSIONS = claude_code.VERSIONS
 
 
 def tool_names():
-    return tuple(TOOL_PREFIX + tool.__name__ for tool in TOOLS)
-
-
-def allow_list():
-    return ','.join((*HARNESS_TOOLS, *tool_names()))
+    """Every server tool under the name an agent calls it by."""
+    return tuple(TOOL_PREFIX + name for name in sorted(TOOLS))
 
 
 def plugin_dir():
     """The plugin that ships inside this package.
 
     It is package data, not a checkout: an installed wheel has no ``plugins/``
-    folder beside it, and a review that cannot find its own plugin is the one
-    failure the starter must never have.
+    folder beside it. Nothing is loaded as a plugin any more — the skills in it
+    shell out to this command — but it is still what the run's provenance
+    hashes, so a review can say which copy of the package produced it.
     """
     return Path(__file__).resolve().parent / PLUGIN
 
 
 def claude_binary():
-    """Claude Code, resolved the way a shell resolves it.
+    """Claude Code, resolved the way a shell resolves it, or ``None``.
 
-    ``shutil.which`` honours PATHEXT, so it finds the ``claude.cmd`` shim a
-    Windows install puts on PATH, where naming the bare word would not.
+    One resolution for the whole package: the runner starts the path this
+    returns, so a provenance line and a session can never disagree about which
+    binary was meant.
     """
-    return shutil.which('claude')
+    return claude_code.executable()
 
 
 def claude_version(binary=None):
     """What ``claude --version`` prints, for provenance. ``None`` if it will not say."""
-    binary = binary or claude_binary()
-    if not binary:
-        return None
-    if binary not in VERSIONS:
-        VERSIONS[binary] = None
-        try:
-            done = subprocess.run([binary, '--version'], capture_output=True, text=True,
-                                  timeout=60, encoding='utf-8', errors='replace')
-            first = ((done.stdout or '') + (done.stderr or '')).strip().splitlines()
-            VERSIONS[binary] = first[0][:120] if first else None
-        except (OSError, subprocess.SubprocessError):
-            VERSIONS[binary] = None
-    return VERSIONS[binary]
-
-
-def background_wait(deadline=None, inherited=None, wall_timeout=WALL_TIMEOUT):
-    """How long the session waits for the review after its own last turn, in ms.
-
-    The review runs under ``-p`` as the session's background task, and the
-    harness stops background tasks a fixed time after the session's final turn
-    — ten minutes unless something says otherwise. The session's last turn
-    happens early, while the review is still working, so that default is a
-    second deadline nobody set: the SPOT re-run lost a healthy run at 10.3
-    minutes with its reference stage mid-flight, and the pilot's seven runs all
-    finished between 6.9 and 10.3 minutes against a wall they could not see.
-
-    So the engine states the wait itself, from the only wall clock that belongs
-    to this run: :func:`launch`'s deadline, or ``wall_timeout`` when there is
-    none yet. :data:`BG_WAIT_MARGIN` is added on top, because exactly one thing
-    should end a run — the driver, which stops at the deadline and writes down
-    why — and a harness that gives up first takes that away.
-
-    An inherited value is overridden rather than respected, with two
-    exceptions. Overriding is the point: the value this run needs follows from
-    its own wall clock, an inherited one was set for some other session, and a
-    value that is too small is the fault being fixed. The exceptions are values
-    that cannot end a run early — ``0``, which the harness reads as waiting
-    indefinitely, and anything more patient than what this run would ask for.
-    Both are kept, so raising the ceiling by hand still works and lowering it
-    cannot quietly kill a review.
-    """
-    seconds = float(deadline) - time.time() if deadline else float(wall_timeout)
-    wanted = max(int(round(seconds)) + BG_WAIT_MARGIN, BG_WAIT_MARGIN) * 1000
-    try:
-        held = int(str(inherited).strip())
-    except (TypeError, ValueError):
-        held = None
-    if held == 0 or (held or 0) > wanted:
-        return str(held)
-    return str(wanted)
-
-
-def child_environment(binary, chosen=None, deadline=None):
-    """The environment a session runs in: subscription login, own interpreter.
-
-    ``chosen`` carries the models this run asked for into the session, because
-    the session reaches the server through its own workflow and never sees this
-    process's arguments. The server reads them at ingest, so a session that
-    passes no model arguments of its own still runs the models the user chose.
-
-    ``deadline`` carries this run's wall clock in, as a POSIX timestamp, for
-    the same reason: a tool inside the session that is thinking about waiting —
-    the citation resolve stage and its five-minute retry gap — cannot otherwise
-    tell whether the wait ends before the driver ends the run. It is an
-    absolute timestamp because a monotonic clock means nothing on the other
-    side of a process boundary.
-
-    The same deadline sets :data:`BG_WAIT`, so the harness waits for the review
-    this run is actually allowed to take — see :func:`background_wait`.
-    """
-    environment = {**os.environ, 'PEERREVIEW_PLUGIN_RUN': '1',
-                   # The plugin's `.mcp.json` launches its MCP server through
-                   # this, so the run is served by the very interpreter that
-                   # started it even when that virtualenv is not on PATH.
-                   'PEERREVIEW_MCP_COMMAND': sys.executable}
-    for key, value in (chosen or {}).items():
-        environment[key] = value
-    environment[BG_WAIT] = background_wait(deadline, os.environ.get(BG_WAIT))
-    if deadline:
-        environment['PEERREVIEW_RUN_DEADLINE'] = f'{float(deadline):.0f}'
-    for key in ('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'):
-        environment.pop(key, None)  # subscription login only, never a key
-    version = claude_version(binary)
-    if version:
-        # Provenance records the harness that ran the review. Nothing else sets
-        # this, so the starter is the one place that can know it.
-        environment['PEERREVIEW_CLAUDE_VERSION'] = version
-    return environment
+    return claude_code.version(binary or claude_code.BINARY)
 
 
 def now():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
-def pump(stream, lines):
-    """Read one pipe to its end, in its own thread."""
-    try:
-        for line in stream:
-            lines.put(line)
-    except (OSError, ValueError):  # the pipe closed under us; EOF either way
-        pass
-    finally:
-        lines.put(None)
-
-
-def drain(stream, into):
-    """Keep a pipe empty and remember its tail.
-
-    Claude Code writes plugin and MCP diagnostics to stderr. Left unread, that
-    pipe fills and the session stops writing events, which looked like a hung
-    review; the tail is what gets shown if the run then fails.
-    """
-    try:
-        for line in stream:
-            into.append(line)
-    except (OSError, ValueError):
-        pass
-
-
 def recorded_progress(review):
     """What the server last wrote in ``progress.json``, or ``{}``.
 
-    Read while the review is running, so a file caught half-rewritten is not an
-    answer about the run: an unreadable one reads as nothing, and the next look
-    a second later gets the whole of it.
+    Read after the panel has stopped, and read defensively: a file caught
+    half-rewritten is not an answer about the run.
     """
     path = Path(review) / 'progress.json'
     if not path.is_file():
@@ -300,370 +147,63 @@ def recorded_progress(review):
     return current if isinstance(current, dict) else {}
 
 
-class Completion:
-    """Whether the review this session launched has reached an end.
+def recorder_row(panel):
+    """The recorder slot's whole accounting: this process, and what it called.
 
-    The driver used to end the run when the session stopped talking, which is
-    not the same event: the review is a background workflow, so a session can
-    report it running, end its turn, and close its event stream with ten agents
-    still working. Terminating then takes the workflow down with the process.
-
-    So completion is read from the folder the server writes instead of from the
-    session. Three questions, in order:
-
-    * Did the server record the review as written, or the run as blocked? Then
-      the run is over, whatever the session is doing.
-    * Has the folder stopped changing, for long enough to mean it in the state
-      the session is in — process gone, workflow task reported finished, or
-      merely silent? Then no review is coming and the folder's own account is
-      the cause.
-    * Otherwise: wait. The wall clock is the ceiling, as it always was.
-
-    One cost is worth naming: while the stream is closed no ``task_progress``
-    events arrive, so the token ceilings are not enforced over that stretch.
-    The wall clock is the only limit there.
+    The recorder was an agent with a model, a token spend and a state of its
+    own. It is this orchestrator now, so the row says ``in process`` and
+    carries no model — a row claiming the model it was once planned with would
+    read as an agent that ran.
     """
-
-    def __init__(self, review, accounting=None, tick=WATCH_TICK):
-        self.review = Path(review)
-        self.accounting = accounting
-        self.tick = tick
-        self.read_at = None
-        self.recorded = {}
-        self.mark = None
-        self.still_since = None
-        #: How the wait ended, for the run record. ``None`` until it has.
-        self.note = None
-
-    def look(self):
-        """The recorded progress, read at most once a tick."""
-        at = time.monotonic()
-        if self.read_at is not None and at - self.read_at < self.tick:
-            return self.recorded
-        self.read_at = at
-        self.recorded = recorded_progress(self.review)
-        mark = (self.recorded.get('updated'), self.recorded.get('status'),
-                len(self.recorded))
-        if mark != self.mark:
-            self.mark, self.still_since = mark, at
-        return self.recorded
-
-    def __call__(self, closed, alive):
-        recorded = self.look()
-        status = str(recorded.get('status') or '')
-        if status in COMPLETE_STATUSES:
-            return REVIEW_WRITTEN
-        if status == BLOCKED:
-            return RUN_MARKED_BLOCKED
-        finished = bool(self.accounting and self.accounting.finished)
-        if not (closed or finished):
-            return None
-        quiet = EXITED_QUIET if not alive else (
-            FINISHED_QUIET if finished else STREAM_QUIET)
-        still = time.monotonic() - (self.still_since or time.monotonic())
-        if still < quiet:
-            return None
-        self.note = ('the session exited' if not alive
-                     else 'the workflow task reported finishing' if finished
-                     else 'the session closed its event stream')
-        self.note += f' and the run folder stood still for {still:.0f}s'
-        return NOTHING_LEFT_WRITING
+    return {'label': 'recorder', 'slot': 'recorder', 'attempt': 1, 'agent': 'recorder',
+            'observed_tokens': 0, 'tool_calls': getattr(panel, 'calls', 0) or 0,
+            'seconds': round(panel.budget.seconds, 3) if panel.budget else 0.0,
+            'model': '', 'state': IN_PROCESS,
+            'detail': 'the run itself: every recorder tool was called in this process, '
+                      'with no model'}
 
 
-def launch(prompt, directory, timeout_at, on_event, cwd, chosen=None, watch=None,
-           deadline=None):
-    """Run one headless session, handing every stream event to ``on_event``.
+def agent_rows(budget, panel=None):
+    """One row per attempt, in the vocabulary the engine's readers use.
 
-    ``on_event`` returns a reason to stop, or ``None`` to carry on; a reason
-    terminates the session. Returns ``(events_seen, stop_reason, exit_code)``.
-
-    ``watch`` is what the driver waits for when the session launches work that
-    outlives its own turn. It is called every tick with ``(stream_closed,
-    session_alive)`` and returns a reason to stop or ``None`` to keep waiting,
-    so a closed stream ends the run only when it says so — see
-    :class:`Completion`. Without one, a closed stream ends the loop, which is
-    right for a session whose whole job is one answer, like the probe.
-
-    ``deadline`` is ``timeout_at`` as a POSIX timestamp, which is the form the
-    session can read — see :func:`child_environment`. The driver keeps timing
-    itself on the monotonic clock, which no system clock change can move.
-
-    Both pipes are read by threads rather than polled: ``select`` cannot wait on
-    a pipe on Windows, and stderr has to be drained for the whole run and not
-    only at the end.
+    :class:`orchestrator.Budget` keeps the run's own words —
+    ``observed_tokens``, ``tool_calls``, the runner's ending. ``runtime.json``
+    is read by :mod:`peerreviewagents.engine.usage`, which was written against
+    the harness's stream, so the names are translated here in one place and the
+    runner's own ending is kept beside the translation rather than lost.
     """
-    binary = claude_binary()
-    if not binary:
-        return 0, MISSING_CLAUDE, 127
-    command = [
-        binary, '-p', prompt,
-        '--plugin-dir', str(directory),
-        '--permission-mode', 'dontAsk',
-        '--allowed-tools', allow_list(),
-        '--output-format', 'stream-json',
-        '--verbose',
-        '--forward-subagent-text',
-    ]
-    try:
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   text=True, bufsize=1, cwd=str(cwd),
-                                   env=child_environment(binary, chosen, deadline),
-                                   encoding='utf-8', errors='replace')
-    except (OSError, ValueError) as exc:
-        # A claude that will not start is a blocked run, not a traceback.
-        return 0, 'claude could not be started: ' + str(exc), 127
-    lines = queue.Queue()
-    errors = collections.deque(maxlen=400)
-    readers = (threading.Thread(target=pump, args=(process.stdout, lines), daemon=True),
-               threading.Thread(target=drain, args=(process.stderr, errors), daemon=True))
-    for reader in readers:
-        reader.start()
-    seen, stop, closed = 0, None, False
-    try:
-        while True:
-            if time.monotonic() > timeout_at:
-                stop = 'the session passed its wall-clock limit'
-                break
-            try:
-                line = lines.get(timeout=WATCH_TICK if watch else 5)
-            except queue.Empty:
-                line = ''
-            if line is None:  # the session closed its event stream
-                closed = True
-            elif line.strip():
-                try:
-                    event = json.loads(line)
-                except ValueError:
-                    event = None
-                if event is not None:
-                    seen += 1
-                    stop = on_event(event)
-            if stop:
-                break
-            if watch is not None:
-                # The stream closing is the session's turn ending, not the
-                # review's. What ends the run is the watch, or the wall clock.
-                # Only ever asked with the queue drained: the events a session
-                # sent before the server wrote the last word are part of the
-                # run's accounting, and reading the folder first would drop
-                # them.
-                if line == '':
-                    stop = watch(closed, process.poll() is None)
-                    if stop:
-                        break
-            elif closed:
-                break
-    finally:
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=20)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=20)
-        for reader in readers:
-            reader.join(timeout=5)
-        rest = ''.join(errors)
-        if rest.strip():
-            sys.stderr.write(rest[-4000:])
-    return seen, stop, process.returncode
+    rows = list(sorted(budget.rows, key=lambda row: row['label']))
+    if panel is not None:
+        rows.append(recorder_row(panel))
+    return [{'label': row['label'],
+             'agentType': row['agent'],
+             'attempt': row['attempt'],
+             'tokens': row['observed_tokens'],
+             'toolCalls': row['tool_calls'],
+             'model': row['model'] or None,
+             # `done` is the word every reader of this file already knows for a
+             # slot that finished; `ending` is the runner's own.
+             'state': 'done' if row['state'] in (agent_runner.ANSWERED, IN_PROCESS)
+             else row['state'],
+             'ending': row['state'],
+             'seconds': row['seconds'],
+             'detail': row['detail'] or None} for row in rows]
 
 
-def probe(directory, cwd):
-    """Assert the plugin and the server are really there before spending a run."""
-    found = {'plugin': False, 'server': False, 'tools': set(), 'agents': set(), 'raw': None}
-    expected = set(tool_names())
-    if not claude_binary():
-        # Without a harness there is nothing to say about the plugin, and
-        # "the plugin was not loaded" would send the fix to the wrong place.
-        return [MISSING_CLAUDE], found
-
-    def on_event(event):
-        if event.get('type') != 'system' or event.get('subtype') != 'init':
-            return None
-        found['raw'] = {key: event.get(key) for key in
-                        ('plugins', 'mcp_servers', 'agents', 'slash_commands')}
-        text = json.dumps(event)
-        found['plugin'] = PLUGIN in text
-        for server in event.get('mcp_servers') or []:
-            name = str(server.get('name', ''))
-            if SERVER in name and str(server.get('status', '')) == 'connected':
-                found['server'] = True
-        found['tools'] = {name for name in (event.get('tools') or []) if name in expected}
-        found['agents'] = {name for name in (event.get('agents') or []) if PLUGIN in str(name)}
-        return 'probe complete'
-
-    deadline = time.monotonic() + PROBE_TIMEOUT
-    _, stop, _ = launch('Reply with the single word ready.', directory, deadline, on_event, cwd)
-    problems = []
-    if stop and stop != 'probe complete':
-        # The session never reached its init event, so say what actually went
-        # wrong instead of reporting every tool as absent.
-        return [stop], found
-    if not found['plugin']:
-        problems.append(f'the {PLUGIN} plugin was not loaded')
-    if not found['server']:
-        problems.append(f'the {SERVER} MCP server did not connect')
-    missing = expected - found['tools']
-    if missing:
-        problems.append(f'{len(missing)} server tool(s) absent: ' + ', '.join(sorted(missing)[:6]))
-    return problems, found
-
-
-ALLOWED_LIMIT_STATUS = ('allowed', 'allowed_warning', 'warning', 'ok')
-
-
-def rate_limit_reason(event):
-    """A rate limit, read from the shape the real stream sends.
-
-    The event is ``{'type': 'rate_limit_event', 'rate_limit_info': {...}}``, and
-    a healthy one says ``status: 'allowed'`` — a subscription with no overage
-    credit reports ``overageStatus: 'rejected'`` on every call it serves
-    perfectly well, so only ``status`` itself blocks a run. Any nested object
-    that reports a numeric ``utilization`` is also honoured, without this code
-    asserting what those windows are called.
-    """
-    if not isinstance(event, dict):
-        return None
-    info = event.get('rate_limit_info')
-    if not isinstance(info, dict):
-        info = event.get('rate_limit')
-    if not isinstance(info, dict):
-        return None
-    status = str(info.get('status') or '').strip().lower()
-    if status and status not in ALLOWED_LIMIT_STATUS:
-        detail = info.get('overageDisabledReason') or info.get('reason') or 'no reason given'
-        return f'the subscription rate limit reported status {status} ({detail})'
-    for name, window in info.items():
-        levels = [(name, window)]
-        if isinstance(window, dict):
-            levels += list(window.items())
-        for label, level in levels:
-            used = level.get('utilization') if isinstance(level, dict) else None
-            if isinstance(used, (int, float)) and not isinstance(used, bool):
-                if used >= RATE_LIMIT_CEILING:
-                    return f'the {label} rate-limit window is at {used:.0%}'
-    return None
-
-
-class Accounting:
-    """Per-agent tokens, tool calls and models, taken from the progress stream."""
-
-    def __init__(self, per_agent, per_run):
-        self.per_agent = per_agent
-        self.per_run = per_run
-        self.agents = {}
-        self.results = []
-        self.notified = False
-        #: The workflow task reported finishing: a notification arrived and the
-        #: session has since closed a turn. It is the session's account of the
-        #: work, not the server's, so it shortens the wait rather than ending
-        #: the run — the run folder says what the workflow left behind.
-        self.finished = False
-        self.rate_limits = []
-
-    def on_event(self, event):
-        kind, subtype = event.get('type'), event.get('subtype')
-        limit = rate_limit_reason(event)
-        if limit:
-            self.rate_limits.append({'at': now(), 'reason': limit})
-            return limit
-        if kind == 'system' and subtype == 'task_progress':
-            return self.progress(event)
-        if kind == 'system' and subtype == 'task_notification':
-            self.notified = True
-            return None
-        if kind == 'result':
-            self.results.append(event)
-            if self.notified:
-                self.finished = True
-        return None
-
-    def progress(self, event):
-        rows = event.get('workflow_progress')
-        if rows is None:
-            rows = ((event.get('task') or {}).get('workflow_progress')
-                    or (event.get('data') or {}).get('workflow_progress') or [])
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            key = row.get('label') or row.get('agentType')
-            if not key:
-                # The stream emits a placeholder row for an agent it has not
-                # named yet. It carries no usage, so inventing an `agent-N`
-                # label for it only puts an empty agent in the run record.
-                continue
-            key = str(key)
-            if row.get('attempt') and int(row.get('attempt') or 1) > 1:
-                key = f"{key}#{row['attempt']}"
-            record = self.agents.setdefault(key, {'label': key})
-            for field in ('tokens', 'toolCalls', 'durationMs', 'state', 'attempt', 'agentType',
-                          'model'):
-                if row.get(field) is not None:
-                    record[field] = row[field]
-        over = [key for key, row in self.agents.items()
-                if (row.get('tokens') or 0) > self.per_agent]
-        if over:
-            return (f'{over[0]} passed the per-agent token ceiling of {self.per_agent:,}')
-        if self.total_tokens() > self.per_run:
-            return f'the run passed its token ceiling of {self.per_run:,}'
-        return None
-
-    def total_tokens(self):
-        return sum(row.get('tokens') or 0 for row in self.agents.values())
-
-    def last_result(self):
-        return self.results[-1] if self.results else None
-
-    def failures(self):
-        """The agents the stream reported in a failed state, named.
-
-        A run that ends with no review has a cause, and the stream usually
-        knows it: an agent the harness gave up on is reported with a failed
-        state and the tokens it had spent. Naming it is the difference between
-        "the workflow ended without writing the review" and knowing which
-        stage ended it.
-        """
-        broken = [row for row in sorted(self.agents.values(), key=lambda row: row['label'])
-                  if str(row.get('state') or '').strip().lower() in FAILED_STATES]
-        return ', '.join(f"{row['label']} ended in state {row['state']} after "
-                         f"{row.get('tokens') or 0:,} tokens" for row in broken) or None
-
-
-def session_last_word(result):
-    """What the orchestrating session itself said as it ended, in one line.
-
-    A run that ends with nothing written and nothing marked blocked has a cause
-    the server never heard. The first real fix check ended with the recorder
-    answering *No such tool available* to ``write_fix_check``, and all the run
-    folder said was that the workflow ended without writing the fix check —
-    true, and no use to anyone. The session's closing message held the real
-    reason, so it is carried into the blocked reason, shortened.
-    """
-    spoken = (result or {}).get('result')
-    said = ' '.join((spoken if isinstance(spoken, str) else
-                     json.dumps(spoken, default=str) if spoken else '').split())
-    if not said:
-        return None
-    if len(said) > LAST_WORD_CHARACTERS:
-        said = said[:LAST_WORD_CHARACTERS].rstrip() + '…'
-    return 'the session signed off: ' + said
-
-
-def write_usage(review, accounting):
-    """Usage the engine's own report reader can find, plus the full stream record."""
-    for key, row in accounting.agents.items():
-        slot = key.split('#')[0].replace(' ', '-').replace('/', '-')
-        folder = review / 'usage' / slot
+def write_usage(review, rows):
+    """Usage the engine's own report reader can find, one receipt per attempt."""
+    for row in rows:
+        slot = str(row['slot']).replace(' ', '-').replace('/', '-')
+        folder = Path(review) / 'usage' / slot
         folder.mkdir(parents=True, exist_ok=True)
         attempt = int(row.get('attempt') or 1)
         write(folder / f'{slot}-{attempt}.started.json',
-              {'label': key, 'attempt': attempt, 'agent': row.get('agentType')})
+              {'label': row['label'], 'attempt': attempt, 'agent': row.get('agent')})
         with (folder / 'usage.jsonl').open('a', encoding='utf-8') as stream:
-            stream.write(json.dumps({'label': key, 'attempt': attempt,
-                                     'observed_tokens': row.get('tokens') or 0,
-                                     'tool_calls': row.get('toolCalls') or 0,
-                                     'model': row.get('model'),
+            stream.write(json.dumps({'label': row['label'], 'attempt': attempt,
+                                     'observed_tokens': row.get('observed_tokens') or 0,
+                                     'tool_calls': row.get('tool_calls') or 0,
+                                     'model': row.get('model') or None,
                                      'state': row.get('state')}) + '\n')
 
 
@@ -673,26 +213,26 @@ def write_identity(review, source, arm, reviewers, cutoff=None, tracks=None, mod
 
     The server writes ``protocol.json`` and ``manifest.json`` from the imported
     manuscript, which is the full record and is left alone wherever it exists.
-    A run that never reached ``ingest`` — a start-up probe that refused to
-    launch, a session that died before the workflow called the first tool — has
-    neither, and a folder that cannot name its own paper or arm is not a result
-    anybody can file. These two are the thin version: the source hash, the
-    plan, the versions, and nothing the run did not actually learn.
+    A run that never reached ``ingest`` — a tool server that would not come up,
+    a refused manuscript — has neither, and a folder that cannot name its own
+    paper or arm is not a result anybody can file. These two are the thin
+    version: the source hash, the plan, the versions, and nothing the run did
+    not actually learn.
 
     ``models`` is the per-slot assignment and ``reviewer_models`` the ordered
     list the core reviewers were to be drawn from. Both are written, because
     the list is what a later comparison has to be pinned to and a folder
     holding only the per-slot mapping cannot say what order it came from.
     """
-    source = Path(source)
+    review, source = Path(review), Path(source)
     try:
         source_sha256 = digest(source.read_bytes()) if source.is_file() else None
     except OSError:
         source_sha256 = None
     plan = ARMS.get(arm) or {}
-    # The session was going to run the arm's own default tracks, so a folder
-    # that records `specialists: []` for a full two-track run says the plan was
-    # something it never was. The default here is the one `prompt_for` asks for.
+    # The run was going to run the arm's own default tracks, so a folder that
+    # records `specialists: []` for a full two-track run says the plan was
+    # something it never was.
     default = DRAFT_CHECK_TRACKS if arm == 'draft-check' else SPECIALIST_TRACKS
     specialists = [track for track in (tracks or default) if track in SPECIALIST_TRACKS]
     wrote = []
@@ -740,24 +280,29 @@ def write_identity(review, source, arm, reviewers, cutoff=None, tracks=None, mod
     return wrote
 
 
-def finish(review, status, reason, accounting, wall, result):
+def finish(review, status, reason, budget, wall, result=None, panel=None, runner=None):
+    """Write the run's own accounting: ``runtime.json``, then every receipt."""
+    review = Path(review)
+    rows = list(budget.rows) + ([recorder_row(panel)] if panel is not None else [])
     write(review / 'runtime.json', {
         'status': status,
         'blocked_reason': reason,
         'wall_seconds': round(wall, 1),
-        'tokens_total': accounting.total_tokens(),
-        'agents': sorted(accounting.agents.values(), key=lambda row: row['label']),
-        'rate_limits': accounting.rate_limits,
-        'per_agent_token_ceiling': accounting.per_agent,
-        'per_run_token_ceiling': accounting.per_run,
+        'tokens_total': budget.spent(),
+        'agents': agent_rows(budget, panel),
+        'rate_limits': [{'reason': limit} for limit in budget.limits],
+        'per_agent_token_ceiling': budget.per_agent,
+        'per_run_token_ceiling': budget.per_run,
         'claude_code_version': claude_version() or os.environ.get('PEERREVIEW_CLAUDE_VERSION'),
-        'result': {key: result.get(key) for key in ('subtype', 'is_error', 'num_turns',
-                                                    'duration_ms', 'session_id')}
-        if result else None,
-        'workflow_result': (result or {}).get('result') if result else None,
+        'runner': runner.describe() if runner is not None else None,
+        # What the orchestrator itself returned: the route, the stages it
+        # closed, the counts the server recorded. The old `result` was the
+        # driving session's own last event, which no longer exists.
+        'result': result or None,
+        'notes': list(panel.notes) if panel is not None else [],
         'recorded': now(),
     })
-    write_usage(review, accounting)
+    write_usage(review, rows)
     progress = review / 'progress.json'
     if status == 'blocked' and progress.is_file():
         current = read(progress)
@@ -804,11 +349,12 @@ def supersede(review):
 def rerender(review, workspace=None):
     """Render REVIEW.md again, now that the run's own accounting is on disk.
 
-    The recorder writes the reports from inside the session, which is before
-    this starter has written ``runtime.json`` or a single usage receipt: that
-    copy can only report no tokens and no models. This is the first moment the
-    whole accounting exists, so the reports are written once more over the top.
+    ``write_review`` writes the reports while the run is still open, which is
+    before ``runtime.json`` or a single usage receipt exists: that copy can
+    only report no tokens and no models. This is the first moment the whole
+    accounting exists, so the reports are written once more over the top.
     """
+    review = Path(review)
     if not (review / 'protocol.json').is_file():
         return None
     try:
@@ -819,41 +365,133 @@ def rerender(review, workspace=None):
         return {'error': str(exc)}
 
 
-def prompt_for(pdf, out, reviewers, arm, cutoff, tracks, models=None, citation_workers=None,
-               code=None):
-    text = (f'Use the peer-review-manuscript skill from the {PLUGIN} plugin. Review the '
-            f'manuscript at {pdf} and write the run folder to {out}. Use {reviewers} core '
-            f'reviewer(s) and the {arm} arm.')
-    if arm == 'draft-check':
-        chosen = ', '.join(tracks or DRAFT_CHECK_TRACKS)
-        text = (f'Use the check-draft skill from the {PLUGIN} plugin. Check the draft at {pdf}, '
-                f'write the run folder to {out}, and run these tracks: {chosen}.')
-    if cutoff:
-        text += f' The literature cutoff is {cutoff}.'
-    if code:
-        # The code this paper is reviewed against. The session passes it to
-        # ingest, which takes the snapshot and plans the lane that reads it; the
-        # path or URL is stated here because nothing else in the prompt would
-        # tell the session there is any code at all.
-        text += (f' The code this paper is reviewed against is {code}: pass it to ingest as '
-                 'code, and run the code lane against the snapshot ingest takes.')
-    if citation_workers is not None:
-        # The count is planned out here, so the session has to be told it: the
-        # server's own default would otherwise plan a different number of
-        # workers than the models were settled for. Zero is a count, not a
-        # missing one — the references are still resolved, and the in-text uses
-        # are left for the specialist to read as unjudged.
-        text += (' Run no citation workers: resolve the references, and leave the in-text '
-                 'uses unjudged.' if citation_workers == 0
-                 else f' Judge the citations with {citation_workers} worker(s).')
-    if models:
-        # The models are already in the session's environment, where the server
-        # reads them. Saying so stops the session from passing model arguments
-        # of its own, which would be a second answer to a settled question.
-        text += (' The models for this run are already set in this session, one per slot: '
-                 + ', '.join(f'{slot} {model}' for slot, model in models.items())
-                 + '. Pass no model arguments to the workflow.')
-    return text + ' Report exactly what the workflow returns.'
+def failures_line(budget):
+    """Every agent that did not answer, as one sentence, or ``''``."""
+    rows = budget.failures()
+    if not rows:
+        return ''
+    said = []
+    for row in rows:
+        detail = str(row.get('detail') or '')[:LAST_WORD_CHARACTERS]
+        said.append(f'{row["label"]} ({row["state"]}' + (f': {detail}' if detail else '') + ')')
+    return 'these agents did not answer: ' + '; '.join(said)
+
+
+def runner_for(runner=None):
+    """What runs the agents: Claude Code unless a caller brought its own."""
+    return runner if runner is not None else ClaudeCodeRunner()
+
+
+def runner_missing(runner):
+    """The line that says this runner cannot run anything at all, or ``''``.
+
+    Asked with no models, because it is not a question about the plan: Claude
+    Code that is not installed refuses every model there is.
+    """
+    problems = runner.unavailable({})
+    return str(problems[0]) if problems else ''
+
+
+def refuse_models(runner, wanted):
+    """Raise if this login cannot run the models the plan asks for.
+
+    The runner owns the question, because the answer is about the login rather
+    than about the plan: an ``availableModels`` allowlist that leaves one of
+    these out is a bad argument, refused before anything is written, because a
+    model substituted behind our back would leave the run recording an arm it
+    did not run.
+
+    A runner that is not installed at all is not refused here. Nothing is wrong
+    with what the caller asked for, so that run is opened, identified and
+    marked blocked at start-up like any other run that could not begin — see
+    :func:`conduct`.
+
+    A name no version of this package knows is the one refusal the runner is
+    never asked about. It is a misspelling, not a login, and a machine with no
+    harness installed has to answer it the same way as a machine with one:
+    otherwise ``--reviewer-models claude-nonesuch-9`` reads as "blocked at
+    start-up, no harness" and sends the reader to their installation over a
+    typo.
+    """
+    unknown = model_plan.problems(dict(wanted))
+    if unknown:
+        raise ValueError('; '.join(unknown))
+    if runner_missing(runner):
+        return
+    problems = runner.unavailable(dict(wanted))
+    if problems:
+        raise ValueError('; '.join(problems))
+
+
+def conduct(panel_class, review_dir, request, budget, runner, directory=None, watch=None):
+    """Open the tools, run one panel to its end, and say how it ended.
+
+    Returns ``(result, blocked, stage, panel)``: the orchestrator's own answer
+    or ``None``, the reason the run is blocked or ``None``, how far it got, and
+    the panel itself for its notes and its tool count.
+
+    ``stage`` is ``startup`` where nothing was spent — the tool server would
+    not come up, or the server refused to open the run — and ``session``
+    everywhere else. :func:`exit_code` turns the first into the code 2, because
+    the fix is on this machine and no subscription usage was spent.
+    """
+    service = Service(plugin_root=directory)
+    # A runner whose agents are in this process calls the tools directly, and
+    # this is the only place that holds the service they belong to.
+    runner.opened(service)
+    panel = panel_class(service, runner, budget, watch)
+    started = time.monotonic()
+    missing = runner_missing(runner)
+    if missing:
+        # Nothing to run the agents with. The run folder is written and
+        # identified all the same, because the caller asked for a review of a
+        # named paper and the folder is what says which one it was.
+        service.stop()
+        write(Path(review_dir) / 'startup.json',
+              {'runner': runner.describe(), 'server': None, 'problems': [missing],
+               'tools_expected': list(tool_names()), 'at': now()})
+        return None, missing, 'startup', panel
+    try:
+        address = service.listen() if runner.remote else None
+    except RuntimeError as problem:
+        write(Path(review_dir) / 'startup.json',
+              {'runner': runner.describe(), 'server': None, 'problems': [str(problem)],
+               'tools_expected': list(tool_names()), 'at': now()})
+        return None, f'the run\'s tool server could not be started: {problem}', 'startup', panel
+    write(Path(review_dir) / 'startup.json',
+          {'runner': runner.describe(), 'server': address, 'problems': [],
+           'tools_expected': list(tool_names()), 'at': now()})
+    try:
+        return panel.run(request), None, 'session', panel
+    except orchestrator.Blocked as stop:
+        return None, stop.reason, 'session', panel
+    except ValueError as refused:
+        # The server refused to open the run at all — a manuscript it will not
+        # import, a folder already holding another plan. Nothing ran, so this
+        # is a start-up failure and not a review that stopped.
+        stage = 'startup' if not budget.rows else 'session'
+        return None, str(refused), stage, panel
+    except Exception as broken:  # noqa: BLE001 - a crash is an outcome, not a lost folder
+        return (None, f'the run stopped with an unexpected error after '
+                f'{time.monotonic() - started:.0f}s: {type(broken).__name__}: {broken}',
+                'session', panel)
+    finally:
+        service.stop()
+
+
+def settle_run(wall_timeout):
+    """Put this run's deadline and Claude Code's version where the tools look.
+
+    Both are read from the environment by code that cannot see this function:
+    ``server.run_deadline`` for a tool deciding whether it has time to wait,
+    and the provenance for the version. In-process now, so they are set here
+    rather than passed into a child.
+    """
+    os.environ['PEERREVIEW_RUN_DEADLINE'] = f'{time.time() + float(wall_timeout):.0f}'
+    version = claude_version()
+    if version:
+        os.environ['PEERREVIEW_CLAUDE_VERSION'] = version
+    return version
 
 
 def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, tracks=None,
@@ -861,17 +499,17 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
            wall_timeout=WALL_TIMEOUT, directory=None, cwd=None,
            reviewer_models=None, specialist_model=None, editor_model=None,
            recorder_model=None, citation_workers=CITATION_WORKERS, citation_worker_model=None,
-           reader_model=None, code=None):
+           reader_model=None, code=None, runner=None, watch=None):
     """Run one review and return its summary.
 
     The summary is a dict, not an exit code: ``status``, ``blocked_reason``,
     the run and review folders, the arm, the wall time, the tokens in total and
     per agent, the models each slot was asked to run (``models_requested``) and
-    the models the session reported running (``models``), and the counts the
-    server recorded. ``stage`` says how far the run got — ``startup`` means the
-    probe refused to launch a session and no usage was spent. :func:`exit_code`
-    turns it into a process status, and nothing here prints: the command
-    prints, a library caller reads the dict and the run folder.
+    the models the agents reported running (``models``), and the counts the
+    server recorded. ``stage`` says how far the run got — ``startup`` means
+    nothing was spent. :func:`exit_code` turns it into a process status, and
+    nothing here prints: the command prints, a library caller reads the dict
+    and the run folder.
 
     ``reviewer_models`` is the ordered list the core reviewers are drawn from,
     reviewer *i* running ``list[(i - 1) % len(list)]``; the default makes three
@@ -888,27 +526,30 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     Every review of a PDF has that stage; there is no way to review the
     converter's text on its own.
 
-    Anything not given here falls
-    back to the ``PEERREVIEW_*_MODEL(S)`` variables in this process's
-    environment, and only then to the defaults — one merge, in
-    :func:`peerreviewagents.plugin.models.settle`, because the session this
-    starter launches reads those same variables and the two must not reach
-    different answers about what the run asked for.
+    Anything not given here falls back to the ``PEERREVIEW_*_MODEL(S)``
+    variables in this process's environment, and only then to the defaults —
+    one merge, in :func:`peerreviewagents.plugin.models.settle`, the same one
+    the server's ``ingest`` makes, so the plan this function records and the
+    plan the server fixes cannot disagree.
 
     ``code`` is the code this paper is reviewed against: a local folder or a git
-    URL. The session passes it to ``ingest``, which copies the text source of it
-    into ``<out>/code`` and plans one further lane — ``spec-code`` — that reads
-    the paper against that snapshot and quotes both sides of what it files.
-    Nothing in the snapshot is executed, and a run given no code reports that
-    the code was not reviewed rather than saying nothing about it. An arm that
-    runs no specialists is refused, because that lane is a specialist.
+    URL. ``ingest`` copies the text source of it into ``<out>/code`` and plans
+    one further lane — ``spec-code`` — that reads the paper against that
+    snapshot and quotes both sides of what it files. Nothing in the snapshot is
+    executed, and a run given no code reports that the code was not reviewed
+    rather than saying nothing about it. An arm that runs no specialists is
+    refused, because that lane is a specialist.
 
-    An unknown arm, a manuscript that is not there, a missing plugin, a model
-    this login cannot run and a ``CLAUDE_CODE_SUBAGENT_MODEL`` that would
-    outrank the plan all raise ``ValueError`` before anything is written or any
-    usage is spent — a caller gave an argument no run can be made from, which
-    is not a run that stopped. :func:`review_main` turns that into a message
-    and the exit code 2.
+    ``runner`` is what runs one agent — :class:`ClaudeCodeRunner` by default,
+    and a scripted runner in the tests, which is how the whole panel is
+    exercised without a model. ``watch`` is called with each phase, tool call
+    and line the run says about itself, for a caller showing progress.
+
+    An unknown arm, a manuscript that is not there, a missing plugin and a
+    model this login cannot run all raise ``ValueError`` before anything is
+    written or any usage is spent — a caller gave an argument no run can be
+    made from, which is not a run that stopped. :func:`review_main` turns that
+    into a message and the exit code 2.
     """
     if arm not in ARMS:
         raise ValueError(f'Unknown arm {arm}. Arms: ' + ', '.join(REVIEWABLE_ARMS))
@@ -916,9 +557,8 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     if not source.is_file():
         raise ValueError(f'No manuscript at {source}')
     # The code is checked here for the same reason the arm and the models are:
-    # a session launched to review code against an arm that reads none, or
-    # against a folder that is not there, would spend a probe and a reader
-    # before the server refused it.
+    # a run opened to review code against an arm that reads none, or against a
+    # folder that is not there, would spend a reader before the server refused.
     if code and not ARMS[arm]['specialists']:
         raise ValueError('The ' + str(arm) + ' arm runs no specialists, and the code review is '
                          'one. Run an arm with specialists, or drop --code. Arms that run them: '
@@ -952,143 +592,103 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
     root = Path(out).resolve()
     review_dir = root / RUN_DIRECTORY
     directory = Path(directory) if directory else plugin_dir()
-    cwd = Path(cwd) if cwd else Path(__file__).resolve().parent.parent.parent
     if not (directory / '.claude-plugin' / 'plugin.json').is_file():
         raise ValueError(f'No plugin at {directory}')
     # Which model each slot will run, settled and checked here: a model this
-    # login cannot run is refused before the probe spends anything, because
-    # Claude Code's own answer to one is to quietly run a different model.
-    #
-    # `settle` merges this call's arguments over the environment once, and the
-    # same merged answer is both planned from and passed on. Planning from the
-    # arguments alone while passing the environment through was a disagreement
-    # with the server inside the session: with PEERREVIEW_REVIEWER_MODELS set
-    # and no argument given, this folder was written with the defaults and the
-    # server then refused it for already holding a run under other models.
+    # login cannot run is refused before anything is spent, because Claude
+    # Code's own answer to one is to quietly run a different model.
     settled = model_plan.settle(reviewer_models, specialist_model, editor_model, recorder_model,
                                 citation_worker_model, reader_model)
     reviewer_list = list(model_plan.parse_list(settled.get('reviewers'))
                          or model_plan.DEFAULT_REVIEWER_MODELS)
     # The citation workers are planned here too, so a login that cannot run the
-    # worker model is refused before the probe spends anything — the same rule
-    # as every other slot. They are not part of `plan_slots`: a worker closes
-    # no stage of the review.
+    # worker model is refused before anything is spent — the same rule as every
+    # other slot. They are not part of `plan_slots`: a worker closes no stage.
     workers = citation_slots(arm, citation_workers, tracks)
     # Whether this arm has a citation lane at all, which is not the same
     # question as whether this run asked for workers in it. ``--citation-workers
-    # 0`` is an arm that has the lane and wants nothing judged in it, and
-    # reading the empty list as "no lane" is what sent the session off to plan
-    # the server's default four.
+    # 0`` is an arm that has the lane and wants nothing judged in it.
     citation_lane = bool(citation_slots(arm, 1, tracks))
-    # The reader is planned here too, so a login that cannot run the reader
-    # model is refused before the probe spends anything — except where there is
-    # no Read stage to run. A folder that already holds a sealed manuscript
-    # (an application's own source through `write_manuscript`, or a run picked
-    # up after its own seal) has no draft to repair, the server plans no reader
-    # slot for it, and refusing the session over a model nothing would run is a
-    # refusal about a stage that does not exist.
+    # The reader is planned here too, except where there is no Read stage to
+    # run. A folder that already holds a sealed manuscript (an application's
+    # own source through `write_manuscript`, or a run picked up after its own
+    # seal) has no draft to repair and the server plans no reader slot for it.
     reader_slots = (() if (root / MANUSCRIPT_DIRECTORY / 'manifest.json').is_file()
                     else ('reader',))
+    # `recorder` is in the plan because the server still plans the slot — it is
+    # the run key's own slot — even though this process holds it and runs no
+    # model for it. See :func:`recorder_row`.
     wanted = model_plan.assign(
         (*reader_slots, *plan_slots(arm, reviewers, tracks, bool(code)), *workers, 'recorder'),
         **settled)
-    model_plan.refuse(wanted)
-    # A variable that outranks the per-spawn override makes every slot one
-    # model while the run records the plan. Refused, never unset: the variable
-    # is the user's.
-    outranked = model_plan.subagent_override(claude_version())
-    if outranked:
-        raise ValueError(outranked)
-    chosen = model_plan.to_environment(**settled)
+    runner = runner_for(runner)
+    refuse_models(runner, wanted)
     review_dir.mkdir(parents=True, exist_ok=True)
     supersede(review_dir)
 
-    problems, found = probe(directory, cwd)
-    write(review_dir / 'startup.json', {'probe': found['raw'], 'problems': problems,
-                                        'tools_expected': list(tool_names()), 'at': now()})
-    if problems:
-        reason = 'the start-up probe failed: ' + '; '.join(problems)
-        write_identity(review_dir, source, arm, reviewers, literature_cutoff, tracks, wanted,
-                       reviewer_list)
-        finish(review_dir, 'blocked', reason,
-               Accounting(per_agent_tokens, per_run_tokens), 0.0, None)
-        return {'status': 'blocked', 'blocked_reason': reason, 'stage': 'startup',
-                'probe_problems': problems, 'run': str(root), 'review': str(review_dir),
-                'arm': arm, 'reviewers': reviewers, 'models_requested': dict(wanted)}
-
-    accounting = Accounting(per_agent_tokens, per_run_tokens)
+    settle_run(wall_timeout)
+    budget = orchestrator.Budget(per_agent_tokens, per_run_tokens, wall_timeout)
+    request = {
+        'pdf': str(source),
+        'out': str(root),
+        'reviewers': reviewers,
+        'arm': arm,
+        'literature_cutoff': literature_cutoff or '',
+        'tracks': list(tracks) if tracks else None,
+        'reviewer_models': list(reviewer_list),
+        'specialist_model': settled.get('specialist') or '',
+        'editor_model': settled.get('editor') or '',
+        'recorder_model': settled.get('recorder') or '',
+        'citation_workers': len(workers) if citation_lane else CITATION_WORKERS,
+        'citation_worker_model': settled.get('citation_worker') or '',
+        'reader_model': settled.get('reader') or '',
+        'code': code or '',
+    }
     started = time.monotonic()
-    prompt = prompt_for(source, root, reviewers, arm, literature_cutoff, tracks, wanted,
-                        citation_workers=len(workers) if citation_lane else None,
-                        code=code)
-    watch = Completion(review_dir, accounting)
-    seen, stop, code = launch(prompt, directory, started + wall_timeout,
-                              accounting.on_event, cwd, chosen, watch=watch,
-                              deadline=time.time() + wall_timeout)
+    result, blocked, stage, panel = conduct(orchestrator.Review, review_dir, request, budget,
+                                            runner, directory, watch)
     wall = time.monotonic() - started
-    result = accounting.last_result()
     recorded = recorded_progress(review_dir)
-    written = str(recorded.get('status') or '') in COMPLETE_STATUSES
-    recorded_cause = str(recorded.get('error') or '') or None
-    blocked = None
-    if accounting.rate_limits:
-        blocked = accounting.rate_limits[-1]['reason']
-    elif stop and stop not in SETTLED:
-        blocked = stop
-    elif recorded_cause and not written:
-        # The server's own words for why the run stopped — the manuscript it
-        # refused to import, the stage it marked blocked — rather than the
-        # session's exit, which is often only the consequence of them. A
-        # workflow that cannot open a run ends its turn badly; what the user
-        # needs to read is why the paper was refused.
-        blocked = recorded_cause
-    elif result and result.get('is_error') and not written:
-        # The orchestrating session's own turn ending badly is not the review
-        # failing, because the review outlives that turn: it is a cause only
-        # where the server never recorded one written.
-        blocked = 'the session ended in an error: ' + str(result.get('subtype'))
-
     status = 'blocked' if blocked else None
-    progress = review_dir / 'progress.json'
     if status is None:
         status = str(recorded.get('status') or '') or None
         if status not in COMPLETE_STATUSES:
-            # A workflow that ends without write_review or mark_blocked leaves
-            # the server's own status at `running`, which would read as a review
-            # still in flight long after the session is gone.
+            # A panel that ends without write_review or mark_blocked leaves the
+            # server's own status at `running`, which would read as a review
+            # still in flight long after the run is over.
             blocked = recorded.get('error') or '; '.join(part for part in (
-                (f'the workflow ended without writing the review or marking the run blocked,'
-                 f' the server last recorded {status}' if status
+                (f'the panel ended without writing the review or marking the run blocked, the '
+                 f'server last recorded {status}' if status
                  else 'the server wrote no progress file'),
-                watch.note, accounting.failures(), session_last_word(result)) if part)
+                (panel.notes[-1] if panel.notes else ''), failures_line(budget)) if part)
             status = 'blocked'
-    # A session that ended before the workflow called `ingest` left no protocol
-    # and no manifest, so the folder would not name its own paper or arm.
+    # A run that stopped before `ingest` left no protocol and no manifest, so
+    # the folder would not name its own paper or arm.
     write_identity(review_dir, source, arm, reviewers, literature_cutoff, tracks, wanted,
                    reviewer_list)
-    finish(review_dir, status, blocked, accounting, wall, result)
+    finish(review_dir, status, blocked, budget, wall, result, panel, runner)
     report = rerender(review_dir, root / MANUSCRIPT_DIRECTORY)
     summary = {
         'status': status,
         'blocked_reason': blocked,
-        'stage': 'session',
+        'stage': stage,
         'run': str(root),
         'review': str(review_dir),
         'report': report,
         'arm': arm,
         'reviewers': reviewers,
         'wall_seconds': round(wall, 1),
-        'tokens_total': accounting.total_tokens(),
-        'tokens_by_agent': {row['label']: row.get('tokens') for row in
-                            sorted(accounting.agents.values(), key=lambda r: r['label'])},
+        'tokens_total': budget.spent(),
+        'tokens_by_agent': {row['label']: row['observed_tokens']
+                            for row in sorted(budget.rows, key=lambda r: r['label'])},
         # Two different facts: what was asked for, per slot, and what the
-        # session reported running. They disagree when a model was substituted.
+        # agents reported running. They disagree when a model was substituted.
         'models_requested': dict(wanted),
-        'models': sorted({str(row.get('model')) for row in accounting.agents.values()
-                          if row.get('model')}),
-        'stream_events': seen,
-        'exit_code': code,
+        'models': sorted({row['model'] for row in budget.rows if row['model']}),
+        'agents_run': len(budget.rows),
+        'runner': runner.describe(),
     }
+    progress = review_dir / 'progress.json'
     if progress.is_file():
         done = read(progress)
         summary['findings_delivered'] = done.get('findings_delivered')
@@ -1105,8 +705,8 @@ def review(pdf, out, reviewers=3, arm=DEFAULT_ARM, literature_cutoff=None, track
 def exit_code(summary):
     """What the command exits with: 0 reviewed, 2 never started, 1 anything else.
 
-    A start-up probe that refuses to launch is worth its own code, because no
-    subscription usage was spent and the fix is on this machine.
+    A run that never started is worth its own code, because no subscription
+    usage was spent and the fix is on this machine.
     """
     if summary.get('status') in COMPLETE_STATUSES:
         return 0
@@ -1116,7 +716,7 @@ def exit_code(summary):
 def build_parser(prog='peerreview review'):
     parser = argparse.ArgumentParser(
         prog=prog,
-        description='Review one manuscript with the pra plugin in a headless Claude Code session.')
+        description='Review one manuscript with a panel of Claude Code agents.')
     parser.add_argument('workspace', help='the manuscript PDF')
     parser.add_argument('output', help='the run folder to write')
     parser.add_argument('--arm', default=DEFAULT_ARM, choices=list(REVIEWABLE_ARMS),
@@ -1138,8 +738,9 @@ def build_parser(prog='peerreview review'):
                         help='the model the editor runs (default: '
                              + model_plan.DEFAULT_EDITOR_MODEL + ')')
     parser.add_argument('--recorder-model', default=None, metavar='MODEL',
-                        help='the model the recorder runs: ingest, the ledger and the '
-                             'write-up (default: ' + model_plan.DEFAULT_RECORDER_MODEL + ')')
+                        help='the model the recorder slot is planned with. Nothing runs it: '
+                             'the recorder is the run itself now (default: '
+                             + model_plan.DEFAULT_RECORDER_MODEL + ')')
     parser.add_argument('--citation-workers', type=int, default=CITATION_WORKERS,
                         metavar='N', choices=range(0, MAX_CITATION_WORKERS + 1),
                         help='workers judging the in-text citations against the resolved '
@@ -1210,36 +811,23 @@ def review_main(argv=None, prog='peerreview review'):
     return exit_code(summary)
 
 
-def fix_prompt_for(pdf, out, problems, count, models=None):
-    text = (f'Use the check-fixes skill from the {PLUGIN} plugin. Check the new draft at {pdf} '
-            f'against the {count} problem(s) in {problems}, and write the run folder to {out}. '
-            f'Pass that problems file to ingest as problems and run the {FIX_ARM} arm: this is '
-            'not a review, nothing new is raised, and every verdict is on a problem from that '
-            'file.')
-    if models:
-        text += (' The models for this run are already set in this session, one per slot: '
-                 + ', '.join(f'{slot} {model}' for slot, model in models.items())
-                 + '. Pass no model arguments to the workflow.')
-    return text + ' Report exactly what the workflow returns.'
-
-
 def check_fixes(pdf, out, problems, per_agent_tokens=FIX_PER_AGENT_TOKENS,
                 per_run_tokens=FIX_PER_RUN_TOKENS, wall_timeout=FIX_WALL_TIMEOUT,
                 directory=None, cwd=None, specialist_model=None, recorder_model=None,
-                reader_model=None):
+                reader_model=None, runner=None, watch=None):
     """Read one new draft against the problems a review raised, and return the summary.
 
-    The same launch as :func:`review` — the same probe, the same headless
-    session, the same accounting and the same folder-watched completion — for a
-    run that raises nothing. ``problems`` is the path to a file of problems in
-    the shape :mod:`peerreviewagents.problems` validates, which
+    The same machinery as :func:`review` — the same tool server, the same
+    runner, the same budget and the same accounting — for a run that raises
+    nothing. ``problems`` is the path to a file of problems in the shape
+    :mod:`peerreviewagents.problems` validates, which
     :func:`peerreviewagents.problems_from_run` writes from a finished review.
     The manuscript is the *new* draft and it is read from the PDF as a review
     reads one: there is no way to check a draft nobody has read.
 
     The summary is a dict, not an exit code: ``status``, ``blocked_reason``,
     the run and review folders, the wall time, the tokens, the models asked for
-    and the models the session reported running, and the check's own counts —
+    and the models the agents reported running, and the check's own counts —
     ``problems``, ``checked``, ``counts`` per verdict, ``not_checked``.
     :func:`exit_code` turns it into a process status and nothing here prints.
     :func:`peerreviewagents.read_fix_check` is the reading of the folder it
@@ -1263,10 +851,10 @@ def check_fixes(pdf, out, problems, per_agent_tokens=FIX_PER_AGENT_TOKENS,
     source = Path(pdf).resolve()
     if not source.is_file():
         raise ValueError(f'No manuscript at {source}')
-    # The problems are read here, before the probe, for the same reason the arm
-    # and the models are: a session launched against a file the server will
-    # refuse would spend a probe and a reader first, and the complaint would
-    # arrive from inside a run folder instead of from the command line.
+    # The problems are read here, before anything is opened, for the same
+    # reason the models are: a run opened against a file the server will refuse
+    # would spend a reader first, and the complaint would arrive from inside a
+    # run folder instead of from the command line.
     document = problem_list.read(problems)
     rows = document['problems']
     if not rows:
@@ -1275,7 +863,6 @@ def check_fixes(pdf, out, problems, per_agent_tokens=FIX_PER_AGENT_TOKENS,
     root = Path(out).resolve()
     review_dir = root / RUN_DIRECTORY
     directory = Path(directory) if directory else plugin_dir()
-    cwd = Path(cwd) if cwd else Path(__file__).resolve().parent.parent.parent
     if not (directory / '.claude-plugin' / 'plugin.json').is_file():
         raise ValueError(f'No plugin at {directory}')
     settled = model_plan.settle(None, specialist_model, None, recorder_model, None, reader_model)
@@ -1283,79 +870,57 @@ def check_fixes(pdf, out, problems, per_agent_tokens=FIX_PER_AGENT_TOKENS,
                     else ('reader',))
     slots = checker_slots(FIX_ARM, len(rows))
     wanted = model_plan.assign((*reader_slots, *slots, 'recorder'), **settled)
-    model_plan.refuse(wanted)
-    outranked = model_plan.subagent_override(claude_version())
-    if outranked:
-        raise ValueError(outranked)
-    chosen = model_plan.to_environment(**settled)
+    runner = runner_for(runner)
+    refuse_models(runner, wanted)
     review_dir.mkdir(parents=True, exist_ok=True)
     supersede(review_dir)
 
     checked = min(len(rows), MAX_FIX_CHECKS)
-    startup_problems, found = probe(directory, cwd)
-    write(review_dir / 'startup.json', {'probe': found['raw'], 'problems': startup_problems,
-                                        'tools_expected': list(tool_names()), 'at': now()})
-    if startup_problems:
-        reason = 'the start-up probe failed: ' + '; '.join(startup_problems)
-        write_identity(review_dir, source, FIX_ARM, 0, models=wanted)
-        finish(review_dir, 'blocked', reason,
-               Accounting(per_agent_tokens, per_run_tokens), 0.0, None)
-        return {'status': 'blocked', 'blocked_reason': reason, 'stage': 'startup',
-                'probe_problems': startup_problems, 'run': str(root), 'review': str(review_dir),
-                'arm': FIX_ARM, 'problems': len(rows), 'models_requested': dict(wanted)}
-
-    accounting = Accounting(per_agent_tokens, per_run_tokens)
+    settle_run(wall_timeout)
+    budget = orchestrator.Budget(per_agent_tokens, per_run_tokens, wall_timeout)
+    request = {
+        'pdf': str(source),
+        'out': str(root),
+        'problems': str(Path(problems).resolve()),
+        'specialist_model': settled.get('specialist') or '',
+        'recorder_model': settled.get('recorder') or '',
+        'reader_model': settled.get('reader') or '',
+    }
     started = time.monotonic()
-    prompt = fix_prompt_for(source, root, Path(problems).resolve(), checked, wanted)
-    watch = Completion(review_dir, accounting)
-    seen, stop, exited = launch(prompt, directory, started + wall_timeout,
-                                accounting.on_event, cwd, chosen, watch=watch,
-                                deadline=time.time() + wall_timeout)
+    result, blocked, stage, panel = conduct(orchestrator.FixCheck, review_dir, request, budget,
+                                            runner, directory, watch)
     wall = time.monotonic() - started
-    result = accounting.last_result()
     recorded = recorded_progress(review_dir)
-    written = str(recorded.get('status') or '') in COMPLETE_STATUSES
-    recorded_cause = str(recorded.get('error') or '') or None
-    blocked = None
-    if accounting.rate_limits:
-        blocked = accounting.rate_limits[-1]['reason']
-    elif stop and stop not in SETTLED:
-        blocked = stop
-    elif recorded_cause and not written:
-        blocked = recorded_cause
-    elif result and result.get('is_error') and not written:
-        blocked = 'the session ended in an error: ' + str(result.get('subtype'))
-
     status = 'blocked' if blocked else None
     if status is None:
         status = str(recorded.get('status') or '') or None
         if status not in COMPLETE_STATUSES:
             blocked = recorded.get('error') or '; '.join(part for part in (
-                (f'the workflow ended without writing the fix check or marking the run blocked,'
-                 f' the server last recorded {status}' if status
+                (f'the panel ended without writing the fix check or marking the run blocked, '
+                 f'the server last recorded {status}' if status
                  else 'the server wrote no progress file'),
-                watch.note, accounting.failures(), session_last_word(result)) if part)
+                (panel.notes[-1] if panel.notes else ''), failures_line(budget)) if part)
             status = 'blocked'
     write_identity(review_dir, source, FIX_ARM, 0, models=wanted)
-    finish(review_dir, status, blocked, accounting, wall, result)
+    finish(review_dir, status, blocked, budget, wall, result, panel, runner)
     summary = {
         'status': status,
         'blocked_reason': blocked,
-        'stage': 'session',
+        'stage': stage,
         'run': str(root),
         'review': str(review_dir),
         'arm': FIX_ARM,
         'problems': len(rows),
         'problems_file': str(Path(problems).resolve()),
         'wall_seconds': round(wall, 1),
-        'tokens_total': accounting.total_tokens(),
-        'tokens_by_agent': {row['label']: row.get('tokens') for row in
-                            sorted(accounting.agents.values(), key=lambda r: r['label'])},
+        'tokens_total': budget.spent(),
+        'tokens_by_agent': {row['label']: row['observed_tokens']
+                            for row in sorted(budget.rows, key=lambda r: r['label'])},
         'models_requested': dict(wanted),
-        'models': sorted({str(row.get('model')) for row in accounting.agents.values()
-                          if row.get('model')}),
-        'stream_events': seen,
-        'exit_code': exited,
+        'models': sorted({row['model'] for row in budget.rows if row['model']}),
+        'agents_run': len(budget.rows),
+        'runner': runner.describe(),
+        'planned': checked,
     }
     progress = review_dir / 'progress.json'
     if progress.is_file():
@@ -1373,8 +938,8 @@ def check_fixes_parser(prog='peerreview check-fixes'):
     """The argument parser behind ``peerreview check-fixes``."""
     parser = argparse.ArgumentParser(
         prog=prog,
-        description='Read a new draft against the problems a review already raised, in a '
-                    'headless Claude Code session. Nothing new is raised.')
+        description='Read a new draft against the problems a review already raised. '
+                    'Nothing new is raised.')
     parser.add_argument('workspace', help='the new draft, as a PDF')
     parser.add_argument('output', help='the run folder to write')
     parser.add_argument('--problems', required=True, metavar='FILE',
@@ -1384,8 +949,9 @@ def check_fixes_parser(prog='peerreview check-fixes'):
                         help='the model every checker runs (default: '
                              + model_plan.DEFAULT_SPECIALIST_MODEL + ')')
     parser.add_argument('--recorder-model', default=None, metavar='MODEL',
-                        help='the model the recorder runs: ingest and the written check '
-                             '(default: ' + model_plan.DEFAULT_RECORDER_MODEL + ')')
+                        help='the model the recorder slot is planned with. Nothing runs it: '
+                             'the recorder is the run itself now (default: '
+                             + model_plan.DEFAULT_RECORDER_MODEL + ')')
     parser.add_argument('--reader-model', default=None, metavar='MODEL',
                         help='the model that reads the new draft against its page images before '
                              'anything is checked (default: '

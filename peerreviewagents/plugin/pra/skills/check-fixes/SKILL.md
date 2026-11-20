@@ -32,20 +32,21 @@ is raised. If the request wants the revised paper reviewed, that is
    optionally `author_reply`. The quotations are what makes a verdict
    checkable, so a problem with none can still be checked but has nothing
    behind it.
-3. Call the `Workflow` tool with `name` set to `pra:check-fixes` (if that name
-   is not found, try `check-fixes`) and `args` set to:
+3. Run it as one command, in the background — a check takes minutes to tens of
+   minutes and must not be waited on in the foreground:
 
-   ```json
-   {"pdf": "<the new draft's PDF>", "out": "<the new run folder>",
-    "problems": "<path to the problems file>"}
+   ```bash
+   peerreview check-fixes "<the new draft's PDF>" "<the new run folder>" \
+       --problems "<path to the problems file>"
    ```
 
-   Add `"specialist_model": "<a model>"` only when the request names one; left
-   out, every checker runs on Sonnet. If the workflow refuses to start because
-   a model is not available on this login, report that line as it came and do
-   not retry with another model.
+   Add `--specialist-model <a model>` only when the request names one; left
+   out, every checker runs on Sonnet. If it refuses to start because a model is
+   not available on this login, report that line as it came and do not retry
+   with another model.
 
-4. Wait for it, then report what it returns and point at
+4. Wait for it, then report the JSON object it prints — the verdict counts, how
+   many problems went unchecked, and the status — and point at
    `<the new run folder>/review/FIXES.md`, with `fix-check.json` beside it.
 
 Read the three verdicts as they are meant, and do not round them off:

@@ -9,7 +9,6 @@ artifact itself.
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import zipfile
@@ -22,17 +21,16 @@ from peerreviewagents.plugin import starter
 ROOT = Path(__file__).resolve().parent.parent
 PLUGIN_FILES = (
     'peerreviewagents/plugin/pra/.claude-plugin/plugin.json',
-    'peerreviewagents/plugin/pra/.mcp.json',
     'peerreviewagents/plugin/pra/README.md',
-    'peerreviewagents/plugin/pra/workflows/review.js',
-    'peerreviewagents/plugin/pra/workflows/check-fixes.js',
     'peerreviewagents/plugin/pra/skills/peer-review-manuscript/SKILL.md',
     'peerreviewagents/plugin/pra/skills/check-draft/SKILL.md',
     'peerreviewagents/plugin/pra/skills/check-fixes/SKILL.md',
 )
+#: Every slot an agent runs. The recorder is not one: that slot is held by the
+#: orchestrator in this process and no model runs it, so it has no definition.
 AGENTS = ('citation-worker', 'citations', 'code', 'code-check', 'core-reviewer', 'editor',
           'field', 'figures-tables', 'fix-check', 'methods-reporting', 'numbers', 'reader',
-          'recorder', 'stats')
+          'stats')
 
 
 @pytest.fixture(scope='module')
@@ -63,10 +61,18 @@ def test_the_wheel_ships_the_plugin_that_runs_the_review(wheel):
     inside = set(wheel.namelist())
     missing = [name for name in PLUGIN_FILES if name not in inside]
     assert not missing, 'the wheel cannot run a review without these: ' + ', '.join(missing)
+    # The instruction text ships beside the engine rather than inside the
+    # plugin: the orchestrator reads it from the installed package, and the
+    # runner it hands a definition to need not be Claude Code.
     for agent in AGENTS:
-        assert f'peerreviewagents/plugin/pra/agents/{agent}.md' in inside
-    assert len([name for name in inside
-                if name.startswith('peerreviewagents/plugin/pra/agents/')]) == len(AGENTS)
+        assert f'peerreviewagents/agents/{agent}.md' in inside
+    packed = [name for name in inside
+              if name.startswith('peerreviewagents/agents/') and name.endswith('.md')]
+    assert len(packed) == len(AGENTS), packed
+    gone = [name for name in inside
+            if name.endswith(('.js', '.mcp.json'))
+            or '/plugin/pra/agents/' in name]
+    assert not gone, 'the wheel still carries the plugin the orchestrator replaced: ' + str(gone)
 
 
 def test_the_installed_plugin_is_the_one_the_starter_looks_for(wheel):
@@ -76,19 +82,28 @@ def test_the_installed_plugin_is_the_one_the_starter_looks_for(wheel):
     assert f'{relative}/.claude-plugin/plugin.json' in set(wheel.namelist())
 
 
-def test_the_packaged_mcp_server_is_launched_by_an_installed_entry_point(wheel):
-    """Nothing in the shipped plugin may point at a virtualenv in a checkout."""
-    config = json.loads(
-        wheel.read('peerreviewagents/plugin/pra/.mcp.json').decode('utf-8'))
-    server = config['mcpServers']['peerreview']
-    assert 'CLAUDE_PROJECT_DIR' not in json.dumps(config)
-    assert '.venv' not in json.dumps(config)
-    assert server['command'] == '${PEERREVIEW_MCP_COMMAND:-peerreview-plugin-server}'
-    metadata = [name for name in wheel.namelist() if name.endswith('entry_points.txt')]
+def test_the_shipped_plugin_is_three_skills_that_shell_out_to_the_command(wheel):
+    """Nothing in the shipped plugin may point at a virtualenv in a checkout.
+
+    The tools are served in the orchestrator's own process now, over a server
+    it starts itself, so there is no ``.mcp.json`` for a session to launch and
+    no stdio entry point to launch it with. What ships is the skills, and they
+    reach the review the way a person would: ``peerreview review``.
+    """
+    inside = set(wheel.namelist())
+    skills = [name for name in inside if name.endswith('SKILL.md') and '/pra/skills/' in name]
+    assert len(skills) == 3, skills
+    for name in skills:
+        said = wheel.read(name).decode('utf-8')
+        assert 'peerreview ' in said, f'{name} names no command to run'
+        for stale in ('CLAUDE_PROJECT_DIR', '.venv', 'peerreview-plugin-server',
+                      'workflows/review.js', '.mcp.json'):
+            assert stale not in said, f'{name} still names {stale}'
+    metadata = [name for name in inside if name.endswith('entry_points.txt')]
     assert metadata, 'the wheel declares no console scripts'
     entry_points = wheel.read(metadata[0]).decode('utf-8')
-    assert 'peerreview-plugin-server = peerreviewagents.plugin.server:main' in entry_points
     assert 'peerreview = peerreviewagents.cli.main:run' in entry_points
+    assert 'peerreview-plugin-server' not in entry_points, 'nothing launches a server by stdio'
 
 
 def test_the_engine_data_the_review_reads_is_still_packed(wheel):

@@ -15,11 +15,11 @@ the manuscript is imported.
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 import pytest
 
+from peerreviewagents import agents as agent_pack
 from peerreviewagents.plugin import models as model_plan
 from peerreviewagents.plugin import server as srv
 from peerreviewagents.runs import read_run
@@ -234,17 +234,18 @@ def test_the_agent_files_pin_the_same_models_this_module_defaults_to():
     is how a run comes to record a model it did not run, so the twelve files
     and the defaults here are checked against each other rather than by hand.
     """
-    agents = Path(model_plan.__file__).resolve().parent / 'pra' / 'agents'
     pinned = {}
-    for path in sorted(agents.glob('*.md')):
-        found = re.search(r'^model:\s*(\S+)\s*$', path.read_text(encoding='utf-8'), re.M)
-        assert found, f'{path.name} pins no model, so its slot would inherit one'
-        pinned[path.stem] = found.group(1)
+    for name in agent_pack.names():
+        held = agent_pack.definition(name)
+        assert held.model, f'{name}.md pins no model, so its slot would inherit one'
+        pinned[name] = held.model
 
-    assert len(pinned) == 14, pinned
+    # Thirteen, and no recorder among them: the recorder slot is held by the
+    # orchestrator itself, in this process, and runs no model at all.
+    assert len(pinned) == 13, pinned
+    assert 'recorder' not in pinned
     assert pinned['core-reviewer'] == model_plan.DEFAULT_REVIEWER_MODELS[0]
     assert pinned['editor'] == model_plan.DEFAULT_EDITOR_MODEL
-    assert pinned['recorder'] == model_plan.DEFAULT_RECORDER_MODEL
     assert pinned['citation-worker'] == model_plan.DEFAULT_CITATION_WORKER_MODEL
     assert pinned['reader'] == model_plan.DEFAULT_READER_MODEL
     specialists = {name: model for name, model in pinned.items()

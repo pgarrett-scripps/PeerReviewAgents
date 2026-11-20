@@ -1208,7 +1208,7 @@ def test_a_retry_in_the_same_folder_does_not_read_as_the_old_block(tmp_path, no_
     assert summary['stage'] == 'startup'
     second = read_run(finished)
     assert second['status'] == 'blocked'
-    assert 'probe failed' in second['cause']
+    assert 'claude is not installed' in second['cause']
 
 
 def test_the_readme_names_every_key_read_run_returns(tmp_path):

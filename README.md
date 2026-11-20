@@ -30,9 +30,9 @@ program that called a model CLI per reviewer: `ensemble`, `reviewer`,
 and `run_review`. All of it is gone, along with the Codex provider, the web UI
 and the standalone MCP server.
 
-What runs a review now is a Claude Code plugin — `peerreviewagents/plugin/pra`,
-shipped inside the package, so an installed wheel carries it — whose workflow
-fans out the agents and whose MCP server owns the manuscript, the agent
+What runs a review now is one command: a Python orchestrator fans out the
+agents as Claude Code sessions, and an MCP server it serves itself owns the
+manuscript, the agent
 identities, the tool allowances, the budgets, the stage ledger and the run
 files. No agent's account of its own work is taken on trust: it can only ask
 the server for text and hand it findings, and the server decides what a finding
@@ -45,11 +45,10 @@ unchanged; the LangGraph panel that preceded it is frozen at
 
 ## Install
 
-Install it anywhere a Python environment runs. `peerreview review` starts the
-plugin's MCP server with the very interpreter running the command — it passes
-it in `PEERREVIEW_MCP_COMMAND` — so neither the venv's name nor its place
-matters, and a plain `pip install peerreviewagents` can run a review with no
-checkout at all.
+Install it anywhere a Python environment runs. `peerreview review` serves the
+tools itself, from the very interpreter running the command, so neither the
+venv's name nor its place matters, and a plain `pip install peerreviewagents`
+can run a review with no checkout at all.
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
@@ -120,8 +119,8 @@ the review's options:
 | `--reviewer-models` | `sonnet,opus,haiku` | Ordered; reviewer *i* takes the *i*-th, wrapping round |
 | `--specialist-model` | `claude-sonnet-5-5` | Every specialist |
 | `--editor-model` | `claude-fable-5-2` | The editor in chief |
-| `--recorder-model` | `claude-haiku-5-5` | The recorder, which writes the run files |
-| `--arm` | `full-two-track` | Which workflow runs; see [`docs/study-arms.md`](docs/study-arms.md) |
+| `--recorder-model` | `claude-haiku-5-5` | Recorded in the plan only: the recorder's work is done in process and no session is started for it |
+| `--arm` | `full-two-track` | Which agents run and in what order; see [`docs/study-arms.md`](docs/study-arms.md) |
 | `--track` | all six | Repeatable; limits the specialist tracks (used by `draft-check`) |
 | `--citation-workers` | `4` | Workers judging in-text citations against the resolved sources, 0 to 12; only where the `citations` track runs |
 | `--citation-worker-model` | `claude-haiku-5-5` | Every citation worker |
@@ -142,11 +141,11 @@ the flag — never quietly swapped for another. Nothing about models is gated on
 billing or usage.
 
 Set `PEERREVIEW_CLAUDE_VERSION` to have the run record which Claude Code
-version produced it; `PEERREVIEW_REVIEWER_MODELS`,
-`PEERREVIEW_SPECIALIST_MODEL`, `PEERREVIEW_EDITOR_MODEL`,
-`PEERREVIEW_RECORDER_MODEL` and `PEERREVIEW_CITATION_WORKER_MODEL` are those
-model flags for a session the starter launched. Nothing else in the run depends
-on them.
+version produced it when `claude --version` cannot be asked;
+`PEERREVIEW_REVIEWER_MODELS`, `PEERREVIEW_SPECIALIST_MODEL`,
+`PEERREVIEW_EDITOR_MODEL`, `PEERREVIEW_RECORDER_MODEL` and
+`PEERREVIEW_CITATION_WORKER_MODEL` are those model flags for a caller that
+reaches `ingest` directly instead. Nothing else in the run depends on them.
 
 ### What a run writes
 
@@ -176,9 +175,10 @@ on them.
 
 `protocol.json` and `manifest.json` are written when the manuscript is
 ingested, before any agent reports, so a run that stopped halfway still says
-which paper it was, which arm it ran and what the source hashed to. A run whose
-probe never launched a session gets a thin pair written by the starter instead,
-which never overwrites the server's own.
+which paper it was, which arm it ran and what the source hashed to. A run that
+never got as far as ingest — nothing to run the agents with, a tool server that
+would not open — gets a thin pair written by the starter instead, which never
+overwrites the server's own, beside a `startup.json` saying what stopped it.
 
 `peerreview report` works on a blocked or stopped run too, and reports what was
 saved rather than failing. A rate limit, a breached budget or a missing stage
@@ -346,8 +346,8 @@ unfinished ledger is reported, not published over — it is never a
 `not_publishable_reason`; see [Reading a run folder](#reading-a-run-folder).
 
 [`peerreviewagents/plugin/pra/README.md`](peerreviewagents/plugin/pra/README.md)
-documents the plugin itself: the agents, the workflow, the 27 server tools and
-the arms.
+documents the parts themselves: the agents, the orchestrator, the runner, the
+server tools and the arms.
 
 ## Manuscript ingest
 
@@ -396,14 +396,13 @@ claude plugin marketplace add /absolute/path/to/PeerReviewAgents
 claude plugin install pra@peer-review-agents-local
 ```
 
-Loaded by hand like this, nothing sets `PEERREVIEW_MCP_COMMAND`, so the server
-starts through the `peerreview-plugin-server` console script instead: install
-this package in the environment that shell uses, or the plugin loads with its
-tools absent. `peerreview review` needs nothing of the sort.
-
-It carries two skills: `peer-review-manuscript` for a full review and
-`check-draft` for a draft of your own. Each one runs the same server and the
-same guarantees as `peerreview review`.
+It carries three skills: `peer-review-manuscript` for a full review,
+`check-draft` for a draft of your own, and `check-fixes` for a new draft
+against problems already raised. Each one shells out to `peerreview`, so the
+session you are in asks for the review and the command runs it — same panel,
+same server, same guarantees as running it yourself. Nothing in the plugin
+launches a server: a run serves its own tools, in its own process, for its own
+lifetime. The package has to be installed in the environment that shell uses.
 
 ## As a library
 
@@ -469,8 +468,9 @@ as a difference instead of as an option your wrapper silently drops.
 else produced. It works on every kind of folder a review can leave behind —
 complete, complete without findings, blocked by the server, killed by the
 starter on a token ceiling, a wall-clock limit, a rate limit or a session
-error, and stopped by a start-up probe that never launched a session, which
-leaves only `startup.json` and `runtime.json`. It takes the run folder or the
+error, and stopped at start-up before any agent ran — nothing to run them with,
+or a tool server that would not open — which leaves only `startup.json` and
+`runtime.json`. It takes the run folder or the
 `review/` folder inside it, raises `peerreviewagents.runs.NotARunFolder` for a
 folder that is neither, and refuses a run file that is a symlink, by name.
 
@@ -503,8 +503,8 @@ them:
 | `agents` | one row per agent slot: role, track, `assigned_model` and the `model` it reported running as, tool calls, tokens, state |
 | `usage` | observed subscription tokens from the usage receipts, with `unknown` set if any receipt was unreadable |
 | `reports` | absolute paths to what exists — `REVIEW.md`, `REVIEW.txt`, `issues.json`, `editor-log.jsonl`, and `audits` keyed by track |
-| `startup` | the harness's own start-up event as `probe` (`None` when no probe was written or it holds the wrong shape) and the probe's own `problems` |
-| `startup_problems` | what the start-up probe refused to launch over |
+| `startup` | what start-up recorded: `problems` — the lines a run that could not begin was stopped over — and `probe`, the harness's own init event from a 0.9 folder that probed one (`None` otherwise, or where it holds the wrong shape) |
+| `startup_problems` | that same list at the top level, for callers that already read it |
 | `problems` | every file that could not be read in full, named, every slot that ran a different model family than it was assigned, and one line per citation stage that did not finish |
 | `files` | the run files that exist, by name |
 
@@ -596,7 +596,7 @@ repository alongside the evaluation analysis. It will be linked here on
 submission.
 
 [`docs/study-arms.md`](docs/study-arms.md) is the study design: the exact
-command for each workflow arm, including the manuscript-only baseline.
+command for each arm, including the manuscript-only baseline.
 [`docs/EVALUATION.md`](docs/EVALUATION.md) is the frozen audit record of the
 0.4.0 OpenReview comparison, which measured the LangGraph panel; its harness
 was removed in 0.8.0 with the panel itself.

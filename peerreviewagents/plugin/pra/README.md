@@ -1,9 +1,10 @@
 # pra — the PeerReviewAgents plugin
 
-One peer review of one manuscript, run as a Claude Code plugin: a workflow
-script fans out N core reviewers and six specialists over the same paper, an
-editor groups what they found into ranked issues, and the run is written to
-disk with every finding anchored to a quotation in the manuscript.
+One peer review of one manuscript, run from one command: a Python orchestrator
+fans out N core reviewers and six specialists over the same paper, an editor
+groups what they found into ranked issues, and the run is written to disk with
+every finding anchored to a quotation in the manuscript. The agents are Claude
+Code sessions; everything that decides what happens next is Python.
 
 Nothing here trusts an agent's own account of what it did. The MCP server owns
 the manuscript, the identities, the ledger, the budgets and the files; an agent
@@ -13,13 +14,14 @@ can only ask it for text and hand it findings.
 
 | Part | Where | What it is |
 | --- | --- | --- |
-| `peerreview` server | `.mcp.json` → `peerreviewagents.plugin.server` | 47 tools, and every piece of state worth forging |
-| Agents | `agents/*.md` | `core-reviewer`, six specialists, `citation-worker`, `reader`, `editor`, `recorder`, `fix-check`; each pins `maxTurns:` and a fallback `model:`, and may call only server tools |
+| `peerreview` server | `peerreviewagents.plugin.server` | 47 tools, and every piece of state worth forging. One server per run, owned by the orchestrator and served over loopback for the length of the run |
+| Agents | `peerreviewagents/agents/*.md` | `core-reviewer`, six specialists, `citation-worker`, `reader`, `editor`, `fix-check`; each pins `maxTurns:` and a `model:`, and may call only the server tools its own header grants. Runner-neutral: nothing in a definition names Claude Code |
 | Models | `peerreviewagents/plugin/models.py` | which model each slot runs, and the refusal when one is not available |
-| Workflow | `workflows/review.js` | ingest → read → reviewers ∥ specialists (the citation lane first resolves, then fans out workers) → (revision) → editor → record |
-| Fix check | `workflows/check-fixes.js` | ingest → read → one `fix-check` lane per batch of problems a review already raised → record. No reviewer, no specialist, no editor: nothing here raises anything |
-| Skills | `skills/*/SKILL.md` | `peer-review-manuscript` (a full review), `check-draft` (your own draft), `check-fixes` (a new draft against problems already raised) |
-| Starter | `peerreviewagents/plugin/starter.py` | probes, launches the headless session, enforces token budgets, records models and wall time |
+| Orchestrator | `peerreviewagents/plugin/orchestrator.py` | the panel itself: ingest → read → reviewers ∥ specialists (the citation lane first resolves, then fans out workers) → (revision) → editor → record, with one retry per stage, the budgets, and the recorder's work done in this process |
+| Fix check | `peerreviewagents/plugin/orchestrator.py` | ingest → read → one `fix-check` lane per batch of problems a review already raised → record. No reviewer, no specialist, no editor: nothing here raises anything |
+| Runner | `peerreviewagents/plugin/runner.py`, `claude_code.py` | one call that runs one agent and accounts for it. `ClaudeCodeRunner` starts a headless session; `ScriptedRunner` puts Python where the models go, which is how the whole panel is tested without spending a token |
+| Skills | `skills/*/SKILL.md` | `peer-review-manuscript` (a full review), `check-draft` (your own draft), `check-fixes` (a new draft against problems already raised). Each one shells out to `peerreview` |
+| Starter | `peerreviewagents/plugin/starter.py` | checks the arguments, refuses a model this login cannot run, opens the panel, and writes the accounting |
 
 ## Running one
 
@@ -30,13 +32,19 @@ peerreview review <manuscript.pdf> <run folder> [--reviewers N] [--arm NAME]
                   [--reader-model M]
 ```
 
-That is the only way to run a review in 0.9: the Python orchestration the 0.8
-engine used is deleted, and `--arm` is an ordinary option that picks which
-agents run. The starter probes a throwaway session first: a run only
-starts once the start-up event shows the plugin loaded, `peerreview`
-connected, and every tool the agents are allowed to call present. It never
-uses `--bare`, which skips plugin sync and reads an API key; this runs on a
-Claude Code subscription login only.
+That is the only way to run a review, and `--arm` is an ordinary option that
+picks which agents run. Nothing drives the panel from a session: the command
+runs the stages itself, serves the tools itself, and starts one Claude Code
+session per agent through the runner.
+
+Each session is started with our tools and nothing else — no built-in tools, no
+user or project settings, no `CLAUDE.md` — and its environment is built from a
+named list rather than inherited, so no API key can reach it. It never uses
+`--bare`, which skips plugin sync and reads a key; this runs on a Claude Code
+subscription login only. The runner owns the question of whether this login can
+run a model at all, and answers it before anything is written: Claude Code that
+is not installed is a run blocked at start-up with nothing spent, and a model
+the login may not run is refused with the flag that changes it.
 
 ## Arms
 
@@ -92,15 +100,18 @@ ordered list, wrapping round:
 | `spec-*` | `claude-sonnet-5-5` | `--specialist-model` |
 | `cite-1`, `cite-2`, … | `claude-haiku-5-5` | `--citation-workers N`, `--citation-worker-model` |
 | `editor` | `claude-fable-5-2` | `--editor-model` |
-| `recorder` | `claude-haiku-5-5` | `PEERREVIEW_RECORDER_MODEL` |
 
 So one reviewer is Sonnet, two are Sonnet and Opus, and three are all three.
-A session that drives the workflow itself passes `reviewer_models`,
-`specialist_model` and `editor_model` to `ingest`; a session the starter
-launched reads `PEERREVIEW_REVIEWER_MODELS`, `PEERREVIEW_SPECIALIST_MODEL`,
-`PEERREVIEW_EDITOR_MODEL` and `PEERREVIEW_RECORDER_MODEL` from its environment,
-and an explicit `ingest` argument wins over the environment. Nothing here is
-gated on billing or usage: which models a login may run is yours to decide.
+The `recorder` slot has no model: its work is done in this process, by the
+orchestrator, and its usage row says so rather than pricing a session nobody
+started.
+
+The orchestrator passes `reviewer_models`, `specialist_model` and
+`editor_model` to `ingest` explicitly; `PEERREVIEW_REVIEWER_MODELS`,
+`PEERREVIEW_SPECIALIST_MODEL` and `PEERREVIEW_EDITOR_MODEL` remain a fallback
+for a caller that sets them instead, and an explicit `ingest` argument wins
+over the environment. Nothing here is gated on billing or usage: which models a
+login may run is yours to decide.
 
 Each agent is started with its family alias as a per-spawn override, which is
 what Claude Code takes, and the pinned version is what the run records —
@@ -110,7 +121,7 @@ what Claude Code takes, and the pinned version is what the run records —
 **A model this login cannot run is a refusal, not a substitution.** Claude Code
 answers a model it may not run by quietly running another, so a run that asked
 for Opus could be recorded as an arm it was not. Both entry points check first
-— `peerreview review` before the probe spends anything, `ingest` before the
+— `peerreview review` before a folder is written, `ingest` before the
 manuscript is imported — and fail with one line naming the slot, the model and
 the flag that changes it. Availability is the `availableModels` allowlist in
 the settings files Claude Code reads, managed settings first.
@@ -146,11 +157,12 @@ recorder's `seal_as_converted`. One code path writes the manuscript either way.
 ## What the server owns
 
 - **Identity.** `ingest` mints one claim code per slot and returns them to the
-  recorder, which gives each agent its own code in its own prompt. An agent
-  calls `claim_agent` with that code and gets a token; every other tool takes
-  the token. A code works once, a slot someone else holds is not re-claimed,
-  and a retry asks the recorder for a fresh code through `reissue_claim_code`,
-  which drops the stuck holder's token. A slot name is not an identity: without
+  recorder — the slot the orchestrator holds in this process — which writes
+  each agent's own code into its own prompt. An agent calls `claim_agent` with
+  that code and gets a token; every other tool takes the token. A code works
+  once, a slot someone else holds is not re-claimed, and a retry takes a fresh
+  code through `reissue_claim_code`, which drops the stuck holder's token.
+  A slot name is not an identity: without
   the codes, a reviewer that guessed `recorder` read every other reviewer's
   findings.
 - **Tools per track.** Each slot has an allow list. A citations specialist
@@ -163,8 +175,10 @@ recorder's `seal_as_converted`. One code path writes the manuscript either way.
   `submit_citation_verdict`, `citation_rows` belongs to the citations
   specialist alone, and `resolve_citations` to the recorder alone.
 - **Budgets.** Per-agent and per-run tool-call ceilings, plus a separate
-  external-request ceiling, all enforced in the server. The starter enforces
-  token ceilings from the stream on top.
+  external-request ceiling, all enforced in the server. On top of those the
+  orchestrator enforces token ceilings: every agent is handed what the run has
+  left, and a run that reaches its ceiling says so instead of starting another
+  stage.
 - **Findings.** `review-finding-v4`: `finding_uid` (stable across re-reviews of
   the same paper), the `document`, `line` and `end_line` the engine anchored the
   quote on, `track`, `escalate` (specialists only), and a `basis` the server
@@ -269,7 +283,8 @@ two axes in words, never a number.
 <run>/review/progress.json    stages and status
 <run>/review/closures.jsonl  one row per submit_report call, taken or refused
 <run>/review/runtime.json     tokens per agent, models, wall time, rate limits
-<run>/review/usage/<slot>/    the stream's own usage record
+<run>/review/usage/<slot>/    one receipt per attempt, tokens and tool calls
+<run>/review/startup.json   the runner, the tool server, what stopped a run starting
 <run>/review/citations/ledger.jsonl  one row per reference and per in-text use
 <run>/review/citations/stages.json   what fill, resolve and judge each did
 <run>/review/citations/lookups/      cached lookups and their receipts

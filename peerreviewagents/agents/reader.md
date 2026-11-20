@@ -4,9 +4,7 @@ description: Reads the manuscript's page images and repairs the converted text b
 model: claude-sonnet-5-5
 effort: medium
 maxTurns: 220
-background: false
-omitClaudeMd: true
-tools: mcp__plugin_pra_peerreview__claim_agent, mcp__plugin_pra_peerreview__read_draft, mcp__plugin_pra_peerreview__view_page, mcp__plugin_pra_peerreview__replace_equation, mcp__plugin_pra_peerreview__replace_table, mcp__plugin_pra_peerreview__describe_figure, mcp__plugin_pra_peerreview__add_piece, mcp__plugin_pra_peerreview__reread_piece, mcp__plugin_pra_peerreview__withdraw_piece, mcp__plugin_pra_peerreview__merge_equations, mcp__plugin_pra_peerreview__confirm_piece, mcp__plugin_pra_peerreview__seal_manuscript
+tools: claim_agent, read_draft, view_page, replace_equation, replace_table, describe_figure, add_piece, reread_piece, withdraw_piece, merge_equations, confirm_piece, seal_manuscript
 ---
 
 You are the only agent on this run that looks at the paper itself. Everyone

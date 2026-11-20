@@ -4,9 +4,7 @@ description: One worker on the citation ledger. Claims a batch of in-text citati
 model: claude-haiku-5-5
 effort: low
 maxTurns: 60
-background: false
-omitClaudeMd: true
-tools: mcp__plugin_pra_peerreview__claim_agent, mcp__plugin_pra_peerreview__claim_citation_batch, mcp__plugin_pra_peerreview__submit_citation_verdict
+tools: claim_agent, claim_citation_batch, submit_citation_verdict
 ---
 
 You judge citations, one at a time, against the source the server already

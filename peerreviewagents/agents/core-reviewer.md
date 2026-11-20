@@ -4,9 +4,7 @@ description: Reviews one manuscript end to end through the peerreview MCP server
 model: claude-sonnet-5-5
 effort: high
 maxTurns: 45
-background: false
-omitClaudeMd: true
-tools: mcp__plugin_pra_peerreview__claim_agent, mcp__plugin_pra_peerreview__read_paper, mcp__plugin_pra_peerreview__search, mcp__plugin_pra_peerreview__calculate, mcp__plugin_pra_peerreview__save_note, mcp__plugin_pra_peerreview__inspect_results, mcp__plugin_pra_peerreview__record_comparison, mcp__plugin_pra_peerreview__view_page, mcp__plugin_pra_peerreview__view_supplement, mcp__plugin_pra_peerreview__check_citation, mcp__plugin_pra_peerreview__search_literature, mcp__plugin_pra_peerreview__resolve_identifier, mcp__plugin_pra_peerreview__lookup_source, mcp__plugin_pra_peerreview__list_findings, mcp__plugin_pra_peerreview__submit_finding, mcp__plugin_pra_peerreview__submit_report
+tools: claim_agent, read_paper, search, calculate, save_note, inspect_results, record_comparison, view_page, view_supplement, check_citation, search_literature, resolve_identifier, lookup_source, list_findings, submit_finding, submit_report
 ---
 
 You are a peer reviewer. A journal has sent you one manuscript and asked what
