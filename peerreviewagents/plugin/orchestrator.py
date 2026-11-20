@@ -397,6 +397,18 @@ class Budget:
                     return str(row.get('state') or '')
         return ''
 
+    def attempts(self, slot):
+        """How many times *slot* was started, ``0`` for never.
+
+        A stage reports its own attempt count from the answer it got back, so
+        a stage whose attempts all failed has nothing to report it from. Every
+        start is written down here whatever it ended as, which is why this is
+        the count a failed stage says out loud rather than leaving the number
+        empty and reading as a stage that was never tried.
+        """
+        with self.lock:
+            return len([row for row in self.rows if row['slot'] == slot])
+
 
 # -- the prompts -------------------------------------------------------------
 #
@@ -1040,7 +1052,9 @@ class Panel:
         converter's own equations — and it says so here rather than through an
         absence that reads as the other case. The run is not blocked for it,
         on a review or on a fix check: the stage has a fallback and the
-        fallback worked, which is why there is a run to report at all.
+        fallback worked, which is why there is a run to report at all. The
+        case where it did not is :meth:`read_failed`, which writes the record
+        itself because there is no answer here to build one from.
 
         The record is kept on the panel as well as returned, because a run
         that blocks after the Read stage has no result to carry it and the
@@ -1055,7 +1069,7 @@ class Panel:
                                 'reader_failed': True,
                                 'sealed': 'as converted',
                                 'reason': read.get('reason') or '',
-                                'attempts': read.get('attempts'),
+                                'attempts': self.read_attempts(read),
                                 'pages_viewed': 0,
                                 'pages': read.get('pages') or 0,
                                 'actions': 0,
@@ -1063,12 +1077,48 @@ class Panel:
             return self.read_record
         self.read_record = {'model': self.model_of(self.reader_slot),
                             'reader_failed': False,
-                            'attempts': read.get('attempts'),
+                            'attempts': self.read_attempts(read),
                             'pages_viewed': read.get('pages_viewed') or 0,
                             'pages': read.get('pages') or 0,
                             'actions': read.get('actions') or 0,
                             'tool_calls': read.get('tool_calls') or 0}
         return self.read_record
+
+    def read_attempts(self, read=None):
+        """How many readers this run started, from the answer or the budget.
+
+        :meth:`read_stage` says which attempt sealed the manuscript, and that
+        is the number when there is one. A reader that never sealed reports no
+        attempt at all — the fallback is built from the draft, not from an
+        answer there isn't — so the count comes from the budget's own rows,
+        where every start was written down. ``None`` only for a reader that was
+        never started: no claim code, or no reader slot in the plan.
+        """
+        stated = (read or {}).get('attempts')
+        if isinstance(stated, int) and not isinstance(stated, bool) and stated > 0:
+            return stated
+        return self.budget.attempts(self.reader_slot) or None
+
+    def read_failed(self, reason, pages=0):
+        """Record a Read stage that could not seal, then block the run on it.
+
+        The record is written before the block, because a run blocked here has
+        no result to carry it and no sealed manuscript to describe it: without
+        this the folder says a Read stage was planned and nothing about what
+        became of the reader, which reads as a reader that was fine. ``sealed``
+        is ``False`` — the one record where it is — because this is the case
+        where not even the converted seal went through.
+        """
+        self.read_record = {'model': self.model_of(self.reader_slot),
+                            'reader_failed': True,
+                            'sealed': False,
+                            'reason': reason,
+                            'attempts': self.read_attempts(),
+                            'pages_viewed': 0,
+                            'pages': int(pages or 0),
+                            'actions': 0,
+                            'tool_calls': 0}
+        self.block(reason)
 
     def seal_as_converted(self, reason):
         """The Read stage's failure path, in the server's own hands.
@@ -1235,8 +1285,8 @@ class Review(Panel):
                      'read: the reviewers read the lines it already has')
             return read, counts, lines
         if not self.reader_slot:
-            self.block('ingest returned an unsealed manuscript and no reader, so nothing can '
-                       'write the manuscript and no reviewer can read it')
+            self.read_failed('ingest returned an unsealed manuscript and no reader, so nothing '
+                             'can write the manuscript and no reviewer can read it')
         draft = opened.get('draft') or {}
         reader = opened.get('reader') or {}
         self.say(f'reading {draft.get("pages", "?")} page(s) and {draft.get("pieces", "?")} '
@@ -1253,9 +1303,10 @@ class Review(Panel):
         fallback = self.seal_as_converted('the reader stage returned twice without sealing the '
                                           'manuscript')
         if not fallback.get('sealed'):
-            self.block('the reader did not seal the manuscript and it could not be sealed as '
-                       'converted'
-                       + (f': {fallback["refusal"]}' if fallback.get('refusal') else ''))
+            self.read_failed('the reader did not seal the manuscript and it could not be sealed '
+                             'as converted'
+                             + (f': {fallback["refusal"]}' if fallback.get('refusal') else ''),
+                             pages=draft.get('pages') or 0)
         failed = ("the manuscript was sealed as converted after the reader failed: the reviewers "
                   "read the converter's equations and no figure has a description")
         self.say(failed)
@@ -1697,8 +1748,8 @@ class FixCheck(Panel):
                      'read: the checkers read the lines it already has')
             return None, lines
         if not self.reader_slot:
-            self.block('ingest returned an unsealed draft and no reader, so nothing can write '
-                       'the manuscript and no problem can be answered against it')
+            self.read_failed('ingest returned an unsealed draft and no reader, so nothing can '
+                             'write the manuscript and no problem can be answered against it')
         draft = opened.get('draft') or {}
         reader = opened.get('reader') or {}
         self.say(f'reading {draft.get("pages", "?")} page(s) and {draft.get("pieces", "?")} '
@@ -1711,9 +1762,10 @@ class FixCheck(Panel):
         fallback = self.seal_as_converted('the reader stage returned twice without sealing the '
                                           'new draft')
         if not fallback.get('sealed'):
-            self.block('the reader did not seal the new draft and it could not be sealed as '
-                       'converted'
-                       + (f': {fallback["refusal"]}' if fallback.get('refusal') else ''))
+            self.read_failed('the reader did not seal the new draft and it could not be sealed '
+                             'as converted'
+                             + (f': {fallback["refusal"]}' if fallback.get('refusal') else ''),
+                             pages=draft.get('pages') or 0)
         failed = ('the new draft was sealed as converted after the reader failed: the checkers '
                   "read the converter's equations and no figure has a description")
         self.say(failed)

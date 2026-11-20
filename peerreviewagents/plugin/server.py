@@ -1832,6 +1832,12 @@ class Run:
         problem past the cap was never dealt to anybody; a problem whose lane
         died is a lane that died, and the author reading FIXES.md should not
         have to tell those apart from the count alone.
+
+        Short on purpose. Why the *run* stopped is one sentence about the run,
+        and a blocked check used to carry the whole of it under every row it
+        holds — the same paragraph twenty times over is still one fact. The
+        cause is kept once, as ``stopped`` on the record, and a row whose lane
+        never started says that it stopped and points there for why.
         """
         lane = self.fix_lane(problem['id'])
         if not lane:
@@ -1841,10 +1847,12 @@ class Run:
         if agent is None:
             # The run can be blocked here — the reader could not seal the new
             # draft, so no lane was ever started — and then why the run stopped
-            # is why this problem has no verdict. It is said on the row,
-            # because a consumer reading the rows is not holding the status.
+            # is why this problem has no verdict. The row says that much,
+            # because a consumer reading the rows is not holding the status,
+            # and points at `stopped` for the cause itself.
             return lane, (f'{lane} never claimed its batch, so nothing read the draft against it'
-                          + (f'; the run stopped first: {self.error}' if self.error else ''))
+                          + ('; the run stopped first, and stopped says why' if self.error
+                             else ''))
         if not agent.report:
             return lane, (f'{lane} claimed its batch and stopped without reporting, so the new '
                           'draft was never read against it')
@@ -1882,6 +1890,11 @@ class Run:
                 f'{len(unchecked)} of {len(self.problems)} problem(s) have no verdict — '
                 + '; '.join(f'{cause} ({count})' if count > 1 else cause
                             for cause, count in tally.items())) if unchecked else None,
+            # Why the run stopped, once, for the rows that point at it: a
+            # check blocked before its lanes started has the same cause under
+            # every problem it holds, and a paragraph repeated twenty times is
+            # not twenty facts.
+            'stopped': self.error or None,
             'over_cap': self.fix_over_cap(),
             'counts': {verdict: len([row for row in self.fix_checks
                                      if row['verdict'] == verdict])
@@ -1906,7 +1919,7 @@ class Run:
         return None if record is None else {
             key: record[key] for key in
             ('cap', 'problems', 'checked', 'not_checked', 'incomplete', 'incomplete_reason',
-             'over_cap', 'counts', 'unchecked')}
+             'stopped', 'over_cap', 'counts', 'unchecked')}
 
     def quarantine_rows(self):
         """Every refused submission, each stamped with the finding that replaced it.

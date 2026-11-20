@@ -14,67 +14,26 @@ going to put them back, so the refusal stands there, by page.
 
 The PDFs here are written byte by byte rather than kept as fixtures, because
 what is under test is one entry in the page dictionary: the same content
-stream, the same fonts, ``/Rotate 0`` against ``/Rotate 90``.
+stream, the same fonts, ``/Rotate 0`` against ``/Rotate 90``. The writer is
+:func:`manuscripts.pdf_with_rotations`, beside the suite's other builders,
+because a test of a *run* blocked in its Read stage needs the same PDF: the
+page the converter lost is what makes the converted seal refuse.
 """
 from __future__ import annotations
 
 import json
-import zlib
-from pathlib import Path
 
 import pytest
+from manuscripts import pdf_with_rotations
 
 from peerreviewagents import names
 from peerreviewagents.engine import ingest, paper_base
 from peerreviewagents.engine import reader as read_stage
 from peerreviewagents.plugin import server as srv
 
-PAGES = [
-    b'BT /F1 14 Tf 72 720 Td (An upright page) Tj ET\n'
-    b'BT /F1 11 Tf 72 700 Td (This page is the right way up and holds a sentence of prose.) Tj ET\n'
-    b'BT /F1 11 Tf 72 680 Td (It holds a second sentence so that the page is worth reading.) Tj ET\n'
-    b'BT /F1 11 Tf 72 660 Td (A third sentence makes it a paragraph rather than a caption.) Tj ET\n',
-    b'BT /F1 14 Tf 72 720 Td (A landscape table page) Tj ET\n'
-    b'BT /F1 11 Tf 72 700 Td (This page is turned ninety degrees and carries the big table.) Tj ET\n'
-    b'BT /F1 11 Tf 72 680 Td (Its rows are the measurements the whole result rests upon.) Tj ET\n'
-    b'BT /F1 11 Tf 72 660 Td (Losing it loses the evidence for every number in the text.) Tj ET\n',
-]
-
 #: What the reader transcribes off the page the converter dropped.
 TRANSCRIBED = ('A landscape table page. Day 1, 12.5 mm; day 2, 12.5 mm; day 3, 12.6 mm. '
                'The rows are the measurements the result rests upon.')
-
-
-def pdf_with_rotations(path: Path, rotations) -> Path:
-    """A PDF of one page per entry in *rotations*, each turned that far."""
-    streams = [zlib.compress(PAGES[index % len(PAGES)]) for index in range(len(rotations))]
-    first_page, first_stream = 3, 3 + len(rotations)
-    font = first_stream + len(rotations)
-    kids = ' '.join('%d 0 R' % (first_page + index) for index in range(len(rotations)))
-    objects = [b'<< /Type /Catalog /Pages 2 0 R >>',
-               ('<< /Type /Pages /Kids [%s] /Count %d >>' % (kids, len(rotations))).encode()]
-    for index, rotation in enumerate(rotations):
-        objects.append(
-            ('<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Rotate %d /Resources '
-             '<< /Font << /F1 %d 0 R >> >> /Contents %d 0 R >>'
-             % (rotation, font, first_stream + index)).encode())
-    for stream in streams:
-        objects.append(b'<< /Length %d /Filter /FlateDecode >>\nstream\n' % len(stream)
-                       + stream + b'\nendstream')
-    objects.append(b'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>')
-    out = bytearray(b'%PDF-1.4\n')
-    offsets = []
-    for number, body in enumerate(objects, start=1):
-        offsets.append(len(out))
-        out += b'%d 0 obj\n' % number + body + b'\nendobj\n'
-    start = len(out)
-    out += b'xref\n0 %d\n' % (len(objects) + 1) + b'0000000000 65535 f \n'
-    for offset in offsets:
-        out += b'%010d 00000 n \n' % offset
-    out += (b'trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n'
-            % (len(objects) + 1, start))
-    path.write_bytes(bytes(out))
-    return path
 
 
 def test_the_lost_page_is_carried_on_the_draft_rather_than_refused(tmp_path):

@@ -474,6 +474,7 @@ check['status']        # a run status, by the same rule a review's status follow
 check['checks']        # one row per answered problem: verdict, basis, quotations, note
 check['counts']        # one key per verdict
 check['not_checked']   # every problem with no verdict; check['unchecked'] names them
+check['stopped']       # why the run stopped, once, or None for a check that was written
 check['problems']      # the problems it was given, as --problems held them
 check['reports']       # absolute paths to fix-check.json, FIXES.md and fix-checks.jsonl
 ```
@@ -1996,7 +1997,13 @@ base = read.base()          # the sealed workspace: `text`, `rows`, `manifest`
   later reads the same fact rather than inferring it from the manuscript's
   state and a row in the agent table. `read` is `None` only for a folder that
   arrived sealed. The same is true of a fix check — it is the same stage, and
-  `read_fix_check` carries the same block.
+  `read_fix_check` carries the same block. `attempts` is how many readers the
+  run started, so a stage that failed once and sealed on the second reader
+  reads as two. The one run where the fallback fails too is a paper with a page
+  the converter returned nothing from: sealing as converted would write a
+  manuscript missing that page, so it is refused, the run is blocked, and the
+  block still says `reader_failed: True` with `sealed: False` and the reason
+  for both.
 
 ### Building a written fix check for your tests: `scripted_fix_check`
 
@@ -2068,7 +2075,12 @@ reading = check.read()                 # or read_fix_check(folder), which is the
   rows are in `progress.json` as well as in the written check, so a folder
   whose check was never written still answers *which* problems have no verdict
   and why, rather than a count with nothing under it. The check
-  says `incomplete: True` with `incomplete_reason` in one sentence. The status
+  says `incomplete: True` with `incomplete_reason` in one sentence. Where the
+  run stopped before its lanes started — the reader could not seal the new
+  draft, and sealing what the converter read would write a manuscript missing
+  a page — the whole cause is on the check once, as `stopped`, and each row's
+  `reason` names its lane and points there rather than repeating a paragraph
+  under every problem. The status
   is still `complete` (or `complete-without-findings` where no lane answered
   at all), because the check *was* written and there is no third kind of
   finished run — so a consumer that reports the status reports `incomplete`
