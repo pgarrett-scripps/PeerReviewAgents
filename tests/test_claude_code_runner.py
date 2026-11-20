@@ -25,6 +25,7 @@ from pathlib import Path
 
 import pytest
 
+from peerreviewagents import names
 from peerreviewagents.agents import definition
 from peerreviewagents.plugin import claude_code
 from peerreviewagents.plugin import runner as agent_runner
@@ -98,19 +99,37 @@ def init_event(task, server='connected', tools=None):
 
 
 MESSAGES = itertools.count(1)
+TOOL_BLOCKS = itertools.count(1)
 
 
-def assistant(text='', tokens=0, calls=0, model='claude-sonnet-5-5', held=None):
+def assistant(text='', tokens=0, calls=0, model='claude-sonnet-5-5', held=None, tool_ids=None,
+              parts=None, answer=None):
     """One assistant event. ``held`` is its message id, which a real stream can
-    send more than once — one event per content block, the same usage on each."""
-    content = [{'type': 'tool_use', 'name': 'submit_finding'} for _ in range(calls)]
+    send more than once — one event per content block, the same usage on each.
+
+    Every ``tool_use`` block carries its own id, as a real stream's does.
+    ``tool_ids`` names them, which is how one block repeated across events is
+    told from one event per call: the same id twice is the same call.
+
+    ``parts`` is the usage spelled out — ``input_tokens``, the two cache fields
+    and ``output_tokens`` — for a test about where the tokens went rather than
+    how many there were; ``tokens`` alone puts them all in the uncached input.
+    ``answer`` is a stage answer the agent submits through the answering tool,
+    which is how an agent says something before anything stops it.
+    """
+    ids = list(tool_ids) if tool_ids is not None else [
+        f'toolu_{next(TOOL_BLOCKS):012d}' for _ in range(calls)]
+    content = [{'type': 'tool_use', 'id': which, 'name': 'submit_finding'} for which in ids]
+    if answer is not None:
+        content.append({'type': 'tool_use', 'id': f'toolu_{next(TOOL_BLOCKS):012d}',
+                        'name': claude_code.ANSWER_TOOL, 'input': answer})
     if text:
         content.append({'type': 'text', 'text': text})
     return {'type': 'assistant', 'message': {
         'id': held or f'msg_{next(MESSAGES):012d}',
         'model': model, 'content': content,
-        'usage': {'input_tokens': tokens, 'output_tokens': 0,
-                  'cache_read_input_tokens': 0, 'cache_creation_input_tokens': 0}}}
+        'usage': parts or {'input_tokens': tokens, 'output_tokens': 0,
+                           'cache_read_input_tokens': 0, 'cache_creation_input_tokens': 0}}}
 
 
 def result_event(answer=None, subtype='success', model='claude-sonnet-5-5', tokens=0):
@@ -287,6 +306,83 @@ def test_a_session_past_its_token_ceiling_is_stopped_where_it_stands(tmp_path, m
     assert outcome.seconds < 60, 'it was stopped, not waited out'
 
 
+def test_what_a_session_spent_is_reported_in_parts_and_at_its_widest(tmp_path, monkeypatch):
+    """Two numbers nobody could tell apart before, and the four they are made of.
+
+    The ceiling is measured against the cumulative spend — every call added up,
+    cache reads included — and the figure these runs reported per agent before
+    this orchestrator existed was something else: the largest single call. Both
+    are in the outcome, under names that cannot be confused, because a 500,000
+    ceiling set in the second unit and enforced in the first stopped a reader
+    that had done all its work.
+    """
+    task = task_for()
+    install(tmp_path, monkeypatch, events=[
+        init_event(task),
+        assistant(held='msg_one', parts={'input_tokens': 4_000, 'output_tokens': 300,
+                                         'cache_read_input_tokens': 20_000,
+                                         'cache_creation_input_tokens': 9_000}),
+        assistant(text='done', held='msg_two',
+                  parts={'input_tokens': 1_000, 'output_tokens': 700,
+                         'cache_read_input_tokens': 48_000,
+                         'cache_creation_input_tokens': 300}),
+        result_event({'ok': True})])
+
+    outcome = ClaudeCodeRunner().run(task)
+
+    assert outcome.usage['tokens_cumulative'] == 83_300 == outcome.tokens
+    assert outcome.usage['tokens_input_uncached'] == 5_000
+    assert outcome.usage['tokens_cache_write'] == 9_300
+    assert outcome.usage['tokens_cache_read'] == 68_000
+    assert outcome.usage['tokens_output'] == 1_000
+    assert sum(outcome.usage[field] for field in names.TOKEN_FIELDS[1:5]) == 83_300
+    assert outcome.usage[names.TOKEN_PEAK] == 50_000, \
+        'the widest single call, which is the second turn and not the sum'
+
+
+def test_an_agent_that_answered_before_it_was_stopped_has_answered(tmp_path, monkeypatch):
+    """Being stopped is not the same as having nothing to say.
+
+    A real reader submitted its answer, was killed on the token ceiling before
+    the harness wrote its result event, and was recorded as over budget with no
+    answer — so the stage retried work that was already finished, against a
+    manuscript that was already sealed. The answer is in the stream; the
+    outcome takes it, says in its detail that the agent was stopped, and keeps
+    the stop beside it.
+    """
+    task = task_for(token_ceiling=100_000)
+    install(tmp_path, monkeypatch, linger=90.0, events=[
+        init_event(task),
+        assistant(tokens=60_000, answer={'ok': True}),
+        assistant(tokens=70_000)])
+
+    outcome = ClaudeCodeRunner().run(task)
+
+    assert outcome.ending == agent_runner.ANSWERED
+    assert outcome.answer == {'ok': True}
+    assert 'stopped' in outcome.detail and agent_runner.OVER_BUDGET in outcome.detail
+    assert outcome.record['stopped'] == agent_runner.OVER_BUDGET
+    assert outcome.tokens == 130_000, 'what it spent is still what it spent'
+
+
+def test_a_session_that_started_up_wrong_is_never_promoted_to_answered(tmp_path, monkeypatch):
+    """The one stop that no answer can override: a session that is not ours.
+
+    A session started with the wrong tools can submit an answer and still be
+    answering about a manuscript nobody verified it could reach, so its ending
+    stays the start-up failure.
+    """
+    task = task_for()
+    install(tmp_path, monkeypatch, events=[
+        init_event(task, tools=[]),
+        assistant(tokens=1_000, answer={'ok': True})])
+
+    outcome = ClaudeCodeRunner().run(task)
+
+    assert outcome.ending == agent_runner.FAILED
+    assert outcome.answer is None
+
+
 def test_one_assistant_message_sent_twice_is_one_turn_not_two(tmp_path, monkeypatch):
     """A real stream sends an assistant message once per content block.
 
@@ -298,8 +394,8 @@ def test_one_assistant_message_sent_twice_is_one_turn_not_two(tmp_path, monkeypa
     task = task_for(token_ceiling=100_000)
     install(tmp_path, monkeypatch, events=[
         init_event(task),
-        assistant(tokens=40_000, calls=1, held='msg_same'),
-        assistant(tokens=40_000, calls=1, held='msg_same'),
+        assistant(tokens=40_000, held='msg_same', tool_ids=['toolu_one']),
+        assistant(tokens=40_000, held='msg_same', tool_ids=['toolu_one']),
         assistant(text='done', tokens=20_000, held='msg_next'),
         result_event({'ok': True})])
     outcome = ClaudeCodeRunner().run(task)
@@ -313,11 +409,29 @@ def test_a_message_whose_blocks_arrive_one_at_a_time_counts_every_call(tmp_path,
     task = task_for()
     install(tmp_path, monkeypatch, events=[
         init_event(task),
-        assistant(tokens=9_000, calls=1, held='msg_growing'),
-        assistant(tokens=9_000, calls=3, held='msg_growing'),
+        assistant(tokens=9_000, held='msg_growing', tool_ids=['toolu_a']),
+        assistant(tokens=9_000, held='msg_growing',
+                  tool_ids=['toolu_a', 'toolu_b', 'toolu_c']),
         result_event({'ok': True})])
     outcome = ClaudeCodeRunner().run(task)
     assert outcome.tokens == 9_000 and outcome.tool_calls == 3
+
+
+def test_one_turn_that_calls_fifteen_tools_one_event_each_counts_fifteen(tmp_path, monkeypatch):
+    """The shape a real reader's stream has: one event per call, one turn.
+
+    Every event carries the same message id and the same usage, and exactly one
+    ``tool_use`` — a different one each time. Counting a turn's blocks and
+    keeping the largest count read that whole turn as a single call, so a run
+    that spent sixty-five calls' worth of allowance recorded nine.
+    """
+    task = task_for()
+    install(tmp_path, monkeypatch, events=[init_event(task)] + [
+        assistant(tokens=9_000, held='msg_one_turn', tool_ids=[f'toolu_{index:02d}'])
+        for index in range(15)] + [result_event({'ok': True})])
+    outcome = ClaudeCodeRunner().run(task)
+    assert outcome.tokens == 9_000, 'one turn, charged once'
+    assert outcome.tool_calls == 15, 'and every call it made is counted'
 
 
 def test_a_session_past_its_deadline_is_stopped_where_it_stands(tmp_path, monkeypatch):

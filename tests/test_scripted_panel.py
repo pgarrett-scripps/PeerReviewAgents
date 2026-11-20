@@ -285,11 +285,28 @@ def test_usage_names_every_attempt_and_the_tools_each_one_called(tmp_path):
     assert receipts['core-1']['state'] == 'answered'
     assert receipts['core-1']['tool_calls'] > 0
     assert receipts['core-1']['observed_tokens'] == 1000
+    # And in the unit each number is in: the cumulative spend, its four parts,
+    # and the widest single call, which is the figure the pre-orchestrator runs
+    # reported per agent.
+    assert receipts['core-1']['tokens_cumulative'] == 1000
+    assert sum(receipts['core-1'][field] for field in names.TOKEN_FIELDS[1:5]) == 1000
+    assert receipts['core-1'][names.TOKEN_PEAK] == 1000
+    assert receipts['core-1']['detail'] is None, 'it answered and nothing stopped it'
     # The recorder is accounted for without being run: no model, no tokens.
     assert receipts['recorder']['state'] == starter.IN_PROCESS
     assert receipts['recorder']['observed_tokens'] == 0
+    assert all(receipts['recorder'][field] == 0 for field in names.TOKEN_FIELDS), \
+        'zero in every unit, because no session ran for this slot'
     assert receipts['recorder']['model'] is None
     assert receipts['recorder']['tool_calls'] > 0
+
+    # The same numbers in runtime.json, which is what the public reader reads.
+    agents = {row['slot']: row for row in read_run(summary['review'])['agents']}
+    assert agents['core-1']['tokens_cumulative'] == 1000
+    assert agents['core-1']['ending'] == 'answered'
+    assert agents['recorder']['ending'] == starter.IN_PROCESS, \
+        'no model ran for it, and the row says so in words'
+    assert 'called in this process' in agents['recorder']['detail']
 
 
 # -- the boundary the scripted panel exists to hold -------------------------
@@ -341,6 +358,68 @@ def test_the_tools_one_slot_holds_are_the_ones_its_definition_names(tmp_path):
     assert summary['status'] == 'complete', summary
     granted, _ = held['core-1']
     assert 'submit_finding' in granted and 'submit_issues' not in granted
+
+
+def test_a_reader_whose_answer_was_lost_is_not_asked_to_read_a_sealed_paper(tmp_path):
+    """The run that sent us here: all the work done, the answer gone.
+
+    The reader viewed all 29 pages of a real manuscript, repaired every piece
+    and sealed it — and was then stopped on a token ceiling before the harness
+    wrote the result event, so the stage saw no answer, retried, and was
+    refused by the server because the manuscript was already sealed. The run
+    blocked on work that was finished.
+
+    So before any retry the stage asks the server what is on disk. The seal is
+    the reader's own, the counts come from the server, and the run goes on.
+    """
+    tried = []
+
+    def seals_then_says_nothing(tools, task):
+        tried.append(task.label)
+        read_stage(tools, task)
+        return None
+
+    summary = starter.review(str(FIXTURE), str(tmp_path / 'run'), reviewers=1,
+                             arm='reviewers-only',
+                             runner=ScriptedRunner({**REVIEW_SCRIPTS,
+                                                    'reader': seals_then_says_nothing}))
+
+    assert tried == ['reader'], 'asked once: the second attempt would have been refused'
+    assert summary['status'] == 'complete', summary
+    manifest = json.loads((Path(summary['run']) / names.MANUSCRIPT_DIRECTORY / 'manifest.json')
+                          .read_text(encoding='utf-8'))
+    assert (manifest.get('ai_read') or {}).get('read') is True, \
+        'the seal is the reader\'s own, not a seal-as-converted'
+    assert read_run(summary['review'])['manuscript']['state'] == names.MANUSCRIPT_SEALED_BY_READER
+
+
+def test_a_reviewer_whose_answer_was_lost_is_not_asked_to_report_twice(tmp_path):
+    """The same rule, for a stage the ledger holds rather than the manuscript.
+
+    A reviewer that filed its findings and closed its slot has reported; if the
+    answer never reached us the work is still on the ledger, and asking again
+    would be asking for work the server will refuse.
+    """
+    tried = []
+
+    def reports_then_says_nothing(tools, task):
+        tried.append(task.label)
+        reviewer(tools, task)
+        return None
+
+    summary = starter.review(str(FIXTURE), str(tmp_path / 'run'), reviewers=1,
+                             arm='reviewers-only',
+                             runner=ScriptedRunner({**REVIEW_SCRIPTS,
+                                                    'core-reviewer': reports_then_says_nothing}))
+
+    assert tried == ['core-1'], 'the ledger already had its report'
+    assert summary['status'] == 'complete', summary
+    filed = [row['finding_uid'] for row in read_run(summary['review'])['findings']]
+    assert filed, 'the findings it filed are the ones the review was written from'
+    runtime = json.loads((Path(summary['review']) / 'runtime.json').read_text(encoding='utf-8'))
+    stage = next(row for row in runtime['result']['stages'] if row['slot'] == 'core-1')
+    assert stage['findings'] == len(filed), \
+        'the count comes from the server, not from the answer that was lost'
 
 
 def test_a_stage_that_answers_nothing_is_retried_once_and_then_blocks(tmp_path):

@@ -1127,6 +1127,29 @@ def read_run(path):
         *not recorded* and never *what it was asked to run* — ``assigned_model``,
         what the run asked that slot to run, server and session tool calls,
         tokens, state. Empty for a run that never claimed a slot.
+
+        ``ending`` and ``detail`` are the runner's own account beside ``state``:
+        ``answered``, ``no answer``, ``over the token ceiling``, ``out of
+        time``, ``failed``, or ``in process`` for the recorder slot, whose tools
+        this package calls itself with no model behind them — a consumer that
+        had to infer that from an empty model reads the word instead.
+        ``detail`` is the sentence the runner left, including the note on an
+        agent that answered and was stopped over budget afterwards: that agent
+        is ``answered``, because its answer is the one the stage used.
+
+        The tokens come under the names in
+        :data:`peerreviewagents.names.TOKEN_FIELDS`:
+        ``tokens_cumulative`` — the session's whole spend, which is what the
+        token ceilings are measured against — its four parts
+        (``tokens_input_uncached``, ``tokens_cache_write``,
+        ``tokens_cache_read``, ``tokens_output``), and
+        ``tokens_peak_context``, the largest single call. ``tokens`` is the
+        cumulative total under its older name. The two are not
+        interchangeable: a reader working through thirty pages spends several
+        times its peak, and the per-agent figure these runs reported before the
+        orchestrator existed was the peak, so ``tokens_peak_context`` is the
+        field that compares with a run from then. ``None`` in any of them means
+        *not recorded* — a run written before they existed — and never zero.
     ``reports``
         Absolute paths to what exists on disk — ``REVIEW.md``, ``REVIEW.txt``,
         each ``audit_<track>.md``, ``issues.json``, and ``editor_log`` when the

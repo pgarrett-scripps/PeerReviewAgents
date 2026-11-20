@@ -346,6 +346,33 @@ built-ins turned off outright, and no user or project settings read. No `Read`,
 `Write`, `Edit`, `Bash`, `WebSearch` or `WebFetch` reaches a reviewer, which is
 why a quotation cannot come from anywhere but the manuscript the server served.
 
+### What the isolation does not cover
+
+Two things an agent's start-up event reports that the flags do not remove.
+Neither has been seen to reach an agent, and both are written down here because
+"nothing of the owner's reaches a reviewer" is a claim, and these are its edges:
+
+- **The owner's own agent types are listed in the session's init event.** The
+  flags that matter are passed — no settings sources, no memory, no project
+  instructions, a throwaway working directory — but the harness still reports
+  the agent types it found on the machine. They are inert: an agent is given
+  the server's tools and the answering tool, so it has no `Task` tool to start
+  one of them with, and a reviewer that tried would be refused. What an agent
+  can *see* in its own init event is not what it can call.
+- **Built-in plugins load, and which ones varies by machine.** A session's init
+  event names them. There is no documented switch that keeps plugins out of a
+  headless session: `--restricted` leaves the installed ones in place, the
+  `--tools` help says plugins are unaffected, and `--bare`, which does skip
+  plugin sync and hooks, also forces the session to authenticate by API key
+  alone — these runs use a subscription login, so passing it would stop every
+  run. If your own machine has a plugin that grants tools, note that it is
+  loaded (and that an agent still cannot call a tool its own definition does
+  not grant).
+
+An application that needs a stronger boundary than this should run the review
+in a container, which is the only answer that does not depend on what the
+harness reports.
+
 ## Checking the fixes
 
 ```bash
@@ -362,9 +389,9 @@ queue and a submit tool, and nothing else.
 The command is the `review` command's shape: the same start-up checks, the same
 tool server, the same runner starting one session per checker, `startup.json`
 beside its own run, and a summary dict printed rather than a report. Its ceilings are its
-own, because a check is a much smaller run than a review: 150,000 tokens per
-agent, 900,000 for the run and a 45-minute wall clock, against a review's
-millions. `--per-agent-tokens`, `--per-run-tokens` and `--timeout` move them,
+own, because a check is a much smaller run than a review: 900,000 tokens per
+agent, 4,500,000 for the run and a 45-minute wall clock, against a review's
+three and thirty million. `--per-agent-tokens`, `--per-run-tokens` and `--timeout` move them,
 and `--specialist-model` and `--reader-model` choose the models exactly as
 `review` does.
 
@@ -1132,6 +1159,61 @@ Four rules it enforces so you do not have to:
   directory itself, a usage receipt, a specialist audit, `issues.json`: all the
   same way, with a `ValueError` naming the path. A symlink in `issues.json`'s
   place is some other file's contents presented as this run's result.
+
+### What each agent spent, and how it ended
+
+Every row of `run["agents"]` carries the slot's spend in six named fields, plus
+the runner's own account of how that agent finished. The names are
+`peerreviewagents.names.TOKEN_FIELDS`, so a consumer can iterate them rather
+than hard-coding a list:
+
+| Field | What it counts |
+| --- | --- |
+| `tokens_cumulative` | the session's whole spend — every call's usage added up, cache reads included. This is what the service bills and what the token ceilings are measured against. |
+| `tokens_input_uncached` | the input that was neither read from nor written to the cache |
+| `tokens_cache_write` | input written into the prompt cache |
+| `tokens_cache_read` | input served from the prompt cache |
+| `tokens_output` | what the model produced |
+| `tokens_peak_context` | the largest single call: the context that agent was holding at its widest |
+| `tokens` | `tokens_cumulative` again, under the name this field has always had |
+
+The four parts add up to `tokens_cumulative`. `tokens_peak_context` does not:
+it is a different measurement of the same session, and for an agent that works
+through a long document the cumulative total is several times the peak.
+
+**If you are comparing against a run from before 0.10.0, compare against
+`tokens_peak_context`.** Up to 0.9 the per-agent figure these runs reported came
+from the workflow harness, which reported the widest single call; from 0.10.0
+the orchestrator reads the session's own usage events and reports the
+cumulative total, so the same agent doing the same work reports a much larger
+number than it used to. The run total, `runtime['tokens_total']`, changed the
+same way. Nothing is wrong with either number — they answer different
+questions — but a dashboard that plots them in one series will show a step
+change at 0.10.0 that nobody's spending explains.
+
+`ending` is the runner's word for how the agent finished, beside the `state`
+every reader already knows:
+
+| `ending` | What happened |
+| --- | --- |
+| `answered` | it submitted the answer its stage asked for |
+| `no answer` | the session ended having said nothing the stage could use |
+| `over the token ceiling` | it was stopped at `--per-agent-tokens` |
+| `out of time` | it was stopped at the wall clock |
+| `failed` | the session could not be started, or died |
+| `in process` | the recorder slot: this package called those tools itself, with no model behind them |
+
+`detail` is the sentence the runner left with it. Two of these are worth
+special handling. **`in process`** is the recorder: an application that had to
+infer "no model ran for this slot" from an empty `model` field reads the word
+instead. And **an agent that answered and was then stopped over budget is
+`answered`**, not `over the token ceiling`: its answer is the one the stage
+used, the `detail` says it was stopped and what stopped it, and the tokens it
+spent are reported in full. Being stopped is not the same as having nothing to
+say, and a stage that already closed is never asked to do its work again.
+
+All eight fields are `None` for a run written before 0.10.0, and for a slot
+nothing observed. `None` means *not recorded* and never zero.
 
 ### Reading a document you did not write
 

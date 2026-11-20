@@ -134,6 +134,30 @@ PROBLEMS_SCHEMA_VERSION = 'review-problems-v1'
 #: reader finds its files the same way.
 FIX_CHECK_FILE = 'fix-check.json'
 
+#: What an agent spent, in the names every file of this package writes it under.
+#: One vocabulary because the same six numbers are written by the runner, kept
+#: by the orchestrator, written into the usage receipts and ``runtime.json``,
+#: and read back out by the public readers — and because two of them are easy
+#: to mistake for each other.
+#:
+#: ``tokens_cumulative`` is the session's whole spend, cache included: every
+#: call's usage added up, which is what the service bills and what the token
+#: ceilings are measured against. The four parts after it add up to that total.
+#: ``tokens_peak_context`` is something else entirely — the largest single call,
+#: which is the context the agent was holding at its widest. For a one-turn
+#: agent the two are nearly the same number; for a reader working through
+#: thirty pages the cumulative total is several times the peak.
+#:
+#: Which matters because the figure these runs reported per agent *before* the
+#: orchestrator existed — the workflow harness's own — was the peak, not the
+#: total. ``tokens_peak_context`` is the field that compares with those runs.
+TOKEN_FIELDS = ('tokens_cumulative', 'tokens_input_uncached', 'tokens_cache_write',
+                'tokens_cache_read', 'tokens_output', 'tokens_peak_context')
+
+#: The one of :data:`TOKEN_FIELDS` that is a largest-single-call figure rather
+#: than a sum: two rows for one agent add their totals and take the larger peak.
+TOKEN_PEAK = 'tokens_peak_context'
+
 #: Every command ``peerreview`` has, in the order its help lists them. A wrapper
 #: that offers its own commands checks them against this rather than against a
 #: list of its own: ``review`` runs a review, ``check-fixes`` reads a new draft
@@ -151,5 +175,5 @@ __all__ = ['RUN_DIRECTORY', 'MANUSCRIPT_DIRECTORY', 'CODE_DIRECTORY', 'RUN_MARKE
            'MANUSCRIPT_DRAFT', 'MANUSCRIPT_SEALED_BY_READER', 'MANUSCRIPT_SEALED_WITHOUT_READ',
            'MANUSCRIPT_ABSENT', 'CODE_CHECK_VERDICTS',
            'FIX_VERDICTS', 'FIX_CHECK_SCHEMA_VERSION', 'PROBLEMS_SCHEMA_VERSION',
-           'FIX_CHECK_FILE',
+           'FIX_CHECK_FILE', 'TOKEN_FIELDS', 'TOKEN_PEAK',
            'RUNNING', 'BLOCKED', 'COMPLETE', 'COMPLETE_WITHOUT_FINDINGS', 'CLI_COMMANDS']

@@ -1082,6 +1082,21 @@ class Run:
             return None
         return citation_ledger.counts(self.citations)
 
+    def read_state(self):
+        """Whether the manuscript is sealed, for a caller whose answer was lost.
+
+        The Read stage closes no stage in the ledger, so a reader that sealed
+        the manuscript and was then killed leaves nothing in
+        ``ledger['reported']`` to say the work is done. This is how the run
+        asks. The line count and the ``ai_read`` account come with it, because
+        a caller that carries on from the seal needs what the seal answered
+        with and must not read the pages again to get it.
+        """
+        if self.base is None:
+            return {'sealed': False, 'line_count': 0, 'ai_read': None}
+        return {'sealed': True, 'line_count': self.base.line_count(),
+                'ai_read': (self.base.manifest or {}).get('ai_read')}
+
     def resolve_slot(self, slot):
         """Role, track and what a slot may see. Unknown slots are refused, not invented.
 
@@ -1907,11 +1922,19 @@ class Run:
         reported = {slot: self.agents[slot].report for slot in self.required
                     if slot in self.agents and self.agents[slot].report}
         missing = [slot for slot in self.required if slot not in reported]
-        delivered = {finding['slot'] for finding in self.pooled()}
+        pooled = self.pooled()
+        delivered = {finding['slot'] for finding in pooled}
+        stored = {slot: sum(1 for finding in pooled if finding['slot'] == slot)
+                  for slot in sorted(delivered)}
         return {
             'required': list(self.required),
             'reported': sorted(reported),
             'missing': missing,
+            # How many findings each slot stored. A run that carries on from a
+            # closed stage whose answer was lost reads its count here rather
+            # than reporting the zero it was handed, which would read as a
+            # reviewer that found nothing.
+            'findings_by_slot': stored,
             # There are two ways to be missing from this ledger and they are
             # not the same run. A stage that stored findings and never filed a
             # report left a gap in the record — its summary and its
@@ -5077,7 +5100,12 @@ def run_status(recorder_key: str = '') -> dict:
               # watching the run sees that findings were thrown out and how
               # many, without opening the review.
               'code_check': run.code_check_counts(),
-              'citations': run.citation_counts()}
+              'citations': run.citation_counts(),
+              # Whether the manuscript is sealed. The Read stage closes no
+              # stage in the ledger, so this is the only way a caller whose
+              # reader was killed after it sealed can learn that the work is
+              # already done instead of reading the pages again.
+              'read': run.read_state()}
     if recorder_key and secrets.compare_digest(str(recorder_key), run.recorder_key):
         status['ledger'] = ledger
     return status
