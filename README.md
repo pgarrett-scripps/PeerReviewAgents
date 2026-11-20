@@ -84,8 +84,12 @@ session's environment.
 
 How much subscription usage a run may spend is your own account setting. The
 run records every token the session reports in `runtime.json` and stops itself
-at its own ceilings (500,000 tokens per agent, 6,000,000 per run, 90 minutes
-wall clock, all overridable).
+at its own ceilings (3,000,000 tokens per agent, 30,000,000 per run, 90 minutes
+wall clock, all overridable). They are a guard against an agent that has run
+away rather than a budget this tool manages for you — the turn cap stops a
+looping agent long before they do — and they are measured against an agent's
+*cumulative* spend, every call added up. They are provisional until one full
+review has been measured end to end.
 
 ## One review
 
@@ -125,8 +129,8 @@ the review's options:
 | `--citation-worker-model` | `claude-haiku-5-5` | Every citation worker |
 | `--code` | none | A folder or repository URL holding the code behind the paper: its text is snapshotted into the run folder and one more specialist reads the paper against it |
 | `--literature-cutoff` | today | Latest eligible publication date |
-| `--per-agent-tokens` | `500000` | Per-agent token ceiling, enforced from the session stream |
-| `--per-run-tokens` | `6000000` | Per-run token ceiling |
+| `--per-agent-tokens` | `3000000` | Per-agent ceiling on cumulative tokens, enforced from the session stream |
+| `--per-run-tokens` | `30000000` | Per-run ceiling on cumulative tokens |
 | `--timeout` | `5400` | Wall-clock limit in seconds |
 | `--plugin-dir` | the checkout's | Override the folder the plugin is loaded from |
 

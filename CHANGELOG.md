@@ -518,8 +518,59 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   `write_manuscript` — and `reason` is the manifest's own words for which of
   them it was.
 
+- **What an agent spent is reported in both units, under names nobody can mix
+  up.** Every usage receipt, every `runtime.json` agent row and every row of
+  `read_run`'s `agents` now carries `tokens_cumulative` — the session's whole
+  spend, every call's usage added up, which is what the ceilings are measured
+  against — its four parts (`tokens_input_uncached`, `tokens_cache_write`,
+  `tokens_cache_read`, `tokens_output`), and `tokens_peak_context`, the largest
+  single call. `peerreviewagents.names.TOKEN_FIELDS` is the list.
+  **Totals before and after this release are different units**: up to 0.9 the
+  per-agent figure came from the workflow harness, which reported the widest
+  single call, and `tokens_peak_context` is the field that compares with those
+  runs. One real reader spent 592,106 cumulative tokens while holding 144,072
+  at its widest, so a dashboard plotting the old and new totals in one series
+  will show a step change at this release that nobody's spending explains.
+- **The token ceilings are a runaway guard, not a budget, and they are set
+  like one.** `--per-agent-tokens` is 3,000,000 (was 500,000) and
+  `--per-run-tokens` 30,000,000 (was 6,000,000); the fix check's are 900,000
+  and 4,500,000 (were 150,000 and 900,000). The turn cap remains the first line
+  of defence against a looping agent. The old per-agent ceiling had been
+  calibrated in the old unit and enforced in the new one, which stopped a
+  reader that had read all 29 pages of a paper, repaired every piece and sealed
+  the manuscript. All six numbers are provisional until one full review has
+  been measured end to end. No call budget was affected: the per-agent call
+  ceilings are enforced on the server's own count of the tools it served, not
+  on the session's.
+- **`read_run`'s agent rows say how each agent ended, in the runner's own
+  words.** `ending` is `answered`, `no answer`, `over the token ceiling`, `out
+  of time`, `failed`, or `in process` for the recorder slot, whose tools this
+  package calls itself with no model behind them — an application had to infer
+  that last one from an empty `model` field. `detail` is the sentence the
+  runner left with it. Both were already in `runtime.json` and were dropped on
+  the way out.
+- **`docs/INTEGRATIONS.md` writes down what the agent isolation does not
+  cover.** A session's init event lists the owner's agent types — inert,
+  because an agent is given no tool that could start one — and loads whatever
+  built-in plugins the machine has, which varies between machines. There is no
+  documented switch that keeps plugins out of a headless session: `--bare`
+  skips plugin sync but forces API-key authentication, and these runs use a
+  subscription login. A stronger boundary than this means a container.
+
 ### Fixed
 
+- **Being stopped is not the same as having nothing to say.** An agent that
+  submitted its answer and was then stopped — over the token ceiling, out of
+  time — is `answered`, with the stop named in its `detail`, and the answer it
+  gave is the one its stage uses. Two things used to throw that work away: a
+  stop that beat the harness's own result event left the answer unread, so the
+  last answer in the stream is now taken as the answer; and the stage then
+  retried. **No stage retries work that is already finished**: before a retry
+  it asks the server whether that slot has already closed on the ledger, and
+  the Read stage asks whether the manuscript is already sealed, and either way
+  it carries on with what is on disk. A reader that had sealed a 29-page
+  manuscript was retried, refused by the server because the manuscript was
+  sealed, and the whole run blocked on work that was complete.
 - **A turn that called fifteen tools is fifteen calls, not one.** A real
   reader's stream sends one event per call — the same assistant message id and
   the same usage on each, a different `tool_use` block in each — so counting a

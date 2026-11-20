@@ -57,6 +57,28 @@ says how many tokens this agent may spend, the usage on each assistant message
 is added up, and the process is stopped the moment the total passes it. That is
 the only way an agent can be stopped mid-thought, and it is the orchestrator's
 number, not this file's.
+
+What that number *means* changed when the orchestrator took the panel over, and
+the first real run found it the hard way. Each assistant message's ``usage`` is
+one call's usage, so summing them is the session's **cumulative** spend — the
+same total Claude Code's own ``result`` reports. The workflow harness this
+engine used to read reported a per-agent figure that was the largest single
+call instead: the context the agent was holding at the end. For a one-turn
+agent those are the same number; for a reader that works through 29 pages they
+are 592,106 and 144,072. Both are now written down, under their own names
+(:func:`parts_of` for the four parts, ``peak_context`` for the largest call),
+and ``Outcome.tokens`` — what the ceiling is measured against — is the
+cumulative one. ``peak_context`` is the figure that compares with runs made
+before the orchestrator existed.
+
+Being stopped is not the same as having nothing to say. A session that has
+already called ``StructuredOutput`` has answered, whatever the ceiling then
+does to it: the first proving run killed a reader that had viewed every page,
+repaired every piece and sealed the manuscript, and threw the answer away
+because the kill landed before Claude Code's ``result`` event. So the last
+``StructuredOutput`` in the stream is kept, and a stopped agent that answered
+ends :data:`~peerreviewagents.plugin.runner.ANSWERED` with a note saying it was
+stopped. Finished work is never thrown away.
 """
 
 from __future__ import annotations
@@ -71,6 +93,7 @@ import threading
 import time
 from pathlib import Path
 
+from ..names import TOKEN_FIELDS, TOKEN_PEAK
 from . import models as model_plan
 from .runner import ANSWERED, FAILED, OVER_BUDGET, SILENT, TIMED_OUT, Outcome, Runner
 from .service import TOOL_PREFIX
@@ -194,17 +217,29 @@ def rate_limit_reason(event):
     return None
 
 
+#: The four things a usage block counts, each under the name it is written down
+#: as — :data:`~peerreviewagents.names.TOKEN_FIELDS` is the whole vocabulary,
+#: and these are its parts in its own order. Kept apart because they are not
+#: the same token: cache reads are most of a long agent's total and the cheapest
+#: part of it, and an agent whose total is nearly all cache read is not an agent
+#: that is running away.
+PARTS = tuple(zip(TOKEN_FIELDS[1:5], ('input_tokens', 'cache_creation_input_tokens',
+                                      'cache_read_input_tokens', 'output_tokens')))
+
+
 def tokens_of(usage):
     """Every token one usage block accounts for, cache included."""
-    if not isinstance(usage, dict):
-        return 0
-    total = 0
-    for key in ('input_tokens', 'output_tokens', 'cache_creation_input_tokens',
-                'cache_read_input_tokens'):
-        value = usage.get(key)
-        if isinstance(value, (int, float)):
-            total += int(value)
-    return total
+    return sum(parts_of(usage).values())
+
+
+def parts_of(usage):
+    """One usage block as the four parts it is made of, zeros included."""
+    held = usage if isinstance(usage, dict) else {}
+    parts = {}
+    for name, key in PARTS:
+        value = held.get(key)
+        parts[name] = int(value) if isinstance(value, (int, float)) else 0
+    return parts
 
 
 def events_of(line):
@@ -376,9 +411,9 @@ class ClaudeCodeRunner(Runner):
         lines, tail, events = queue.Queue(), [], []
         threading.Thread(target=pump, args=(child.stdout, lines), daemon=True).start()
         threading.Thread(target=drain, args=(child.stderr, tail), daemon=True).start()
-        state = {'tokens': 0, 'calls': 0, 'models': set(), 'result': None, 'init': None,
-                 'stop': '', 'last': '', 'limits': [], 'messages': {}, 'anonymous': 0,
-                 'startup': ''}
+        state = {'tokens': 0, 'parts': {}, 'peak': 0, 'calls': 0, 'models': set(),
+                 'result': None, 'init': None, 'stop': '', 'last': '', 'said': None,
+                 'limits': [], 'messages': {}, 'anonymous': 0, 'startup': ''}
         open_stream = True
         while open_stream:
             try:
@@ -429,15 +464,26 @@ class ClaudeCodeRunner(Runner):
                 state['models'].add(str(message['model']))
             self._count(message, state)
             for block in message.get('content') or ():
-                if (isinstance(block, dict) and block.get('type') == 'text'
-                        and str(block.get('text') or '').strip()):
+                if not isinstance(block, dict):
+                    continue
+                if block.get('type') == 'text' and str(block.get('text') or '').strip():
                     state['last'] = str(block['text']).strip()
+                # The agent's answer, as it gave it. Kept because a session can
+                # be stopped, or die, between answering and the `result` event
+                # that normally carries the answer out.
+                if (block.get('type') == 'tool_use' and block.get('name') == ANSWER_TOOL
+                        and isinstance(block.get('input'), dict)):
+                    state['said'] = dict(block['input'])
             return
         if kind == 'result':
             state['result'] = event
             total = tokens_of(event.get('usage'))
             if total > state['tokens']:
+                # The session's own total against our sum of the messages we
+                # saw: the larger is the one to keep, and its parts come with
+                # it so the parts and the total always add up.
                 state['tokens'] = total
+                state['parts'] = parts_of(event.get('usage'))
 
     def _count(self, message, state):
         """What one assistant message spent and called, counted once.
@@ -448,7 +494,12 @@ class ClaudeCodeRunner(Runner):
         which is what the token ceiling is measured against: a long turn could
         be stopped as over budget on tokens it never spent. So a message id's
         usage is credited once, the largest figure it reports, in case a later
-        event knows more.
+        event knows more — and its four parts are credited the same way, so
+        the parts of the run add up to its total.
+
+        The largest single message is kept as it goes past, because that is
+        the figure a run made before the orchestrator existed reported per
+        agent, and nothing else here can reconstruct it afterwards.
 
         The calls in such a turn are *not* the same block repeated: a real
         reader's stream sent one event per call, each carrying a different
@@ -461,11 +512,17 @@ class ClaudeCodeRunner(Runner):
         if not held:
             state['anonymous'] += 1
             held = f'anonymous-{state["anonymous"]}'
-        seen = state['messages'].setdefault(held, {'tokens': 0, 'tools': set()})
+        seen = state['messages'].setdefault(held, {'tokens': 0, 'parts': {}, 'tools': set()})
         tokens = tokens_of(message.get('usage'))
         if tokens > seen['tokens']:
             state['tokens'] += tokens - seen['tokens']
             seen['tokens'] = tokens
+            state['peak'] = max(state['peak'], tokens)
+        for name, value in parts_of(message.get('usage')).items():
+            had = seen['parts'].get(name, 0)
+            if value > had:
+                state['parts'][name] = state['parts'].get(name, 0) + value - had
+                seen['parts'][name] = value
         for block in message.get('content') or ():
             if not isinstance(block, dict) or block.get('type') != 'tool_use':
                 continue
@@ -516,20 +573,41 @@ class ClaudeCodeRunner(Runner):
         if self.keep_events and self.events_root:
             record['events'] = self._keep(task, events)
         stop = state['stop']
-        if stop:
-            return Outcome(ending=stop, tokens=state['tokens'], model=ran_as(result,
-                           state['models']) or task.model, tool_calls=state['calls'],
-                           seconds=seconds, record=record,
-                           detail=self._detail(task, state, tail))
+        # The answer the `result` event carried, or — when there was no result,
+        # because the session was stopped or died first — the last answer the
+        # agent gave in the stream. Work that is done is not thrown away for
+        # the sake of the event that normally reports it.
         answer = answer_of(result)
-        if answer is None:
-            return Outcome(ending=SILENT, tokens=state['tokens'],
-                           model=ran_as(result, state['models']) or task.model,
-                           tool_calls=state['calls'], seconds=seconds, record=record,
-                           detail=self._detail(task, state, tail))
-        return Outcome(ending=ANSWERED, answer=answer, tokens=state['tokens'],
-                       model=ran_as(result, state['models']) or task.model,
-                       tool_calls=state['calls'], seconds=seconds, record=record)
+        if answer is None and isinstance(state['said'], dict):
+            answer = dict(state['said'])
+        ending, note = stop or ANSWERED, ''
+        if stop and answer is not None and not state['startup']:
+            # A session that started up wrong is never answered, whatever it
+            # then said: it is not the agent we asked for.
+            ending, note = ANSWERED, (f'the agent answered and was then stopped: {stop}. '
+                                      'The answer it gave is this stage\'s.')
+        elif not stop and answer is None:
+            ending = SILENT
+        common = {'tokens': state['tokens'], 'usage': self._usage(state),
+                  'model': ran_as(result, state['models']) or task.model,
+                  'tool_calls': state['calls'], 'seconds': seconds, 'record': record}
+        if ending == ANSWERED:
+            if note:
+                record['stopped'] = stop
+            return Outcome(ending=ANSWERED, answer=answer, detail=note, **common)
+        return Outcome(ending=ending, detail=self._detail(task, state, tail), **common)
+
+    def _usage(self, state):
+        """What this agent spent, in every unit the record keeps.
+
+        ``tokens_cumulative`` is the session's whole spend and the number the
+        ceiling is measured against; ``tokens_peak_context`` is its largest
+        single call, which is what a run made before the orchestrator existed
+        reported per agent. The four parts add up to the cumulative total.
+        """
+        return {TOKEN_FIELDS[0]: int(state['tokens']),
+                **{name: int(state['parts'].get(name, 0)) for name, _ in PARTS},
+                TOKEN_PEAK: int(state['peak'])}
 
     def _connected(self, task, state):
         """What the session said about itself at start-up.

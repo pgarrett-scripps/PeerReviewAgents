@@ -42,7 +42,7 @@ from pathlib import Path
 from .. import problems as problem_list
 from ..engine import code_source
 from ..engine.storage import digest, read, write
-from ..names import COMPLETE_STATUSES, FINDING_SCHEMA_VERSION
+from ..names import COMPLETE_STATUSES, FINDING_SCHEMA_VERSION, TOKEN_FIELDS
 from . import claude_code, orchestrator
 from . import models as model_plan
 from . import runner as agent_runner
@@ -67,17 +67,35 @@ from .service import TOOL_PREFIX, TOOLS, Service
 
 SERVER = 'peerreview'
 PLUGIN = 'pra'
-PER_AGENT_TOKENS = 500_000
-PER_RUN_TOKENS = 6_000_000
+# The token ceilings are a guard against an agent that has run away, not a
+# budget this package manages on anyone's behalf. The turn cap is the first
+# line of defence and these are the second, so they are set well above what a
+# working agent spends and are measured against the *cumulative* spend of a
+# session — every call's usage added up, which is what the service bills.
+#
+# That unit is why these numbers are what they are. They were calibrated
+# against a per-agent figure the workflow harness reported, which was the
+# largest single call rather than the session total
+# (:data:`~peerreviewagents.names.TOKEN_FIELDS` sets the two side by side), and
+# 500,000 in the old unit stopped a reader that had viewed all 29 pages of a
+# real manuscript, repaired every piece and sealed the manuscript: it spent
+# 592,106 cumulative tokens to hold 144,072 at its widest. Provisional until
+# one full real review has been measured end to end, which is the measurement
+# that will replace the guesswork in all six of these numbers.
+PER_AGENT_TOKENS = 3_000_000
+PER_RUN_TOKENS = 30_000_000
 WALL_TIMEOUT = 5400
 # A fix check is a much smaller run than a review and its ceilings say so. One
 # checker reads the new draft once and answers up to ten questions about it
 # with no literature, no code and no synthesis; there is no editor, no
-# specialist and no citation ledger. A review's six-million ceiling would never
-# fire here, which makes it no ceiling at all: a checker stuck in a search loop
-# would burn a review's budget on ten problems before the wall clock noticed.
-FIX_PER_AGENT_TOKENS = 150_000
-FIX_PER_RUN_TOKENS = 900_000
+# specialist and no citation ledger. A review's ceiling would never fire here,
+# which makes it no ceiling at all: a checker stuck in a search loop would burn
+# a review's budget on ten problems before the wall clock noticed. Raised by
+# the same factor as the review's, for the same reason and with the same
+# caveat: they were set in the old unit and no fix check has been measured in
+# this one.
+FIX_PER_AGENT_TOKENS = 900_000
+FIX_PER_RUN_TOKENS = 4_500_000
 FIX_WALL_TIMEOUT = 2700
 #: What `check-draft` runs when no track is named. The three a draft of your
 #: own is usually wrong about, and the default the prompt and the recorded plan
@@ -156,7 +174,11 @@ def recorder_row(panel):
     read as an agent that ran.
     """
     return {'label': 'recorder', 'slot': 'recorder', 'attempt': 1, 'agent': 'recorder',
-            'observed_tokens': 0, 'tool_calls': getattr(panel, 'calls', 0) or 0,
+            'observed_tokens': 0,
+            # Zero rather than absent, and zero in every unit: no session ran
+            # for this slot, so there is nothing to not record.
+            **{field: 0 for field in TOKEN_FIELDS},
+            'tool_calls': getattr(panel, 'calls', 0) or 0,
             'seconds': round(panel.budget.seconds, 3) if panel.budget else 0.0,
             'model': '', 'state': IN_PROCESS,
             'detail': 'the run itself: every recorder tool was called in this process, '
@@ -171,6 +193,11 @@ def agent_rows(budget, panel=None):
     is read by :mod:`peerreviewagents.engine.usage`, which was written against
     the harness's stream, so the names are translated here in one place and the
     runner's own ending is kept beside the translation rather than lost.
+
+    The token fields are the exception to the translation: they go in under
+    their own names, :data:`~peerreviewagents.names.TOKEN_FIELDS`, because
+    there is no older name for them to be mistaken for. ``tokens`` beside them
+    is the cumulative total, which is what this file has always meant by it.
     """
     rows = list(sorted(budget.rows, key=lambda row: row['label']))
     if panel is not None:
@@ -179,6 +206,7 @@ def agent_rows(budget, panel=None):
              'agentType': row['agent'],
              'attempt': row['attempt'],
              'tokens': row['observed_tokens'],
+             **{field: row.get(field) for field in TOKEN_FIELDS},
              'toolCalls': row['tool_calls'],
              'model': row['model'] or None,
              # `done` is the word every reader of this file already knows for a
@@ -191,7 +219,13 @@ def agent_rows(budget, panel=None):
 
 
 def write_usage(review, rows):
-    """Usage the engine's own report reader can find, one receipt per attempt."""
+    """Usage the engine's own report reader can find, one receipt per attempt.
+
+    ``observed_tokens`` is the cumulative spend, as it always was, and
+    :data:`~peerreviewagents.names.TOKEN_FIELDS` is the same number broken into
+    its parts beside it — plus ``tokens_peak_context``, the largest single call,
+    which is the figure a run from before the orchestrator reported per agent.
+    """
     for row in rows:
         slot = str(row['slot']).replace(' ', '-').replace('/', '-')
         folder = Path(review) / 'usage' / slot
@@ -202,9 +236,14 @@ def write_usage(review, rows):
         with (folder / 'usage.jsonl').open('a', encoding='utf-8') as stream:
             stream.write(json.dumps({'label': row['label'], 'attempt': attempt,
                                      'observed_tokens': row.get('observed_tokens') or 0,
+                                     **{field: row.get(field) or 0
+                                        for field in TOKEN_FIELDS},
                                      'tool_calls': row.get('tool_calls') or 0,
                                      'model': row.get('model') or None,
-                                     'state': row.get('state')}) + '\n')
+                                     # The runner's own word for how it ended,
+                                     # and the sentence it left with it.
+                                     'state': row.get('state'),
+                                     'detail': row.get('detail') or None}) + '\n')
 
 
 def write_identity(review, source, arm, reviewers, cutoff=None, tracks=None, models=None,
@@ -831,8 +870,10 @@ def check_fixes(pdf, out, problems, per_agent_tokens=FIX_PER_AGENT_TOKENS,
     leaves behind.
 
     The ceilings are the fix check's own and are far below a review's, because
-    the run is far smaller: :data:`FIX_PER_AGENT_TOKENS` per agent against a
-    review's 500k, :data:`FIX_PER_RUN_TOKENS` for the run against six million.
+    the run is far smaller: :data:`FIX_PER_AGENT_TOKENS` per agent against
+    :data:`PER_AGENT_TOKENS`, :data:`FIX_PER_RUN_TOKENS` for the run against
+    :data:`PER_RUN_TOKENS`. All four are provisional — see the comment above
+    them — and all four are measured against an agent's cumulative spend.
 
     There is no ``code`` here, and that is deliberate rather than unfinished:
     every verdict this run can give rests on the new draft — a quotation of it,

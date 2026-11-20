@@ -13,6 +13,7 @@ Neither function makes a model call or trusts an agent's account of itself.
 import json
 from pathlib import Path
 
+from ..names import TOKEN_FIELDS, TOKEN_PEAK
 from .storage import read
 
 
@@ -206,11 +207,28 @@ def _attempt(row):
         return 1
 
 
+def _numbers(rows, field):
+    """The values the rows report for ``field``, ignoring anything that is not one."""
+    return [row[field] for row in rows if isinstance(row.get(field), (int, float))
+            and not isinstance(row.get(field), bool)]
+
+
 def _total(rows, field):
     """The sum over the rows that report ``field``, or ``None`` if none does."""
-    values = [row[field] for row in rows if isinstance(row.get(field), (int, float))
-              and not isinstance(row.get(field), bool)]
+    values = _numbers(rows, field)
     return sum(values) if values else None
+
+
+def _largest(rows, field):
+    """The largest value the rows report for ``field``, or ``None``.
+
+    For :data:`~peerreviewagents.names.TOKEN_PEAK` alone: a slot that ran two
+    tasks spent the sum of their tokens but never held more context than its
+    widest single call, so that one field is a maximum where every other is a
+    sum. Adding peaks would invent a context no call ever had.
+    """
+    values = _numbers(rows, field)
+    return max(values) if values else None
 
 
 def _merge(rows):
@@ -220,13 +238,26 @@ def _merge(rows):
     than one task: the recorder ingests the manuscript and later writes the
     review. Both are that slot's spend, so they are added rather than listed as
     two agents, and ``labels`` keeps the task names the stream used.
+
+    Every token field is added the same way, except the peak — see
+    :func:`_largest`. ``ending`` and ``detail`` are the runner's own words about
+    the agent, and the one worth seeing is the task that did not finish: the
+    ending comes from the first row whose state is not ``done``, and the detail
+    from the first row that has one.
     """
     state = [row.get('state') for row in rows if row.get('state')]
+    endings = [row.get('ending') for row in rows if row.get('ending')]
     return {
         'model': next((row['model'] for row in rows if row.get('model')), None),
         'attempt': max((_attempt(row) for row in rows), default=1),
         'session_calls': _total(rows, 'toolCalls'),
         'tokens': _total(rows, 'tokens'),
+        **{field: (_largest if field == TOKEN_PEAK else _total)(rows, field)
+           for field in TOKEN_FIELDS},
+        'ending': next((row['ending'] for row in rows
+                        if row.get('ending') and row.get('state') != 'done'),
+                       endings[0] if endings else None),
+        'detail': next((row['detail'] for row in rows if row.get('detail')), None),
         # Every task done is the slot done; anything else is the state that is
         # not, because that is the one worth seeing.
         'state': next((value for value in state if value != 'done'),
@@ -256,6 +287,21 @@ def agent_rows(run, protocol=None, runtime=None, on_problem=None):
     server itself served that slot, which is the number the ledger bounds;
     ``session_calls`` is every tool call the session saw the agent make, which
     is larger and is Claude Code's count rather than the server's.
+
+    Two account of how it ended, for the same reason. ``state`` is the word
+    every reader of these files already knows — ``done`` for a slot that
+    finished — and ``ending`` is the runner's own: ``answered``, ``no answer``,
+    ``over the token ceiling``, ``out of time``, ``failed``, or ``in process``
+    for the recorder, whose work this orchestrator does itself. ``detail`` is
+    the sentence the runner left with it. A caller that had to guess whether
+    the recorder ran in process reads ``ending`` instead.
+
+    The token fields are :data:`~peerreviewagents.names.TOKEN_FIELDS`, under
+    those exact names: ``tokens_cumulative`` and its four parts, plus
+    ``tokens_peak_context``. ``tokens`` is the cumulative total as well, kept
+    under the name this file has always written it under. ``None`` in any of
+    them means *not recorded* — a run written before they existed, or a slot
+    nothing observed — and never zero.
 
     **One agent is one row.** The stream names a task and the protocol names a
     slot, and for the recorder those are different words: ``ingest`` and ``write
@@ -292,7 +338,10 @@ def agent_rows(run, protocol=None, runtime=None, on_problem=None):
                      'tool_calls': record.get('tool_calls'),
                      'session_calls': observed.get('session_calls'),
                      'tokens': observed.get('tokens'),
+                     **{field: observed.get(field) for field in TOKEN_FIELDS},
                      'state': observed.get('state'),
+                     'ending': observed.get('ending'),
+                     'detail': observed.get('detail'),
                      'labels': observed.get('labels') or []})
     # An agent the stream reported but the protocol never recorded is a real
     # discrepancy, so it is shown rather than dropped to make the table tidy.
@@ -302,6 +351,9 @@ def agent_rows(run, protocol=None, runtime=None, on_problem=None):
                      'assigned_model': None,
                      'attempt': merged.get('attempt') or 1, 'tool_calls': None,
                      'session_calls': merged.get('session_calls'),
-                     'tokens': merged.get('tokens'), 'state': merged.get('state'),
+                     'tokens': merged.get('tokens'),
+                     **{field: merged.get(field) for field in TOKEN_FIELDS},
+                     'state': merged.get('state'),
+                     'ending': merged.get('ending'), 'detail': merged.get('detail'),
                      'labels': merged.get('labels') or []})
     return rows

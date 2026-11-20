@@ -13,12 +13,16 @@ final answer must satisfy, and the token ceiling past which it is not allowed
 to continue. A runner that can honour those can run this panel; nothing in a
 task names Claude Code, a process, or a transport.
 
-An outcome is equally small: the final answer as a dict, the tokens it cost,
-the model it actually ran as — not the one it was asked for — the number of
-tool calls, how long it took, and how it ended. ``ending`` is the one field
-with a closed vocabulary, because the orchestrator branches on it: a stage that
+An outcome is equally small: the final answer as a dict, the tokens it cost
+(cumulatively, with the parts of that number in ``usage`` for the record), the
+model it actually ran as — not the one it was asked for — the number of tool
+calls, how long it took, and how it ended. ``ending`` is the one field with a
+closed vocabulary, because the orchestrator branches on it: a stage that
 answered is a stage that closed, and every other ending is a stage to retry
-once and then block over.
+once and then block over. An agent that answered and was *then* stopped over
+its ceiling has answered: the ending is ``ANSWERED`` and ``detail`` says it was
+stopped, because work that is finished is not thrown away for the sake of the
+event that normally reports it.
 
 Two runners live in the tree. :class:`ScriptedRunner` is here: it runs a Python
 function in place of a model, against the same tool list the real agent is
@@ -32,13 +36,17 @@ import time
 from dataclasses import dataclass, field, replace
 
 from ..agents import Definition, definition
+from ..names import TOKEN_FIELDS, TOKEN_PEAK
 
-#: The stage answered: its final answer is in ``Outcome.answer``.
+#: The stage answered: its final answer is in ``Outcome.answer``. An agent that
+#: answered and was then stopped — over its ceiling, or out of time — ends here
+#: too, with ``Outcome.detail`` saying so.
 ANSWERED = 'answered'
 #: The agent stopped without a final answer — it ran out of turns, refused, or
 #: ended its turn without calling the tool that answers.
 SILENT = 'no answer'
-#: The agent was stopped because it passed its token ceiling.
+#: The agent was stopped because it passed its token ceiling *and* had not
+#: answered. One that had is :data:`ANSWERED`.
 OVER_BUDGET = 'over the token ceiling'
 #: The agent was stopped because the run's wall clock, or its own, ran out.
 TIMED_OUT = 'out of time'
@@ -110,7 +118,15 @@ class Outcome:
 
     ending: str
     answer: dict = None
+    #: The whole spend, cache included, and the number the ceiling is measured
+    #: against. Cumulative over the session: a ten-turn agent's total counts
+    #: every turn's input, as the service that billed it does.
     tokens: int = 0
+    #: The same spend in the units the usage files keep — ``tokens_cumulative``
+    #: and its four parts, plus ``tokens_peak_context``, the largest single
+    #: call. Empty from a runner that cannot break its number down, which is
+    #: not the same as a run that spent nothing.
+    usage: dict = field(default_factory=dict)
     model: str = ''
     tool_calls: int = 0
     seconds: float = 0.0
@@ -252,8 +268,25 @@ class ScriptedRunner(Runner):
             return Outcome(ending=SILENT, model=task.model, tool_calls=len(tools.calls),
                            seconds=seconds, detail='the script answered nothing')
         return Outcome(ending=ANSWERED, answer=dict(answer), tokens=self.tokens,
-                       model=task.model, tool_calls=len(tools.calls), seconds=seconds,
-                       record={'scripted': True, 'tools': list(tools.calls)})
+                       usage=self.spent(), model=task.model, tool_calls=len(tools.calls),
+                       seconds=seconds, record={'scripted': True, 'tools': list(tools.calls)})
+
+    def spent(self):
+        """A scripted agent's tokens, in the shape a real session reports them.
+
+        One made-up number broken into parts that add to it, so everything
+        downstream of the runner — the budget rows, the usage receipts,
+        ``runtime.json`` and the public readers — is exercised by a scripted
+        run rather than only by a real session. The peak is the whole spend
+        because a scripted agent is one call.
+        """
+        output = self.tokens // 10
+        cache_read = self.tokens // 2
+        cache_write = self.tokens // 5
+        return {TOKEN_FIELDS[0]: self.tokens,
+                'tokens_input_uncached': self.tokens - output - cache_read - cache_write,
+                'tokens_cache_write': cache_write, 'tokens_cache_read': cache_read,
+                'tokens_output': output, TOKEN_PEAK: self.tokens}
 
     def describe(self):
         return 'scripted'

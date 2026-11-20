@@ -1012,6 +1012,31 @@ def test_the_reader_cannot_work_after_the_seal(tmp_path):
     assert progress['read'] == {'sealed': True, 'outstanding': None}
 
 
+def test_run_status_says_whether_the_manuscript_is_sealed_and_by_what(tmp_path):
+    """The one question the ledger cannot answer, asked of the server instead.
+
+    The Read stage closes no ledger stage — it writes the manuscript — so a
+    stage deciding whether to retry a reader whose answer was lost has nothing
+    on the ledger to look at. ``run_status`` carries the seal, the line count
+    and the reader's own record of what it read, which is the whole of what a
+    carried-on read answer needs.
+    """
+    opened, token = reading(tmp_path)
+    before = srv.run_status(CODES['recorder_key'])['read']
+    assert before == {'sealed': False, 'line_count': 0, 'ai_read': None}
+
+    account_for_everything(token, ids_of(token))
+    assert 'request_rejected' not in srv.seal_manuscript(
+        token, note='The converter split equation (2).')
+
+    after = srv.run_status(CODES['recorder_key'])['read']
+    assert after['sealed'] is True
+    assert after['line_count'] > 0, 'the manuscript has lines now, and nothing else has them'
+    assert after['ai_read']['read'] is True
+    assert 'split equation (2)' in after['ai_read']['note']
+    assert after['ai_read']['pages_viewed'] == after['ai_read']['pages']
+
+
 def test_a_reader_claiming_after_the_seal_is_refused_in_words(tmp_path):
     """The claim is answered. A slot that cannot be served says why, not how it broke."""
     opened = drafted(tmp_path)

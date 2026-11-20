@@ -343,11 +343,21 @@ class Budget:
     # -- the record -------------------------------------------------------
 
     def record(self, task, outcome):
-        """Write one attempt down, and hand the outcome back unchanged."""
+        """Write one attempt down, and hand the outcome back unchanged.
+
+        ``observed_tokens`` is the cumulative total and the number the ceilings
+        are measured against; ``tokens_cumulative`` beside it is the same
+        number under the name the parts are written in, so a reader of the
+        usage file can tell at a glance which unit a figure is in. The old
+        per-agent figure these runs used to report is ``tokens_peak_context``,
+        the largest single call — a different number for any agent that took
+        more than one turn.
+        """
         slot, _, attempt = task.label.partition('#')
         row = {'label': task.label, 'slot': slot, 'attempt': int(attempt or 1),
                'agent': task.agent.name,
                'observed_tokens': int(outcome.tokens or 0),
+               **{key: int(value or 0) for key, value in (outcome.usage or {}).items()},
                'tool_calls': int(outcome.tool_calls or 0),
                'seconds': round(float(outcome.seconds or 0.0), 3),
                'model': outcome.model or task.model,
@@ -699,6 +709,65 @@ class Panel:
             return None
         return list(ledger['missing'] or [])
 
+    def closed_without_us(self, slot, closes='closed'):
+        """What the server knows about a slot whose answer never reached us.
+
+        Asked before every retry. An agent can close its stage and then be
+        stopped — over its ceiling, out of time, or dead between the close and
+        the answer — and the work is in the server either way. Running a second
+        agent on a fresh claim code then repeats work that is already done at
+        best, and at worst is refused the close and blocks a run whose stage is
+        complete, which is exactly how the first proving run ended. ``None``
+        means the server does not say the slot closed: an unreadable ledger is
+        never read as a closed stage.
+        """
+        answer = self.call('run_status', self.recorder_key)
+        if refusal(answer):
+            return None
+        ledger = answer.get('ledger')
+        if not isinstance(ledger, dict) or slot not in (ledger.get('reported') or ()):
+            return None
+        held = {closes: True, 'slot': slot, 'from_ledger': True,
+                # The findings themselves were stored as they were found and
+                # are in the pool whatever happened to the answer; the count
+                # comes from the server so the run's own summary does not
+                # report this stage as a reviewer that found nothing.
+                'findings_stored': int((ledger.get('findings_by_slot') or {}).get(slot) or 0),
+                'none_found': bool((ledger.get('none_found') or ()) and
+                                   slot in ledger['none_found'])}
+        # Stage-specific numbers the server keeps, for the one stage whose
+        # answer is read for more than the close: a synthesized answer must
+        # not report zero claims checked when the server has the count.
+        counts = answer.get('code_check') if slot == getattr(self, 'check_slot', '') else None
+        if isinstance(counts, dict):
+            # The server's verdicts are the three words of the protocol; the
+            # stage's answer spells the third one with an underscore.
+            kept = counts.get('counts') or {}
+            held.update({'claims': int(counts.get('checked') or 0),
+                         'over_cap': int(counts.get('over_cap') or 0),
+                         'confirmed': int(kept.get('confirmed') or 0),
+                         'contradicted': int(kept.get('contradicted') or 0),
+                         'not_shown': int(kept.get('not-shown') or 0)})
+        return held
+
+    def sealed_without_us(self):
+        """The seal the server holds, or ``None`` if the manuscript is a draft.
+
+        The Read stage closes no stage in the ledger, so
+        :meth:`closed_without_us` cannot see it. This is the same question for
+        the one stage that answers it differently.
+        """
+        answer = self.call('run_status', self.recorder_key)
+        if refusal(answer):
+            return None
+        read = answer.get('read')
+        if not isinstance(read, dict) or not read.get('sealed'):
+            return None
+        counts = answer.get('citations') or {}
+        return {'sealed': True, 'line_count': int(read.get('line_count') or 0),
+                'ai_read': read.get('ai_read'), 'from_server': True,
+                'references': counts.get('references'), 'uses': counts.get('uses')}
+
     # -- running one agent ------------------------------------------------
 
     def task_for(self, slot, prompt, schema, attempt=1):
@@ -736,8 +805,13 @@ class Panel:
         """One retry, then blocked.
 
         A stage that returns nothing, or returns without closing its slot, is
-        not a stage that ran. ``prompt_for`` takes the claim code, because
-        attempt 2 runs on a different one.
+        not a stage that ran — unless the server says otherwise. Before every
+        retry the ledger is asked whether the slot already closed, because an
+        agent whose answer was lost after it reported has done the work and the
+        run carries on from it instead of doing it twice.
+
+        ``prompt_for`` takes the claim code, because attempt 2 runs on a
+        different one.
         """
         for attempt in (1, 2):
             code = self.codes.get(slot, '') if attempt == 1 else self.reissue(slot)
@@ -748,6 +822,12 @@ class Panel:
             answer = self.one(slot, prompt_for(code), schema, attempt)
             if answer and answer.get(closes):
                 return {**answer, 'slot': slot, 'attempts': attempt}
+            held = self.closed_without_us(slot, closes)
+            if held:
+                self.say(f'{slot}: no answer reached the run, but the stage is in the '
+                         'ledger — its report is in, so the run carries on from it rather '
+                         'than running the stage again')
+                return {**held, 'attempts': attempt}
             what = 'returned without closing its stage' if answer else 'returned nothing'
             if attempt == 1:
                 stop = self.budget.exhausted()
@@ -840,7 +920,16 @@ class Panel:
     # -- the Read stage, which both kinds of run have ----------------------
 
     def read_stage(self, slot, citations=True):
-        """One model reads the pages, repairs the text and seals it."""
+        """One model reads the pages, repairs the text and seals it.
+
+        The seal closes no stage in the ledger, so before any retry the server
+        is asked outright whether the manuscript is already sealed. A reader
+        that worked through every page, repaired every piece, sealed the
+        manuscript and was then stopped before its answer came back has done
+        the Read stage: the run carries on from the seal. A second reader
+        cannot repeat it — the server refuses to re-seal — so retrying one over
+        a sealed manuscript spends an agent to arrive at a refusal.
+        """
         for attempt in (1, 2):
             code = self.codes.get(slot, '') if attempt == 1 else self.reissue(slot)
             if not code:
@@ -849,6 +938,12 @@ class Panel:
             answer = self.one(slot, reader_prompt(slot, code, citations), SEALED, attempt)
             if answer and answer.get('sealed'):
                 return {**answer, 'attempts': attempt}
+            sealed = self.sealed_without_us()
+            if sealed:
+                self.say('no answer reached the run, but the manuscript is sealed: the reader '
+                         'finished its work, so the run carries on from the seal rather than '
+                         'reading the pages again')
+                return {**sealed, 'attempts': attempt}
             if answer and answer.get('refusal'):
                 what = f"was refused the seal ({answer['refusal']})"
             elif answer:
@@ -857,6 +952,22 @@ class Panel:
                 what = 'returned nothing'
             self.say('the reader ' + what + ('; retrying once' if attempt == 1 else ''))
         return None
+
+    def _read_line(self, read):
+        """What the Read stage did, in one line.
+
+        A seal the run learned from the server rather than from the reader has
+        no tally of pages or repairs in it — the reader's own answer was lost —
+        and says so, rather than printing zeros that read as a reader that did
+        nothing.
+        """
+        if read.get('from_server'):
+            return (f'read: the manuscript is sealed at {read.get("line_count") or 0} line(s); '
+                    "the reader's own tally of pages viewed and pieces repaired was lost with "
+                    'its answer')
+        return (f'read: {read.get("pages_viewed") or 0} of {read.get("pages") or 0} '
+                f'page(s) viewed, {read.get("actions") or 0} piece(s) repaired or confirmed '
+                f'in {read.get("tool_calls") or 0} call(s)')
 
     def seal_as_converted(self, reason):
         """The Read stage's failure path, in the server's own hands.
@@ -1035,9 +1146,7 @@ class Review(Panel):
                  f'{reader.get("allowance", "?")} call(s)')
         read = self.read_stage(self.reader_slot)
         if read:
-            self.say(f'read: {read.get("pages_viewed") or 0} of {read.get("pages") or 0} '
-                     f'page(s) viewed, {read.get("actions") or 0} piece(s) repaired or confirmed '
-                     f'in {read.get("tool_calls") or 0} call(s)')
+            self.say(self._read_line(read))
             if read.get('references') is not None or read.get('uses') is not None:
                 counts = {'references': read.get('references') or 0,
                           'uses': read.get('uses') or 0}
@@ -1492,9 +1601,7 @@ class FixCheck(Panel):
                  f'{reader.get("allowance", "?")} call(s)')
         read = self.read_stage(self.reader_slot, citations=False)
         if read:
-            self.say(f'read: {read.get("pages_viewed") or 0} of {read.get("pages") or 0} '
-                     f'page(s) viewed, {read.get("actions") or 0} piece(s) repaired or confirmed '
-                     f'in {read.get("tool_calls") or 0} call(s)')
+            self.say(self._read_line(read))
             return read, read.get('line_count') or lines
         fallback = self.seal_as_converted('the reader stage returned twice without sealing the '
                                           'new draft')

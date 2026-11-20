@@ -112,7 +112,11 @@ def complete_run(tmp_path, status='complete', findings=True) -> Path:
         'tokens_total': 636299, 'claude_code_version': '2.1.322',
         'result': {'subtype': 'success', 'is_error': False},
         'agents': [{'label': 'core-1', 'tokens': 400000, 'toolCalls': 24, 'state': 'completed',
-                    'model': 'claude-sonnet-5-5'},
+                    'model': 'claude-sonnet-5-5', 'ending': 'answered',
+                    'detail': 'the agent answered and was then stopped',
+                    'tokens_cumulative': 400000, 'tokens_input_uncached': 24000,
+                    'tokens_cache_write': 76000, 'tokens_cache_read': 288000,
+                    'tokens_output': 12000, 'tokens_peak_context': 144072},
                    {'label': 'spec-stats', 'tokens': 236299, 'toolCalls': 9,
                     'state': 'completed', 'model': 'claude-sonnet-5-5'}]})
     raised = [_finding('aaa1', 'The total does not follow from its parts'),
@@ -266,6 +270,30 @@ def test_read_run_reports_the_runtime_of_each_agent(tmp_path):
     assert rows['core-1']['session_calls'] == 24  # what the session saw it do
     assert rows['spec-stats']['track'] == 'stats'
     assert rows['spec-stats']['model'] == 'claude-sonnet-5-5'
+
+
+def test_read_run_reports_how_each_agent_ended_and_what_it_spent(tmp_path):
+    """The runner's own words, and the tokens in the unit each one means.
+
+    An application reading these rows had to guess two things from an absence:
+    that the recorder ran in this process, because its model was empty, and
+    what ``tokens`` was a count of. Both are words in the row now.
+    """
+    review = complete_run(tmp_path)
+
+    rows = {row['slot']: row for row in read_run(review)['agents']}
+
+    assert rows['core-1']['ending'] == 'answered'
+    assert rows['core-1']['detail'] == 'the agent answered and was then stopped'
+    assert [rows['core-1'][field] for field in names.TOKEN_FIELDS] == [
+        400000, 24000, 76000, 288000, 12000, 144072]
+    assert sum(rows['core-1'][field] for field in names.TOKEN_FIELDS[1:5]) == 400000, \
+        'the four parts are the cumulative total broken up'
+    assert rows['core-1'][names.TOKEN_PEAK] < rows['core-1']['tokens_cumulative'], \
+        'the peak is one call; the total is the session'
+    assert all(rows['spec-stats'][field] is None for field in names.TOKEN_FIELDS), \
+        'not recorded is None, never zero'
+    assert rows['spec-stats']['ending'] is None and rows['spec-stats']['detail'] is None
 
 
 def test_read_run_carries_the_escalations_and_their_rulings(tmp_path):
@@ -1520,9 +1548,13 @@ def test_one_agent_that_ran_two_tasks_is_one_row(tmp_path):
     _write(review / 'runtime.json', {
         **json.loads((review / 'runtime.json').read_text()),
         'agents': [{'label': 'ingest', 'agentType': 'pra:recorder', 'tokens': 12000,
-                    'toolCalls': 5, 'state': 'completed', 'model': 'claude-sonnet-5-5'},
+                    'toolCalls': 5, 'state': 'completed', 'model': 'claude-sonnet-5-5',
+                    'tokens_cumulative': 12000, 'tokens_peak_context': 9000,
+                    'ending': 'answered'},
                    {'label': 'write review', 'agentType': 'pra:recorder', 'tokens': 30000,
-                    'toolCalls': 7, 'state': 'completed', 'model': 'claude-sonnet-5-5'},
+                    'toolCalls': 7, 'state': 'completed', 'model': 'claude-sonnet-5-5',
+                    'tokens_cumulative': 30000, 'tokens_peak_context': 21000,
+                    'ending': 'answered'},
                    {'label': 'spec-field'}]})
 
     rows = read_run(review)['agents']
@@ -1532,3 +1564,7 @@ def test_one_agent_that_ran_two_tasks_is_one_row(tmp_path):
     assert rows[0]['tool_calls'] == 4  # the server's own count, untouched
     assert rows[0]['labels'] == ['ingest', 'write review']
     assert rows[0]['model'] == 'claude-sonnet-5-5'
+    assert rows[0]['tokens_cumulative'] == 42000, 'two tasks, one spend'
+    assert rows[0][names.TOKEN_PEAK] == 21000, \
+        'the widest single call of either task, not the two added up'
+    assert rows[0]['ending'] == 'answered'
