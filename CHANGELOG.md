@@ -85,46 +85,44 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **A whole review can be driven from a script: `scripted_review`.** The third
-  of the scripted stages, and the folder an application renders most of. It
-  opens a real review on a PDF, seals the manuscript as the converter read it,
-  claims every slot the arm plans and the recorder, serves each of them the
-  whole manuscript, and hands back a handle whose methods are those slots' own
-  tools under their own names, `slot=` saying who calls: `submit_finding`,
-  `submit_report`, then the editor's `list_findings`, `submit_issues` and
-  `submit_editor`. `write()` is the recorder's `write_review` — `issues.json`,
-  `REVIEW.md` and the reports — and `read()` is `read_run` on the folder. No
-  model runs and nothing is launched: the script is each slot in turn.
-  A consumer testing against a review had the same two bad choices as before
-  `scripted_fix_check`: drive the private plugin round builders, or hand-write
-  the JSON of a finished review, which copies the engine's output shape by eye
-  and drifts from it silently. A tool only one slot holds goes to it by itself
-  and a tool several hold raises `LookupError` naming them rather than being
-  guessed at, `SUBMISSIONS` is what each role may submit beside the tools the
-  server grants it, and a refusal raises `ReviewRefused` — a sibling of
-  `CheckRefused` under `ToolRefused` — with the server's whole answer on
-  `.answer`. What it does not do is the editor's judgement: the grouping, the
-  ranking and the escalation rulings are the script's, and `submit_editor` and
-  `write()` refuse until they are there, exactly as they refuse a model.
-- **A fix check can be driven from a script: `scripted_fix_check`.** The
-  counterpart of `scripted_read` for the other stage an application renders.
-  It opens a real check on a PDF with a problems file — a path, or the rows
-  themselves, written to `problems.json` for you — seals the manuscript as the
-  converter read it, claims every checker slot, serves each the manuscript, and
-  hands back a handle whose methods are the checker's own tools under their own
-  names: `fix_queue`, `submit_fix_check`, and the tools that read the paper.
-  `write()` writes `fix-check.json` and `FIXES.md`, and `read()` reads them
-  back. No model runs and nothing is launched: the script is the checker.
-  A consumer testing against a check had to import `plugin.server` privately to
-  get a folder to render — ingest with `arm='fix-check'`, `claim_agent`,
-  `submit_fix_check`, `write_fix_check`, and the recorder's seal in the middle
-  of it — or hand-write the JSON, which copies the engine's output shape by eye
-  and drifts from it silently. Verdicts route to the checker whose batch holds
-  the problem (`slots`, `batches`, `slot_of`, and `slot=` to override it on
-  purpose), `line(n)` is where an exact quotation of the new draft comes from,
-  and a refusal raises `CheckRefused` rather than being answered to nobody.
-  `ToolRefused` is new as the base class of that and of `ReaderRefused`; the
-  latter keeps its name and its behaviour.
+- **A whole run can be driven from scripts, through the orchestrator:
+  `scripted_read`, `scripted_fix_check`, `scripted_review`.** Each is a real
+  run with Python where the model goes — the same orchestrator, the same tool
+  server, the same stage order, the same recorder and the same run folder, with
+  nothing launched and no model reading anything. You hand each seat a script,
+  a callable taking the slot, whose methods are that agent's own tools under
+  their own names; the orchestrator drives, and the script answers in the
+  schema the runner would have asked a model for. Scripts are keyed by slot
+  name (`core-1`), agent name (`core-reviewer`), role (`core`, `editor`,
+  `specialist`, `citation-worker`, `fix-check`, `code-check`, `reader`) or
+  `'*'`, and every seat you leave out runs this package's own script for that
+  role: `scripted_review('paper.pdf', folder)` is a whole written review in one
+  call, and `{'editor': mine}` is that review with your editor in it.
+  The point is the folder. These helpers used to claim their slots themselves
+  and write the review as the recorder, which meant a scripted run was the
+  engine's output shape everywhere a *consumer* looked and nothing like a real
+  run anywhere else: no runtime agent rows, every `ending` missing, the recorder
+  reading "not recorded", no token fields. A consumer whose rendering of a run
+  was tested only against that could not see it break. Through the orchestrator
+  there is one mechanism: `runtime.json` has one row per agent with its ending,
+  its tool calls, its seconds and its token fields, the recorder row reads
+  `in process` with no model, `summary['runner']` is `scripted`, and a seat is
+  confined by its agent definition — a tool it was not granted raises
+  `NotGranted` and one the server does not have raises `AttributeError`, the
+  boundary a model meets. A script that returns `NO_ANSWER` is an agent that
+  answered nothing, so the orchestrator retries it and then blocks the run, as
+  it does for a silent model; `ScriptedSlot` and `NO_ANSWER` are public with
+  the helpers. A refusal raises `ReaderRefused`, `CheckRefused` or
+  `ReviewRefused` — siblings under the new `ToolRefused` — with the tool on
+  `.tool` and the server's whole answer on `.answer`: caught in the script the
+  stage goes on, uncaught it ends the run and is raised again out of the call.
+  What the scripts must still do is the work: the reader's accounting for every
+  outstanding piece, the editor's grouping, ranking and escalation rulings, a
+  checker's verdict on each problem its own `fix_queue` dealt it. The server
+  refuses a script exactly as it refuses a model.
+  Before this, a consumer testing against a run had two bad choices: drive the
+  private plugin round builders, or hand-write the JSON of a finished review,
+  which copies the engine's output shape by eye and drifts from it silently.
 - **A new draft can be checked against the problems a review raised:
   `peerreview check-fixes paper-v2.pdf out/ --problems problems.json`.** The
   third command, and the other half of a review rather than a second one:
@@ -279,21 +277,19 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
   resting on reader text were cut paragraphs, which the single number had
   reported as reader-written evidence.
 - **The Read stage driven in code, for a consumer's tests:
-  `peerreviewagents.scripted_read(paper, folder, pieces)`.** It opens a real
-  run on a PDF, claims the reader's slot and hands back a handle whose methods
-  are the reader's own tools under their own names, through the same server the
-  stage drives — nothing launched, no model reading anything. `pieces` are
-  extra converter pieces spliced into the draft, so a fixture holds the
-  failures the stage exists for (a mangled equation, debris left as a heading
-  of its own) without a PDF that has them; `find('a few characters')` names a
-  piece by what the converter read there and raises unless exactly one matches;
-  a refused call raises `ReaderRefused`, because the tools answer a refusal to
-  a model that can try something else and a script cannot; and `base()` reads
-  the sealed workspace back. What the stage leaves on a manuscript — a re-read
-  part's `part` and `of`, a fold's `absorbed`, the reader's `note` — existed
-  only in the output of a real run, so the first consumer's fixtures for it
-  were hand-written JSON copying the shape by eye, which drifts from the engine
-  the moment the engine moves.
+  `peerreviewagents.scripted_read(paper, folder, reader, pieces=…)`.** The
+  first of the scripted helpers above, and the one with the converter's own
+  failures in it: `pieces` are extra converter pieces spliced into the draft,
+  so a fixture holds what the stage exists for (a mangled equation, debris left
+  as a heading of its own) without a PDF that has them, and
+  `slot.find('a few characters')` names a piece by what the converter read
+  there and raises unless exactly one matches. `base()` reads the sealed
+  workspace back, and `sealed` is the reader's own answer to
+  `seal_manuscript`. What the stage leaves on a manuscript — a re-read part's
+  `part` and `of`, a fold's `absorbed`, the reader's `note` — existed only in
+  the output of a real run, so the first consumer's fixtures for it were
+  hand-written JSON copying the shape by eye, which drifts from the engine the
+  moment the engine moves.
 - **`ai_read['gone']` counts the pieces that left the manuscript.**
   `actions` is the pieces the sealed documents hold, counted by what was done
   to each, so a piece folded into another or withdrawn is in no document to be

@@ -8,90 +8,117 @@ run, so a consumer's fixtures for them were hand-built JSON — a copy of the
 engine's output shape, which drifts away from the engine the moment the engine
 moves, silently, because nothing holds the copy against the code.
 
-:func:`scripted_read` is the other way round. It opens a real run on a PDF,
-claims the reader's slot, and hands back a handle whose methods are the
-reader's own tools under their own names, called through
-:mod:`peerreviewagents.plugin.server` — the path the Read stage's own tests
-drive. Nothing is launched and no model reads anything: the script is the
-reader.
+These three functions are the other way round. Each one runs a *real* run —
+the orchestrator's own stage order, the real tool server, the real recorder,
+the real run folder — with Python in the seat the model sits in. Nothing is
+launched and no model reads anything: a script is the agent.
 
     from peerreviewagents import scripted_read
 
-    with scripted_read('paper.pdf', folder) as read:
-        read.view_page(1)
-        read.replace_equation(read.find('E = m c^{2'), 1, 'E = m c^{2}', number='(1)')
-        read.describe_figure(read.find('Figure 1'), 1, 'A photograph of the bench …',
-                             absorb=[read.find('Concentration')])
-        read.seal(note='Table 2 was inside Table 1 and is put back.')
+    read = scripted_read('paper.pdf', folder, pieces=CONVERTER_LEFT)
     base = read.base()        # PaperBase: `rows` and `manifest` as sealed
+
+That call ran the whole Read stage with this module's default reader script,
+which views every page, accounts for every outstanding piece and seals. A
+fixture that wants something else of the reader passes its own script, which
+is one function taking the slot it is running as::
+
+    def reader(slot):
+        slot.view_page(1)
+        slot.replace_equation(slot.find('E = m c^{2'), 1, 'E = m c^{2}', number='(1)')
+        slot.describe_figure(slot.find('Figure 1'), 1, 'A photograph of the bench …',
+                             absorb=[slot.find('Concentration')])
+        slot.seal(note='Table 2 was inside Table 1 and is put back.')
+
+    read = scripted_read('paper.pdf', folder, reader, pieces=CONVERTER_LEFT)
+
+The slot's methods are that agent's own tools under their own names, with the
+token supplied, and it is confined to the tools its own agent definition
+grants: anything else raises
+:class:`~peerreviewagents.plugin.runner.NotGranted`, as it would for a model
+whose prompt named a tool it does not have. A tool that answers a refusal
+raises it — :class:`ReaderRefused`, :class:`CheckRefused`,
+:class:`ReviewRefused` — because a script has no turn to read an answer in.
 
 *pieces* is how a fixture gets the converter's failures into the draft without
 a PDF that has them: each one is a piece in the shape
 :func:`peerreviewagents.engine.ingest.convert_paper` writes, spliced into the
 converted draft before the reference list.
 
-:func:`scripted_fix_check` is the same thing for the other stage whose output an
+:func:`scripted_fix_check` is the same for the other stage whose output an
 application renders: the check of a new draft against the problems a review
-raised. It opens a fix check on a PDF with a problems file, claims every checker
-slot, and hands back a handle whose methods are the checker's own tools —
-``fix_queue``, ``submit_fix_check`` and the tools that read the paper — so a
-fixture holding ``fix-check.json`` and ``FIXES.md`` is written by the lane
-rather than by hand::
+raised. Every lane gets its own queue, and the default checker answers every
+problem in it::
 
     from peerreviewagents import read_fix_check, scripted_fix_check
 
-    with scripted_fix_check('paper-v2.pdf', folder, problems) as check:
-        check.submit_fix_check('i01', 'fixed', quote=check.line(14),
-                               note='The abstract now reports 24%.')
-        check.submit_fix_check('i02', 'cannot-tell',
-                               reason='The repeated experiment is not in this draft.')
-        check.write()
+    def checker(slot):
+        for problem in slot.fix_queue()['problems']:
+            slot.submit_fix_check(problem['id'], 'cannot-tell',
+                                  reason='The repeated experiment is not in this draft.')
+
+    check = scripted_fix_check('paper-v2.pdf', folder, problems, {'fix-check': checker})
     reading = read_fix_check(folder)
 
 :func:`scripted_review` is the third, and the one a consumer rendering a review
 needs: a finished review folder — ``issues.json``, ``REVIEW.md``, the findings
 and the editor's report that :func:`peerreviewagents.read_run` reads — written
-by the engine with no model anywhere in it. It claims every slot the arm plans
-and the recorder, and the script is each of them in turn::
+by the engine with no model anywhere in it::
 
     from peerreviewagents import read_run, scripted_review
 
-    with scripted_review('paper.pdf', folder, arm='reviewers-only', reviewers=1) as review:
-        stored = review.submit_finding(
-            slot='core-1', title='The abstract overstates the result',
-            line=14, quote=review.line(14, slot='core-1'),
-            comment='The sentence asserts more than the measurement shows.',
-            severity='major')
-        review.submit_report('What I checked and what I raised.', slot='core-1')
-        review.submit_issues([{...'members': [stored['finding_uid']]}])   # the editor's
-        review.submit_editor(summary='…', significance='…')
-        review.submit_report('The pooled review is above.', slot='editor')
-        review.write()
+    def reviewer(slot):
+        line, quote = slot.anchor()
+        slot.submit_finding(title='The abstract overstates the result',
+                            line=line, quote=quote, severity='major',
+                            comment='The sentence asserts more than the measurement shows.')
+        slot.submit_report('What I checked and what I raised.')
+
+    review = scripted_review('paper.pdf', folder, {'core': reviewer}, reviewers=1)
     reading = read_run(folder)
 
-**This is for tests and fixtures.** A review's Read stage is a model stage,
-launched by :func:`peerreviewagents.review`, and a fix check is a model run
-launched by :func:`peerreviewagents.check_fixes`; those are what a consumer's
-own users run. What this gives a consumer is a folder to render in a test,
-written by the engine rather than by hand.
+Scripts are keyed by slot (``core-1``), by the agent definition's name
+(``core-reviewer``), by the role the server resolved the slot to (``core``) or
+by ``'*'`` for every slot, in that order of preference; a slot no script names
+runs this module's default for its role, which is :data:`DEFAULT_SCRIPTS`. So a
+one-line call writes a whole folder, and a script is written only for the slot
+a fixture cares about.
+
+What a script returns is normally nothing: the stage's answer is read off what
+the script did — the seal it took, the findings it stored, the reports it filed
+— so a script cannot close a stage it did not do the work for. A dict is merged
+over that answer for a fixture that means to say something else, and
+:data:`NO_ANSWER` stands in for an agent that did the work and then said
+nothing, which is the one thing a scripted run cannot do by returning ``None``.
+
+**This is for tests and fixtures.** A review is a model run launched by
+:func:`peerreviewagents.review` and a fix check one launched by
+:func:`peerreviewagents.check_fixes`; those are what a consumer's own users
+run. What this gives a consumer is a folder of exactly that shape — runtime
+rows, token fields, the recorder's receipt, the tool-grant boundary — written
+by the engine rather than by hand.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
+from . import issues as issue_model
 from . import names
 from . import problems as problem_list
 from .engine import paper_base, paper_view
 from .engine.ingest import DRAFT_FILE, convert_paper
 from .engine.storage import write
+from .plugin import runner as agent_runner
 from .plugin import server as srv
+from .plugin import starter
 
 __all__ = ['scripted_read', 'ScriptedRead', 'ReaderRefused', 'PIECE',
            'scripted_fix_check', 'ScriptedFixCheck', 'CheckRefused',
            'scripted_review', 'ScriptedReview', 'ReviewRefused', 'ToolRefused',
-           'SCRIPTED_SEAL']
+           'ScriptedSlot', 'DEFAULT_SCRIPTS', 'NO_ANSWER']
 
 #: The keys a converter piece carries, with what a fixture usually leaves out.
 #: It mirrors the piece ``convert_paper`` writes — ``docs/INTEGRATIONS.md``
@@ -100,27 +127,26 @@ __all__ = ['scripted_read', 'ScriptedRead', 'ReaderRefused', 'PIECE',
 PIECE = {'text': '', 'section': '', 'kind': 'paragraph', 'page': 1, 'bbox': None,
          'citations': [], 'table': None, 'source': 'text', 'page_mapping': 'converter'}
 
+#: What a script returns to stand in for an agent that worked and then answered
+#: nothing. Returning ``None`` cannot mean that: almost every script returns
+#: ``None`` — the stage's answer is read off the calls it made — so the one
+#: outcome a scripted run could not otherwise produce gets a name of its own.
+#: A stage that answers nothing is retried once and then blocks the run, which
+#: is the behaviour a fixture of a *blocked* folder needs.
+NO_ANSWER = 'no answer'
 
-#: Why the manuscript of a scripted check or review is sealed without a reader.
-#: Both quote the lines of the paper, and there are no lines until the
-#: manuscript is sealed; no model runs here, so it is sealed the one other way a
-#: run can seal it — the recorder's ``seal_as_converted``, the path a run takes
-#: when its reader failed. A fixture that wants a *read* manuscript instead
-#: builds one with :func:`scripted_read`.
-SCRIPTED_SEAL = ('no reader ran: a script drove this run, so the manuscript is the '
-                 'converter\'s reading of the paper')
+#: The claim code a brief hands its agent. A script does not have to find it —
+#: the seat claims the slot before the script runs — but it is read the way the
+#: model reads it, out of the prompt, so a brief that stopped carrying one
+#: would fail here rather than quietly claiming nothing.
+CLAIM_CODE = re.compile(r'claim_code="([^"]*)"')
 
-#: What a slot may submit, by the role the server resolved it to, beside the
-#: tools ``claim_agent`` grants it. A submission is not an investigation call —
-#: it spends no allowance and is rationed by nothing — so the server does not
-#: list these back with the reading tools; the lane's own brief tells each slot
-#: what to submit. A script has no brief, so a handle's methods come from here
-#: as well, which is also what makes a tool one slot's alone: the editor is the
-#: only role that submits issues, and the recorder the only one that writes.
-SUBMISSIONS = {'core': ('submit_finding', 'submit_report'),
-               'specialist': ('submit_finding', 'submit_report'),
-               'editor': ('list_findings', 'submit_issues', 'submit_editor', 'submit_report'),
-               'recorder': ('write_review',)}
+#: What the default reader writes where a figure has no description, and the
+#: note it seals with. Both are placeholders with the shape of the real thing:
+#: long enough and specific enough that the server stores them.
+FIGURE_DESCRIPTION = ('A photograph of the bench with the instrument clamped at the left and '
+                      'three widgets in a row; the scale divisions are 0.5 mm apart.')
+READER_NOTE = 'A script read this draft: every page was viewed and every piece accounted for.'
 
 
 class ToolRefused(RuntimeError):
@@ -130,6 +156,11 @@ class ToolRefused(RuntimeError):
     again. A script has no turn and nothing reads its answers, so a refusal is
     raised here instead: ``tool`` is which one, and ``answer`` is the whole
     thing the server said.
+
+    It is raised inside the script, where the call was made. A script that does
+    not catch it dies as a model that crashed would — the stage gets nothing —
+    and the helper raises it again when the run is over, so a test sees the
+    refusal and not only a blocked folder.
 
     :class:`ReaderRefused` is the Read stage's, :class:`CheckRefused` the fix
     check's and :class:`ReviewRefused` the review's, so a test may catch either
@@ -148,72 +179,147 @@ class ReaderRefused(ToolRefused):
 
 
 class CheckRefused(ToolRefused):
-    """A fix-check tool, or the ingest, seal or write behind it, answered a refusal."""
+    """A fix-check tool, or the ingest or write behind it, answered a refusal."""
 
 
 class ReviewRefused(ToolRefused):
-    """A review tool, or the ingest, seal or write behind it, answered a refusal."""
+    """A review tool, or the ingest or write behind it, answered a refusal."""
 
 
-class ScriptedRead:
-    """One run with its Read stage open, and the reader's tools as methods.
+class ScriptedSlot:
+    """One agent of a scripted run, with its own tools as methods.
 
-    Every tool in :data:`peerreviewagents.plugin.server.READER_TOOLS` is a
-    method here under its own name, with the agent token supplied and the
-    piece ids, pages and arguments exactly as the tool takes them. A refusal
-    is raised as :class:`ReaderRefused`. ``view_page`` answers its JSON
-    payload alone, because the image block beside it is for a model.
+    This is what a script is handed. Every tool the slot's own agent definition
+    grants is a method here under its own name, with the agent token supplied
+    and the arguments exactly as the tool takes them::
 
-    One run is open per process, which is what the server enforces, so this
-    closes: leaving the ``with`` block puts back whatever run was attached
-    before. The folder stays as it is, sealed, for the test to read.
+        slot.submit_finding(title=…, line=14, quote=…, comment=…, severity='major')
+        slot.submit_report('What I read and what I raised.')
+
+    The boundary is the agent's own: a tool the definition does not grant
+    raises :class:`~peerreviewagents.plugin.runner.NotGranted` and one the
+    server does not have raises :class:`AttributeError`, which is what a
+    scripted panel is for. A tool that answers a refusal raises
+    :attr:`refusal`. ``view_page`` answers its JSON payload alone, because the
+    image block beside it is for a model.
+
+    Beside the tools there is sugar a script would otherwise write itself:
+    :meth:`find` and :meth:`pieces` for the reader's draft, :meth:`anchor` and
+    :meth:`line` for a passage of the sealed manuscript to quote,
+    :meth:`whole_paper` for the read every reviewing brief opens with. Nothing
+    here reaches past the slot's own grants.
+
+    Every call is kept on :attr:`calls`, which is where the stage's answer
+    comes from: a script that filed two findings and closed its slot answered
+    ``findings_stored: 2`` whether it said so or not.
     """
 
-    def __init__(self, paper, folder, opened, token, held):
-        self.paper = Path(paper)
-        self.folder = Path(folder)
-        self.workspace = self.folder / names.MANUSCRIPT_DIRECTORY
-        self.opened = opened
+    def __init__(self, tools, task, token, role, index=0, refusal=ToolRefused):
+        #: The slot this agent is: ``core-1``, from a label of ``core-1#2``.
+        self.slot = str(task.label).split('#')[0]
+        #: Which attempt at that slot this is, counting from 1.
+        self.attempt = int(str(task.label).split('#')[1]) if '#' in str(task.label) else 1
+        #: The role the server resolved this slot to: ``core``, ``editor``,
+        #: ``reader``, ``specialist``, ``fix-check``, ``code-check``,
+        #: ``citation-worker``.
+        self.role = str(role or '')
+        #: Where in the run this slot was claimed, counting from 0. The default
+        #: reviewer anchors its finding at this index, so two reviewers of the
+        #: same run quote two different passages.
+        self.index = int(index)
+        #: The agent token, for a call made through something other than this.
         self.token = token
-        self.sealed = None
-        self._held = held
+        #: The model this slot was asked to run, for a report that records it.
+        self.model = str(task.model or '')
+        #: The task the orchestrator built: the brief, the schema, the grants.
+        self.task = task
+        #: Which :class:`ToolRefused` a refused tool raises.
+        self.refusal = refusal
+        #: One row per call: ``tool``, ``arguments``, ``keywords``, ``answer``.
+        self.calls = []
+        self._tools = tools
+
+    def __repr__(self):
+        return f'<{type(self).__name__} {self.slot} ({self.role}), {len(self.calls)} call(s)>'
 
     # --- the tools ---------------------------------------------------------
 
+    @property
+    def granted(self):
+        """Every tool this agent's own definition grants it, as it was granted."""
+        return tuple(self.task.tools)
+
     def call(self, tool, *arguments, **named):
-        """One reader tool by name, with the token supplied. The methods are this."""
-        if tool not in srv.READER_TOOLS:
-            raise AttributeError(str(tool) + ' is not one of the reader\'s tools: '
-                                 + ', '.join(srv.READER_TOOLS) + '.')
-        answer = getattr(srv, tool)(self.token, *arguments, **named)
-        if isinstance(answer, dict) and 'request_rejected' in answer:
-            raise ReaderRefused(tool, answer)
+        """One of this slot's tools by name, with the token supplied.
+
+        The methods are this. A refusal raises :attr:`refusal`; a tool the
+        definition does not grant raises
+        :class:`~peerreviewagents.plugin.runner.NotGranted`.
+        """
+        answer = getattr(self._tools, tool)(self.token, *arguments, **named)
         if isinstance(answer, list):
             # `view_page` answers an image block and a JSON payload. The image
             # is what a model looks at; a script gets what it can read.
             answer = json.loads(answer[-1])
-        if tool == 'seal_manuscript':
-            self.sealed = answer
+        self.calls.append({'tool': tool, 'arguments': arguments, 'keywords': named,
+                           'answer': answer})
+        if isinstance(answer, dict) and 'request_rejected' in answer:
+            raise self.refusal(tool, answer)
         return answer
 
     def __getattr__(self, name):
-        if name in srv.READER_TOOLS:
-            def tool(*arguments, **named):
-                return self.call(name, *arguments, **named)
-            tool.__name__ = name
-            tool.__doc__ = getattr(srv, name).__doc__
-            return tool
-        raise AttributeError(type(self).__name__ + ' has no attribute ' + repr(name))
+        if name.startswith('_'):
+            raise AttributeError(name)
+        tools = self.__dict__.get('_tools')
+        if tools is None:
+            raise AttributeError(name)
+        getattr(tools, name)  # The grant boundary, asked before anything is called.
 
-    def seal(self, note=''):
-        """Seal the manuscript, with the reader's note. :attr:`sealed` is the answer."""
-        return self.call('seal_manuscript', note=note)
+        def tool(*arguments, **named):
+            return self.call(name, *arguments, **named)
 
-    # --- finding the pieces to work on -------------------------------------
+        tool.__name__ = name
+        tool.__doc__ = getattr(srv, name, None).__doc__ if hasattr(srv, name) else None
+        return tool
+
+    # --- what this slot did ------------------------------------------------
+
+    def answers(self, tool):
+        """Every answer this slot got from *tool*, in the order it called it."""
+        return [row['answer'] for row in self.calls if row['tool'] == tool]
+
+    def last(self, tool):
+        """The last answer *tool* gave this slot, or ``None`` if it never called it."""
+        found = self.answers(tool)
+        return found[-1] if found else None
+
+    def count(self, tool):
+        """How many times this slot called *tool*."""
+        return sum(1 for row in self.calls if row['tool'] == tool)
+
+    def given(self, tool):
+        """``(arguments, keywords)`` of every call this slot made to *tool*."""
+        return [(row['arguments'], row['keywords']) for row in self.calls
+                if row['tool'] == tool]
+
+    # --- the reader's draft ------------------------------------------------
 
     def pieces(self, document=''):
-        """``{piece id: row}`` of one document of the draft, as the reader sees it."""
-        return {row['piece']: row for row in self.call('read_draft', document=document)['pieces']}
+        """``{piece id: row}`` of one document of the draft, as the reader sees it.
+
+        ``read_draft`` is served a part at a time, as a long paper's draft is
+        more than one turn's reading; this is every part of one document.
+        """
+        first = self.call('read_draft', document=document)
+        rows = {row['piece']: row for row in first['pieces']}
+        for part in range(2, int(first.get('parts') or 1) + 1):
+            more = self.call('read_draft', document=document, part=part)
+            rows.update({row['piece']: row for row in more['pieces']})
+        return rows
+
+    def outstanding(self, document=''):
+        """What the draft still needs a reader for, as ``read_draft`` reports it."""
+        return self.call('read_draft', document=document)['outstanding']
 
     def find(self, text, document=''):
         """The id of the one piece of the draft whose text holds *text*.
@@ -234,33 +340,403 @@ class ScriptedRead:
                                           for row in rows.values()) + '.')
         return found[0]
 
-    # --- after the seal ----------------------------------------------------
+    def seal(self, note=''):
+        """Seal the manuscript, with the reader's note. ``seal_manuscript``, named."""
+        return self.call('seal_manuscript', note=note)
+
+    # --- the sealed manuscript ---------------------------------------------
+
+    def whole_paper(self, document=''):
+        """Read every part of one document, as every reading brief says to first."""
+        parts = paper_view.served(self.base(), document or paper_base.MAIN_DOCUMENT)
+        return '\n'.join(str(self.call('read_paper', document=document, part=part))
+                         for part in range(1, parts + 1))
+
+    # Kept under the name the handle used to carry, because a consumer's script
+    # reads the paper and then quotes it, and `served` is what that was called.
+    served = whole_paper
+
+    def line(self, number, document=''):
+        """One line of this manuscript, by number, as ``read_paper`` serves it.
+
+        A finding and a verdict are both anchored by a passage matched against
+        the manuscript, so this is where a script takes one from:
+        ``quote=slot.line(14)`` quotes line 14 exactly.
+        """
+        return self.base().line_text(int(number), document or paper_base.MAIN_DOCUMENT)
+
+    def anchor(self, index=0):
+        """A passage of this manuscript that occurs once, and its line.
+
+        ``(line, quote)``, or ``None`` where this manuscript has no *index*-th
+        such passage. The server refuses a finding whose quote it cannot place,
+        or places twice, so this is how a script quotes a real paper it has
+        never seen: ``line, quote = slot.anchor()``.
+        """
+        base = self.base()
+        text = base.text
+        found = 0
+        for number in range(1, base.line_count() + 1):
+            for piece in base.line_text(number).split('. '):
+                piece = piece.strip()
+                if 30 < len(piece) < 160 and text.count(piece) == 1:
+                    if found == index:
+                        return number, piece
+                    found += 1
+                    break
+        return None
 
     def base(self):
-        """The sealed workspace, read back as a :class:`PaperBase`.
+        """This run's manuscript as a :class:`PaperBase`, or ``None`` before the seal."""
+        return srv.current().base
 
-        ``rows`` are the map rows the stage wrote and ``manifest`` holds the
-        reader's note under ``ai_read``. It is
+
+# -- the default scripts ----------------------------------------------------
+
+
+def read_stage(slot):
+    """The reader: view every page, account for every outstanding piece, seal."""
+    draft = slot.read_draft()
+    for page in range(1, int(draft.get('page_count') or 0) + 1):
+        slot.view_page(page)
+    left = slot.outstanding()
+    for row in left['pieces']:
+        if row['kind'] == 'figure':
+            slot.describe_figure(row['piece'], row['page'], FIGURE_DESCRIPTION)
+        else:
+            slot.confirm_piece(row['piece'], row['page'])
+    slot.seal(note=READER_NOTE)
+
+
+def reviewer(slot):
+    """One reviewer: read the paper, file one anchored finding, close the slot."""
+    slot.whole_paper()
+    found = slot.anchor(slot.index)
+    if found is None:
+        return nothing_found(slot)
+    line, quote = found
+    slot.submit_finding(title=f'{slot.slot} raised one problem',
+                        line=line, quote=quote, severity='major',
+                        comment='The sentence asserts more than the passage behind it shows.')
+    slot.submit_report('What I read and what I raised.', model=slot.model)
+
+
+def nothing_found(slot):
+    """One reviewer with nothing to raise: read the paper, close the slot empty."""
+    slot.whole_paper()
+    slot.submit_report('I read the manuscript and found nothing to raise.',
+                       none_found=True, model=slot.model)
+
+
+def editor(slot):
+    """The editor: one issue per finding, ruled on, then the pooled review."""
+    slot.whole_paper()
+    uids = [row['finding_uid'] for row in slot.list_findings()['findings']]
+    issues = [{'name': f'Issue {rank}', 'severity': 'major',
+               'category': 'claims-and-conclusions', 'rank': rank,
+               'statement': 'The manuscript asserts more than the passage behind it supports, '
+                            'and the authors have to say which reading they mean.',
+               'members': [uid]}
+              for rank, uid in enumerate(uids, 1)]
+    for at in range(0, len(issues), issue_model.MAX_ISSUE_BATCH):
+        slot.submit_issues(issues[at:at + issue_model.MAX_ISSUE_BATCH])
+    slot.submit_editor(
+        summary='The reviewers agree on one weakness, and it is answerable.'
+                if issues else 'The reviewers raised nothing.',
+        significance='Would matter to the field if it holds.',
+        strength_of_evidence='Partly supported; the main comparison is underpowered.',
+        verdict_reasoning='The claim is plausible but the evidence shown is thin.')
+    slot.submit_report('The pooled review is above.', model=slot.model)
+
+
+def checker(slot):
+    """One fix-check lane: a verdict for every problem in its own queue."""
+    slot.whole_paper()
+    for problem in slot.fix_queue()['problems']:
+        slot.submit_fix_check(problem['id'], 'cannot-tell',
+                              reason='The experiment this problem asks for is not in this draft.',
+                              note='Nothing in the new draft settles it either way.')
+
+
+def code_checker(slot):
+    """The code check: a verdict for every claim in the queue, then the close."""
+    queue = slot.method_claims()
+    for claim in queue['claims']:
+        looked = str(claim.get('assumed_method') or claim.get('title') or '')[:60]
+        slot.search_code(looked or 'def ')
+        slot.submit_code_check(claim['finding_uid'], 'not-shown',
+                               searches=[looked or 'def '],
+                               note='The snapshot does not hold the step this finding assumes.')
+    slot.submit_report('What I looked for in the snapshot, and what it does not show.',
+                       model=slot.model)
+
+
+def citation_worker(slot):
+    """One citation worker: claim nothing and judge nothing.
+
+    The ledger is a specialist's instrument, not a stage: a worker that judges
+    nothing leaves rows unjudged and cannot hold a run open. A fixture that
+    wants a judged ledger scripts this slot itself.
+    """
+    return {'judged': 0}
+
+
+#: The script each role runs where a caller names none, by the role the server
+#: resolved the slot to. Together they are the smallest run that writes a whole
+#: folder: a read manuscript, one anchored finding per core reviewer, an editor
+#: that groups and rules on them, and a verdict on every problem of a check.
+DEFAULT_SCRIPTS = {'reader': read_stage, 'core': reviewer, 'specialist': nothing_found,
+                   'editor': editor, 'fix-check': checker, 'code-check': code_checker,
+                   'citation-worker': citation_worker}
+
+
+# -- the seat the model sits in ---------------------------------------------
+
+
+def _answer_of(slot):
+    """The stage's answer, read off what the script actually did.
+
+    Every stage answers a schema the orchestrator reads — that it sealed, that
+    it closed, how many findings it stored — and the server already knows all
+    of it, because every one of those is a call this slot made. So the answer
+    is assembled here rather than asked of the script: a script that files two
+    findings and closes its slot cannot report one, and a script that does the
+    work and returns nothing still closes its stage.
+    """
+    closed = bool((slot.last('submit_report') or {}).get('closed'))
+    summary = f'{slot.slot} ran as a script.'
+    if slot.role == 'reader':
+        sealed = slot.last('seal_manuscript') or {}
+        read = sealed.get('ai_read') or {}
+        counts = sealed.get('citations') or {}
+        lines = (sealed.get('statistics') or {}).get('lines') or {}
+        answer = {'sealed': bool(sealed.get('sealed')),
+                  'pages': int(read.get('pages') or 0),
+                  'pages_viewed': int(read.get('pages_viewed') or 0),
+                  'actions': int(read.get('actions') or 0),
+                  'tool_calls': int(read.get('tool_calls') or len(slot.calls)),
+                  'line_count': int(lines.get(paper_base.MAIN_DOCUMENT) or 0)}
+        # Omitted rather than null where the paper has no reference list, which
+        # is what the schema asks of a reader that got `citations: null`.
+        for key in ('references', 'uses'):
+            if counts.get(key) is not None:
+                answer[key] = int(counts[key])
+        return answer
+    if slot.role in ('core', 'specialist'):
+        stored = [row for row in slot.answers('submit_finding')
+                  if isinstance(row, dict) and row.get('finding_uid')]
+        return {'closed': closed, 'findings_stored': len(stored),
+                'none_found': not stored, 'model': slot.model,
+                'summary': f'{slot.slot} filed {len(stored)} finding(s).'}
+    if slot.role == 'editor':
+        rows = [row for arguments, named in slot.given('submit_issues')
+                for row in (named.get('issues') if named.get('issues') is not None
+                            else (arguments[0] if arguments else []) or [])]
+        severities = [str(row.get('severity') or '') for row in rows]
+        required = sum(1 for one in severities if one in ('major', 'moderate'))
+        return {'accepted': bool((slot.last('submit_editor') or {}).get('accepted')),
+                'closed': closed, 'issues': len(rows), 'required_changes': required,
+                'suggestions': len(rows) - required, 'model': slot.model,
+                'summary': f'the editor grouped the findings into {len(rows)} issue(s).'}
+    if slot.role == 'code-check':
+        verdicts = [(named.get('verdict') if 'verdict' in named
+                     else (arguments[1] if len(arguments) > 1 else ''))
+                    for arguments, named in slot.given('submit_code_check')]
+        queue = slot.last('method_claims') or {}
+        return {'closed': closed, 'claims': int(queue.get('count') or 0),
+                'confirmed': sum(1 for one in verdicts if one == 'confirmed'),
+                'contradicted': sum(1 for one in verdicts if one == 'contradicted'),
+                'not_shown': sum(1 for one in verdicts if one == 'not-shown'),
+                'model': slot.model,
+                'summary': f'the code check answered {len(verdicts)} claim(s).'}
+    if slot.role == 'fix-check':
+        verdicts = [(named.get('verdict') if 'verdict' in named
+                     else (arguments[1] if len(arguments) > 1 else ''))
+                    for arguments, named in slot.given('submit_fix_check')]
+        queue = slot.last('fix_queue') or {}
+        return {'answered': len(verdicts), 'count': int(queue.get('count') or 0),
+                'fixed': sum(1 for one in verdicts if one == 'fixed'),
+                'not_fixed': sum(1 for one in verdicts if one == 'not-fixed'),
+                'cannot_tell': sum(1 for one in verdicts if one == 'cannot-tell'),
+                'model': slot.model, 'summary': summary}
+    if slot.role == 'citation-worker':
+        return {'judged': slot.count('submit_citation_verdict')}
+    return {'closed': closed, 'summary': summary, 'model': slot.model}
+
+
+class _Seat:
+    """What sits where the model sits, for one scripted run.
+
+    One of these is the whole runner's script list: it is registered for every
+    slot and dispatches on the task it is handed, because the slots a run plans
+    are not known until the ingest. It claims the slot, builds the
+    :class:`ScriptedSlot`, runs the script the caller named or the default for
+    that role, and assembles the stage's answer out of the calls the script
+    made.
+
+    An exception out of a script is not swallowed: the lane dies as a model
+    that crashed would, and the exception is kept here so the helper can raise
+    it again when the run is over. A blocked folder is a true account of the
+    run but a poor account of a script with a bug in it.
+    """
+
+    def __init__(self, scripts=None, refusal=ToolRefused, defaults=None):
+        self.scripts = dict(scripts or {})
+        self.refusal = refusal
+        self.defaults = DEFAULT_SCRIPTS if defaults is None else dict(defaults)
+        #: ``{slot: ScriptedSlot}`` — every agent this run ran, in order.
+        self.slots = {}
+        #: Every exception a script raised, as ``(slot, exception)``.
+        self.raised = []
+
+    def script_for(self, slot, role, agent):
+        """The script this slot runs: the caller's by slot, agent, role or ``'*'``."""
+        for key in (slot, agent, role, '*'):
+            if key in self.scripts:
+                return self.scripts[key]
+        return self.defaults.get(role)
+
+    def code_of(self, task):
+        """The claim code out of the brief, the one place an agent is given it."""
+        found = CLAIM_CODE.search(str(task.prompt or ''))
+        if not found:
+            raise self.refusal('claim_agent', {'request_rejected': 'the brief for ' + task.label
+                                               + ' carries no claim code'})
+        return found.group(1)
+
+    def __call__(self, tools, task):
+        name = str(task.label).split('#')[0]
+        taken = tools.claim(name, self.code_of(task))
+        if isinstance(taken, dict) and 'request_rejected' in taken:
+            raise self.refusal('claim_agent', taken)
+        slot = ScriptedSlot(tools, task, taken['agent_token'], taken.get('role'),
+                            index=len(self.slots), refusal=self.refusal)
+        self.slots[name] = slot
+        script = self.script_for(name, slot.role, task.agent.name)
+        if script is None:
+            return None
+        try:
+            given = script(slot)
+        except BaseException as problem:  # noqa: BLE001 - kept, then raised again
+            self.raised.append((name, problem))
+            raise
+        if given is NO_ANSWER:
+            return None
+        answer = _answer_of(slot)
+        return {**answer, **given} if isinstance(given, dict) else answer
+
+
+# -- what a scripted run left behind ----------------------------------------
+
+
+class ScriptedRun:
+    """One finished scripted run: its summary, its folder and its slots.
+
+    The run is over by the time a caller holds this. :attr:`summary` is the
+    dict :func:`peerreviewagents.review` returns, :attr:`folder` is the run
+    folder and :attr:`review` the review folder inside it, and :attr:`slots`
+    holds every :class:`ScriptedSlot` that ran — so a test can assert on what
+    a script was handed and what it called, after the fact.
+    """
+
+    def __init__(self, paper, folder, summary, seat):
+        self.paper = Path(paper)
+        self.folder = Path(folder)
+        self.workspace = self.folder / names.MANUSCRIPT_DIRECTORY
+        #: The summary the starter returned: status, folders, tokens, counts.
+        self.summary = dict(summary)
+        #: The review folder inside the run folder, where the stages wrote.
+        self.review = Path(self.summary.get('review') or self.folder)
+        #: ``{slot: ScriptedSlot}`` — every agent that ran, in the order it ran.
+        self.slots = dict(seat.slots)
+
+    def __repr__(self):
+        return (f'<{type(self).__name__} {self.status} '
+                f'[{", ".join(self.slots) or "nothing ran"}] {self.folder}>')
+
+    @property
+    def status(self):
+        """How the run ended: ``complete``, ``blocked``, and the rest."""
+        return self.summary.get('status')
+
+    @property
+    def blocked_reason(self):
+        """Why the run is blocked, or ``None`` where it is not."""
+        return self.summary.get('blocked_reason')
+
+    @property
+    def ran(self):
+        """The slots that ran, in order. The recorder is not one: it is this process."""
+        return tuple(self.slots)
+
+    def slot(self, name):
+        """One slot's :class:`ScriptedSlot`, by name."""
+        held = self.slots.get(str(name))
+        if held is None:
+            raise LookupError(repr(str(name)) + ' did not run in this run. The slots that ran: '
+                              + (', '.join(self.slots) or 'none') + '.')
+        return held
+
+    def base(self):
+        """The manuscript this run left behind, read back as a :class:`PaperBase`.
+
+        ``rows`` are the map rows the Read stage wrote and ``manifest`` holds
+        the reader's note under ``ai_read``. It is
         :func:`peerreviewagents.read_manuscript` on :attr:`workspace`, which a
         consumer may call itself; this is here so a test does not have to know
         where in the run folder the workspace is.
         """
         return paper_base.load(self.workspace)
 
-    def close(self):
-        """Put back the run that was attached before this one. The folder stays."""
-        srv.STATE['run'] = self._held
 
-    def __enter__(self):
-        return self
+class ScriptedRead(ScriptedRun):
+    """A finished scripted run whose Read stage is what the caller came for."""
 
-    def __exit__(self, *exception):
-        self.close()
-        return False
+    @property
+    def sealed(self):
+        """The reader's own answer to ``seal_manuscript``, or ``None``.
+
+        ``None`` where no reader ran — a folder whose manuscript was already
+        sealed plans no Read stage — or where the script sealed nothing.
+        """
+        held = self.slots.get('reader')
+        return held.last('seal_manuscript') if held else None
 
 
-def scripted_read(paper, folder, pieces=(), *, title='', reviewers=1, arm='single', **plan):
-    """Open a run on *paper* in *folder* with its Read stage claimed, for a script.
+class ScriptedFixCheck(ScriptedRun):
+    """A finished scripted fix check: the verdicts are in the folder."""
+
+    def read(self):
+        """The written check, read back with :func:`peerreviewagents.read_fix_check`."""
+        from .runs import read_fix_check  # Local: `runs` is the reader of what this writes.
+
+        return read_fix_check(self.folder)
+
+
+class ScriptedReview(ScriptedRun):
+    """A finished scripted review: the issues and the report are in the folder."""
+
+    def read(self):
+        """The written review, read back with :func:`peerreviewagents.read_run`."""
+        from .runs import read_run  # Local: `runs` is the reader of what this writes.
+
+        return read_run(self.folder)
+
+
+# -- the three helpers ------------------------------------------------------
+
+
+def scripted_read(paper, folder, reader=None, *, pieces=(), title='', supplements=None,
+                  scripts=None, reviewers=1, arm='single', **plan):
+    """Run a review on *paper* in *folder* whose Read stage is a script.
+
+    *reader* is the reader's script: one callable taking its
+    :class:`ScriptedSlot`. The default views every page, accounts for every
+    outstanding piece and seals, which is the fixture most tests want; a script
+    that means to exercise one repair writes that one instead. Anything else
+    the arm plans runs its own default, because a run is not a stage — the
+    manuscript this seals is read by a reviewer and recorded by the recorder,
+    which is what makes the folder the shape a model run leaves.
 
     *pieces* are extra converter pieces to put in the draft, each in the shape
     :func:`peerreviewagents.engine.ingest.convert_paper` writes and merged over
@@ -273,282 +749,51 @@ def scripted_read(paper, folder, pieces=(), *, title='', reviewers=1, arm='singl
     with nothing behind its caption, debris left as a heading of its own —
     without a PDF that has them.
 
-    Anything else in *plan* is :func:`peerreviewagents.plugin.server.ingest`'s:
-    the default is the smallest run there is, one core reviewer in the single
-    arm, because nothing downstream of the seal runs here.
+    *scripts* names the other slots' scripts, as :func:`scripted_review`
+    documents them. Anything else in *plan* is
+    :func:`peerreviewagents.review`'s: the default is the smallest run there
+    is, one core reviewer in the single arm, because what this is for is the
+    manuscript.
 
-    Returns a :class:`ScriptedRead`. Use it as a context manager, or call
-    :meth:`ScriptedRead.close` when the script is done.
+    Returns a :class:`ScriptedRead`.
     """
-    paper, folder = Path(paper), Path(folder)
-    workspace = folder / names.MANUSCRIPT_DIRECTORY
-    draft = convert_paper(str(paper), workspace, title=title or None)
-    for piece in pieces:
-        piece = {**PIECE, **dict(piece)}
-        document = str(piece.get('document') or paper_base.MAIN_DOCUMENT)
-        piece['document'] = document
-        held = draft['documents'].setdefault(document, [])
-        if document == paper_base.MAIN_DOCUMENT:
-            at = next((index for index, one in enumerate(held)
-                       if str(one.get('section')) == 'References'), len(held))
-            held.insert(at, piece)
-        else:
-            held.append(piece)
-    write(workspace / DRAFT_FILE, draft)
-    held = srv.STATE['run']
-    srv.STATE['run'] = None
-    opened = srv.ingest(str(paper), str(folder), reviewers=reviewers, arm=arm,
-                        title=title, **plan)
-    if 'request_rejected' in opened:
-        srv.STATE['run'] = held
-        raise ReaderRefused('ingest', opened)
-    codes = {row['slot']: row['claim_code'] for row in opened.get('claim_codes') or []}
-    taken = srv.claim_agent('reader', codes['reader'])
-    if 'request_rejected' in taken:
-        srv.STATE['run'] = held
-        raise ReaderRefused('claim_agent', taken)
-    return ScriptedRead(paper, folder, opened, taken['agent_token'], held)
+    named = dict(scripts or {})
+    if reader is not None:
+        if not callable(reader):
+            raise TypeError('the third argument of scripted_read is the reader\'s script, one '
+                            'callable taking its slot. Converter pieces go in pieces=.')
+        named['reader'] = reader
+    return _run(paper, folder, ScriptedRead, ReaderRefused, named,
+                pieces=pieces, title=title, supplements=supplements,
+                reviewers=reviewers, arm=arm, **plan)
 
 
-class _ScriptedSlots:
-    """What a handle with several claimed slots is, for the two that have them.
-
-    A fix check and a review are the same shape to a script: a run is open, its
-    slots are claimed, and every tool those slots were granted is a method here
-    under its own name, with the agent token supplied and the arguments exactly
-    as the tool takes them. ``slot=`` says which slot calls; what it means when
-    a caller leaves it out is :meth:`slot_for`, which is the one thing the two
-    stages answer differently. A refusal is raised as :attr:`refusal`.
-
-    One run is open per process, which is what the server enforces, so this
-    closes: leaving the ``with`` block puts back whatever run was attached
-    before. The folder stays as it is, with whatever :meth:`write` wrote in it,
-    for the test to read.
-    """
-
-    #: Which :class:`ToolRefused` a refused tool is raised as.
-    refusal = ToolRefused
-
-    def __init__(self, paper, folder, opened, claims, held):
-        self.paper = Path(paper)
-        self.folder = Path(folder)
-        self.workspace = self.folder / names.MANUSCRIPT_DIRECTORY
-        self.opened = opened
-        self.claims = dict(claims)
-        self.recorder_key = str(opened.get('recorder_key') or '')
-        self.written = None
-        self.tokens = {slot: taken['agent_token'] for slot, taken in self.claims.items()}
-        #: ``{slot: every tool it may call}`` — what the server granted it, and
-        #: then what its role may submit, which the grants leave out because a
-        #: submission spends no allowance. See :data:`SUBMISSIONS`.
-        self.granted = {slot: (*(taken.get('allowed_tools') or ()),
-                               *SUBMISSIONS.get(str(taken.get('role') or ''), ()))
-                        for slot, taken in self.claims.items()}
-        self._tools = tuple(dict.fromkeys(name for granted in self.granted.values()
-                                          for name in granted))
-        self._held = held
-
-    # --- the slots ---------------------------------------------------------
-
-    @property
-    def slots(self):
-        """The slots this run planned and this handle holds, in the order claimed."""
-        return tuple(self.claims)
-
-    @property
-    def tools(self):
-        """Every tool these slots were granted, as the server granted them."""
-        return self._tools
-
-    def slot_for(self, tool):
-        """Which slot calls *tool* when the caller names none: here, the first."""
-        return self.slots[0] if self.slots else ''
-
-    def token(self, slot=''):
-        """The agent token of one slot. The default is the first."""
-        name = str(slot or '') or (self.slots[0] if self.slots else '')
-        if name not in self.tokens:
-            raise LookupError(repr(name) + ' is not a slot of this run. The slots are: '
-                              + (', '.join(self.slots) or 'none') + '.')
-        return self.tokens[name]
-
-    # --- the tools ---------------------------------------------------------
-
-    def call(self, tool, *arguments, slot='', **named):
-        """One tool by name, with the token supplied. The methods are this."""
-        if tool not in self._tools:
-            raise AttributeError(str(tool) + ' is not one of these slots\' tools: '
-                                 + ', '.join(self._tools) + '.')
-        answer = getattr(srv, tool)(self.token(slot or self.slot_for(tool)),
-                                    *arguments, **named)
-        if isinstance(answer, dict) and 'request_rejected' in answer:
-            raise self.refusal(tool, answer)
-        if isinstance(answer, list):
-            # `view_page` answers an image block and a JSON payload. The image
-            # is what a model looks at; a script gets what it can read.
-            answer = json.loads(answer[-1])
-        return answer
-
-    def __getattr__(self, name):
-        tools = self.__dict__.get('_tools') or ()
-        if name in tools:
-            def tool(*arguments, slot='', **named):
-                return self.call(name, *arguments, slot=slot, **named)
-            tool.__name__ = name
-            tool.__doc__ = getattr(srv, name).__doc__
-            return tool
-        raise AttributeError(type(self).__name__ + ' has no attribute ' + repr(name))
-
-    # --- reading the paper -------------------------------------------------
-
-    def line(self, number, document='', slot=''):
-        """One line of this manuscript, by number, as ``read_paper`` serves it.
-
-        A finding and a verdict are both anchored by a passage matched against
-        the manuscript, so this is where a script takes one from:
-        ``quote=handle.line(14)`` quotes line 14 exactly. It reads the run's own
-        base, so it works while the run is open, and *slot* is ignored — the
-        lines are the manuscript's, not a slot's.
-        """
-        base = srv.current().base
-        if base is None:
-            raise LookupError('This manuscript is not sealed, so it has no lines yet.')
-        return base.line_text(int(number), document or paper_base.MAIN_DOCUMENT)
-
-    def served(self, document='', slot=''):
-        """Every part of one document, as ``read_paper`` served it, in one string."""
-        base = srv.current().base
-        parts = paper_view.served(base, document or paper_base.MAIN_DOCUMENT)
-        return '\n'.join(str(self.call('read_paper', slot=slot, document=document, part=part))
-                         for part in range(1, parts + 1))
-
-    def base(self):
-        """The manuscript of this run, read back as a :class:`PaperBase`."""
-        return paper_base.load(self.workspace)
-
-    def close(self):
-        """Put back the run that was attached before this one. The folder stays."""
-        srv.STATE['run'] = self._held
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exception):
-        self.close()
-        return False
-
-
-class ScriptedFixCheck(_ScriptedSlots):
-    """One fix check open, with the checker's own tools as methods.
-
-    Every tool a checker slot was granted — ``fix_queue``, ``submit_fix_check``
-    and the tools that read the paper — is a method here under its own name,
-    with the agent token supplied and the arguments exactly as the tool takes
-    them. A refusal is raised as :class:`CheckRefused`.
-
-    The problems are split between the checkers by the server, so a script does
-    not have to know which slot holds which: :meth:`submit_fix_check` routes a
-    verdict to the slot whose batch holds that problem, and *slot* is there for
-    a test that means to send one to the wrong slot. :attr:`slots` names them
-    all and :meth:`fix_queue` serves one slot's batch.
-
-    One run is open per process, which is what the server enforces, so this
-    closes: leaving the ``with`` block puts back whatever run was attached
-    before. The folder stays as it is, with whatever :meth:`write` wrote in it,
-    for the test to read.
-    """
-
-    refusal = CheckRefused
-
-    def __init__(self, paper, folder, opened, claims, batches, problems, held):
-        super().__init__(paper, folder, opened, claims, held)
-        #: ``{problem id: slot}`` — which checker holds which problem, as the
-        #: server split them. A problem past the check's cap is in no batch and
-        #: so is in no entry here.
-        self.batches = dict(batches)
-        #: The problems this check was given, as the run holds them.
-        self.problems = list(problems)
-
-    # --- the slots ---------------------------------------------------------
-
-    def slot_of(self, problem_id):
-        """Which checker slot holds *problem_id*, as the server split the batches."""
-        name = self.batches.get(str(problem_id).strip())
-        if name is None:
-            raise LookupError('No checker of this run holds problem '
-                              + (str(problem_id).strip() or '(none given)')
-                              + '. Either no problem has that id, or it is past the cap of '
-                              + str(srv.MAX_FIX_CHECKS) + ' and is nobody\'s to check: the '
-                              'written check counts those as not checked.')
-        return name
-
-    # --- the tools ---------------------------------------------------------
-
-    def fix_queue(self, slot=''):
-        """The problems one checker slot is still to answer, as the tool serves them."""
-        return self.call('fix_queue', slot=slot)
-
-    def submit_fix_check(self, problem_id, verdict, *arguments, slot='', **named):
-        """One verdict on one problem, from the slot whose batch holds it.
-
-        The arguments are ``submit_fix_check``'s own — ``quote`` and
-        ``document`` and ``line`` for a verdict that rests on a passage of this
-        draft, ``searches`` for one that rests on the old quotation being gone
-        or still standing, ``reason`` for ``cannot-tell``, and ``note`` for the
-        author. *slot* overrides the routing, which is how a test sends a
-        verdict to the checker that does not hold that problem.
-        """
-        return self.call('submit_fix_check', problem_id, verdict, *arguments,
-                         slot=slot or self.slot_of(problem_id), **named)
-
-    # --- writing the check -------------------------------------------------
-
-    def write(self):
-        """Write the check — ``fix-check.json`` and ``FIXES.md`` — as the recorder.
-
-        The server's answer, with the counts it wrote and the paths it wrote
-        them to, is returned and kept on :attr:`written`. Written once, like a
-        review: a second call raises :class:`CheckRefused`.
-        """
-        answer = srv.write_fix_check(self.recorder_key)
-        if 'request_rejected' in answer:
-            raise CheckRefused('write_fix_check', answer)
-        self.written = answer
-        return answer
-
-    def read(self):
-        """The written check, read back with :func:`peerreviewagents.read_fix_check`."""
-        from .runs import read_fix_check  # Local: `runs` is the reader of what this writes.
-
-        return read_fix_check(self.folder)
-
-
-def scripted_fix_check(paper, folder, problems, *, title='', **plan):
-    """Open a fix check on *paper* against *problems* in *folder*, for a script.
+def scripted_fix_check(paper, folder, problems, scripts=None, *, title='', supplements=None,
+                       **plan):
+    """Run a fix check on *paper* against *problems* in *folder*, from a script.
 
     *problems* is the ``--problems`` file: a path to one, or the document
     itself — a list of problem rows or an object with ``problems`` — which is
     written to ``<folder>/problems.json`` and read back from there, so a test
-    does not have to write the file itself. Either way the ingest validates it
+    does not have to write the file itself. Either way the run validates it
     against :mod:`peerreviewagents.problems`, so a row the check cannot look
     for raises :class:`CheckRefused` naming every reason rather than being
     checked against nothing.
 
-    The manuscript is sealed as the converter read it, with
-    :data:`SCRIPTED_SEAL` as the reason: a check quotes the lines of the new
-    draft and there are no lines until the manuscript is sealed, and no model
-    runs here to read one. Every checker slot the run planned is then claimed
-    and served the whole manuscript, which is what the lane tells a checker to
-    do first.
+    The new draft is *read* before it is checked, by the Read stage, because a
+    verdict quotes the lines of this draft and there are no lines until the
+    manuscript is sealed. The default reader seals it; ``{'reader': …}`` in
+    *scripts* is how a fixture reads it differently.
 
-    Anything else in *plan* is :func:`peerreviewagents.plugin.server.ingest`'s.
-    How many checkers there are is not: the server plans one per batch of
-    problems, up to its own cap.
+    *scripts* names each lane's script, as :func:`scripted_review` documents
+    them. How many lanes there are is not a caller's to choose: the server
+    plans one per batch of problems, up to its own cap, and each one is served
+    its own queue — ``slot.fix_queue()`` is the problems that lane is to
+    answer, and only those.
 
-    Returns a :class:`ScriptedFixCheck`. Use it as a context manager, or call
-    :meth:`ScriptedFixCheck.close` when the script is done.
+    Returns a :class:`ScriptedFixCheck`.
     """
-    paper, folder = Path(paper), Path(folder)
+    folder = Path(folder)
     if isinstance(problems, (str, Path)):
         path = Path(problems)
     else:
@@ -556,149 +801,116 @@ def scripted_fix_check(paper, folder, problems, *, title='', **plan):
         path = folder / 'problems.json'
         path.write_text(json.dumps(problem_list.normalize(problems), indent=2) + '\n',
                         encoding='utf-8')
-    opened, run, claims, held, refuse = _open(
-        paper, folder, CheckRefused, lambda one: one.checker_slots,
-        arm=srv.FIX_ARM, problems=str(path), title=title, **plan)
-    batches = {}
-    for slot, taken in claims.items():
-        queued = srv.fix_queue(taken['agent_token'])
-        if 'request_rejected' in queued:
-            raise refuse('fix_queue', queued)
-        for row in queued['problems']:
-            batches[str(row['id'])] = slot
-    return ScriptedFixCheck(paper, folder, opened, claims, batches, run.problems, held)
+    return _run(paper, folder, ScriptedFixCheck, CheckRefused, scripts,
+                title=title, supplements=supplements, problems=str(path), **plan)
 
 
-class ScriptedReview(_ScriptedSlots):
-    """One review open, with every slot's own tools as methods.
+def scripted_review(paper, folder, scripts=None, *, title='', supplements=None,
+                    reviewers=1, arm='reviewers-only', **plan):
+    """Run a review on *paper* in *folder* with a script in every seat.
 
-    A review is written by many hands, so this holds them all: every slot the
-    arm planned — the core reviewers, the specialist tracks, the revision
-    reader, the editor — and the recorder, each claimed and served the whole
-    manuscript. Every tool those slots were granted is a method here under its
-    own name, and ``slot=`` says who calls::
+    *scripts* is ``{key: script}``, where a script is one callable taking its
+    :class:`ScriptedSlot` and a key is
 
-        review.submit_finding(slot='core-1', title=…, line=14, quote=…,
-                              comment=…, severity='major')
-        review.submit_report('What I checked.', slot='core-1')
+    * a slot — ``'core-1'``, ``'editor'``, ``'reader'``, ``'code-check'``;
+    * an agent definition's name — ``'core-reviewer'``, ``'fix-check'``;
+    * a role — ``'core'``, ``'specialist'``, ``'editor'``, ``'reader'``;
+    * or ``'*'``, for every slot the run plans,
 
-    A tool only one slot holds needs no ``slot``: ``submit_issues``,
-    ``submit_editor`` and ``list_findings`` are the editor's alone, so they go
-    there by themselves. A tool several slots hold — ``submit_finding``,
-    ``submit_report``, ``read_paper`` — raises :class:`LookupError` naming them
-    if the caller does not say which, because a finding filed by the wrong
-    reviewer is a review that passes its tests and says the wrong thing.
+    in that order of preference. A slot no key names runs the default for its
+    role — :data:`DEFAULT_SCRIPTS` — so ``scripted_review('paper.pdf', folder)``
+    writes a whole review folder with no script at all, and a fixture writes a
+    script only for the slot it cares about.
 
-    What the script still has to do is the judgement no handle can supply: the
-    editor groups every finding into issues, ranks them with no gaps or ties,
-    and rules on each escalation. :meth:`write` is the recorder's
-    ``write_review``, which refuses until every stage the arm requires has
-    reported.
-
-    One run is open per process, which is what the server enforces, so this
-    closes: leaving the ``with`` block puts back whatever run was attached
-    before. The folder stays as it is, written, for the test to read.
-    """
-
-    refusal = ReviewRefused
-
-    def slot_for(self, tool):
-        """The one slot granted *tool*, or :class:`LookupError` naming the several."""
-        holders = [slot for slot, granted in self.granted.items() if tool in granted]
-        if len(holders) == 1:
-            return holders[0]
-        return self._ambiguous(tool, holders)
-
-    def _ambiguous(self, tool, holders):
-        raise LookupError(str(tool) + ' is a tool of ' + str(len(holders)) + ' slots of this '
-                          'review, so say which one calls it'
-                          + (': slot=' + repr(holders[0]) if holders else '')
-                          + '. The slots holding it: ' + (', '.join(holders) or 'none') + '.')
-
-    # --- writing the review ------------------------------------------------
-
-    def write(self):
-        """Write the review — ``issues.json``, ``REVIEW.md``, … — as the recorder.
-
-        The server's answer, with the status and the counts it wrote, is
-        returned and kept on :attr:`written`. Written once: a second call
-        raises :class:`ReviewRefused`, as does a review a stage has not
-        reported on yet.
-        """
-        answer = srv.write_review(self.token('recorder'))
-        if 'request_rejected' in answer:
-            raise ReviewRefused('write_review', answer)
-        self.written = answer
-        return answer
-
-    def read(self):
-        """The written review, read back with :func:`peerreviewagents.read_run`."""
-        from .runs import read_run  # Local: `runs` is the reader of what this writes.
-
-        return read_run(self.folder)
-
-
-def scripted_review(paper, folder, *, title='', reviewers=1, arm='reviewers-only', **plan):
-    """Open a review on *paper* in *folder* with every slot claimed, for a script.
-
-    The manuscript is sealed as the converter read it, with
-    :data:`SCRIPTED_SEAL` as the reason — a finding quotes the lines of the
-    paper and there are none until the manuscript is sealed, and no model runs
-    here to read one. Every slot the arm planned is then claimed and served the
-    whole manuscript, which is what the lane tells a reviewer to do first, and
-    so is the recorder, whose token :meth:`ScriptedReview.write` writes with. A
-    fixture that wants a *read* manuscript under the review builds one with
-    :func:`scripted_read` first and keeps that folder.
+    A script normally returns nothing: the stage's answer is read off the calls
+    it made. Returning a dict overrides fields of that answer, and returning
+    :data:`NO_ANSWER` stands in for an agent that worked and then said nothing,
+    which the orchestrator retries once and then blocks over — the way to a
+    *blocked* folder. An exception out of a script kills its lane, as a model
+    that crashed would, and is raised again from this call when the run is
+    over.
 
     *arm* and *reviewers* are the plan, and anything else in *plan* is
-    :func:`peerreviewagents.plugin.server.ingest`'s — ``tracks``, ``code``,
-    ``revision``. The default is the smallest review that writes a whole
-    folder: one core reviewer and the editor, no specialists, so a script that
-    only wants a rendered review has two slots to act as rather than nine.
+    :func:`peerreviewagents.review`'s — ``tracks``, ``code``,
+    ``citation_workers``, the token ceilings. The default is the smallest
+    review that writes a whole folder: one core reviewer and the editor, no
+    specialists. ``arm='full-two-track'`` with ``code=`` adds the code lane and
+    the ``code-check`` slot, which is scriptable like any other.
 
-    Returns a :class:`ScriptedReview`. Use it as a context manager, or call
-    :meth:`ScriptedReview.close` when the script is done.
+    A folder whose manuscript is already sealed — one :func:`scripted_read`
+    left behind — plans no Read stage, which is how a fixture reviews a
+    manuscript a reader read.
+
+    Returns a :class:`ScriptedReview`.
+    """
+    return _run(paper, folder, ScriptedReview, ReviewRefused, scripts,
+                title=title, supplements=supplements, reviewers=reviewers, arm=arm, **plan)
+
+
+def _run(paper, folder, held, refusal, scripts, *, pieces=(), title='', supplements=None,
+         problems=None, tokens=1000, **plan):
+    """One scripted run, start to finish, through the orchestrator.
+
+    The whole of what the three helpers share: the draft pre-written where a
+    fixture asked for pieces or a title of its own, the seat registered as the
+    runner's one script, the run driven by the starter exactly as a model run
+    is, and the refusals a script met raised again once the folder is written.
     """
     paper, folder = Path(paper), Path(folder)
-    opened, run, claims, held, _ = _open(
-        paper, folder, ReviewRefused, lambda one: (*one.required, 'recorder'),
-        arm=arm, reviewers=reviewers, title=title, **plan)
-    return ScriptedReview(paper, folder, opened, claims, held)
-
-
-def _open(paper, folder, refusal, slots_of, **plan):
-    """Ingest, seal as the converter read it, claim the slots, serve the paper.
-
-    What the two multi-slot handles share: the run held and put back, the
-    refusals raised as *refusal* rather than answered, and every slot
-    *slots_of* names claimed with its own code and served the whole manuscript
-    if it was granted ``read_paper``. Answers
-    ``(opened, run, claims, held, refuse)``, where ``refuse`` builds a refusal
-    and puts the held run back first.
-    """
-    held = srv.STATE['run']
+    _prepare(paper, folder, pieces, title, supplements)
+    seat = _Seat(scripts, refusal)
+    runner = agent_runner.ScriptedRunner({'*': seat}, tokens=tokens)
+    # One process serves one run: an ingest is refused while another run is
+    # attached, and the run this opens is detached again after. A consumer's
+    # suite drives several of these in one process, and a server that is still
+    # holding the last one refuses the next ingest rather than running it.
+    attached = srv.STATE.get('run')
     srv.STATE['run'] = None
+    try:
+        if problems is None:
+            summary = starter.review(str(paper), str(folder), runner=runner, **plan)
+        else:
+            summary = starter.check_fixes(str(paper), str(folder), problems, runner=runner,
+                                          **plan)
+    except ValueError as refused:
+        # A plan no run can be made from — a manuscript that is not there, a
+        # problems file the server will not read. Nothing ran and nothing was
+        # written, which is a caller's mistake and not a run that stopped.
+        raise refusal('ingest', {'request_rejected': str(refused)}) from refused
+    finally:
+        srv.STATE['run'] = attached
+    if seat.raised:
+        slot, problem = seat.raised[0]
+        raise problem
+    if summary.get('stage') == 'startup' and summary.get('blocked_reason'):
+        raise refusal('ingest', {'request_rejected': str(summary['blocked_reason'])})
+    return held(paper, folder, summary, seat)
 
-    def refuse(tool, answer):
-        srv.STATE['run'] = held
-        return refusal(tool, answer)
 
-    opened = srv.ingest(str(paper), str(folder), **plan)
-    if 'request_rejected' in opened:
-        raise refuse('ingest', opened)
-    run = srv.current()
-    if run.base is None:
-        sealed = srv.seal_as_converted(opened.get('recorder_key'), reason=SCRIPTED_SEAL)
-        if 'request_rejected' in sealed:
-            raise refuse('seal_as_converted', sealed)
-    codes = {row['slot']: row['claim_code'] for row in opened.get('claim_codes') or []}
-    claims = {}
-    for slot in slots_of(run):
-        taken = srv.claim_agent(slot, codes.get(slot, ''))
-        if 'request_rejected' in taken:
-            raise refuse('claim_agent', taken)
-        claims[slot] = taken
-        if 'read_paper' in (taken.get('allowed_tools') or ()):
-            for part in range(1, paper_view.served(run.base) + 1):
-                srv.read_paper(taken['agent_token'], part=part)
-    return opened, run, claims, held, refuse
+def _prepare(paper, folder, pieces, title, supplements):
+    """Convert the paper into the run's workspace, where a fixture asked for that.
+
+    A run converts the PDF itself, and reuses a draft that is already in the
+    workspace rather than converting over it — which is what lets a fixture put
+    its own pieces, or its own title, in the draft the Read stage then reads. A
+    call that asks for none of that leaves the conversion to the run.
+    """
+    workspace = folder / names.MANUSCRIPT_DIRECTORY
+    if (workspace / 'manifest.json').is_file():
+        return  # Already sealed: this run plans no Read stage and no draft.
+    if not (pieces or title or supplements):
+        return
+    draft = convert_paper(str(paper), workspace, title=title or None,
+                          supplements=supplements)
+    for piece in pieces:
+        piece = {**PIECE, **dict(piece)}
+        document = str(piece.get('document') or paper_base.MAIN_DOCUMENT)
+        piece['document'] = document
+        into = draft['documents'].setdefault(document, [])
+        if document == paper_base.MAIN_DOCUMENT:
+            at = next((index for index, one in enumerate(into)
+                       if str(one.get('section')) == 'References'), len(into))
+            into.insert(at, piece)
+        else:
+            into.append(piece)
+    write(workspace / DRAFT_FILE, draft)

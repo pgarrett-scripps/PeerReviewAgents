@@ -26,6 +26,7 @@ from pathlib import Path
 import pytest
 
 import peerreviewagents
+from peerreviewagents import scripted
 from peerreviewagents import workspace as workspace_tools
 from peerreviewagents.engine.investigation import Investigation
 
@@ -425,26 +426,30 @@ def test_the_read_stage_is_driven_in_code_for_a_fixture_to_render(tmp_path):
     users' runs leave behind.
     """
     folder = tmp_path / 'run'
-    with peerreviewagents.scripted_read(FIXTURE, folder, CONVERTER_LEFT) as read:
+
+    def reader(slot):
         # The equation and the figure are what the draft says is unaccounted
         # for; the paragraph of cells is not, which is why the reader reads the
         # listing against the page rather than the other way round.
-        left = read.read_draft()['outstanding']
+        left = slot.read_draft()['outstanding']
         assert [row['kind'] for row in left['pieces']] == ['equation', 'figure']
         assert left['pages'] == [1, 2]
-        read.view_page(1)
-        read.view_page(2)
-        read.replace_equation(read.find('E = m c^{2'), 1, 'E = m c^{2}', number='(1)')
-        read.describe_figure(read.find('Figure 1: The bench'), 1, DESCRIBED)
-        folded = read.reread_piece(read.find('logged every hour'), 1, [
+        slot.view_page(1)
+        slot.view_page(2)
+        slot.replace_equation(slot.find('E = m c^{2'), 1, 'E = m c^{2}', number='(1)')
+        slot.describe_figure(slot.find('Figure 1: The bench'), 1, DESCRIBED)
+        folded = slot.reread_piece(slot.find('logged every hour'), 1, [
             {'kind': 'paragraph', 'keep': 'The current was logged every hour.'},
             {'kind': 'table', 'rows': [['Hour', 'Current (mA)'], ['1', '4.5'], ['2', '9.0']]},
             {'kind': 'caption', 'text': 'Table 1: Current by hour.'},
-        ], absorb=[read.find('with $\\{$')])
+        ], absorb=[slot.find('with $\\{$')])
         assert folded['kinds'] == ['paragraph', 'table', 'caption']
-        assert read.seal(note=NOTE)['sealed'] is True
-        assert read.sealed['statistics']['lines']['paper.md'] > 0
+        assert slot.seal(note=NOTE)['sealed'] is True
 
+    read = peerreviewagents.scripted_read(FIXTURE, folder, reader, pieces=CONVERTER_LEFT)
+
+    assert read.status == 'complete'
+    assert read.sealed['statistics']['lines']['paper.md'] > 0
     base = read.base()
     assert base.folder == read.workspace == folder / peerreviewagents.MANUSCRIPT_DIRECTORY
     # The three marks a consumer renders. The parts of one re-read, each one
@@ -474,18 +479,32 @@ def test_a_refused_reader_call_is_raised_rather_than_answered(tmp_path):
     repair it thinks it made, so the refusal is an exception with the server's
     own answer on it.
     """
-    with peerreviewagents.scripted_read(FIXTURE, tmp_path / 'run', CONVERTER_LEFT) as read:
-        mangled = read.find('E = m c^{2')
+    def reader(slot):
+        mangled = slot.find('E = m c^{2')
         # A repair is a transcription of a page, and this script has not opened
         # one yet.
         with pytest.raises(peerreviewagents.ReaderRefused) as refused:
-            read.replace_equation(mangled, 1, 'E = m c^{2}', number='(1)')
+            slot.replace_equation(mangled, 1, 'E = m c^{2}', number='(1)')
         assert refused.value.tool == 'replace_equation'
         assert 'request_rejected' in refused.value.answer
         # And a piece is named by what the converter read there, so a fixture
         # that names nothing, or two things, stops rather than working on
         # whichever came first.
         with pytest.raises(LookupError, match='in 0 pieces'):
-            read.find('a sentence this paper does not hold')
-        read.view_page(1)
-        assert read.replace_equation(mangled, 1, 'E = m c^{2}', number='(1)')['piece'] == mangled
+            slot.find('a sentence this paper does not hold')
+        slot.view_page(1)
+        assert slot.replace_equation(mangled, 1, 'E = m c^{2}', number='(1)')['piece'] == mangled
+        # Caught inside the script, the stage goes on and the run seals.
+        scripted.DEFAULT_SCRIPTS['reader'](slot)
+
+    read = peerreviewagents.scripted_read(FIXTURE, tmp_path / 'run', reader,
+                                          pieces=CONVERTER_LEFT)
+
+    assert read.sealed['sealed'] is True
+    # A refusal the script does not catch is the exception the run ends on.
+    def refuser(slot):
+        slot.replace_equation(slot.find('E = m c^{2'), 1, 'E = m c^{2}', number='(1)')
+
+    with pytest.raises(peerreviewagents.ReaderRefused, match='replace_equation'):
+        peerreviewagents.scripted_read(FIXTURE, tmp_path / 'again', refuser,
+                                       pieces=CONVERTER_LEFT)
