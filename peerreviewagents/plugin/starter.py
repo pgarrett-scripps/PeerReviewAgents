@@ -405,7 +405,17 @@ def refuse_models(runner, wanted):
     with what the caller asked for, so that run is opened, identified and
     marked blocked at start-up like any other run that could not begin — see
     :func:`conduct`.
+
+    A name no version of this package knows is the one refusal the runner is
+    never asked about. It is a misspelling, not a login, and a machine with no
+    harness installed has to answer it the same way as a machine with one:
+    otherwise ``--reviewer-models claude-nonesuch-9`` reads as "blocked at
+    start-up, no harness" and sends the reader to their installation over a
+    typo.
     """
+    unknown = model_plan.problems(dict(wanted))
+    if unknown:
+        raise ValueError('; '.join(unknown))
     if runner_missing(runner):
         return
     problems = runner.unavailable(dict(wanted))

@@ -446,13 +446,23 @@ def test_the_flags_the_user_typed_reach_the_run(monkeypatch):
 
 
 def test_a_model_this_login_cannot_run_stops_the_run_before_it_costs_anything(tmp_path,
+                                                                              monkeypatch,
                                                                               no_allowlist):
-    with pytest.raises(ValueError) as refused:
-        starter.review(str(FIXTURE), str(tmp_path / 'run'), arm='single',
-                       reviewer_models='claude-nonesuch-9')
-    assert 'claude-nonesuch-9' in str(refused.value)
-    assert '--reviewer-models' in str(refused.value)
-    assert not (tmp_path / 'run').exists(), 'no run folder, no usage, nothing spent'
+    """And a name no version knows is refused whether or not a harness is installed.
+
+    The PATH is emptied on purpose: a machine with no ``claude`` on it — CI,
+    for one — must refuse a misspelled model by name rather than report the run
+    blocked for want of a harness, which would send the reader to their
+    installation over a typo.
+    """
+    for path in (str(tmp_path / 'empty'), os.environ.get('PATH', '')):
+        monkeypatch.setenv('PATH', path)
+        with pytest.raises(ValueError) as refused:
+            starter.review(str(FIXTURE), str(tmp_path / 'run'), arm='single',
+                           reviewer_models='claude-nonesuch-9')
+        assert 'claude-nonesuch-9' in str(refused.value)
+        assert '--reviewer-models' in str(refused.value)
+        assert not (tmp_path / 'run').exists(), 'no run folder, no usage, nothing spent'
 
 
 def test_the_runner_owns_the_question_and_a_missing_runner_is_not_a_refusal():
@@ -474,11 +484,11 @@ def test_the_runner_owns_the_question_and_a_missing_runner_is_not_a_refusal():
                 return [self.nothing_runs] if self.nothing_runs else []
             return list(self.refused)
 
-    picky = Asked(refused=['claude-nonesuch-9 is not a model this package knows'])
+    picky = Asked(refused=['claude-opus-5-5 is not on this login'])
     with pytest.raises(ValueError) as refused:
-        starter.refuse_models(picky, {'core-1': 'claude-nonesuch-9'})
-    assert 'claude-nonesuch-9' in str(refused.value)
-    assert picky.asked == [{}, {'core-1': 'claude-nonesuch-9'}], \
+        starter.refuse_models(picky, {'core-1': 'claude-opus-5-5'})
+    assert 'claude-opus-5-5' in str(refused.value)
+    assert picky.asked == [{}, {'core-1': 'claude-opus-5-5'}], \
         'asked with no models first, because that question is not about the plan'
     assert starter.runner_missing(picky) == ''
 
@@ -487,6 +497,14 @@ def test_the_runner_owns_the_question_and_a_missing_runner_is_not_a_refusal():
     assert starter.refuse_models(missing, {'core-1': 'claude-opus-5-5'}) is None
     assert missing.asked == [{}], 'a runner that runs nothing is not asked about the plan'
     assert starter.runner_missing(missing) == claude_code.MISSING_CLAUDE
+
+    before = list(missing.asked)
+    with pytest.raises(ValueError) as typo:
+        starter.refuse_models(missing, {'core-1': 'claude-nonesuch-9'})
+    assert 'not a model this version knows' in str(typo.value), \
+        'a misspelling is a bad argument on a machine with no harness too'
+    assert '--reviewer-models' in str(typo.value)
+    assert missing.asked == before, 'and the runner is never asked about a name it cannot know'
 
     healthy = Asked()
     assert starter.refuse_models(healthy, {'core-1': 'claude-opus-5-5'}) is None
