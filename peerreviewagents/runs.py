@@ -674,6 +674,62 @@ def _code_reviewed(progress, manifest, problems):
     }
 
 
+def _read_reading(progress, runtime, problems):
+    """What the Read stage did on this run, or ``None`` where it had none.
+
+    ``None`` means the folder arrived with a sealed manuscript — an
+    application's own source through ``write_manuscript``, or a run picked up
+    after its own seal — so there was no draft to repair and the run planned no
+    reader.
+
+    ``reader_failed`` is the fact this reading exists for. A reader that could
+    not seal the draft is not a blocked run: the manuscript is sealed as the
+    converter read it and every stage after reads that text, over the
+    converter's own equations. Every finding in the folder was made against it,
+    and ``reason`` is the one sentence saying why. A consumer that opens a
+    folder later has no return value to learn it from, which is why it is here
+    and not only in what ``review`` and ``check_fixes`` hand back.
+
+    ``runtime.json`` is read first: the starter writes the panel's own record,
+    with the reader's model, its attempts and its tally of pages. A run killed
+    before the starter could write that leaves ``progress.json``'s own block,
+    which knows whether a Read stage was planned and whether the seal is a
+    failure, and nothing about the pages — those numbers come back ``None``
+    rather than as zeros that would read as a reader that did nothing.
+    """
+    stated = (runtime or {}).get('read')
+    if stated is not None and not isinstance(stated, dict):
+        problems.append(f"runtime.json's read holds a {type(stated).__name__} where the record "
+                        'of the Read stage belongs, so it is read as absent')
+        stated = None
+    if isinstance(stated, dict):
+        return {'reader_failed': bool(stated.get('reader_failed')),
+                'reason': stated.get('reason') or None,
+                'sealed': True,
+                'model': stated.get('model') or None,
+                'attempts': stated.get('attempts') if isinstance(stated.get('attempts'), int)
+                else None,
+                'pages': _count(stated.get('pages')),
+                'pages_viewed': _count(stated.get('pages_viewed')),
+                'actions': _count(stated.get('actions')),
+                'tool_calls': _count(stated.get('tool_calls'))}
+    live = (progress or {}).get('read')
+    if live is not None and not isinstance(live, dict):
+        problems.append(f"progress.json's read holds a {type(live).__name__} where the Read "
+                        'stage belongs, so it is read as absent')
+        live = None
+    if not isinstance(live, dict) or not live.get('planned'):
+        # Either this run had no Read stage, or it is a folder written before
+        # the block said which. A folder that holds a sealed manuscript and no
+        # account of a reader is the first case, and it is the one this answers.
+        return None
+    return {'reader_failed': bool(live.get('reader_failed')),
+            'reason': live.get('reason') or None,
+            'sealed': bool(live.get('sealed')),
+            'model': None, 'attempts': None,
+            'pages': None, 'pages_viewed': None, 'actions': None, 'tool_calls': None}
+
+
 def _code_check_reading(review, document, progress, problems):
     """What the code check answered on this run, or ``None`` where it had none.
 
@@ -720,6 +776,13 @@ def _code_check_reading(review, document, progress, problems):
         # The most findings the check is handed. ``None`` only for a record
         # written by something that did not say, which no version writes.
         'cap': cap if isinstance(cap, int) and not isinstance(cap, bool) else None,
+        # Whether the lane filed no report at all: it answered nothing, or died
+        # before it could close. A lane that reported and settled nothing of
+        # its queue is not silent, and the two read the same in the counts,
+        # which is why the fact is carried rather than inferred. A record
+        # written before this key existed says nothing about it and is read as
+        # ``False``, the same rule the keys below are read by.
+        'silent': bool(record.get('silent')),
         'checked': len(rows),
         # The method claims the lane was handed and left unanswered, and
         # whether that makes this check a partial one. A silent code lane is
@@ -1087,6 +1150,19 @@ def read_run(path):
         ``lost_pages`` is each page the converter returned nothing from, with
         the document and lines its transcription became, and ``documents`` is
         the file names the base holds.
+    ``read``
+        What the Read stage did, and ``None`` where this run had none: the
+        folder arrived with a sealed manuscript, so there was no draft to
+        repair and no reader was planned. ``reader_failed`` is the fact to
+        carry: a reader that could not seal the draft does not block the run —
+        the manuscript is sealed as the *converter* read it and every stage
+        after works on that text, over the converter's own equations — and
+        ``reason`` is the one sentence saying why. ``sealed`` is whether the
+        manuscript is sealed at all, ``model`` and ``attempts`` are what ran
+        the stage, and ``pages``, ``pages_viewed``, ``actions`` and
+        ``tool_calls`` are what it did; those four are ``None``, not ``0``, for
+        a run killed before the starter could write its accounting, because a
+        number nobody recorded is not a reader that did nothing.
     ``code``
         Whether this run read the code behind the paper, and what it read.
         ``reviewed`` is false for every run that was given none — which is most
@@ -1113,7 +1189,10 @@ def read_run(path):
         to it between the reviewers and the synthesis and comes back
         ``confirmed``, ``contradicted`` or ``not-shown``:
         :data:`peerreviewagents.names.CODE_CHECK_VERDICTS` is the three words.
-        ``cap`` is the most findings the check is handed, ``checked`` how many
+        ``cap`` is the most findings the check is handed, ``silent`` whether the
+        lane filed no report at all — it answered nothing, or died before it
+        could close, which is not the same run as a lane that reported and
+        settled nothing — ``checked`` how many
         it answered, ``not_checked`` how many it was handed and never answered
         with ``incomplete`` and ``incomplete_reason`` saying so in words — a
         silent or failed lane leaves its claims as their reviewers filed them,
@@ -1350,6 +1429,7 @@ def read_run(path):
         'identity': _identity(manifest, protocol, paper,
                               (probe or {}).get('pdf'), problems, agents),
         'manuscript': _manuscript(workspace, paper),
+        'read': _read_reading(progress, runtime, problems),
         'code': _code_reviewed(progress, manifest, problems),
         'code_check': code_check,
         'stages': progress.get('stages') or (runtime.get('stages') if runtime else None),
@@ -1411,6 +1491,12 @@ def read_fix_check(path):
         them, each with the ``lane`` it was dealt to and the ``reason`` there
         is no verdict on it. A problem that was not checked is neither fixed
         nor unfixed, and the count is here so that nobody reads it as either.
+    ``read``
+        What the Read stage did to the new draft, as :func:`read_run` reports
+        it, and ``None`` where this check had no Read stage. ``reader_failed``
+        with its ``reason`` is the one to carry: the draft was sealed as the
+        converter read it, and every verdict in the check was reached against
+        that text.
     ``incomplete``, ``incomplete_reason``
         Whether the check answered everything it was given, and in one
         sentence why not. The status says the check was *written*; this says
@@ -1475,7 +1561,11 @@ def read_fix_check(path):
                              'is the reading for one')
     given = [dict(one) for one in (document.get('given') or []) if isinstance(one, dict)]
     answered = {str(row.get('problem_id')) for row in checks}
-    unchecked = ([dict(one) for one in (document.get('unchecked') or [])
+    # The rows first, from whichever record came back: the written check holds
+    # them, and so does `progress.json` for a check that blocked before it
+    # could write one — a problem whose lane was never started still has a
+    # reason, and a count with no row under it is a reading nobody can act on.
+    unchecked = ([dict(one) for one in (record.get('unchecked') or [])
                   if isinstance(one, dict)]
                  or [{'id': one.get('id'), 'statement': one.get('statement'),
                       'severity': one.get('severity'), 'lane': None, 'reason': ''}
@@ -1499,10 +1589,12 @@ def read_fix_check(path):
         'title': document.get('title'),
         'arm': document.get('arm') or (protocol or {}).get('arm'),
         'cap': cap if isinstance(cap, int) and not isinstance(cap, bool) else None,
+        'read': _read_reading(progress, runtime, file_problems),
         'problems': given,
         'checks': checks,
         'checked': len(checks),
-        'not_checked': len(unchecked) if (given or document) else _count(record.get('not_checked')),
+        'not_checked': (len(unchecked) if (unchecked or given or document)
+                        else _count(record.get('not_checked'))),
         'unchecked': unchecked,
         # Whether the written check answered everything it was given. A check
         # written before this key existed says it the only way it can: by

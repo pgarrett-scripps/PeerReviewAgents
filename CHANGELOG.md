@@ -85,6 +85,28 @@ the project uses [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Everything a run knows is readable from its folder.** A consumer opens a
+  run folder days after the call that made it, so a fact that lived only in
+  the return value was a fact that consumer had to infer. Five of them are on
+  disk and in the readings now. `read` — whether the reader failed and why,
+  the model that read, its attempts, pages and tool calls — is written to
+  `runtime.json` and comes back from both `read_run` and `read_fix_check`
+  (`None` for a folder that arrived with a sealed manuscript and planned no
+  reader); it used to be inferable only from the manuscript's state plus a row
+  in the agent table. `read_run`'s `code_check` carries `silent`, which
+  `checked: 0` cannot say — a lane that reported and settled nothing and a
+  lane that never reported are not the same run to come back to. A fix check's
+  unchecked rows are in `progress.json` beside the written document, so a
+  folder whose check was never written still answers which problems have no
+  verdict and why, instead of `not_checked: 3` with `unchecked: []`. A blocked
+  review's reason names each missing stage's own last ending — `core-1 (over
+  the token ceiling)`, `(returned nothing)`, `(out of time)`, `(failed)`,
+  `(was never started)` — and, where the panel stopped starting seats because
+  the run was out of budget, says so and ends with the stop itself (`this run
+  reached its token ceiling of 5,000: …`); it used to be one sentence,
+  "these stages returned nothing twice", for every cause. And
+  `scripted_review` builds that stopped run from a script — a seat that spends
+  past a small `per_run_tokens` — so no consumer writes that folder by hand.
 - **A check that is not whole says so, and says why against each problem.**
   A fix-check lane that answers nothing, or dies holding its batch, costs its
   own batch and nothing else — that is deliberate, a check with ten verdicts

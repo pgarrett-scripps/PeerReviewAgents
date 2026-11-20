@@ -585,7 +585,8 @@ def test_the_queue_is_capped_and_says_what_it_left_alone(tmp_path, code_folder):
     # Eleven of the twelve queued claims went unanswered, which is not the same
     # as three left past the cap: the cap was never handed them, and these the
     # lane was handed and did not read.
-    assert progress == {'cap': srv.MAX_CODE_CHECKS, 'checked': 1, 'not_checked': 11,
+    assert progress == {'cap': srv.MAX_CODE_CHECKS, 'silent': False, 'checked': 1,
+                        'not_checked': 11,
                         'incomplete': True,
                         'incomplete_reason': progress['incomplete_reason'],
                         'over_cap': 3,

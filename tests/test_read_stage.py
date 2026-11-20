@@ -1009,7 +1009,8 @@ def test_the_reader_cannot_work_after_the_seal(tmp_path):
     # And the run's own progress says the stage is done rather than leaving the
     # reading's accounting behind to be read as outstanding work.
     progress = json.loads((srv.current().review / 'progress.json').read_text(encoding='utf-8'))
-    assert progress['read'] == {'sealed': True, 'outstanding': None}
+    assert progress['read'] == {'planned': True, 'sealed': True, 'reader_failed': False,
+                                'reason': '', 'outstanding': None}
 
 
 def test_run_status_says_whether_the_manuscript_is_sealed_and_by_what(tmp_path):

@@ -337,3 +337,154 @@ def test_the_ceilings_still_do_nothing_when_the_plan_sets_none(tmp_path):
 
     assert review.status == 'complete'
     assert review.summary['tokens_total'] == 150_000  # three seats at the flat number
+
+
+# -- the folder on its own: a consumer opens it later ------------------------
+#
+# Everything above is read from what the call returned. A consumer opens a
+# folder days later with no call to return anything, so every one of these
+# facts has to be on disk and in the reading of it.
+
+
+def test_a_folder_whose_reader_failed_says_so_without_the_return_value(tmp_path):
+    """``read_run``'s own ``read`` block, from ``runtime.json``.
+
+    The reader failed and the draft was sealed as the converter read it, which
+    is a fact about every finding in the folder. It used to live only in what
+    ``review`` returned, so a consumer opening the folder afterwards had to
+    infer it from the manuscript's manifest and a row in the agent table.
+    """
+    review = peerreviewagents.scripted_review(FIXTURE, tmp_path / 'run', {'reader': silent})
+
+    runtime = json.loads((Path(review.review) / 'runtime.json').read_text(encoding='utf-8'))
+    assert runtime['read']['reader_failed'] is True
+
+    read = read_run(tmp_path / 'run')['read']
+    assert read['reader_failed'] is True
+    assert 'sealed as converted' in read['reason']
+    assert read['sealed'] is True
+    assert read['model']
+    assert read['pages_viewed'] == 0
+
+
+def test_a_folder_whose_reader_worked_says_that_too(tmp_path):
+    """The other arm, so ``reader_failed`` is a fact about the run, not the key."""
+    peerreviewagents.scripted_review(FIXTURE, tmp_path / 'run')
+
+    read = read_run(tmp_path / 'run')['read']
+    assert read['reader_failed'] is False
+    assert read['reason'] is None
+    assert read['pages_viewed'] >= 1
+
+
+def test_a_folder_that_arrived_sealed_has_no_read_block_at_all(tmp_path):
+    """``None`` is the run that planned no reader, as in the returned summary."""
+    folder = tmp_path / 'run'
+    peerreviewagents.scripted_read(FIXTURE, folder)
+
+    peerreviewagents.scripted_review(FIXTURE, folder, arm='single')
+
+    assert read_run(folder)['read'] is None
+
+
+def test_a_fix_checks_folder_says_its_reader_failed_too(tmp_path):
+    """The same block on the other reading: the verdicts were reached on that text."""
+    peerreviewagents.scripted_fix_check(FIXTURE, tmp_path / 'run', problems(),
+                                        {'reader': silent})
+
+    read = read_fix_check(tmp_path / 'run')['read']
+    assert read['reader_failed'] is True
+    assert 'sealed as converted' in read['reason']
+
+
+def test_a_silent_code_check_is_silent_in_the_folder_as_well(tmp_path):
+    """``silent`` was only in what the call returned, and the counts cannot say it.
+
+    A lane that reported and settled nothing of its queue and a lane that never
+    reported at all leave the same ``checked: 0``, and they are not the same
+    run to come back to.
+    """
+    with_code(tmp_path, {'code-check': silent})
+
+    assert read_run(tmp_path / 'run')['code_check']['silent'] is True
+
+
+def test_a_code_check_that_reported_is_not_silent_in_the_folder(tmp_path):
+    """The other arm of the same key."""
+    with_code(tmp_path)
+
+    assert read_run(tmp_path / 'run')['code_check']['silent'] is False
+
+
+def test_a_check_with_no_document_still_has_a_row_for_every_problem(tmp_path):
+    """Every unchecked problem carries its reason, document or no document.
+
+    A check that stopped before ``write_fix_check`` — the reader could not seal
+    the new draft, so no lane was ever started — has no written check to read
+    the rows out of, and ``not_checked: 3`` with ``unchecked: []`` is a count
+    nobody can act on. The rows are in ``progress.json`` now, which is what a
+    folder missing its document is read from.
+    """
+    check = peerreviewagents.scripted_fix_check(FIXTURE, tmp_path / 'run', problems(3),
+                                                {'fix-check': silent})
+    Path(check.read()['reports']['fix_check']).unlink()
+
+    written = read_fix_check(tmp_path / 'run')
+    assert written['not_checked'] == 3
+    assert len(written['unchecked']) == 3
+    assert {row['lane'] for row in written['unchecked']} == {'fix-1'}
+    assert all('fix-1' in row['reason'] for row in written['unchecked'])
+
+
+def test_a_blocked_review_says_how_each_missing_seat_ended(tmp_path):
+    """The ending, not the retry: a seat over its ceiling is not a silent one.
+
+    Every seat that returns nothing twice blocks the run the same way, and the
+    reason used to be the same sentence for all of them — "these stages
+    returned nothing twice" — which names what the orchestrator did and not
+    what happened to the seat.
+    """
+    def greedy(slot):
+        slot.whole_paper()
+        slot.spend(40_000)
+
+    review = peerreviewagents.scripted_review(FIXTURE, tmp_path / 'run', {'core-1': greedy},
+                                              per_agent_tokens=10_000)
+
+    assert review.status == 'blocked'
+    assert 'core-1 (over the token ceiling)' in review.blocked_reason
+    assert read_run(tmp_path / 'run')['cause'] == review.blocked_reason
+
+
+def test_a_seat_that_truly_said_nothing_reads_as_that(tmp_path):
+    """The plain case keeps its own words, so the ending is the thing that varies."""
+    review = peerreviewagents.scripted_review(FIXTURE, tmp_path / 'run', {'core-1': silent})
+
+    assert review.status == 'blocked'
+    assert 'core-1 (returned nothing)' in review.blocked_reason
+
+
+def test_a_run_stopped_at_its_own_ceiling_says_the_ceiling_in_the_folder(tmp_path):
+    """The starter's stop case, built by a script rather than written by hand.
+
+    The per-run ceiling is spent, so the seat is not started again — and that
+    is the fact a consumer needs: the stage is missing because the *run* ran
+    out, not because this seat is a bad one. Both halves are in the reason now,
+    the seat's own ending and the stop that followed it.
+    """
+    def greedy(slot):
+        slot.whole_paper()
+        slot.spend(40_000)
+
+    review = peerreviewagents.scripted_review(FIXTURE, tmp_path / 'run', {'core-1': greedy},
+                                              per_run_tokens=5_000)
+
+    assert review.status == 'blocked'
+    assert 'core-1 (over the token ceiling, and nothing was started again)' in \
+        review.blocked_reason
+    assert 'this run reached its token ceiling of 5,000' in review.blocked_reason
+    assert review.summary['stages']['attempts']['core-1'] == 1
+    run = read_run(tmp_path / 'run')
+    assert run['status'] == 'blocked'
+    assert run['cause'] == review.blocked_reason
+    assert run['runtime']['per_run_token_ceiling'] == 5_000

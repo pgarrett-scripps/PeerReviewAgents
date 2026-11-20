@@ -457,7 +457,13 @@ def test_a_scripted_review_holds_every_slot_the_arm_planned(tmp_path):
     review = peerreviewagents.scripted_review(FIXTURE, tmp_path / 'run', arm='full-two-track',
                                               reviewers=2, tracks=['stats'])
 
-    assert review.ran == ('reader', *srv.plan_slots('full-two-track', 2, ['stats']))
+    # Every planned slot ran, and the reader ran before them. `ran` is arrival
+    # order, and the seats of one stage are started together, so which of them
+    # arrives first is the thread scheduler's business and not the plan's.
+    planned = srv.plan_slots('full-two-track', 2, ['stats'])
+    assert review.ran[0] == 'reader'
+    assert set(review.ran[1:]) == set(planned)
+    assert review.ran[-1] == planned[-1] == 'editor'  # the editor runs after the panel
     assert review.slot('spec-stats').last('submit_report')['closed']
     assert review.summary['stages']['none_found'] == ['spec-stats']
     assert review.summary['issues']['issue_members'] == 2
